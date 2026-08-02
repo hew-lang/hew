@@ -11,10 +11,10 @@ make structural-lint            # later: cache-only pinned scan + authority ratc
 .ast-grep/tool/bin/ast-grep scan --rule rules/rust/fail-closed/ok-question-in-lowering.yml  # one pinned rule
 ```
 
-Bootstrap is explicit so ordinary local lint never downloads dependencies. The
-complete scan reports the two tracked baseline error rules as warnings; all other
-error-severity rules and the authority inventory remain fail-closed. `warning`/
-`info`/`hint` rules report without failing.
+Bootstrap is explicit so ordinary local lint never downloads dependencies. Every
+error-severity rule is fail-closed; a deliberate local exception must carry the
+rule's explicit source annotation and rationale. `warning`/`info`/`hint` rules
+report without failing.
 
 ## Layout
 
@@ -42,7 +42,7 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 ### Rust — fail-closed (`error`, gates CI)
 | Rule | Hits | Catches |
 |------|------|---------|
-| `ok-question-in-lowering` | 6 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
+| `ok-question-in-lowering` | 0 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
 | `ty-var-constructed-post-inference` | 0 | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3). |
 | `semantic-owner-shortening-sink` (authority audit) | inventory-ratcheted | `short_name(owner)`, qualified-path leaf extraction, or a module alias flowing through local bindings into registry, `DefId`, `NominalId`, or `CallTarget` keys. Display/diagnostic formatting and ordinary collection `.last()` calls are controls. |
 
@@ -54,9 +54,10 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 | `no-unimplemented-macro` | 0 | `unimplemented!()`. |
 | `expect-empty-message` | 0 | `.expect("")` with an empty/whitespace message. |
 
-### Rust — concurrency / drop (`info` / `hint`, advisory)
+### Rust — concurrency / drop
 | Rule | Hits | Catches |
 |------|------|---------|
+| `no-lifecycle-state-drop-suppression` (`error`) | 0 | Restart/lifecycle-specific actor-free helpers or state-drop suppression options that bypass explicit borrowed/consumed incarnation authority. |
 | `lock-unwrap` | 10 | `$M.lock().unwrap()/.expect()` — unwraps a poisoned lock (CLAUDE.md §9; prefer the poison-safe accessor). |
 | `explicit-leak-review` | 3 | `mem::forget` / `Box::leak` — RAII escapes to audit for drop-safety (CLAUDE.md §1). |
 

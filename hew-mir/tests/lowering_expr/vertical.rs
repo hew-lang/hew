@@ -4198,6 +4198,65 @@ fn linear_consumed_in_both_branches_accepted() {
 }
 
 #[test]
+fn linear_consuming_method_retires_initializer_publication_owner() {
+    let pipeline = lower_source_checked_verified(
+        r"
+        #[linear]
+        type Tx { id: i64 }
+        impl Tx {
+            fn commit(consuming self) {}
+        }
+        fn main() {
+            let tx = Tx { id: 1 };
+            tx.commit();
+        }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::MustConsume { name, .. } if name == "__hew_produced_value"
+        )),
+        "the initializer publication transfers into `tx`; it must not leave a synthetic linear owner: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn generic_loop_accumulator_keeps_its_pre_loop_initialisation() {
+    let pipeline = lower_source(
+        r"
+        enum Step { More(i64); Done; }
+        fn next() -> Step { Step::Done }
+        fn fold<B>(init: B, f: fn(B, i64) -> B) -> B {
+            var acc = init;
+            loop {
+                match next() {
+                    Step::More(item) => {
+                        acc = f(acc, item);
+                    },
+                    Step::Done => {
+                        break;
+                    },
+                }
+            }
+            acc
+        }
+        fn step(value: i64, item: i64) -> i64 { value + item }
+        fn main() -> i64 { fold(1, step) }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::InitialisedBeforeUse { name, .. } if name == "acc"
+        )),
+        "a pre-loop initializer dominates the loop exit: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
 fn linear_consumed_only_in_then_branch_rejects() {
     // The plan's canary fixture (linear_consumed_only_some_branches).
     // @linear binding consumed in then arm only; else arm leaves it

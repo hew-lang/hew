@@ -37,9 +37,9 @@ pub use mono::{
     SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_layout_key, mangle_resolved_ty, shorten_named_arg_qualifiers,
-    substitute_type_params, synthetic_cursor_layout_key, EnumLayout, EnumMonoKey,
-    EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    layout_key_for_named, mangle, mangle_layout_key, mangle_resolved_ty,
+    shorten_named_arg_qualifiers, substitute_type_params, synthetic_cursor_layout_key, EnumLayout,
+    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
     MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{

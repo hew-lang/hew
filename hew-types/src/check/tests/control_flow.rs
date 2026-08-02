@@ -106,6 +106,34 @@ fn user_supervisor_stop_shadow_keeps_user_target() {
     );
 }
 
+#[test]
+fn instant_now_publishes_typed_runtime_target() {
+    let output = check_source(
+        r"
+        fn main() {
+            let start = instant::now();
+            sleep_until(start);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "instant::now must typecheck as a compiler builtin: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::InstantNow
+            )
+        )),
+        "instant::now must publish its typed runtime family: {:#?}",
+        output.direct_call_targets
+    );
+}
+
 // ── Supervisor child slot index tests ────────────────────────────────────
 //
 // These tests verify that the checker assigns correct slot indices to

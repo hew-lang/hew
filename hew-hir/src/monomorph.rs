@@ -185,6 +185,26 @@ pub fn synthetic_cursor_layout_key(
     ))
 }
 
+/// Resolve a named type to the one layout-registry key its semantic carrier
+/// permits.  Generic user nominals use the ordinary layout mangle; compiler
+/// cursor records use their disjoint synthetic namespace selected by the
+/// builtin discriminator.  Keeping the discriminator in this API prevents a
+/// user `type VecIter<T>` from selecting the cursor layout by spelling alone.
+#[must_use]
+pub fn layout_key_for_named(
+    name: &str,
+    type_args: &[ResolvedTy],
+    builtin: Option<hew_types::BuiltinType>,
+) -> Option<String> {
+    match builtin {
+        Some(cursor @ (hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter)) => {
+            synthetic_cursor_layout_key(cursor, type_args)
+        }
+        _ if type_args.is_empty() => Some(name.to_string()),
+        _ => Some(mangle_layout_key(name, type_args)),
+    }
+}
+
 /// Recursively preserve canonical named identities throughout a type spine.
 ///
 /// This is the single canonical type-arg-spine normaliser shared by every

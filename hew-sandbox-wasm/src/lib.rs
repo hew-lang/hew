@@ -924,10 +924,168 @@ fn main() {
         let ops = all_instruction_ops(&bytecode);
         assert!(ops.contains(&"regex.compile"));
         assert!(ops.contains(&"regex.find"));
+        assert!(ops.contains(&"regex.free"));
         assert!(bytecode
             .capabilities
             .iter()
             .any(|cap| cap.id == "std.text.regex.compile" && cap.disposition == "reserved"));
+    }
+
+    #[test]
+    fn user_pattern_cannot_mint_regex_profile_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Pattern {
+    value: string;
+}
+
+impl Pattern {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Pattern { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Pattern must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Pattern must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn user_regex_name_remains_a_record_layout() {
+        set_test_hewpath();
+        let source = r"
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    println(value.value);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let layout = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex type layout");
+        assert_eq!(
+            layout.kind, "record",
+            "a user type whose presentation name resembles the internal regex shim must not mint regex layout authority"
+        );
+    }
+
+    #[test]
+    fn user_regex_record_and_std_regex_handle_keep_distinct_layout_identities() {
+        set_test_hewpath();
+        let source = r#"
+import std::text::regex;
+
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    let pattern = regex.new("[0-9]+");
+    println(pattern.find("abc123"));
+    println(value.value);
+    pattern.close();
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let user = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex record layout");
+        assert_eq!(user.kind, "record");
+        assert_eq!(user.id, "type:Regex");
+
+        let builtin = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "std.text.regex.Pattern")
+            .expect("canonical stdlib regex handle layout");
+        assert_eq!(builtin.kind, "regex");
+        assert_eq!(builtin.id, "type:std.text.regex.Pattern");
+        assert_ne!(user.id, builtin.id);
+    }
+
+    #[test]
+    fn user_regex_name_cannot_mint_regex_method_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Regex {
+    value: string;
+}
+
+impl Regex {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Regex { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Regex must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Regex must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
     }
 
     #[test]

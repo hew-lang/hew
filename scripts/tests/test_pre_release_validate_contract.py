@@ -94,8 +94,25 @@ def assert_windows_llvm_binding_contract(text: str) -> None:
     assert "Test-Path $LlvmConfigExe -PathType Leaf" in text
     assert "$LlvmVersion = & $LlvmConfigExe --version" in text
     assert "Assert-NativeSuccess 'llvm-config.exe --version'" in text
-    assert "$LlvmVersion -notmatch '^22\\.1\\.\\d+\\s*$'" in text
+    assert "$LlvmVersion -notmatch '^22\\.1\\.0\\s*$'" in text
     assert "$env:LLVM_SYS_221_PREFIX = $LlvmPrefix" in text
+
+
+def assert_platform_identity_contract(text: str) -> None:
+    """No validator may certify artifacts under a guessed platform label."""
+    assert "PLATFORMS=(linux linux-aarch64 macos freebsd windows)" in text
+    assert '"$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64"' in text
+    assert '[ \\"\\$(uname -s)\\" = Darwin ]' in text
+    assert 'case \\"\\$(uname -m)\\" in\n                arm64|x86_64)' in text
+    assert '[ \\"\\$(uname -s)\\" = Linux ]' in text
+    assert "aarch64|arm64)" in text
+    assert ". /etc/os-release" in text
+    assert 'VERSION_ID:-}\\" = 24.04' in text
+    assert '[ \\"\\$(uname -s)\\" = FreeBSD ]' in text
+    assert '[ \\"\\$(uname -m)\\" = amd64 ]' in text
+    windows = WINDOWS_BUILD_SCRIPT.read_text()
+    assert "[Environment]::Is64BitOperatingSystem" in windows
+    assert "$env:PROCESSOR_ARCHITECTURE -ne 'AMD64'" in windows
 
 
 def assert_windows_staged_build_transport_contract(text: str) -> None:
@@ -330,6 +347,10 @@ def test_cargo_output_dir_contract() -> None:
     assert_cargo_output_dir_contract(validator())
 
 
+def test_platform_identity_contract() -> None:
+    assert_platform_identity_contract(validator())
+
+
 def test_macos_llvm_discovery_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
@@ -388,13 +409,60 @@ def test_windows_llvm_binding_mutations_are_rejected() -> None:
             "$LlvmVersion = '22.1.0'",
             1,
         ),
-        original.replace("^22\\.1\\.\\d+\\s*$", ".*", 1),
+        original.replace("^22\\.1\\.0\\s*$", ".*", 1),
     ):
         try:
             assert_windows_llvm_binding_contract(mutation)
         except AssertionError:
             continue
         raise AssertionError("Windows LLVM binding mutation escaped the contract")
+
+
+def test_platform_identity_mutations_are_rejected() -> None:
+    original = validator()
+    mutations = (
+        original.replace("linux linux-aarch64 macos", "linux macos", 1),
+        original.replace('"$(uname -s)" != "Linux"', '"$(uname -s)" != "Never"', 1),
+        original.replace('[ \\"\\$(uname -s)\\" = Darwin ]', "true", 1),
+        original.replace("aarch64|arm64)", "x86_64)", 1),
+        original.replace(". /etc/os-release", "true", 1),
+        original.replace('[ \\"\\$(uname -s)\\" = FreeBSD ]', "true", 1),
+    )
+    for mutation in mutations:
+        try:
+            assert_platform_identity_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("platform identity mutation escaped the contract")
+
+
+def test_linux_validator_rejects_macos_before_building() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        temp = Path(directory)
+        calls = temp / "calls"
+        fake_uname = temp / "uname"
+        fake_uname.write_text(
+            "#!/usr/bin/env bash\n"
+            "case \"${1:-}\" in -s) printf 'Darwin\\n' ;; -m) printf 'arm64\\n' ;; esac\n"
+        )
+        fake_uname.chmod(0o755)
+        fake_cargo = temp / "cargo"
+        fake_cargo.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\n' called >> '{calls}'\nexit 99\n"
+        )
+        fake_cargo.chmod(0o755)
+        env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}"}
+        result = subprocess.run(
+            ["bash", str(VALIDATOR), "linux"],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode != 0
+    assert "requires a native Linux x86_64 host" in result.stdout
+    assert not calls.exists(), "wrong-host rejection must happen before Cargo"
 
 
 def test_windows_staged_build_transport_mutations_are_rejected() -> None:
@@ -844,6 +912,12 @@ def _run_linux_target_dir_contract(
     _write_executable(bin_dir / "cargo", _FAKE_CARGO)
     _write_executable(bin_dir / "rustc", _FAKE_RUSTC)
     _write_executable(bin_dir / "ldd", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        bin_dir / "uname",
+        "#!/usr/bin/env bash\n"
+        "case \"${1:-}\" in -s) printf 'Linux\\n' ;; -m) printf 'x86_64\\n' ;; esac\n",
+    )
+    _write_executable(bin_dir / "make", "#!/usr/bin/env bash\nexit 0\n")
     bash_env = cargo_home / "bash-env"
     bash_env.write_text(f'export PATH="{bin_dir}:$PATH"\n')
 
@@ -907,9 +981,12 @@ _TESTS = [
     test_windows_staged_build_transport_contract,
     test_windows_remote_cleanup_contract,
     test_cargo_output_dir_contract,
+    test_platform_identity_contract,
     test_macos_llvm_discovery_mutations_are_rejected,
     test_windows_toolchain_bootstrap_mutations_are_rejected,
     test_windows_llvm_binding_mutations_are_rejected,
+    test_platform_identity_mutations_are_rejected,
+    test_linux_validator_rejects_macos_before_building,
     test_windows_staged_build_transport_mutations_are_rejected,
     test_windows_remote_cleanup_mutations_are_rejected,
     test_cargo_output_dir_mutations_are_rejected,

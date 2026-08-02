@@ -541,6 +541,29 @@ fn let_bound_literal_unifies_to_i32_width_when_compared_against_i32_fn() {
     }
 }
 
+#[test]
+fn literal_backed_binding_keeps_numeric_mismatch_diagnostic() {
+    let output = check_source(
+        r"
+        fn take_i32(value: i32) {}
+
+        fn main() {
+            let decimal = 1.5;
+            take_i32(decimal);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "a literal-backed float local must not bypass the i32 argument boundary: {:#?}",
+        output.errors
+    );
+}
+
 /// `var` bindings with an untyped integer literal remain inferable (not
 /// immediately materialised to I64) so that use-site context can narrow them.
 /// Regression: if `var passed = 0` materialises to I64 before `passed +
@@ -640,6 +663,62 @@ fn for_range_mixed_width_bounds_resolves_to_wider_type() {
     assert!(
         output.errors.is_empty(),
         "mixed-width range bounds should resolve to the wider type: {:#?}",
+        output.errors
+    );
+}
+
+/// Mixed signedness is not an implicit range conversion. Keeping this rejected
+/// is the counterfactual for MIR's signedness-aware widening: every accepted
+/// mixed-width range has one unambiguous extension mode.
+#[test]
+fn for_range_mixed_signedness_bounds_are_rejected() {
+    let source = r"
+        fn main() {
+            let start: i32 = -2;
+            let end: u64 = 6;
+            for value in start .. end {
+                println(value);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("range bounds require compatible integer types")),
+        "mixed-signedness range must be rejected before MIR: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn numeric_branch_joins_accept_checker_selected_common_types() {
+    let source = r"
+        fn main() {
+            let flag = true;
+            let narrow_signed: i32 = -2;
+            let wide_signed: i64 = 4;
+            let signed = if flag { narrow_signed } else { wide_signed };
+            let narrow_unsigned: u16 = 65534;
+            let wide_unsigned: u64 = 65537;
+            let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
+            let float = if flag { narrow_signed } else { 4.5 };
+            let present: Option<i64> = Some(1);
+            let signed_if_let = if let Some(_) = present {
+                narrow_signed
+            } else {
+                wide_signed
+            };
+            println(signed);
+            println(unsigned);
+            println(float);
+            println(signed_if_let);
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "checker-selected branch normalizations must remain explicit downstream, not be rejected by the ownership graph: {:#?}",
         output.errors
     );
 }

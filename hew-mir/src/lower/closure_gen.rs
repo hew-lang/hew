@@ -56,14 +56,15 @@ impl Builder {
             return Some(GeneratorEnvFieldPlan::TrivialCopy);
         }
         let record_layouts = self.record_layouts_for_classification();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        let classified = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
             &self.lifecycle_registry,
-        )
-        .ok()?;
+        );
+        // JUSTIFIED: `None` feeds the caller's fail-closed capture diagnostic; it admits nothing.
+        let plan = classified.ok()?;
         if matches!(
             plan.root(),
             crate::state_clone::StateFieldCloneKind::BitCopy { .. }
@@ -855,7 +856,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: fn_symbol.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places.clone(),
             dest: Some(Place::ReturnSlot),
             next: ret_block_id,
@@ -1127,6 +1128,10 @@ impl Builder {
         //     its copy and the caller's binding remains the owner of the
         //     original. The env drop releases the clone via
         //     `hew_string_drop` exactly once at actor shutdown.
+        //   - Strong `LambdaPid`: as with string, the frame store is only an
+        //     alias. Codegen replaces it with `hew_lambda_actor_clone` in the
+        //     boxed env, and the env drop releases that independent strong
+        //     handle exactly once with `hew_lambda_actor_release`.
         //   - Anything else (Vec, HashMap, records, owned handles):
         //     `CannotMaterializeClosureCapture` — no silent shallow copy
         //     of an owned aggregate across the actor boundary.
@@ -1171,6 +1176,13 @@ impl Builder {
                     (hew_hir::HirCaptureKind::Strong, ResolvedTy::String) => {
                         crate::model::LambdaEnvFieldDrop::String
                     }
+                    (
+                        hew_hir::HirCaptureKind::Strong,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::LambdaPid),
+                            ..
+                        },
+                    ) => crate::model::LambdaEnvFieldDrop::StrongLambdaActorHandle,
                     // BitCopy scalars and pids share the no-drop class. A pid
                     // is an opaque identity reference with no drop glue (its
                     // drop is a codegen no-op — see the double-free origin
@@ -1211,7 +1223,7 @@ impl Builder {
                             note: format!(
                                 "lambda-actor capture `{}` has type `{}`, which the \
                                  capture env cannot carry yet: only BitCopy scalars, \
-                                 `string`, actor pids, and the weak self-handle have \
+                                 `string`, actor pids, `LambdaPid`, and the weak self-handle have \
                                  an ownership protocol across the actor boundary. A \
                                  shallow byte copy of an owned aggregate would alias \
                                  its heap and double-free at shutdown — fail closed \
@@ -2470,7 +2482,7 @@ impl Builder {
         let after_peer_check = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_sink_peer_closed".to_string(),
-            builtin: Some(RuntimeCallFamily::SinkPeerClosed),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkPeerClosed),
             args: vec![sink],
             dest: Some(peer_closed),
             next: after_peer_check,
@@ -2645,7 +2657,7 @@ impl Builder {
         let after_register = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_register".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkRegister),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkRegister),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: after_register,
@@ -2730,7 +2742,7 @@ impl Builder {
         let close_next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_complete".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkComplete),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkComplete),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: close_next,

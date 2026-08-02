@@ -2840,12 +2840,12 @@ fn fresh_string_producer_term_dest(
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Option<Place> {
     match term {
-        Terminator::Call {
-            callee,
-            builtin: None,
-            dest,
-            ..
-        } if fresh_string_producer_term_admissible(callee, owned_string_return_carrier_symbols) => {
+        Terminator::Call { callee, dest, .. }
+            if fresh_string_producer_term_admissible(
+                callee,
+                owned_string_return_carrier_symbols,
+            ) =>
+        {
             *dest
         }
         Terminator::Suspend { .. } => match suspend_kind {
@@ -4111,7 +4111,7 @@ mod nested_fresh_string_temp_drop_admission {
     fn fresh_string_call(callee: &str, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![Place::Local(0)],
             dest: Some(Place::Local(dest)),
             next,
@@ -4359,7 +4359,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_string_length".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(3)],
                     dest: Some(Place::Local(4)),
                     next: 3,
@@ -4488,7 +4488,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_string_length".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(2)],
                     dest: Some(Place::Local(3)),
                     next: 2,
@@ -4619,7 +4619,7 @@ mod nested_fresh_string_temp_drop_admission {
     fn concat_term(lhs: u32, rhs: u32, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: "hew_string_concat".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![Place::Local(lhs), Place::Local(rhs)],
             dest: Some(Place::Local(dest)),
             next,
@@ -4715,7 +4715,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![concat(0, 1, 2)],
                 Terminator::Call {
                     callee: "hew_vec_push_owned".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5), Place::Local(2)],
                     dest: None,
                     next: 1,
@@ -4906,7 +4906,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![concat(0, 1, 2)],
                 Terminator::Call {
                     callee: "user_takes_string".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(2)],
                     dest: None,
                     next: 1,
@@ -5213,7 +5213,6 @@ fn fresh_bytes_producer_defs_in_block(
     }
     if let Terminator::Call {
         callee,
-        builtin: None,
         dest: Some(dest),
         ..
     } = &block.terminator
@@ -5503,7 +5502,7 @@ mod nested_fresh_bytes_temp_drop_admission {
     fn user_call(callee: &str, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![],
             dest: Some(Place::Local(dest)),
             next,
@@ -5709,7 +5708,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_string_to_bytes".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -5739,7 +5738,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_slice".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -5767,7 +5766,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_get".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -5850,7 +5849,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_get".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(2), Place::Local(6)],
                     dest: Some(Place::Local(7)),
                     next: 2,
@@ -6969,7 +6968,7 @@ mod cow_sole_owner_derivation {
                 ],
                 terminator: Terminator::Call {
                     callee: "produce".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![],
                     dest: Some(Place::Local(41)),
                     next: 1,
@@ -7344,7 +7343,7 @@ mod cow_sole_owner_derivation {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "hew_string_drop".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![Place::Local(3)],
                 dest: None,
                 next: 1,
@@ -7540,7 +7539,7 @@ fn main() {}
             args: vec![Place::Local(9)],
             dest: None,
             next: 1,
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
         };
         assert!(
             !crate::lower::string_binder_read_is_user_fn_borrow(
@@ -7564,7 +7563,7 @@ fn main() {}
             args: vec![Place::Local(9)],
             dest: None,
             next: 1,
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
         };
         assert!(
             crate::lower::string_binder_read_is_user_fn_borrow(

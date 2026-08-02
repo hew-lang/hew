@@ -109,13 +109,14 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	37	stage-1	reviewed qualified string identity construction including unique imported constructor surfaces
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	28	stage-1	one reviewed compatibility-key factory for unique imported tagged-union constructors; exact source owner remains the authority
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/actor.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	2	stage-3	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_resource_close_authority.rs	1	stage-5	reviewed typed-resource close test identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	17	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/ownership.rs	1	stage-5	reviewed qualified string identity construction
@@ -130,7 +131,7 @@ string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	31	st
 string-method-identity	qualified-format-macro	hew-types/src/check/lints/mod.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	54	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	3	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	36	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	37	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	11	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	3	stage-1	reviewed qualified string identity construction

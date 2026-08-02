@@ -172,9 +172,11 @@ fn emit_hashmap_probe_ll(
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -197,9 +199,11 @@ fn emit_hashset_probe_ll(
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashset_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashset_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -494,9 +498,11 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -508,9 +514,11 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 2,
@@ -645,9 +653,11 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "hew_vec_contains_thunk",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(3)),
             next: 1,
@@ -659,9 +669,11 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(1), Place::Local(2)],
             dest: None,
             next: 2,
@@ -798,9 +810,11 @@ fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -860,9 +874,11 @@ fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashset_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashset_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -925,7 +941,9 @@ fn pipeline_with_probe_call(
             callee: callee.to_string(),
             // Mirror the producer lift: the walker classifies layout-op
             // sites by their carried typed family.
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee))
+                .map(hew_mir::CallAuthority::Runtime)
+                .unwrap_or_default(),
             args,
             dest,
             next: 1,
@@ -1066,9 +1084,11 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(0), Place::Local(2)],
             dest: None,
             next: 1,
@@ -1080,9 +1100,11 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                 "__hew_codegen_emit_hashmap_layout_probe",
-            ),
+            ))
+            .map(hew_mir::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(1), Place::Local(2)],
             dest: None,
             next: 2,

@@ -1464,6 +1464,47 @@ impl Checker {
         );
     }
 
+    /// Return the runtime family for a canonical stdlib extern method whose
+    /// ABI is compiler-lowered.
+    ///
+    /// The endpoint spelling is deliberately insufficient here: user impls
+    /// may publish the same `#[extern_symbol]`.  This join requires the exact
+    /// registered method identity, its canonical stdlib provenance, and the
+    /// checked parameter/result shape before a runtime descriptor can cross
+    /// the checker boundary.
+    fn canonical_std_io_runtime_method_family(
+        &self,
+        signature_key: &str,
+        c_symbol: &str,
+        sig: &FnSig,
+    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let declaration = crate::runtime_call::canonical_std_io_extern_signature(
+            signature_key,
+            c_symbol,
+            &sig.params,
+            &sig.return_type,
+        )?;
+        let canonical_stdlib = self.extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| {
+                    *trusted && module.as_deref() == Some(declaration.module)
+                })
+            // Directly checking a shipped stdlib file has a root module id
+            // unrelated to its dotted import owner. `canonical_std_root_sources`
+            // is populated only for that exact root path (not for an ordinary
+            // user program that merely imports the module), so it is a safe
+            // provenance substitute for the registration origin here.
+            || self.canonical_std_root_sources.contains(declaration.module);
+        if !canonical_stdlib {
+            return None;
+        }
+        let family = declaration.family?;
+        // The descriptor is a three-way join: the source table names the only
+        // signature that may lift this family, and the typed family
+        // independently confirms that it emits the same ABI endpoint.
+        (family.c_symbol() == c_symbol).then_some(family)
+    }
+
     /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
     ///
     /// Every `c_symbol` reaching this helper is one the checker resolved from
@@ -1476,8 +1517,12 @@ impl Checker {
     /// `checker-output-boundary` guarantee — a user FFI symbol that happens to
     /// collide with a catalog name must never be reclassified into a typed
     /// runtime descriptor.
-    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
-        let c_symbol = c_symbol.into();
+    fn record_runtime_method_family_rewrite(
+        &mut self,
+        span: &Span,
+        family: crate::runtime_call::RuntimeCallFamily,
+    ) {
+        let c_symbol = family.c_symbol().to_string();
         // The consume verdict is derived once, here, from the resolved runtime
         // symbol — the single rewrite-recording authority for runtime-symbol
         // method calls (close-family handle releases route through this helper).
@@ -1493,28 +1538,42 @@ impl Checker {
         // `None` only for the few builtin symbols the substrate does not yet
         // enumerate (pre-staged families); those keep `descriptor: None` and
         // consumers fall back to `c_symbol`.
-        let descriptor =
-            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map(|family| {
-                crate::runtime_call::RuntimeCallDescriptor::new(family, None)
-                    .expect("substrate variant rejects elem; runtime symbols never carry elem here")
-            });
+        let descriptor = crate::runtime_call::RuntimeCallDescriptor::new(family, None)
+            .expect("substrate variant rejects elem; runtime symbols never carry elem here");
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
-                target: descriptor.as_ref().map_or_else(
-                    || CallTarget::Unsupported {
-                        reason: format!("unregistered runtime method `{c_symbol}`"),
-                    },
-                    |descriptor| CallTarget::Runtime(descriptor.family()),
-                ),
+                target: CallTarget::Runtime(descriptor.family()),
                 c_symbol,
-                descriptor,
+                descriptor: Some(descriptor),
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
                 returns_receiver_identity: false,
             },
         );
+    }
+
+    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
+        let c_symbol = c_symbol.into();
+        let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol) else {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteToFunction {
+                    target: CallTarget::Unsupported {
+                        reason: format!("unregistered runtime method `{c_symbol}`"),
+                    },
+                    c_symbol,
+                    descriptor: None,
+                    extern_identity: None,
+                    elem_ty: None,
+                    consumes_receiver: false,
+                    returns_receiver_identity: false,
+                },
+            );
+            return;
+        };
+        self.record_runtime_method_family_rewrite(span, family);
     }
 
     /// Record a direct opaque-handle call through the exact source extern
@@ -1556,6 +1615,7 @@ impl Checker {
                 target: CallTarget::Extern {
                     declaration: crate::DefId::new(extern_identity.signature_key.clone()),
                     endpoint: extern_identity.endpoint.clone(),
+                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
                 c_symbol,
                 descriptor: None,
@@ -1628,6 +1688,7 @@ impl Checker {
                 |declaration| CallTarget::Extern {
                     declaration,
                     endpoint: extern_identity.endpoint.clone(),
+                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
             );
         self.record_method_call_rewrite(
@@ -1653,14 +1714,10 @@ impl Checker {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
-        if spec.template.raw == "hew_bytes_clear"
-            && signature_key == "bytes::clear"
-            && self
-                .extern_method_origins
-                .get(signature_key)
-                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
         {
-            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
         if !spec.template.is_monomorphic() {
@@ -1695,19 +1752,10 @@ impl Checker {
             return false;
         };
         let signature_key = format!("{receiver_type_name}::{method}");
-        // `bytes::clear` is a closed compiler builtin even though its method
-        // signature is authored in std/io.hew with `#[extern_symbol]`.  Admit
-        // the typed runtime family only for that exact source declaration and
-        // endpoint triple. User-authored extern symbols remain open-set and
-        // continue through the declaration-owned Extern target below.
-        if spec.template.raw == "hew_bytes_clear"
-            && signature_key == "bytes::clear"
-            && self
-                .extern_method_origins
-                .get(&signature_key)
-                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(&signature_key, &spec.template.raw, sig)
         {
-            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
         if spec.template.is_monomorphic() {
@@ -2604,7 +2652,10 @@ impl Checker {
         else {
             return None;
         };
-        let sig = self.lookup_named_method_sig(name, type_args, method)?;
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
         let return_type = self
             .apply_instantiated_call_signature(
                 &sig,
@@ -2617,7 +2668,81 @@ impl Checker {
                 true,
             )
             .return_type;
-        Some(self.qualify_method_return_to_receiver_owner(name, &return_type))
+        // The successful signature lookup and the emitted impl body must use
+        // the same declaration identity.  In particular, a fielded resource
+        // wrapper such as `std.text.regex.Pattern` deliberately cannot be
+        // rewritten to its raw handle extern: its source impl forwards
+        // `self.handle` and reconstructs wrappers where needed.  Resolve the
+        // canonical, source-qualified impl key here, at the lookup boundary,
+        // rather than making HIR rediscover it from a presentation name.
+        self.record_named_source_method_rewrite(receiver_ty, method, &sig, span);
+        Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
+    }
+
+    /// Record a direct call to the exact source implementation that supplied
+    /// a named-method signature.  This is intentionally keyed only by the
+    /// checker-owned declaration map: same-leaf user types and registry
+    /// aliases cannot mint an imported stdlib impl dispatch.
+    fn record_named_source_method_rewrite(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        sig: &FnSig,
+        span: &Span,
+    ) {
+        let Ty::Named {
+            name,
+            args: type_args,
+            builtin,
+            ..
+        } = receiver_ty
+        else {
+            return;
+        };
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let method_key = format!("{canonical_name}::{method}");
+        let dispatch_key = if type_args.is_empty() {
+            method_key.clone()
+        } else {
+            type_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                .collect::<Option<Vec<_>>>()
+                .as_ref()
+                .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical_name, args))
+                .map(|owner| format!("{owner}::{method}"))
+                .filter(|key| self.impl_method_declaration_ids.contains_key(key))
+                .unwrap_or_else(|| method_key.clone())
+        };
+        let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).cloned() else {
+            return;
+        };
+        let consumes_receiver = sig.consumes_receiver
+            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_inherent_close_consumes_receiver(
+                &canonical_name,
+                *builtin,
+                method,
+                sig,
+            );
+        if consumes_receiver {
+            self.method_call_consumes_receiver
+                .insert(SpanKey::in_module(span, self.current_module_idx));
+        }
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::impl_method(declaration),
+                c_symbol: dispatch_key,
+                descriptor: None,
+                extern_identity: None,
+                elem_ty: None,
+                consumes_receiver,
+                returns_receiver_identity: sig.returns_receiver_identity,
+            },
+        );
     }
 
     /// Restore the source owner on bare nominal types in a qualified receiver's
@@ -6762,8 +6887,7 @@ impl Checker {
             } => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
                     return !Self::ty_contains_impl_param(self_arg, impl_params)
-                        && crate::unify::unify(&mut self.subst, &receiver_resolved, self_arg)
-                            .is_ok();
+                        && self.try_unify_with_owner_identity(&receiver_resolved, self_arg);
                 }
                 let Ty::Named {
                     name: r_name,
@@ -6785,8 +6909,7 @@ impl Checker {
             // equality, or unify an unbound receiver var with the concrete leaf.
             concrete => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
-                    return crate::unify::unify(&mut self.subst, &receiver_resolved, concrete)
-                        .is_ok();
+                    return self.try_unify_with_owner_identity(&receiver_resolved, concrete);
                 }
                 receiver_resolved == *concrete
             }
@@ -8062,7 +8185,10 @@ impl Checker {
                 // actionable one. Reject uniformly here, whether or not
                 // the actor declares `impl ActorMsg` — same diagnostic
                 // as the no-envelope case.
-                if method == "send" && !has_user_send_handler {
+                if method == "send"
+                    && !has_user_send_handler
+                    && !self.checking_canonical_stdlib_source("std.builtins")
+                {
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
@@ -8110,7 +8236,9 @@ impl Checker {
                                 },
                                 true,
                             );
-                            if method == "send" {
+                            if method == "send"
+                                && !self.checking_canonical_stdlib_source("std.builtins")
+                            {
                                 self.enforce_actor_method_send_args(args);
                             }
                             return applied_sig.return_type;
@@ -8249,7 +8377,9 @@ impl Checker {
                         } else {
                             applied_sig.return_type.clone()
                         };
-                        if matches!(method, "send" | "ask") {
+                        if matches!(method, "send" | "ask")
+                            && !self.checking_canonical_stdlib_source("std.builtins")
+                        {
                             // `RemotePid<T>::send` / `::ask` route to the native
                             // mesh transport (`hew_remote_pid_send` →
                             // `hew_actor_send_by_id`), which is not compiled for
@@ -8899,6 +9029,9 @@ impl Checker {
                 },
                 _,
             ) => {
+                let canonical_receiver_name = self
+                    .canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone());
                 // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
                 // `Result<T, AskError>` wrapper an actor ask produces) resolve
                 // their methods against the origin-based stdlib snapshot ONLY,
@@ -8919,7 +9052,7 @@ impl Checker {
                     Some(b @ (BuiltinType::Result | BuiltinType::Option)) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
-                    _ => self.lookup_named_method_sig(name, type_args, method),
+                    _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
                     // Mutable-receiver enforcement (Q297 Stage 1): methods
@@ -9107,7 +9240,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::Step {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9115,7 +9248,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::StateName {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9123,7 +9256,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::TakeEmits {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9207,7 +9340,7 @@ impl Checker {
                         // that exact source identity even when compatibility
                         // `fn_sigs` aliases retain a shorter presentation.
                         // Never retry through either the type or method leaf.
-                        let method_owner = name.as_str();
+                        let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
                         // struct or enum. `encode` is the binary CBOR path
@@ -9357,8 +9490,10 @@ impl Checker {
                             );
                         }
                     }
-                    return self
-                        .qualify_method_return_to_receiver_owner(name, &applied_sig.return_type);
+                    return self.qualify_method_return_to_receiver_owner(
+                        &canonical_receiver_name,
+                        &applied_sig.return_type,
+                    );
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in
@@ -10229,6 +10364,54 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
+        let push_signature = FnSig {
+            params: vec![Ty::U8],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        let mut canonical = Checker::default();
+        canonical.extern_method_origins.insert(
+            "bytes::push".to_string(),
+            (Some("std.io".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::BytesPush),
+        );
+
+        let lookalike = Checker::default();
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            None,
+            "a user extern sharing the runtime spelling must remain an Extern call",
+        );
+
+        let wrong_signature = FnSig {
+            params: vec![Ty::I64],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &wrong_signature,
+            ),
+            None,
+            "the runtime ABI family is not admitted by symbol spelling and arity alone",
+        );
+    }
 
     #[test]
     fn wasm_file_stream_function_policy_uses_canonical_std_owner_not_spellings() {

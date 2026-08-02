@@ -118,8 +118,8 @@ use self::consts::{
     is_unit_close_error_result, is_unit_send_error_result, literal_match_scrutinee_ty,
     method_name_from_id, named_type_marker, numeric_method_op, numeric_method_signedness,
     recv_result_payload_ty, register_builtin_monomorphic_enum_layouts,
-    register_builtin_record_layouts, runtime_symbol_for_call_expr, signed_min_value,
-    unary_op_label, unresolved_fn_sig_reason,
+    register_builtin_record_layouts, register_lifecycle_hook_layouts, runtime_symbol_for_call_expr,
+    signed_min_value, unary_op_label, unresolved_fn_sig_reason,
 };
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
@@ -2005,7 +2005,13 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     .iter()
                     .map(|f| (f.name.clone(), f.ty.clone()))
                     .collect();
-                if !fields.is_empty() {
+                // A zero-field STRUCT declaration still owns a concrete
+                // layout. The bundled lambda-actor handles deliberately use
+                // this shape: their actual representation is supplied by the
+                // runtime ABI, but HIR/MIR must retain the declaration so a
+                // source-owned constructor never falls through as unknown.
+                // Enums use their distinct tagged-union layout below.
+                if decl.variants.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
@@ -2219,6 +2225,11 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // module-graph-loaded stdlib TypeDecl is present; this fills only missing
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
+    register_lifecycle_hook_layouts(
+        &mut record_layouts,
+        &mut record_field_orders,
+        &mut enum_layouts,
+    );
 
     // Pre-compute the opaque handle names and resource-close registry before the
     // state-field classification pass so the classifier can distinguish plain
@@ -6344,9 +6355,36 @@ impl Builder {
                 .get(&(func.id, i))
                 .copied()
                 == Some(true);
-            let param_is_owned_carrier =
-                self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
             let owned_ty = self.subst_ty(&param.ty);
+            // A generic Iterator parameter can specialise to the compiler's
+            // first-class `VecIter<T>` cursor.  Its sole release authority is
+            // the guarded cursor-field protocol (`scope_vec_iter_bindings`),
+            // not the generic owned-carrier snapshot/drop path: treating the
+            // synthetic cursor as a user record would later request an invalid
+            // `RecordInPlace` drop.  It still crosses the call boundary by
+            // value; only the callee-side cleanup representation is special.
+            let param_is_vec_iter_cursor = self.vec_iter_cursor_release_symbol(&owned_ty).is_some();
+            let param_is_owned_carrier = if param_is_vec_iter_cursor {
+                false
+            } else {
+                self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed)
+            };
+            if param_is_vec_iter_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
+                let flag = self.alloc_local(ResolvedTy::I64);
+                self.vec_iter_drop_flags.insert(param.id, flag);
+                self.vec_iter_scope_owner_ledger
+                    .push((param.id, owned_ty.clone()));
+                self.scope_vec_iter_bindings
+                    .push((func.body.scope, param.id, owned_ty.clone()));
+                // A by-value parameter is the callee's cursor snapshot from
+                // entry. The caller's transfer preparation has already made
+                // the source unavailable on its executed path; this flag is
+                // the callee-side authority for normal and abandoning exits.
+                self.push_instr(Instr::ConstI64 {
+                    dest: flag,
+                    value: 0,
+                });
+            }
             if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
                 // Every dyn value that crosses the function ABI owns persistent
                 // heap-box storage: coercions transfer into a dyn box, dyn
@@ -6608,6 +6646,54 @@ impl Builder {
         self.local_scopes.push(None);
         self.local_decl_bytes.push(None);
         Place::Local(id)
+    }
+
+    /// Materialize a checker-selected common numeric type before a CFG value
+    /// crosses into a destination slot of that type.
+    ///
+    /// HIR preserves each source expression's concrete type even when the
+    /// checker assigns a wider/common type to the enclosing expression. A
+    /// plain `Move` carries no signedness or numeric-conversion authority, so
+    /// branch joins and other common-type boundaries must emit `NumericCast`
+    /// explicitly. The backend then has enough type information to choose
+    /// sign extension, zero extension, or an integer/float conversion.
+    pub(crate) fn normalize_checker_numeric_value(
+        &mut self,
+        src: Place,
+        source_ty: &ResolvedTy,
+        target_ty: &ResolvedTy,
+        role: &str,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let source_ty = self.subst_ty(source_ty);
+        let target_ty = self.subst_ty(target_ty);
+        if source_ty == target_ty {
+            return Some(src);
+        }
+        if !source_ty.can_implicitly_numeric_normalize_to(&target_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "{role} type `{}` cannot normalize to checker-selected type `{}`",
+                        source_ty.user_facing(),
+                        target_ty.user_facing()
+                    ),
+                    site,
+                },
+                note: "checker-selected numeric joins must carry an admitted typed conversion into MIR"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let dest = self.alloc_local(target_ty.clone());
+        self.push_instr(Instr::NumericCast {
+            dest,
+            src,
+            from_ty: source_ty,
+            to_ty: target_ty,
+        });
+        Some(dest)
     }
 
     /// Record a source-level binding name for an already-allocated local

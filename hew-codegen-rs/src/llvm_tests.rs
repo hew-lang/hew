@@ -438,6 +438,39 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
 }
 
 #[test]
+fn ordinary_mixed_width_integer_move_fails_closed() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let main = &mut pipeline.raw_mir[0];
+    main.locals = vec![ResolvedTy::I32, ResolvedTy::I64];
+    main.blocks[0].instructions = vec![
+        Instr::ConstI64 {
+            dest: Place::Local(0),
+            value: -1,
+        },
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::Local(0),
+        },
+        Instr::Move {
+            dest: Place::ReturnSlot,
+            src: Place::Local(1),
+        },
+    ];
+
+    let ctx = Context::create();
+    let err = build_module(&ctx, &pipeline, "mixed_width_move")
+        .expect_err("ordinary i32 -> i64 Move must not guess signedness");
+    let message = match err {
+        CodegenError::FailClosed(message) => message,
+        other => panic!("expected FailClosed, got {other:?}"),
+    };
+    assert!(
+        message.contains("Move type mismatch"),
+        "mismatched ordinary integer Move must fail at the typed boundary: {message}"
+    );
+}
+
+#[test]
 fn wasm_wasi_main_adapter_normalizes_source_integer_width() {
     let ctx = Context::create();
     let pipeline = empty_pipeline_with_const_42();
@@ -1114,7 +1147,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
             // Probe callee: codegen-internal synthetic, no catalog family.
-            builtin: None,
+            authority: Default::default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -1253,7 +1286,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
-            builtin: None,
+            authority: Default::default(),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -6107,6 +6140,142 @@ fn borrow_tainted_crash_cleanup_arms_only_in_copy_mode() {
     );
 }
 
+#[test]
+fn return_sweep_skips_planned_owner_but_drops_unplanned_live_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("mixed_return_cleanup_owners");
+    let harness = build_harness(&ctx, &[], &[]);
+    let planned = frame_cleanup_string_descriptor(Place::Local(0));
+    let residual = frame_cleanup_string_descriptor(Place::Local(1));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![planned.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![planned.clone().into(), residual.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("mixed return cleanup owners");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm planned owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(1))
+        .expect("arm residual owner");
+
+    emit_one_elab_drop(&fn_ctx, &planned).expect("ordinary Return-plan drop");
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("residual return sweep");
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("mixed return cleanup module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("mixed return cleanup driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        2,
+        "the planned and residual owners must each have exactly one destructor site:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_1")
+            && !ir.contains("helper_crash_cleanup_return_drop_0")
+            && ir.contains("helper_crash_cleanup_return_retire_0"),
+        "the planned owner needs only its stale-token retirement path, while only \
+         the unplanned live owner belongs to the residual destructor sweep:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_uses_only_the_current_return_blocks_plan() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_block_discrimination");
+    let harness = build_harness(&ctx, &[], &[]);
+    let owner = frame_cleanup_string_descriptor(Place::Local(0));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 1 },
+        hew_mir::DropPlan {
+            drops: vec![owner.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![owner.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("return cleanup owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm owner");
+
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("current-block return sweep");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .expect("return block discrimination module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("return block discrimination driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        1,
+        "a plan belonging to another Return block must not suppress this block's residual drop:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_0"),
+        "a descriptor planned only by another Return block must retain this block's active-gated destructor path:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_rejects_same_place_descriptor_drift() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_descriptor_drift");
+    let harness = build_harness(&ctx, &[], &[]);
+    let registered = frame_cleanup_string_descriptor(Place::Local(0));
+    let mut drifted = registered.clone();
+    drifted.kind = hew_mir::DropKind::CowHeap {
+        release: hew_mir::CowHeapRelease::Bytes,
+    };
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![drifted],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![registered.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("registered cleanup owner");
+
+    let error = emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect_err("same-place descriptor drift must fail closed");
+    assert!(
+        matches!(error, CodegenError::FailClosed(ref message) if message.contains("return drop descriptor drift")
+            && message.contains("Local(0)")),
+        "unexpected drift error: {error:?}"
+    );
+}
+
 /// A `DropKind::CowHeap { release: Bytes }` ElabDrop on a
 /// `bytes` local must route through the BytesTriple-aware emitter
 /// (`emit_bytes_inplace_drop`): GEP field 0, load the data pointer, call
@@ -9655,22 +9824,25 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
     let module = ctx.create_module("crash_cleanup_terminator_admission");
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let real_value = module.add_function("real_owner", ptr_ty.fn_type(&[], false), None);
-    let symbols = HashMap::from([(
-        "real_owner".to_string(),
-        FnSymbol::Real {
-            value: real_value,
-            return_ty: ptr_ty.into(),
-            returns_unit: false,
-            extern_record_ret: None,
-            extern_malloc_string_ret: false,
-        },
-    )]);
+    let real_symbol = FnSymbol::Real {
+        value: real_value,
+        return_ty: ptr_ty.into(),
+        returns_unit: false,
+        extern_record_ret: None,
+        extern_malloc_string_ret: false,
+    };
+    let symbols = HashMap::from([
+        ("real_owner".to_string(), real_symbol),
+        // A direct extern may legitimately choose a spelling that an internal
+        // runtime operation also uses.  It must stay on the generic Real tail.
+        ("hew_bytes_get".to_string(), real_symbol),
+    ]);
     let cases = [
         (
             "generic real-call common tail",
             Terminator::Call {
                 callee: "real_owner".to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args: vec![],
                 dest: Some(Place::Local(0)),
                 next: 1,
@@ -9682,7 +9854,11 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             "Vec clone initialized tail",
             Terminator::Call {
                 callee: "hew_vec_get_clone".to_string(),
-                builtin: None,
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                        hew_types::runtime_call::VecGetElem::Clone,
+                    ),
+                ),
                 args: vec![Place::Local(1), Place::Local(2)],
                 dest: Some(Place::Local(0)),
                 next: 1,
@@ -9730,10 +9906,24 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             true,
         ),
         (
-            "specialized call without a post-write hook",
+            "direct extern collision uses the generic tail",
             Terminator::Call {
                 callee: "hew_bytes_get".to_string(),
-                builtin: None,
+                authority: Default::default(),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "typed runtime BytesGet needs a post-write hook",
+            Terminator::Call {
+                callee: "hew_bytes_get".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::BytesGet,
+                ),
                 args: vec![Place::Local(1), Place::Local(2)],
                 dest: Some(Place::Local(0)),
                 next: 1,
@@ -11714,8 +11904,20 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 };"#,
                 r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
             ),
-            vec![hew_mir::DropKind::RecordInPlace],
-            vec!["call void @__hew_record_drop_inplace_Packet("],
+            // `RecordInit` retains the fresh bytes producer before copying it
+            // into `Packet`.  The record field and the original producer local
+            // are therefore two independent owners, and the Suspend plan must
+            // retire both of them.
+            vec![
+                hew_mir::DropKind::RecordInPlace,
+                hew_mir::DropKind::CowHeap {
+                    release: hew_mir::CowHeapRelease::Bytes,
+                },
+            ],
+            vec![
+                "call void @__hew_record_drop_inplace_Packet(",
+                "call void @hew_bytes_drop(",
+            ],
         ),
         (
             "closure",
@@ -11737,11 +11939,25 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
     ];
 
     for (label, pipeline, expected_kinds, rituals) in cases {
+        if label == "record" {
+            let ingress_retain_count = pipeline
+                .raw_mir
+                .iter()
+                .filter(|function| function.name == "Probe__recv__run")
+                .flat_map(|function| &function.blocks)
+                .flat_map(|block| &block.instructions)
+                .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
+                .count();
+            assert_eq!(
+                ingress_retain_count, 1,
+                "the Packet field and fresh producer may have two releases only when aggregate ingress retains the Bytes owner exactly once"
+            );
+        }
         let drops = suspending_call_closure_drops(&pipeline);
         assert_eq!(
             drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
             expected_kinds,
-            "{label}: grounded Suspend plan selected the wrong typed rituals"
+            "{label}: grounded Suspend plan selected the wrong typed rituals: {drops:#?}"
         );
         let ctx = Context::create();
         let module = build_module(&ctx, &pipeline, &format!("{label}_frame_cleanup"))
@@ -12140,10 +12356,10 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
         assert!(
             helper.contains("helper_crash_cleanup_retire")
                 && helper.contains("helper_crash_cleanup_return_retire")
-                && helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_drop")
                 && !helper.contains("helper_crash_cleanup_return_active_trap"),
-            "{triple}: normal drops and the return sweep must both retire lexical tokens:\n\
-             {helper}"
+            "{triple}: ordinary drops own every destructor site while the return \
+             sweep only retires stale lexical tokens:\n{helper}"
         );
     }
 }
@@ -12405,12 +12621,13 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
             "{triple}: refreshed source owner must remain a Snapshot escrow:\n{helper}"
         );
         assert!(
-            helper.contains("helper_crash_cleanup_return_drop")
+            !helper.contains("helper_crash_cleanup_return_drop")
                 && helper.contains("@hew_panic_msg")
                 && helper.contains("cancel_exit")
-                && helper.contains("helper_crash_cleanup_retire"),
+                && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire"),
             "{triple}: the same helper must retain normal-return, crash, and \
-             cancellation cleanup paths:\n{helper}"
+             cancellation cleanup paths without a duplicate return destructor:\n{helper}"
         );
     }
 }
@@ -12560,10 +12777,12 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         );
         assert!(
             helper.contains("@hew_panic_msg")
-                && helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_drop")
                 && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire")
                 && helper.contains("cancel_exit"),
-            "{triple}: normal return, crash, and cancellation cleanup must remain present:\n{helper}"
+            "{triple}: normal return, crash, and cancellation cleanup must remain \
+             present without a duplicate return destructor:\n{helper}"
         );
     }
 }
@@ -14518,6 +14737,25 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         ))
         .unwrap(),
         expected,
+    );
+    // Compiler cursors use the discriminator-selected synthetic record key;
+    // a same-leaf user record cannot select this helper namespace.
+    let cursor_args = vec![ResolvedTy::I64, ResolvedTy::String];
+    let cursor_expected =
+        hew_hir::synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &cursor_args)
+            .unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "HashMapIter",
+            hew_types::BuiltinType::HashMapIter,
+            cursor_args.clone(),
+        ))
+        .unwrap(),
+        cursor_expected,
+    );
+    assert_ne!(
+        record_inplace_drop_name(&ResolvedTy::named_user("HashMapIter", cursor_args)).unwrap(),
+        cursor_expected,
     );
     // A non-record type fails closed (never a dangling helper name).
     assert!(matches!(

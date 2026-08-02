@@ -585,7 +585,7 @@ fn report_ticker_join_result(join_result: std::thread::Result<()>) {
     if let Err(panic_payload) = join_result {
         let message = format!(
             "hew timer ticker panicked during shutdown: {}",
-            crate::util::panic_payload_message(panic_payload.as_ref())
+            crate::util::take_panic_payload_message(panic_payload)
         );
         crate::set_last_error(message.clone());
         eprintln!("hew: {message}");
@@ -730,6 +730,7 @@ mod tests {
             spawn_serial: id,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 

@@ -39,6 +39,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Exercise the program-invocation seam under the same shell running this
+# harness. In particular, supported macOS hosts use Bash 3.2 and must retain
+# both the zero-argument and deterministic command-argument paths.
+"${BASH}" scripts/tests/test_coverage_runtime_program.sh
+# shellcheck source=scripts/lib/coverage-runtime-program.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/coverage-runtime-program.sh"
+
 COV_DIR="${COV_DIR:-coverage-out}"
 RT_DIR="$COV_DIR/runtime-e2e"
 BIN_DIR="$RT_DIR/bins"
@@ -106,30 +114,67 @@ echo "==> Phase 3: compile + run self-contained example programs (HEW_COVERAGE=1
 rm -rf "$RT_DIR"
 mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
 
-built=0; build_fail=0; ran=0; run_fail=0
+# Inputs for command-style examples in the otherwise self-contained corpus.
+# Keep these deterministic and local: coverage must not depend on the caller's
+# argv, stdin, network, or filesystem state.
+GREP_INPUT="$RT_DIR/hew-grep-input.txt"
+printf 'alpha\nneedle one\nomega\nneedle two\n' > "$GREP_INPUT"
+
+built=0; ran=0
+BUILD_FAILURES=()
+RUN_FAILURES=()
 for f in "${PROGRAMS[@]}"; do
   stem="$(basename "$f" .hew)"
   bin="$BIN_DIR/$stem.bin"
   if HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" >/dev/null 2>&1; then
     built=$((built + 1))
   else
-    build_fail=$((build_fail + 1))
+    BUILD_FAILURES+=("$f")
     continue
   fi
   # %m = binary signature (distinct per program), %p = pid → no collisions.
-  if LLVM_PROFILE_FILE="$PROFRAW_DIR/${stem}-%m-%p.profraw" \
-      timeout "$PER_PROG_TIMEOUT" "$bin" >/dev/null 2>&1; then
+  if coverage_runtime_run_program \
+      "$stem" \
+      "$PROFRAW_DIR/${stem}-%m-%p.profraw" \
+      "$(command -v timeout)" \
+      "$PER_PROG_TIMEOUT" \
+      "$bin" \
+      "$GREP_INPUT" \
+      >/dev/null 2>&1; then
     ran=$((ran + 1))
   else
-    run_fail=$((run_fail + 1))
+    RUN_FAILURES+=("$f")
   fi
 done
-echo "    programs: built=$built (build_fail=$build_fail) ran=$ran (run_fail=$run_fail)"
+echo "    programs: enumerated=${#PROGRAMS[@]} built=$built ran=$ran"
+
+# Coverage is evidence only for programs that actually completed.  A profraw
+# file from one successful binary must never mask build failures, crashes, or
+# timeouts elsewhere in the corpus.
+if [ "${#BUILD_FAILURES[@]}" -ne 0 ] || [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
+  if [ "${#BUILD_FAILURES[@]}" -ne 0 ]; then
+    echo "error: ${#BUILD_FAILURES[@]} runtime-coverage program(s) failed to build:" >&2
+    printf '  build: %s\n' "${BUILD_FAILURES[@]}" >&2
+  fi
+  if [ "${#RUN_FAILURES[@]}" -ne 0 ]; then
+    echo "error: ${#RUN_FAILURES[@]} runtime-coverage program(s) failed or timed out:" >&2
+    printf '  run:   %s\n' "${RUN_FAILURES[@]}" >&2
+  fi
+  exit 1
+fi
+if [ "$built" -ne "${#PROGRAMS[@]}" ] || [ "$ran" -ne "$built" ]; then
+  echo "error: runtime-coverage execution accounting drifted" >&2
+  exit 1
+fi
 
 shopt -s nullglob
 PROFRAWS=("$PROFRAW_DIR"/*.profraw)
 if [ "${#PROFRAWS[@]}" -eq 0 ]; then
   echo "error: no profraw produced — coverage capture failed" >&2
+  exit 1
+fi
+if [ "${#PROFRAWS[@]}" -lt "$ran" ]; then
+  echo "error: only ${#PROFRAWS[@]} profraw file(s) for $ran successful program(s)" >&2
   exit 1
 fi
 
@@ -146,6 +191,17 @@ IGNORE='(/\.cargo/|/rustc/|/usr/|registry|/tests/|hew-cli/|hew-types/|hew-hir/|h
 "$LLVM_COV" report "${BINS[0]}" "${OBJ_ARGS[@]}" \
   -instr-profile="$PROFDATA" \
   --ignore-filename-regex="$IGNORE" | tee "$RT_DIR/runtime-summary.txt"
+
+# Pin meaningful runtime reach, not just profiler-file existence. llvm-cov's
+# TOTAL row is: regions, functions, lines, branches; each group reports total,
+# missed, percent. A source or corpus change that silently stops exercising a
+# runtime subsystem therefore turns this gate red even when all binaries exit.
+COVERED_FUNCTIONS="$(awk '$1 == "TOTAL" { print $5 - $6 }' "$RT_DIR/runtime-summary.txt")"
+if [ -z "$COVERED_FUNCTIONS" ]; then
+  echo "error: llvm-cov report did not contain a TOTAL row" >&2
+  exit 1
+fi
+corpus_floor_assert "runtime-e2e-covered-functions" "$COVERED_FUNCTIONS" || exit 1
 
 if [ "$WANT_HTML" -eq 1 ]; then
   echo "==> Generating HTML runtime report"

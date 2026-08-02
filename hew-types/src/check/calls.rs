@@ -121,14 +121,17 @@ impl Checker {
         }
     }
 
-    fn expected_constructor_type_args(
+    pub(super) fn expected_constructor_type_args(
+        &self,
         expected: &Ty,
         type_name: &str,
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
             Ty::Named { name, args, .. }
-                if Ty::names_match_qualified(name, type_name) && args.len() == arity =>
+                if self.strict_nominal_identity(name)
+                    == self.strict_nominal_identity(type_name)
+                    && args.len() == arity =>
             {
                 Some(args.clone())
             }
@@ -625,7 +628,7 @@ impl Checker {
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(constructor_name)
         {
-            let mut inferred_args = Self::expected_constructor_type_args(
+            let mut inferred_args = self.expected_constructor_type_args(
                 &resolved_expected,
                 &type_name,
                 type_params.len(),
@@ -1091,6 +1094,10 @@ impl Checker {
             return CallTarget::Extern {
                 declaration: crate::DefId::new(extern_decl.signature_key.clone()),
                 endpoint: extern_decl.symbol.clone(),
+                trusted_compiled_stdlib: extern_decl
+                    .declaring_module
+                    .as_deref()
+                    .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
             };
         }
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
@@ -1856,16 +1863,17 @@ impl Checker {
             }
 
             if resolved_fn_name == "len" {
-                if let Some(Ty::Named { name, args, .. }) =
-                    applied_sig.params.first().map(|ty| self.subst.resolve(ty))
+                if let Some(Ty::Named {
+                    args,
+                    builtin: Some(crate::BuiltinType::HashSet),
+                    ..
+                }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
-                    if Ty::names_match_qualified(&name, "HashSet") {
-                        let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
-                        if !self.validate_hashset_element_type(&elem_ty, span) {
-                            return Ty::Error;
-                        }
-                        self.record_hashset_lowering_fact(span, &elem_ty);
+                    let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                    if !self.validate_hashset_element_type(&elem_ty, span) {
+                        return Ty::Error;
                     }
+                    self.record_hashset_lowering_fact(span, &elem_ty);
                 }
             }
 

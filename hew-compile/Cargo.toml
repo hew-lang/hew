@@ -19,6 +19,7 @@ serde.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-mir = { path = "../hew-mir" }
 tempfile.workspace = true
 

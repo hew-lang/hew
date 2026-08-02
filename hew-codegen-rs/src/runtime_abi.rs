@@ -3943,11 +3943,17 @@ pub(crate) fn lower_call_runtime_abi(
         | F::TaskSetResult
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecAppend
+        | F::VecClear
+        | F::VecClone
         | F::VecContainsLayout
         | F::VecContainsOwned
+        | F::VecContainsScalar(_)
         // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
         // never an `Instr::CallRuntimeAbi`.
         | F::VecGet(VecGetElem::Clone)
+        | F::VecIsEmpty
+        | F::VecJoinStr
         | F::VecNew
         | F::VecPopBool
         | F::VecPopLayout
@@ -3956,11 +3962,14 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecPushLayout
         | F::VecPushOwned
         | F::VecPushOwnedMove
+        // Scalar Vec operations are authorized at `Terminator::Call` and
+        // deliberately use the ordinary typed function path. They must never
+        // appear in the runtime-ABI instruction carrier.
+        | F::VecScalar { .. }
         | F::VecRemoveAtBool
         | F::VecRemoveAtLayout
         | F::VecRemoveAtOwned
         | F::VecSetBool
-        | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
         | F::VecSetOwnedMove
@@ -4880,6 +4889,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_channel_sender_close" | "hew_channel_receiver_close" => {
             ctx.void_type().fn_type(&[ptr_ty.into()], false)
         }
+        // hew_lambda_actor_clone(actor: *mut HewLambdaActorHandle)
+        //     -> *mut HewLambdaActorHandle
+        // Used when a nested lambda actor takes an independent strong capture.
+        "hew_lambda_actor_clone" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.

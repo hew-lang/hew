@@ -605,7 +605,7 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
     release = workflow()
     gate = RELEASE_GATE.read_text()
     assert release.count("git bash pkgconf") == 2
-    assert gate.count("git bash pkgconf") == 2
+    assert gate.count("git gmake bash pkgconf") == 2
     assert release.count("command -v bash") == 2
     assert gate.count("command -v bash") == 2
     assert release.count("bash scripts/test-release-lib-link.sh") == 2
@@ -1281,6 +1281,44 @@ def test_musl_packaging_uses_explicit_target_release_lib_output() -> None:
     assert "${REPO_DIR}/target/${musl_target}" not in builder
 
 
+def assert_foundational_release_gate_contract(gate: str, validator: str) -> None:
+    linux = gate[gate.index("  gate-linux:\n") : gate.index("  gate-linux-aarch64:\n")]
+    for command in (
+        "make check-gate-reachability",
+        "make test-release-workflow-contract",
+        "make test-compiler-pipeline",
+        "make test-opaque-resource-lifecycle-matrix-external",
+        "make test-vertical-slice",
+        "make test-hew-ratchet",
+        "make test-stdlib-ratchet",
+        "make test-stdlib-execution-proofs",
+    ):
+        assert command in linux
+        assert command in validator
+    assert "make macos-leak-oracle" in validator
+    assert "macos-14" in gate and "macos-15-intel" in gate
+    assert gate.count("gmake test-vertical-slice") == 2
+    assert gate.count("gmake test-hew-ratchet") == 2
+
+
+def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
+    gate = RELEASE_GATE.read_text()
+    validator = PRE_RELEASE_VALIDATOR.read_text()
+    assert_foundational_release_gate_contract(gate, validator)
+    mutations = (
+        (gate.replace("make test-stdlib-execution-proofs", "true", 1), validator),
+        (gate, validator.replace("make macos-leak-oracle", "true", 1)),
+        (gate.replace("macos-15-intel", "macos-14", 1), validator),
+        (gate.replace("gmake test-vertical-slice", "true", 1), validator),
+    )
+    for mutated_gate, mutated_validator in mutations:
+        try:
+            assert_foundational_release_gate_contract(mutated_gate, mutated_validator)
+        except AssertionError:
+            continue
+        raise AssertionError("foundational release-gate mutation escaped")
+
+
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
     test_npm_publication_is_pinned_to_a_version_matching_release_tag,
@@ -1321,6 +1359,7 @@ _TESTS = [
     test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
     test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
     test_musl_packaging_uses_explicit_target_release_lib_output,
+    test_foundational_release_gates_are_platform_scoped_and_mandatory,
 ]
 
 

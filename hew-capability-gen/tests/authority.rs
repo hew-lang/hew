@@ -1,5 +1,6 @@
 use hew_capability_gen::{
-    stale_outputs, write_outputs, Manifest, MATRIX_OUTPUT, PLAYGROUND_OUTPUT, RUST_OUTPUT,
+    stale_outputs, write_outputs, Manifest, MATRIX_OUTPUT, PLAYGROUND_MANIFEST, PLAYGROUND_OUTPUT,
+    RUST_OUTPUT,
 };
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,19 @@ fn seed_checked_outputs(root: &Path, manifest: &Manifest) {
         std::fs::read_to_string(repo_root().join(MATRIX_OUTPUT)).expect("read live matrix"),
     )
     .expect("seed matrix");
+    let playground_manifest_path = root.join(PLAYGROUND_MANIFEST);
+    std::fs::create_dir_all(
+        playground_manifest_path
+            .parent()
+            .expect("playground manifest parent"),
+    )
+    .expect("create playground manifest parent");
+    std::fs::write(
+        &playground_manifest_path,
+        std::fs::read_to_string(repo_root().join(PLAYGROUND_MANIFEST))
+            .expect("read live playground manifest"),
+    )
+    .expect("seed playground manifest");
     write_outputs(root, manifest).expect("seed generated outputs");
 }
 
@@ -42,6 +56,80 @@ fn checked_outputs_are_current() {
     assert!(
         stale.is_empty(),
         "generated WASM capability outputs are stale: {stale:?}"
+    );
+}
+
+#[test]
+fn structural_coverage_ratchet_is_pinned() {
+    let manifest = parsed();
+    let variants: Vec<_> = manifest
+        .features
+        .iter()
+        .filter_map(|feature| feature.enum_variant.as_deref())
+        .collect();
+
+    assert_eq!(
+        manifest.features.len(),
+        35,
+        "review every feature row change"
+    );
+    assert_eq!(
+        variants,
+        [
+            "SupervisionTrees",
+            "LinkMonitor",
+            "StructuredConcurrency",
+            "Tasks",
+            "BlockingChannelRecv",
+            "BlockingSemaphoreAcquire",
+            "Timers",
+            "PeriodicTimers",
+            "Streams",
+            "FilesystemStreams",
+            "HttpClient",
+            "Smtp",
+            "WebSocket",
+            "HttpServer",
+            "TcpNetworking",
+            "ProcessExecution",
+            "Tls",
+            "Quic",
+            "Dns",
+            "OsEnv",
+            "Distributed",
+            "CryptoRandom",
+            "CryptoEncrypt",
+            "CryptoSign",
+        ],
+        "checker coverage changed; review the complete bidirectional authority"
+    );
+    assert_eq!(
+        manifest.backlog.len(),
+        39,
+        "review every backlog row change"
+    );
+    assert_eq!(
+        manifest
+            .features
+            .iter()
+            .map(|feature| feature.native_only_modules.len())
+            .sum::<usize>(),
+        13,
+        "review every generated native-only module exclusion"
+    );
+    assert_eq!(
+        manifest
+            .features
+            .iter()
+            .map(|feature| feature.native_only_functions.len())
+            .sum::<usize>(),
+        1,
+        "review every generated native-only function exclusion"
+    );
+    assert_eq!(
+        manifest.playground_wasi.len(),
+        7,
+        "review every curated WASI exclusion"
     );
 }
 
@@ -116,6 +204,15 @@ fn authority_mutations_fail_closed() {
     assert!(Manifest::parse(&unknown_field)
         .expect_err("unknown authority field must fail")
         .contains("unknown field"));
+
+    let runtime_mismatch = source.replacen(
+        "checker = \"reject\"\nruntime = \"native-only\"",
+        "checker = \"warn\"\nruntime = \"native-only\"",
+        1,
+    );
+    assert!(Manifest::parse(&runtime_mismatch)
+        .expect_err("warning/native-only mismatch must fail")
+        .contains("must have cooperative runtime disposition"));
 }
 
 #[test]
@@ -161,6 +258,67 @@ fn every_checked_output_gate_detects_mutation() {
         let stale = stale_outputs(temp.path(), &manifest).expect("mutated check");
         assert_eq!(stale, vec![output], "{path} mutation must turn gate red");
     }
+}
+
+#[test]
+fn playground_wasi_summary_mutations_turn_the_freshness_gate_red() {
+    let manifest = parsed();
+    let temp = tempfile::tempdir().expect("tempdir");
+    seed_checked_outputs(temp.path(), &manifest);
+    let matrix_path = temp.path().join(MATRIX_OUTPUT);
+    let playground_manifest_path = temp.path().join(PLAYGROUND_MANIFEST);
+
+    let matrix = std::fs::read_to_string(&matrix_path).expect("read generated matrix");
+    let mutated_matrix = matrix.replacen(
+        "| `types/wire_types` | `runnable` |",
+        "| `types/wire_types` | `unsupported` |",
+        1,
+    );
+    assert_ne!(mutated_matrix, matrix, "summary mutation must alter matrix");
+    std::fs::write(&matrix_path, mutated_matrix).expect("write matrix mutation");
+    assert_eq!(
+        stale_outputs(temp.path(), &manifest).expect("check summary mutation"),
+        vec![matrix_path.clone()],
+        "WASI summary drift must turn the matrix authority gate red"
+    );
+
+    seed_checked_outputs(temp.path(), &manifest);
+    let playground_manifest =
+        std::fs::read_to_string(&playground_manifest_path).expect("read playground manifest");
+    let mutated_manifest = playground_manifest.replacen(
+        "\"id\": \"types/wire_types\"",
+        "\"id\": \"types/wire_types_mutated\"",
+        1,
+    );
+    assert_ne!(
+        mutated_manifest, playground_manifest,
+        "runnable truth mutation must alter playground manifest"
+    );
+    std::fs::write(&playground_manifest_path, mutated_manifest)
+        .expect("write playground manifest mutation");
+    assert_eq!(
+        stale_outputs(temp.path(), &manifest).expect("check runnable truth mutation"),
+        vec![matrix_path.clone()],
+        "runnable playground truth drift must turn the generated summary gate red"
+    );
+
+    seed_checked_outputs(temp.path(), &manifest);
+    let playground_manifest =
+        std::fs::read_to_string(&playground_manifest_path).expect("read playground manifest");
+    let contradictory_manifest =
+        playground_manifest.replacen("\"wasi\": \"unsupported\"", "\"wasi\": \"runnable\"", 1);
+    assert_ne!(
+        contradictory_manifest, playground_manifest,
+        "status contradiction must alter playground manifest"
+    );
+    std::fs::write(&playground_manifest_path, contradictory_manifest)
+        .expect("write contradictory playground manifest");
+    let error = stale_outputs(temp.path(), &manifest)
+        .expect_err("runnable status must contradict the typed unsupported row");
+    assert!(
+        error.contains("is runnable but [[playground_wasi]] declares it unsupported"),
+        "unexpected contradiction diagnostic: {error}"
+    );
 }
 
 #[test]

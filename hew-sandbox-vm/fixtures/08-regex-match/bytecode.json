@@ -184,21 +184,21 @@
           "mutable": false,
           "name": null,
           "span": "span:51-70",
-          "type": "type:Regex"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": "re",
           "span": "span:46-49",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
           "span": "span:84-86",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.4",
@@ -226,7 +226,7 @@
           "mutable": false,
           "name": null,
           "span": "span:108-110",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.8",
@@ -284,11 +284,6 @@
         "name": "NodeId"
       },
       {
-        "id": "type:Regex",
-        "kind": "regex",
-        "name": "Regex"
-      },
-      {
         "id": "type:RemotePid",
         "kind": "record",
         "name": "RemotePid"
@@ -339,14 +334,69 @@
         "name": "regex"
       },
       {
-        "id": "type:regex.Pattern",
-        "kind": "record",
-        "name": "regex.Pattern"
-      },
-      {
         "id": "type:reply",
         "kind": "opaque",
         "name": "ReplyToken"
+      },
+      {
+        "id": "type:std.builtins.AskError",
+        "kind": "enum",
+        "name": "std.builtins.AskError"
+      },
+      {
+        "id": "type:std.builtins.HashMapIter",
+        "kind": "record",
+        "name": "std.builtins.HashMapIter"
+      },
+      {
+        "id": "type:std.builtins.LinkError",
+        "kind": "enum",
+        "name": "std.builtins.LinkError"
+      },
+      {
+        "id": "type:std.builtins.LocalPid",
+        "kind": "record",
+        "name": "std.builtins.LocalPid"
+      },
+      {
+        "id": "type:std.builtins.Location",
+        "kind": "record",
+        "name": "std.builtins.Location"
+      },
+      {
+        "id": "type:std.builtins.LookupError",
+        "kind": "enum",
+        "name": "std.builtins.LookupError"
+      },
+      {
+        "id": "type:std.builtins.NodeId",
+        "kind": "record",
+        "name": "std.builtins.NodeId"
+      },
+      {
+        "id": "type:std.builtins.RemotePid",
+        "kind": "record",
+        "name": "std.builtins.RemotePid"
+      },
+      {
+        "id": "type:std.builtins.SendError",
+        "kind": "enum",
+        "name": "std.builtins.SendError"
+      },
+      {
+        "id": "type:std.builtins.TimeoutError",
+        "kind": "enum",
+        "name": "std.builtins.TimeoutError"
+      },
+      {
+        "id": "type:std.builtins.VecIter",
+        "kind": "record",
+        "name": "std.builtins.VecIter"
+      },
+      {
+        "id": "type:std.text.regex.Pattern",
+        "kind": "regex",
+        "name": "std.text.regex.Pattern"
       },
       {
         "id": "type:string",
@@ -384,7 +434,7 @@
       }
     ]
   },
-  "package_id": "pkg:931a63ae0c822147",
+  "package_id": "pkg:3c72948fbe402d70",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

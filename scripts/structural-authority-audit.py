@@ -1032,6 +1032,55 @@ def rc1_structural_authority_findings(
     return {item for item in results if not excluded(item, test_ranges)}
 
 
+def reject_raw_codegen_call_dispatch(ast_grep: Path, root: Path) -> None:
+    """Forbid symbol spelling from granting a `lower_terminator` intercept.
+
+    The two allowed comparisons are the carrier's exact linkage assertions.
+    All specialised lowering must branch on `CallAuthority`/its runtime family;
+    ordinary `Direct` calls retain their open-set linkage semantics.
+    """
+    ranges = [
+        node_range(match)
+        for match in run_query(
+            ast_grep, root, pattern="fn lower_terminator($$$ARGS) { $$$BODY }"
+        )
+    ]
+    # Counterfactual audit fixtures intentionally contain only the syntax
+    # under test; this production-only guard has no target there.
+    if not ranges:
+        return
+    if len(ranges) != 1:
+        raise SystemExit(
+            "expected exactly one codegen lower_terminator authority boundary"
+        )
+
+    bad: list[SyntaxRange] = []
+    for pattern, allowed_left in (
+        ("$LEFT == callee", {"family.c_symbol()", "kind.expected_callee()"}),
+        ("$LEFT != callee", {"family.c_symbol()", "kind.expected_callee()"}),
+    ):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            if not range_contains(ranges[0], node_range(match)):
+                continue
+            if single_meta(match, "LEFT") not in allowed_left:
+                bad.append(node_range(match))
+    for pattern in (
+        "callee == $RIGHT",
+        "callee != $RIGHT",
+        "matches!(callee, $$$PATTERN)",
+        "callee.as_str()",
+    ):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            if range_contains(ranges[0], node_range(match)):
+                bad.append(node_range(match))
+    if bad:
+        sites = ", ".join(f"{item.path}:{item.line}:{item.column}" for item in bad)
+        raise SystemExit(
+            "raw callee spelling dispatch is forbidden in lower_terminator; "
+            f"carry CallAuthority instead ({sites})"
+        )
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -1125,6 +1174,7 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
             )
 
     findings.update(semantic_owner_shortening_findings(ast_grep, root, test_ranges))
+    reject_raw_codegen_call_dispatch(ast_grep, root)
     findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
 
@@ -1264,6 +1314,33 @@ def scalar_span_site_findings(
             item, test_ranges
         ):
             result.append(item)
+    return sorted(set(result))
+
+
+def forbidden_context_free_nominal_findings(
+    ast_grep: Path, root: Path, test_ranges: list[SyntaxRange]
+) -> list[Finding]:
+    """Reject checker/codegen bypasses of the owner-aware nominal authority."""
+    result = []
+    for match in run_query(ast_grep, root, pattern="$F($$$ARGS)"):
+        callee = single_meta(match, "F")
+        path = str(match["file"])
+        leaf = callee.rsplit("::", 1)[-1]
+        item = finding("forbidden-context-free-nominal", leaf, match)
+        if excluded(item, test_ranges):
+            continue
+        if leaf == "names_match_qualified":
+            if path not in {
+                "hew-types/src/unify.rs",
+                "hew-types/src/check/resolution.rs",
+            } and not path.startswith("hew-analysis/src/"):
+                result.append(item)
+        elif leaf == "unify":
+            if path not in {
+                "hew-types/src/unify.rs",
+                "hew-types/src/check/coerce.rs",
+            }:
+                result.append(item)
     return sorted(set(result))
 
 
@@ -1697,6 +1774,11 @@ def main() -> int:
     for item in forbidden:
         failures.append(
             f"forbidden scalar SpanKey -> SiteId authority at "
+            f"{item.path}:{item.line}:{item.column}: {item.text}"
+        )
+    for item in forbidden_context_free_nominal_findings(ast_grep, root, test_ranges):
+        failures.append(
+            f"forbidden context-free nominal authority at "
             f"{item.path}:{item.line}:{item.column}: {item.text}"
         )
     if failures:

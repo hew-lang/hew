@@ -1245,7 +1245,8 @@ fn seed_missing_boundary_facts(raw: &mut RawMirFunction) {
 
 fn mark_param_place(
     place: Place,
-    param_count: usize,
+    param_tys: &[ResolvedTy],
+    facts: &[ParamBoundaryFact],
     state: RepresentationEffectState,
     effects: &mut [RepresentationEffectState],
 ) {
@@ -1255,9 +1256,23 @@ fn mark_param_place(
     let Ok(param_index) = usize::try_from(local) else {
         return;
     };
-    if param_index < param_count {
-        effects[param_index] = effects[param_index].max(state);
-    }
+    let Some(param_ty) = param_tys.get(param_index) else {
+        return;
+    };
+    // The representation-loan ABI exists solely for inline `bytes` triples.
+    // Every other interior write through a checker-proven caller-visible
+    // projection has no admitted representation-mutation contract, so it must
+    // fail closed instead of silently retaining a read-only boundary.
+    effects[param_index] = if matches!(param_ty, ResolvedTy::Bytes) {
+        effects[param_index].max(state)
+    } else if facts
+        .get(param_index)
+        .is_some_and(|fact| fact.caller_visible_projection)
+    {
+        RepresentationEffectState::Unproven
+    } else {
+        effects[param_index]
+    };
 }
 
 fn mark_unproven_param_place(
@@ -1281,19 +1296,19 @@ fn mark_unproven_param_place(
 
 type RepresentationEffectEdge = (usize, usize, usize, usize);
 
-/// Whether one direct MIR argument has an audited contract that proves it is
-/// borrowed only. These calls do not replace a caller parameter's
-/// representation, even though catalog and source-stdlib FFI shims have no
-/// raw MIR body to appear in `function_index`.
+/// Whether one checker-authorized standard-library extern argument has an
+/// audited contract that proves it is borrowed only. These calls do not
+/// replace a caller parameter's representation, even though source-stdlib FFI
+/// shims have no raw MIR body to appear in `function_index`.
 ///
 /// This answers only the representation-effect question.  It is deliberately
 /// a positive, argument-indexed query over the concrete emitted ABI symbol
-/// (for example `hew_string_length` or `hew_tcp_listen`), after HIR's catalog
-/// `ItemId` join projected that symbol into raw MIR. The generated FFI table
-/// is the authority for source externs; the runtime table remains the
-/// authority for compiler-presented catalog calls. Unknown, consuming, and
+/// (for example `hew_metric_counter_register` or `hew_tcp_listen`), but is
+/// reachable only through [`crate::CallAuthority::Extern`]. The generated FFI
+/// table is the authority for checker-proven source externs; a `Direct` call
+/// cannot acquire it by reusing a linker spelling. Unknown, consuming, and
 /// escaping arguments keep the normal fail-closed `Unproven` result below.
-fn callee_has_proven_borrowed_string_abi(callee: &str, arg_index: usize) -> bool {
+fn checked_std_extern_borrows_argument(callee: &str, arg_index: usize) -> bool {
     use crate::ffi_contracts::ExternParamOwnership;
 
     if let Some(contract) = crate::ffi_contracts::extern_ownership_contract(callee).contract() {
@@ -1314,9 +1329,19 @@ fn scan_function_representation_effects(
     for block in &raw.blocks {
         for instr in &block.instructions {
             for place in crate::dataflow::instr_interior_write_places(instr) {
+                // A record parameter is materialised as the callee's by-value
+                // aggregate snapshot. `var self` iterator adapters update that
+                // snapshot with `RecordFieldStore`; this is ordinary local
+                // state evolution, not a write through shared caller storage.
+                // Other interior operations can drain or neutralise projected
+                // ownership and therefore retain the fail-closed path above.
+                if matches!(instr, Instr::RecordFieldStore { record, .. } if *record == place) {
+                    continue;
+                }
                 mark_param_place(
                     place,
-                    param_count,
+                    &raw.params,
+                    facts,
                     RepresentationEffectState::MayReplace,
                     &mut effects[function],
                 );
@@ -1341,7 +1366,7 @@ fn scan_function_representation_effects(
 
         if let Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             ..
         } = &block.terminator
@@ -1363,11 +1388,18 @@ fn scan_function_representation_effects(
                         effects[function][caller_param] = RepresentationEffectState::Unproven;
                     }
                 }
-            } else if builtin.is_none() {
+            } else if matches!(authority, crate::CallAuthority::Extern) {
                 for (arg_index, &arg) in args.iter().enumerate() {
-                    if !callee_has_proven_borrowed_string_abi(callee, arg_index) {
+                    if !checked_std_extern_borrows_argument(callee, arg_index) {
                         mark_unproven_param_place(arg, facts, &mut effects[function]);
                     }
+                }
+            } else if matches!(authority, crate::CallAuthority::Direct) {
+                // A direct call may be a user function, an opaque host extern,
+                // or a malformed fixture. Its linker spelling is deliberately
+                // not authority to read the generated FFI table.
+                for &arg in args {
+                    mark_unproven_param_place(arg, facts, &mut effects[function]);
                 }
             }
         }
@@ -1584,7 +1616,7 @@ mod param_boundary_effect_tests {
     fn call_with_args(callee: &str, args: Vec<Place>) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args,
             dest: None,
             next: 0,
@@ -1694,6 +1726,66 @@ mod param_boundary_effect_tests {
     }
 
     #[test]
+    fn adapter_state_field_store_is_not_a_bytes_representation_loan() {
+        // `var self` adapters (Map/Filter/Take/Skip) update fields in their
+        // callee-owned aggregate snapshot and return that state through the
+        // ordinary var-self carrier. This must not be misclassified as the
+        // special pointer-ABI mutation reserved for inline `bytes` values.
+        let cursor = ResolvedTy::named_user("Cursor", Vec::new());
+        let mut raw = vec![raw_function(
+            "adapter_next",
+            FunctionCallConv::Default,
+            vec![Instr::RecordFieldStore {
+                record: Place::Local(0),
+                field_offset: crate::model::FieldOffset(0),
+                src: Place::Local(1),
+            }],
+            Terminator::Return,
+        )];
+        raw[0].params = vec![cursor.clone()];
+        raw[0].locals = vec![cursor.clone(), ResolvedTy::I64];
+        raw[0].decisions[0].ty = cursor;
+
+        finalize(&mut raw);
+
+        assert_eq!(mode(&raw[0]), ParamBoundaryMode::BorrowReadOnly);
+    }
+
+    #[test]
+    fn caller_visible_user_record_field_drain_fails_closed() {
+        // A Holder value is passed by value, so an ordinary RecordFieldStore
+        // updates only its callee-local snapshot (the adapter case above).
+        // Draining an owned shared-handle field is different: without an
+        // owned-carrier boundary it can retire storage still visible to the
+        // caller. The representation pass must reject that unproven mutation,
+        // not erase it merely because the outer parameter is not `bytes`.
+        let holder = ResolvedTy::named_user("Holder", Vec::new());
+        let shared_vec =
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64]);
+        let mut raw = vec![raw_function(
+            "drain_shared_field",
+            FunctionCallConv::Default,
+            vec![Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(crate::model::FieldOffset(0)),
+                ty: shared_vec,
+            }],
+            Terminator::Return,
+        )];
+        raw[0].params = vec![holder.clone()];
+        raw[0].locals = vec![holder.clone()];
+        raw[0].decisions[0].ty = holder;
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            mode(&raw[0]),
+            ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            "a caller-visible shared-handle field drain needs explicit ownership authority"
+        );
+    }
+
+    #[test]
     fn unresolved_and_copied_triple_mutation_forms_reject_explicitly() {
         let mut raw = vec![
             raw_function(
@@ -1737,6 +1829,10 @@ mod param_boundary_effect_tests {
         raw[0].params = vec![ResolvedTy::String];
         raw[0].locals = vec![ResolvedTy::String];
         raw[0].decisions[0].ty = ResolvedTy::String;
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        *authority = crate::CallAuthority::Extern;
 
         finalize(&mut raw);
 
@@ -1749,7 +1845,101 @@ mod param_boundary_effect_tests {
     }
 
     #[test]
-    fn source_stdlib_ffi_borrow_contract_keeps_network_address_read_only() {
+    fn direct_bytes_abi_contracts_distinguish_borrow_consume_and_absence() {
+        // The representation scan sees concrete emitted ABI symbols. A
+        // runtime receiver-borrow may keep a caller-visible Bytes projection
+        // read-only, while both a generated consuming FFI row and an absent
+        // row remain fail-closed. This guards the per-argument authority
+        // boundary rather than any particular stdlib wrapper spelling.
+        let mut raw = vec![
+            raw_function(
+                "bytes_borrow",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_vec_len"),
+            ),
+            raw_function(
+                "generated_consume",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_tcp_listener_close"),
+            ),
+            raw_function(
+                "absent_contract",
+                FunctionCallConv::Default,
+                vec![],
+                call("unclassified_bytes_abi"),
+            ),
+        ];
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        // The first is the real catalog family. Runtime families carry their
+        // ownership semantics independently of this direct-extern
+        // representation scan.
+        *authority =
+            crate::CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen);
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            raw.iter().map(mode).collect::<Vec<_>>(),
+            vec![
+                ParamBoundaryMode::BorrowReadOnly,
+                ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+                ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            ],
+            "only an exact per-parameter borrow authority may retain a caller-visible Bytes projection"
+        );
+    }
+
+    #[test]
+    fn vec_receiver_borrow_contract_covers_all_element_carriers() {
+        // Direct stdlib algorithms reach `hew_vec_len` through a catalog
+        // `Terminator::Call`, regardless of whether their Vec contains plain
+        // values or strings. The receiver contract is independent of the
+        // element carrier, so both retain their caller-visible read-only
+        // boundary instead of being rejected as an unknown representation
+        // mutation.
+        let mut raw = [ResolvedTy::I64, ResolvedTy::String]
+            .into_iter()
+            .map(|element_ty| {
+                let vec_ty = ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![element_ty],
+                    builtin: Some(hew_types::BuiltinType::Vec),
+                    is_opaque: false,
+                };
+                let mut function = raw_function(
+                    "vec_len_reader",
+                    FunctionCallConv::Default,
+                    vec![],
+                    call("hew_vec_len"),
+                );
+                function.params = vec![vec_ty.clone()];
+                function.locals = vec![vec_ty.clone()];
+                function.decisions[0].ty = vec_ty;
+                let Terminator::Call { authority, .. } = &mut function.blocks[0].terminator else {
+                    unreachable!("test helper constructs a direct call terminator");
+                };
+                *authority = crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecLen,
+                );
+                function
+            })
+            .collect::<Vec<_>>();
+
+        finalize(&mut raw);
+
+        assert!(
+            raw.iter()
+                .all(|function| mode(function) == ParamBoundaryMode::BorrowReadOnly),
+            "the exact Vec receiver borrow contract must be element-agnostic: {raw:#?}"
+        );
+    }
+
+    #[test]
+    fn checker_authorized_std_extern_contract_keeps_network_address_read_only() {
         // Source stdlib wrappers call their declared externs directly, rather
         // than through a catalog presentation name. The generated FFI contract
         // is therefore the proof that `listen` and `connect_timeout` read the
@@ -1775,6 +1965,10 @@ mod param_boundary_effect_tests {
             function.params = vec![ResolvedTy::String];
             function.locals = vec![ResolvedTy::String];
             function.decisions[0].ty = ResolvedTy::String;
+            let Terminator::Call { authority, .. } = &mut function.blocks[0].terminator else {
+                unreachable!("test helper constructs a direct call terminator");
+            };
+            *authority = crate::CallAuthority::Extern;
         }
 
         finalize(&mut raw);
@@ -1785,7 +1979,46 @@ mod param_boundary_effect_tests {
                 ParamBoundaryMode::BorrowReadOnly,
                 ParamBoundaryMode::BorrowReadOnly,
             ],
-            "audited TCP address borrows must not manufacture representation-mutation authority"
+            "checker-authorized std extern borrows must not manufacture representation-mutation authority"
+        );
+    }
+
+    #[test]
+    fn same_symbol_user_extern_cannot_claim_std_ffi_borrow_contract() {
+        // The linker spelling is intentionally identical. Only the
+        // checker/HIR-projected `Extern` authority may consult the generated
+        // ownership row; a direct user declaration stays fail-closed.
+        let mut raw = vec![
+            raw_function(
+                "compiled_std_metrics",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_metric_counter_register"),
+            ),
+            raw_function(
+                "user_same_symbol",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_metric_counter_register"),
+            ),
+        ];
+        for function in &mut raw {
+            function.params = vec![ResolvedTy::String];
+            function.locals = vec![ResolvedTy::String];
+            function.decisions[0].ty = ResolvedTy::String;
+        }
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        *authority = crate::CallAuthority::Extern;
+
+        finalize(&mut raw);
+
+        assert_eq!(mode(&raw[0]), ParamBoundaryMode::BorrowReadOnly);
+        assert_eq!(
+            mode(&raw[1]),
+            ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            "a user extern must not acquire a standard-library representation contract by symbol collision"
         );
     }
 
@@ -4004,6 +4237,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_vec_join_str",
         "hew_vec_push_str",
         "hew_vec_set_str",
     ];
@@ -4030,6 +4264,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_get_str",
+        "hew_vec_join_str",
         "hew_vec_pop_str",
         "hew_vec_remove_at_str",
         "to_string_bool",
@@ -4076,8 +4311,8 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(vec_receiver.len(), 92);
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 28);
-        assert_eq!(fresh_string.len(), 30);
+        assert_eq!(string_use.len(), 29);
+        assert_eq!(fresh_string.len(), 31);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);
@@ -4160,23 +4395,16 @@ mod layout_key_shortening_guard {
 
     /// The production (non-test) sources containing record layout-key consumers.
     ///
-    /// Normalises CRLF→LF before splitting: on a Windows checkout
-    /// (`core.autocrlf=true`) the embedded `include_str!` source carries
-    /// `\r\n`, so a split on the LF-anchored `\n#[cfg(test)]\n` never matches
-    /// and would return the WHOLE file — pulling the test module's own
-    /// `mangle_layout_key(name, args)` string literals into the scan and
-    /// breaking the bare-key count guard below. Normalising keeps the guard
-    /// deterministic across line-ending conventions.
+    /// Normalises CRLF→LF for deterministic source scanning. Test-only
+    /// helpers may appear before later production items in these large module
+    /// files, so truncating at the first `#[cfg(test)] mod` would silently omit
+    /// real consumers. Scan the complete files: the forbidden short-name call
+    /// is absent everywhere, while the positive full-owner calls are ordinary
+    /// Rust expressions rather than strings manufactured by this guard.
     fn production_source() -> String {
         [include_str!("mod.rs"), include_str!("expr.rs")]
             .into_iter()
-            .map(|src| {
-                src.replace("\r\n", "\n")
-                    .split("\n#[cfg(test)]\nmod ")
-                    .next()
-                    .expect("lower module source has a non-test prefix")
-                    .to_string()
-            })
+            .map(|src| src.replace("\r\n", "\n"))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -4294,17 +4522,13 @@ mod enum_layout_tests {
             "no diagnostics expected for monomorphic mixed enum; got: {:?}",
             pipeline.diagnostics
         );
-        let user_layouts: Vec<_> = pipeline
+        let shape_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Shape")
             .collect();
-        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
-        let layout = user_layouts[0];
+        assert_eq!(shape_layouts.len(), 1, "expected one EnumLayout for Shape");
+        let layout = shape_layouts[0];
         assert_eq!(layout.name, "Shape");
         assert_eq!(layout.variants.len(), 3);
         // Declaration order is load-bearing: Point=0, Line=1, Box=2. MIR's
@@ -4351,18 +4575,17 @@ mod enum_layout_tests {
             "no diagnostics expected for all-unit enum; got: {:?}",
             pipeline.diagnostics
         );
-        let user_layouts: Vec<_> = pipeline
+        let colour_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Colour")
             .collect();
-        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
-        assert_eq!(user_layouts[0].name, "Colour");
-        assert_eq!(user_layouts[0].variants.len(), 3);
+        assert_eq!(
+            colour_layouts.len(),
+            1,
+            "expected one EnumLayout for Colour"
+        );
+        assert_eq!(colour_layouts[0].variants.len(), 3);
     }
 
     #[test]
@@ -4555,27 +4778,20 @@ mod enum_layout_tests {
         );
         // The MIR pipeline emits the layout under the mangled name (not "Option").
         // Codegen finds it via the mangled key in machine_layout_map.
-        // Builtin enum layouts are always registered out-of-band; filter them
-        // out so this test asserts on the user-declared layouts only.
-        let user_layouts: Vec<_> = pipeline
+        // The pipeline may also register bundled source enums. Select the
+        // declaration under test by its exact monomorphised layout key rather
+        // than inferring user ownership from the absence of a builtin row.
+        let option_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Option$$i64")
             .collect();
         assert_eq!(
-            user_layouts.len(),
+            option_layouts.len(),
             1,
-            "expected one MIR EnumLayout for Option$$i64; got: {user_layouts:?}"
+            "expected one MIR EnumLayout for Option$$i64; got: {option_layouts:?}"
         );
-        let layout = user_layouts[0];
-        assert_eq!(
-            layout.name, "Option$$i64",
-            "layout must be emitted under mangled name"
-        );
+        let layout = option_layouts[0];
         assert_eq!(layout.variants.len(), 2);
         assert_eq!(layout.variants[0].name, "Some");
         assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);

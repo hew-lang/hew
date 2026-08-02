@@ -28,6 +28,7 @@ pub enum StdlibRoot {
     LinkMonitor,
     String,
     Io,
+    Metrics,
     Net,
     NetDns,
     Prelude,
@@ -44,6 +45,7 @@ impl StdlibRoot {
             Self::LinkMonitor => "link_monitor",
             Self::String => "string",
             Self::Io => "io",
+            Self::Metrics => "metrics",
             Self::Net => "net",
             Self::NetDns => "net::dns",
             Self::Prelude => "prelude",
@@ -113,6 +115,11 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
         StdlibRoot::Io,
         "std/io.hew",
         include_str!("../../std/io.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::Metrics,
+        "std/metrics/metrics.hew",
+        include_str!("../../std/metrics/metrics.hew"),
     ),
     AuthoritySource::embedded(
         StdlibRoot::Net,
@@ -230,6 +237,7 @@ pub struct ExternRuntimeCapabilityEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternRuntimeCapability {
     BlockingOffload,
+    Metrics,
 }
 
 impl ExternRuntimeCapability {
@@ -237,6 +245,7 @@ impl ExternRuntimeCapability {
     pub const fn key(self) -> &'static str {
         match self {
             Self::BlockingOffload => "blocking_offload",
+            Self::Metrics => "metrics",
         }
     }
 
@@ -244,6 +253,7 @@ impl ExternRuntimeCapability {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "blocking_offload" => Some(Self::BlockingOffload),
+            "metrics" => Some(Self::Metrics),
             _ => None,
         }
     }
@@ -1100,6 +1110,12 @@ mod tests {
                 "missing blocking-offload capability on {symbol}"
             );
         }
+        assert_eq!(
+            authority.extern_runtime_capabilities()["metrics::hew_metric_counter_register"]
+                .capability,
+            ExternRuntimeCapability::Metrics,
+            "metrics externs must carry the authority that installs their RuntimeInner"
+        );
     }
 
     #[test]

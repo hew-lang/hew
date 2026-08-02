@@ -737,6 +737,11 @@ impl Ty {
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
+        if let Some(fact) = crate::builtin_enums::monomorphic_builtin_enum(name) {
+            if name == fact.canonical_name {
+                return Some(fact.canonical_name);
+            }
+        }
         lookup_builtin_type(name).map(BuiltinType::canonical_name)
     }
 
@@ -787,8 +792,8 @@ impl Ty {
     /// collision — a root-local `Widget` and an imported `widgeti8.Widget` share
     /// a final segment yet are DISTINCT nominal types (issue #2651). That
     /// discrimination requires the checker's resolution tables and is enforced
-    /// by `nominal_owner_conflict` at the `expect_type` boundary BEFORE this
-    /// permissive rule is reached; see `canonical_nominal_name`.
+    /// by `nominal_owner_conflict` at every checker unification boundary BEFORE
+    /// this permissive rule is reached; see `canonical_nominal_name`.
     #[must_use]
     pub fn names_match_qualified(a: &str, b: &str) -> bool {
         if a == b {

@@ -2003,6 +2003,24 @@ fn user_vec_iter_name_does_not_bypass_into_iterator() {
 }
 
 #[test]
+fn bare_vec_iter_annotation_matches_the_compiler_cursor_without_a_source_shadow() {
+    let output = check_source(
+        r"
+        fn returned(values: Vec<Rc<i64>>) -> VecIter<Rc<i64>> {
+            values.iter()
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "the public cursor spelling must denote the compiler cursor when no \
+         source declaration owns it: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_iter_clone_totality_rejects_direct_function_element() {
     let output = check_source(
         r"

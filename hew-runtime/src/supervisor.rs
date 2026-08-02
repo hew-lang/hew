@@ -12,9 +12,7 @@
 use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -102,49 +100,80 @@ fn append_supervisor_rows(
         return;
     }
 
-    // SAFETY: top-level supervisor pointers remain valid while registered.
-    let supervisor = unsafe { &*sup };
-    let self_actor_id = if supervisor.self_actor.is_null() {
+    // SAFETY: copy non-roster scalars from the live allocation.
+    let (self_actor, strategy) = unsafe { ((*sup).self_actor, (*sup).strategy) };
+    let self_actor_id = if self_actor.is_null() {
         0
     } else {
         // SAFETY: self_actor belongs to the live supervisor.
-        unsafe { (*supervisor.self_actor).id }
+        unsafe { (*self_actor).id }
     };
     let label = format!(
         "⊞ supervisor:{self_actor_id} [{}]",
-        supervisor_strategy_name(supervisor.strategy)
+        supervisor_strategy_name(strategy)
     );
     append_tree_row(json, first, depth, &label, "Supervisor");
 
-    for (index, child) in supervisor
-        .children
-        .iter()
-        .take(supervisor.child_count)
-        .enumerate()
-    {
-        let spec = &supervisor.child_specs[index];
-        let name = child_name(spec.name, &format!("child[{index}]"));
-        let restarts = if spec.circuit_breaker.crash_stats.is_null() {
-            0
-        } else {
-            // SAFETY: crash stats pointer belongs to the child spec.
-            unsafe { (*spec.circuit_breaker.crash_stats).total_crashes }
-        };
-        let label = format!("  {name} (restarts: {restarts})");
-        append_tree_row(json, first, depth + 1, &label, actor_state_name(*child));
-    }
+    // Snapshot display data and exact nested pins under this node's roster,
+    // then release it before recursive descent. No code ever holds two roster
+    // mutexes, so parent/child traversal cannot invert another lifecycle path.
+    let (child_rows, nested, pool_rows) = {
+        // SAFETY: top-level supervisor pointers remain valid while registered;
+        // nested calls carry a stable pin acquired by their parent snapshot.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        let child_rows = roster
+            .children
+            .iter()
+            .take(roster.child_count)
+            .enumerate()
+            .map(|(index, child)| {
+                let spec = &roster.child_specs[index];
+                let name = child_name(spec.name, &format!("child[{index}]"));
+                let restarts = if spec.circuit_breaker.crash_stats.is_null() {
+                    0
+                } else {
+                    // SAFETY: crash stats pointer belongs to the child spec.
+                    unsafe { (*spec.circuit_breaker.crash_stats).total_crashes }
+                };
+                (
+                    format!("  {name} (restarts: {restarts})"),
+                    actor_state_name(*child),
+                )
+            })
+            .collect::<Vec<_>>();
+        let nested = roster
+            .child_supervisors
+            .iter()
+            .copied()
+            .zip(roster.child_supervisor_tokens.iter().copied())
+            .filter_map(|(child, token)| {
+                let pin = crate::lifetime::local_handles::pin_current_supervisor(token)?;
+                (pin.supervisor() == child).then_some((child, pin))
+            })
+            .collect::<Vec<_>>();
+        let pool_rows = roster
+            .pool_slots
+            .iter()
+            .enumerate()
+            .map(|(i, pool)| {
+                let spec = &roster.pool_specs[i];
+                let name = child_name(spec.name, &format!("pool[{i}]"));
+                // SAFETY: the pool is Box-owned and cannot be removed while
+                // this roster guard is held.
+                let member_count = unsafe { crate::pool::hew_pool_size(*pool) };
+                format!("  {name} (members: {member_count})")
+            })
+            .collect::<Vec<_>>();
+        (child_rows, nested, pool_rows)
+    };
 
-    for child_sup in &supervisor.child_supervisors {
-        append_supervisor_rows(json, first, *child_sup, depth + 1);
+    for (label, state) in child_rows {
+        append_tree_row(json, first, depth + 1, &label, state);
     }
-
-    for (i, pool) in supervisor.pool_slots.iter().enumerate() {
-        let spec = &supervisor.pool_specs[i];
-        let name = child_name(spec.name, &format!("pool[{i}]"));
-        // SAFETY: pool pointer is Box-owned by this supervisor and valid while
-        // the supervisor lock is held.
-        let member_count = unsafe { crate::pool::hew_pool_size(*pool) };
-        let label = format!("  {name} (members: {member_count})");
+    for (child_sup, _pin) in nested {
+        append_supervisor_rows(json, first, child_sup, depth + 1);
+    }
+    for label in pool_rows {
         append_tree_row(json, first, depth + 1, &label, "Pool");
     }
 }
@@ -441,7 +470,7 @@ fn trap_kind_name(code: i32) -> &'static str {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct DelayedRestartEvent {
-    child_index: usize,
+    child_identity: u64,
 }
 
 /// Overflow policy: drop new messages.
@@ -648,6 +677,34 @@ struct SupervisorChildSpec {
     init_fn: SupervisorInitFn,
 }
 
+/// All mutable child, nested-supervisor, pool, restart-budget, and child-config
+/// state. Keeping this data inside the mutex makes unlocked roster mutation
+/// unrepresentable and prevents a whole-`HewSupervisor` reference from
+/// aliasing concurrent raw roster updates.
+struct SupervisorRoster {
+    children: Vec<*mut HewActor>,
+    child_specs: Vec<InternalChildSpec>,
+    child_count: usize,
+    next_child_spec_identity: u64,
+    child_supervisors: Vec<*mut HewSupervisor>,
+    child_supervisor_tokens: Vec<crate::lifetime::local_handles::HewLocalPidId>,
+    child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
+    restart_times: [u64; MAX_RESTARTS_TRACK],
+    restart_count: usize,
+    restart_head: usize,
+    restart_notify: Option<Arc<(Mutex<usize>, Condvar)>>,
+    pool_slots: Vec<*mut HewActorPool>,
+    pool_specs: Vec<InternalPoolSpec>,
+    config_buf: *mut c_void,
+    config_size: usize,
+    config_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+// SAFETY: raw roster pointers are allocation identities, not transferable
+// borrows. Every access occurs while the owning supervisor's mutex is held;
+// destruction first closes external access and drains admitted operations.
+unsafe impl Send for SupervisorRoster {}
+
 // ---------------------------------------------------------------------------
 // Supervisor struct
 // ---------------------------------------------------------------------------
@@ -662,41 +719,26 @@ pub struct HewSupervisor {
     max_restarts: c_int,
     window_secs: c_int,
 
-    children: Vec<*mut HewActor>,
-    child_specs: Vec<InternalChildSpec>,
-    child_count: usize,
-
-    /// Child supervisors managed by this supervisor.
-    child_supervisors: Vec<*mut HewSupervisor>,
-    /// Restart specs for child supervisors (parallel to `child_supervisors`).
-    /// Entries are `None` for child supervisors added without an init fn.
-    child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
-
-    restart_times: [u64; MAX_RESTARTS_TRACK],
-    restart_count: usize,
-    restart_head: usize,
-
     running: AtomicI32,
-    teardown_claimed: AtomicBool,
+    /// Wait-free cancellation observation for public/hot read paths. The
+    /// restart-timer control mirrors this state under its mutex only for timer
+    /// wakeup and raw-borrow exclusion.
+    cancelled: AtomicBool,
     /// Shared cancellation and lifetime authority for delayed-restart threads.
     /// A timer holds an `Arc` lease from before spawn until its final raw
     /// supervisor access is complete; teardown cancels/wakes the control and
     /// waits for every lease to drain before reclaiming this allocation.
     restart_timers: Arc<RestartTimerControl>,
     self_actor: *mut HewActor,
-    /// Serializes public child-slot reads against restart-time replacement.
-    children_lock: Mutex<()>,
+    /// Owns every mutable roster collection and its related count/config state.
+    /// Any raw template read is converted to an owned restart snapshot while
+    /// this lock is held; no spec-owned pointer crosses the guard boundary.
+    roster: Mutex<SupervisorRoster>,
 
     /// Parent supervisor (set by `hew_supervisor_add_child_supervisor`).
     parent: *mut HewSupervisor,
     /// Index of this supervisor in parent's `child_supervisors` vec.
     index_in_parent: usize,
-
-    /// Restart notification shared by public wait helpers.
-    /// The counter increments once per completed restart cycle (including
-    /// budget exhaustion), and `hew_supervisor_set_restart_notify` resets it
-    /// for deterministic test sequencing.
-    restart_notify: Option<Arc<(Mutex<usize>, Condvar)>>,
 
     /// Parked `await_restart` continuations — the COOPERATIVE restart observer.
     ///
@@ -710,41 +752,6 @@ pub struct HewSupervisor {
     /// supervisor teardown; a cancelled slot drops its wake (the channel-core
     /// race guard).
     restart_await_waiters: Mutex<Vec<RestartAwaitWaiter>>,
-
-    /// Pool children declared via `pool name: Type` in the supervisor surface.
-    ///
-    /// Indexed by checker-assigned pool slot index. Disjoint from the static
-    /// `children` slot space — a `pool_key` of 0 is the first *pool* child,
-    /// not the first static child. Each entry is a `Box`-owned `HewActorPool`.
-    pool_slots: Vec<*mut HewActorPool>,
-    /// Parallel spec for pool children. `pool_slots[i]` and `pool_specs[i]`
-    /// always have the same length.
-    pool_specs: Vec<InternalPoolSpec>,
-
-    /// Construction-time config buffer (the v0.6 init-closure restart model's
-    /// dynamic-data source). A single supervisor-owned `malloc`'d copy of the
-    /// supervisor's spawn-time config struct, captured ONCE at bootstrap and
-    /// shared (by borrow) with every child's `init_fn`. Each thunk reads
-    /// `config.field` to recompute config-derived init args per incarnation.
-    ///
-    /// Adopted on the FIRST `hew_supervisor_set_child_init_fn` call (or carried
-    /// in the first `init_fn` child's `HewChildSpec` literal); subsequent
-    /// registrations re-use the same pointer. Freed EXACTLY ONCE at supervisor
-    /// teardown (`stop_supervisor_owned`). The thunks only ever read it.
-    /// `null` when the supervisor takes no config.
-    config_buf: *mut c_void,
-    /// Size in bytes of `config_buf`. `0` when `config_buf` is null.
-    config_size: usize,
-    /// Drop glue for the config struct's OWNED fields (`string`/`bytes`/…),
-    /// run over `config_buf` once at teardown BEFORE the flat `libc::free`.
-    ///
-    /// The config buffer is a flat snapshot of the moved-in config value, so it
-    /// OWNS the config struct's inner owned fields (the thunks only CLONE from
-    /// them, never take ownership). Without this, those inner fields would leak
-    /// at teardown (the flat free reclaims only the wrapper). Codegen registers
-    /// the config struct's `__hew_record_drop_inplace_<T>` here when the config
-    /// has owned fields; `None` for an all-scalar config (nothing to drop).
-    config_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 const SUPERVISOR_PIN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -800,10 +807,6 @@ impl RestartTimerControl {
         let mut state = self.state.lock_or_recover();
         state.cancelled = true;
         self.changed.notify_all();
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.state.lock_or_recover().cancelled
     }
 
     fn wait_for_drain(&self, deadline: Instant) -> bool {
@@ -880,6 +883,12 @@ static SUPERVISOR_CLOSE_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
 #[cfg(all(test, not(target_arch = "wasm32")))]
 static SUPERVISOR_TEARDOWN_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
     std::sync::OnceLock::new();
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static RESTART_SPEC_SNAPSHOT_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+    std::sync::OnceLock::new();
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DYNAMIC_CHILD_RESERVED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+    std::sync::OnceLock::new();
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 struct SupervisorTestHookGuard(&'static std::sync::OnceLock<Mutex<SupervisorTestHook>>);
@@ -921,6 +930,26 @@ fn install_supervisor_teardown_hook_for_test(
     SupervisorTestHookGuard(&SUPERVISOR_TEARDOWN_HOOK)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_restart_spec_snapshot_hook_for_test(
+    hook: Arc<dyn Fn() + Send + Sync>,
+) -> SupervisorTestHookGuard {
+    *RESTART_SPEC_SNAPSHOT_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover() = Some(hook);
+    SupervisorTestHookGuard(&RESTART_SPEC_SNAPSHOT_HOOK)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_dynamic_child_reserved_hook_for_test(
+    hook: Arc<dyn Fn() + Send + Sync>,
+) -> SupervisorTestHookGuard {
+    *DYNAMIC_CHILD_RESERVED_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover() = Some(hook);
+    SupervisorTestHookGuard(&DYNAMIC_CHILD_RESERVED_HOOK)
+}
+
 fn run_supervisor_access_hook_for_test() {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if let Some(hook) = SUPERVISOR_ACCESS_HOOK
@@ -954,6 +983,28 @@ fn run_supervisor_teardown_hook_for_test() {
     }
 }
 
+fn run_restart_spec_snapshot_hook_for_test() {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(hook) = RESTART_SPEC_SNAPSHOT_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover()
+        .clone()
+    {
+        hook();
+    }
+}
+
+fn run_dynamic_child_reserved_hook_for_test() {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(hook) = DYNAMIC_CHILD_RESERVED_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock_or_recover()
+        .clone()
+    {
+        hook();
+    }
+}
+
 unsafe fn close_supervisor_access(
     sup: *mut HewSupervisor,
     timeout: Duration,
@@ -962,16 +1013,17 @@ unsafe fn close_supervisor_access(
     if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
         return None;
     }
-    // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
-    let supervisor = unsafe { &*sup };
-    if supervisor.runtime.is_null() {
+    // SAFETY: callers provide a live allocation created by `hew_supervisor_new`;
+    // copy scalars without creating a whole-supervisor reference.
+    let (runtime_ptr, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
+    if runtime_ptr.is_null() {
         return None;
     }
     // SAFETY: the runtime outlives every registered supervisor control.
-    let runtime = unsafe { &*supervisor.runtime };
+    let runtime = unsafe { &*runtime_ptr };
     let control = runtime
         .local_handles
-        .supervisor_control_for_raw(supervisor.local_pid_id, sup)?;
+        .supervisor_control_for_raw(token, sup)?;
     let won_close = control.begin_close();
     runtime.local_handles.retire_supervisor_route(&control);
     if won_close {
@@ -990,13 +1042,13 @@ unsafe fn begin_supervisor_teardown(
     sup: *mut HewSupervisor,
 ) -> Option<crate::lifetime::local_handles::SupervisorTeardownLease> {
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
-    let supervisor = unsafe { &*sup };
-    if supervisor.runtime.is_null() {
+    let runtime_ptr = unsafe { (*sup).runtime };
+    if runtime_ptr.is_null() {
         return None;
     }
     // SAFETY: cleanup cannot reclaim the runtime until this admission either
     // fails under the closed gate or returns a lease that cleanup must drain.
-    unsafe { &*supervisor.runtime }
+    unsafe { &*runtime_ptr }
         .local_handles
         .begin_supervisor_teardown()
 }
@@ -1071,9 +1123,21 @@ impl Drop for CircuitBreakerState {
 /// Internal owned copy of a child spec.
 #[derive(Debug)]
 struct InternalChildSpec {
+    /// Monotonic identity for this exact roster entry. A restart snapshots it
+    /// under `roster` and rechecks it before publishing, so a concurrent
+    /// swap-remove cannot redirect a completed spawn into another child's slot.
+    identity: u64,
+    /// Metadata revision for non-template callback fields. Restarts validate
+    /// it with `identity` so a lifecycle/init setter cannot be lost to a late
+    /// publication from an earlier snapshot.
+    revision: u64,
     name: *mut c_char,
-    init_state: *mut c_void,
-    init_state_size: usize,
+    /// Immutable, reference-counted template generation. Restart clones this
+    /// Arc under `roster`, then may call the user/codegen clone callback
+    /// without holding a supervisor lock. A concurrent setter installs a new
+    /// generation, while the old allocation remains alive until every restart
+    /// snapshot releases its lease.
+    state_template: Arc<ChildStateTemplate>,
     dispatch: Option<HewDispatchFn>,
     sys_dispatch: Option<HewSysDispatchFn>,
     restart_policy: c_int,
@@ -1102,21 +1166,6 @@ struct InternalChildSpec {
     /// `apply_restart` before the restart policy is consulted when the child
     /// exits with `HewActorState::Crashed`. `None` means no handler.
     on_crash: Option<HewOnCrashFn>,
-    /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
-    /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
-    /// is added. Every restart path calls this on the newly spawned actor so that
-    /// restarted actors free their heap-allocated state fields on teardown.
-    state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
-    /// Codegen-emitted deep-clone callback for the spec's `init_state` template.
-    /// Registered via [`hew_supervisor_set_child_state_clone`] after the child spec
-    /// is added. When present, the restart path calls
-    /// `state_clone_fn(spec.init_state)` to produce an independently-owned deep
-    /// clone for each new actor (consumed via [`actor::hew_actor_spawn_opts_adopt`])
-    /// instead of the legacy byte-copy — fixing the supervisor-restart byte-alias
-    /// UAF (audit C1 / spec-section §5). Registration itself also breaks the
-    /// initial-spawn byte-alias by re-cloning the template in place
-    /// (see [`hew_supervisor_set_child_state_clone`] doc).
-    state_clone_fn: Option<actor::HewStateCloneFn>,
     /// Codegen-emitted lifecycle wrapper that runs the child actor's `init()` /
     /// `#[on(start)]` hooks. Copied from `HewChildSpec::lifecycle_fn` at spec
     /// registration (so the INITIAL supervised spawn fires it inside
@@ -1137,37 +1186,86 @@ struct InternalChildSpec {
     config: *mut c_void,
 }
 
+/// One state-drop descriptor shared by every immutable template generation.
+/// The setter may arrive after the initial generation was constructed; an
+/// atomic function word lets the eventual last allocation owner observe it
+/// without mutating or replacing an Arc generation.
+#[derive(Debug)]
+struct ChildStateDropDescriptor {
+    function: AtomicUsize,
+}
+
+impl ChildStateDropDescriptor {
+    fn new() -> Self {
+        Self {
+            function: AtomicUsize::new(0),
+        }
+    }
+
+    fn store(&self, function: unsafe extern "C" fn(*mut c_void)) {
+        self.function.store(function as usize, Ordering::Release);
+    }
+
+    fn load(&self) -> Option<unsafe extern "C" fn(*mut c_void)> {
+        let function = self.function.load(Ordering::Acquire);
+        if function == 0 {
+            None
+        } else {
+            // SAFETY: the only non-zero values stored above came from this
+            // exact C-ABI function-pointer type, and function/data pointers are
+            // the same width on every supported Hew runtime target.
+            Some(unsafe {
+                std::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(function)
+            })
+        }
+    }
+}
+
+/// The allocation retained by one or more immutable template generations.
+#[derive(Debug)]
+struct ChildStateTemplateAllocation {
+    state: *mut c_void,
+    size: usize,
+    /// True only after a clone callback produced this allocation. Legacy
+    /// byte-copy templates deliberately own wrapper bytes but not typed fields.
+    owns_typed_fields: bool,
+    state_drop: Arc<ChildStateDropDescriptor>,
+}
+
+// SAFETY: the allocation is immutable after construction. Clone callbacks
+// receive only a const pointer; destruction occurs after the final Arc lease.
+unsafe impl Send for ChildStateTemplateAllocation {}
+// SAFETY: same immutable-allocation/final-Arc argument as the Send impl above.
+unsafe impl Sync for ChildStateTemplateAllocation {}
+
+impl Drop for ChildStateTemplateAllocation {
+    fn drop(&mut self) {
+        if self.state.is_null() {
+            return;
+        }
+        if self.owns_typed_fields {
+            if let Some(drop_fn) = self.state_drop.load() {
+                // SAFETY: a successful state clone produced an independently
+                // owned allocation for this exact actor-state layout.
+                unsafe { drop_fn(self.state) };
+            }
+        }
+        // SAFETY: every template wrapper is allocated by libc::malloc or a
+        // clone callback whose contract requires malloc-compatible output.
+        unsafe { libc::free(self.state) }; // ALLOCATOR-PAIRING: libc
+        self.state = ptr::null_mut();
+    }
+}
+
+/// Immutable template metadata published atomically under `roster`.
+#[derive(Debug)]
+struct ChildStateTemplate {
+    allocation: Arc<ChildStateTemplateAllocation>,
+    clone_fn: Option<actor::HewStateCloneFn>,
+}
+
 impl Drop for InternalChildSpec {
     fn drop(&mut self) {
-        if !self.init_state.is_null() {
-            // Call the user-provided drop callback before freeing the wrapper so
-            // owned inner fields (e.g. heap-backed payload buffers) are released
-            // before the wrapper allocation is reclaimed.
-            //
-            // ONLY call when state_clone_fn is registered: registering a clone fn
-            // re-clones spec.init_state in place, giving it an independently-owned
-            // allocation. Without a clone fn the spec's init_state is a byte-alias
-            // of the initial actor's init_state; the actor's lifecycle drops the
-            // shared inner payload, so calling state_drop_fn here would double-free.
-            //
-            // WHY: init_state is a C heap wrapper whose inner fields may own malloc'd
-            // memory; the wrapper-level libc::free below does not recurse into those
-            // fields. state_drop_fn is the one authority on releasing them.
-            // WHEN obsolete: if init_state becomes a Rust-managed type with a proper
-            // Drop impl this call is no longer needed.
-            if self.state_clone_fn.is_some() {
-                if let Some(drop_fn) = self.state_drop_fn {
-                    // SAFETY: state_drop_fn was registered by the caller for this
-                    // exact init_state allocation; init_state is valid and
-                    // independently owned (re-cloned at clone-fn registration time).
-                    unsafe { drop_fn(self.init_state) };
-                }
-            }
-            // SAFETY: init_state was allocated with libc::malloc in
-            // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.init_state) }; // ALLOCATOR-PAIRING: libc
-            self.init_state = ptr::null_mut();
-        }
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup in
             // hew_supervisor_add_child_spec.
@@ -1180,9 +1278,18 @@ impl Drop for InternalChildSpec {
 impl Default for InternalChildSpec {
     fn default() -> Self {
         Self {
+            identity: 0,
+            revision: 1,
             name: ptr::null_mut(),
-            init_state: ptr::null_mut(),
-            init_state_size: 0,
+            state_template: Arc::new(ChildStateTemplate {
+                allocation: Arc::new(ChildStateTemplateAllocation {
+                    state: ptr::null_mut(),
+                    size: 0,
+                    owns_typed_fields: false,
+                    state_drop: Arc::new(ChildStateDropDescriptor::new()),
+                }),
+                clone_fn: None,
+            }),
             dispatch: None,
             sys_dispatch: None,
             restart_policy: RESTART_PERMANENT,
@@ -1198,8 +1305,6 @@ impl Default for InternalChildSpec {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -1211,16 +1316,16 @@ impl std::fmt::Debug for HewSupervisor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewSupervisor")
             .field("strategy", &self.strategy)
-            .field("child_count", &self.child_count)
             .finish_non_exhaustive()
     }
 }
 
-// SAFETY: Supervisor is accessed through C ABI calls which assume
-// single-threaded access or external synchronisation.
+// SAFETY: runtime-callable roster access is serialized by `roster`;
+// remaining mutable fields are either atomic, supervisor-actor-owned, or used
+// only during exclusive construction/teardown.
 unsafe impl Send for HewSupervisor {}
-// SAFETY: All mutable access is through `*mut` pointers in C ABI functions
-// which rely on external synchronisation; no concurrent &-ref sharing occurs.
+// SAFETY: shared runtime access follows the same field-level authority model;
+// no roster reference is created before acquiring `roster`.
 unsafe impl Sync for HewSupervisor {}
 
 /// Wrapper to send an actor pointer to a background thread for deferred cleanup.
@@ -1248,16 +1353,17 @@ fn monotonic_time_ns() -> u64 {
 
 /// Count restarts within the sliding window.
 #[expect(clippy::cast_sign_loss, reason = "C ABI: window_secs is non-negative")]
-fn restart_within_window(sup: &HewSupervisor) -> c_int {
+fn restart_within_window(window_secs: c_int, roster: &SupervisorRoster) -> c_int {
+    // ROSTER-GUARDED-HELPER: callers bound this borrow by their MutexGuard.
     // SAFETY: no preconditions.
     let now = unsafe { hew_now_ms() };
-    let window_ms = (sup.window_secs as u64).wrapping_mul(1000);
+    let window_ms = (window_secs as u64).wrapping_mul(1000);
 
     let mut count: c_int = 0;
-    let limit = sup.restart_count.min(MAX_RESTARTS_TRACK);
+    let limit = roster.restart_count.min(MAX_RESTARTS_TRACK);
     for i in 0..limit {
-        let idx = (sup.restart_head + MAX_RESTARTS_TRACK - 1 - i) % MAX_RESTARTS_TRACK;
-        if now.wrapping_sub(sup.restart_times[idx]) <= window_ms {
+        let idx = (roster.restart_head + MAX_RESTARTS_TRACK - 1 - i) % MAX_RESTARTS_TRACK;
+        if now.wrapping_sub(roster.restart_times[idx]) <= window_ms {
             count += 1;
         } else {
             break;
@@ -1267,25 +1373,28 @@ fn restart_within_window(sup: &HewSupervisor) -> c_int {
 }
 
 /// Record a restart timestamp.
-fn record_restart(sup: &mut HewSupervisor) {
+fn record_restart(roster: &mut SupervisorRoster) {
+    // ROSTER-GUARDED-HELPER: callers bound this borrow by their MutexGuard.
     // SAFETY: no preconditions.
-    sup.restart_times[sup.restart_head] = unsafe { hew_now_ms() };
-    sup.restart_head = (sup.restart_head + 1) % MAX_RESTARTS_TRACK;
-    if sup.restart_count < MAX_RESTARTS_TRACK {
-        sup.restart_count += 1;
+    roster.restart_times[roster.restart_head] = unsafe { hew_now_ms() };
+    roster.restart_head = (roster.restart_head + 1) % MAX_RESTARTS_TRACK;
+    if roster.restart_count < MAX_RESTARTS_TRACK {
+        roster.restart_count += 1;
     }
 }
 
 /// Resolve the supervisor's own actor id for trace attribution. Returns `0`
 /// when the supervisor has no backing actor yet (pre-start). Read-only; used
 /// only to tag emitted supervisor lifecycle events.
-fn supervisor_actor_id(sup: &HewSupervisor) -> u64 {
-    if sup.self_actor.is_null() {
+fn supervisor_actor_id(sup: *mut HewSupervisor) -> u64 {
+    // SAFETY: callers keep the supervisor live for this scalar read.
+    let self_actor = unsafe { (*sup).self_actor };
+    if self_actor.is_null() {
         0
     } else {
         // SAFETY: self_actor belongs to the live supervisor for the duration
         // of this dispatch.
-        unsafe { (*sup.self_actor).id }
+        unsafe { (*self_actor).id }
     }
 }
 
@@ -1298,16 +1407,18 @@ fn supervisor_actor_id(sup: &HewSupervisor) -> u64 {
 /// # Safety
 ///
 /// `sup.parent` must be non-null and point to a valid `HewSupervisor`.
-fn escalate_to_parent(sup: &HewSupervisor) {
+fn escalate_to_parent(sup: *mut HewSupervisor) {
+    // SAFETY: caller guarantees the child and its non-null parent edge remain
+    // live through this synchronous notification; copy only scalar fields.
+    let (parent, index_in_parent) = unsafe { ((*sup).parent, (*sup).index_in_parent) };
     // SAFETY: caller guarantees parent is valid.
-    let parent = unsafe { &*sup.parent };
-    if parent.self_actor.is_null() {
+    let parent_actor = unsafe { (*parent).self_actor };
+    if parent_actor.is_null() {
         return;
     }
-    let Ok(supervisor_index) = u32::try_from(sup.index_in_parent) else {
+    let Ok(supervisor_index) = u32::try_from(index_in_parent) else {
         eprintln!(
-            "[supervisor] refusing to escalate: child-supervisor index {} exceeds u32",
-            sup.index_in_parent
+            "[supervisor] refusing to escalate: child-supervisor index {index_in_parent} exceeds u32"
         );
         return;
     };
@@ -1319,10 +1430,12 @@ fn escalate_to_parent(sup: &HewSupervisor) {
         // Use the honest unknown value rather than fabricating a signal number.
         crash_code: 0,
     };
+    // SAFETY: caller keeps `sup` live while this scalar tracing id is copied.
+    let sup_actor_id = supervisor_actor_id(sup);
     // SAFETY: parent.self_actor is valid.
     unsafe {
         let _ = actor::send_system_message(
-            parent.self_actor,
+            parent_actor,
             HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildSupervisorEscalation>(),
@@ -1333,9 +1446,9 @@ fn escalate_to_parent(sup: &HewSupervisor) {
     // dispatch): record that this supervisor escalated to its parent. Never
     // gates control flow.
     crate::tracing::record_supervisor_event(
-        supervisor_actor_id(sup),
+        sup_actor_id,
         crate::tracing::SPAN_SUPERVISOR_ESCALATE,
-        i32::try_from(sup.index_in_parent).unwrap_or(i32::MAX),
+        i32::try_from(index_in_parent).unwrap_or(i32::MAX),
     );
 }
 
@@ -1494,11 +1607,13 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
     spec.next_restart_time_ns = monotonic_time_ns().wrapping_add(delay_ns);
 }
 
-fn schedule_delayed_restart(sup: &HewSupervisor, child_index: usize, delay: Duration) {
-    let Some(timer) = sup.restart_timers.begin() else {
+fn schedule_delayed_restart(sup: *mut HewSupervisor, child_identity: u64, delay: Duration) {
+    // SAFETY: caller keeps `sup` live through timer admission; the returned
+    // lease extends raw-pointer lifetime through the spawned closure.
+    let Some(timer) = (unsafe { &(*sup).restart_timers }).begin() else {
         return;
     };
-    let sup_addr = std::ptr::from_ref(sup) as usize;
+    let sup_addr = sup as usize;
     let spawn_result = std::thread::Builder::new()
         .name("hew-supervisor-restart-timer".to_owned())
         .spawn(move || {
@@ -1509,11 +1624,14 @@ fn schedule_delayed_restart(sup: &HewSupervisor, child_index: usize, delay: Dura
                 // complete raw access. Once cancellation is published this
                 // closure can never run.
                 unsafe {
-                    let s = &*sup_ptr;
-                    if s.running.load(Ordering::Acquire) != 0 && !s.self_actor.is_null() {
-                        let event = DelayedRestartEvent { child_index };
+                    let self_actor = (*sup_ptr).self_actor;
+                    if !(*sup_ptr).cancelled.load(Ordering::Acquire)
+                        && (*sup_ptr).running.load(Ordering::Acquire) != 0
+                        && !self_actor.is_null()
+                    {
+                        let event = DelayedRestartEvent { child_identity };
                         let _ = actor::send_system_message(
-                            s.self_actor,
+                            self_actor,
                             HewSysMsg::DelayedRestart,
                             (&raw const event).cast::<c_void>().cast_mut(),
                             std::mem::size_of::<DelayedRestartEvent>(),
@@ -1552,8 +1670,15 @@ fn schedule_delayed_restart(sup: &HewSupervisor, child_index: usize, delay: Dura
 /// empty registry (the waiter not yet pushed), the awaiting actor's under-lock
 /// recheck observes the advanced counter and resolves READY instead of parking
 /// against a wake that already fired. Do not reorder the bump after the drain.
-fn notify_restart(sup: &HewSupervisor) {
-    if let Some(ref pair) = sup.restart_notify {
+fn restart_notify_snapshot(sup: *mut HewSupervisor) -> Option<Arc<(Mutex<usize>, Condvar)>> {
+    // SAFETY: callers keep `sup` live; notification option publication shares
+    // roster authority so no whole-supervisor reference crosses a roster lock.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    roster.restart_notify.as_ref().map(Arc::clone)
+}
+
+fn notify_restart(sup: *mut HewSupervisor) {
+    if let Some(pair) = restart_notify_snapshot(sup) {
         let mut count = pair.0.lock_or_recover();
         *count += 1;
         pair.1.notify_all();
@@ -1566,9 +1691,10 @@ fn notify_restart(sup: &HewSupervisor) {
 /// readiness status into each waiter's slot (a no-op + no wake if its abandon
 /// edge cancelled the slot first), `enqueue_resume` the parked actor on a
 /// successful deposit, then release the observer's retained slot ref.
-fn wake_restart_await_waiters(sup: &HewSupervisor) {
+fn wake_restart_await_waiters(sup: *mut HewSupervisor) {
+    // SAFETY: caller keeps `sup` live while its waiter registry is drained.
     let waiters: Vec<RestartAwaitWaiter> =
-        std::mem::take(&mut *sup.restart_await_waiters.lock_or_recover());
+        std::mem::take(&mut *unsafe { &(*sup).restart_await_waiters }.lock_or_recover());
     for waiter in waiters {
         // SAFETY: the observer holds an in-flight ref on the slot; depositing a
         // terminal status is the documented reactor-deposit contract. A no-op +
@@ -1590,26 +1716,28 @@ fn wake_restart_await_waiters(sup: &HewSupervisor) {
     }
 }
 
-fn load_child_slot(sup: &HewSupervisor, index: usize) -> *mut HewActor {
-    let _guard = sup.children_lock.lock_or_recover();
-    sup.children.get(index).copied().unwrap_or(ptr::null_mut())
+fn load_child_slot(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
+    // SAFETY: callers keep `sup` live for this synchronous lookup.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    roster
+        .children
+        .get(index)
+        .copied()
+        .unwrap_or(ptr::null_mut())
 }
 
-fn store_child_slot(sup: &mut HewSupervisor, index: usize, child: *mut HewActor) {
-    let _guard = sup.children_lock.lock_or_recover();
-    if let Some(slot) = sup.children.get_mut(index) {
+fn store_child_slot(sup: *mut HewSupervisor, index: usize, child: *mut HewActor) {
+    // SAFETY: callers keep the supervisor allocation live.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    if let Some(slot) = roster.children.get_mut(index) {
         *slot = child;
     }
 }
 
-fn push_child_slot(sup: &mut HewSupervisor, child: *mut HewActor) {
-    let _guard = sup.children_lock.lock_or_recover();
-    sup.children.push(child);
-}
-
-fn take_child_slot(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
-    let _guard = sup.children_lock.lock_or_recover();
-    let Some(slot) = sup.children.get_mut(index) else {
+fn take_child_slot(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
+    // SAFETY: callers keep the supervisor allocation live.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let Some(slot) = roster.children.get_mut(index) else {
         return ptr::null_mut();
     };
     let child = *slot;
@@ -1617,12 +1745,54 @@ fn take_child_slot(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
     child
 }
 
+/// Detach the current slot for one stable spec identity. The identity lookup
+/// and null publication are indivisible with dynamic swap-remove.
+fn take_child_slot_by_identity(sup: *mut HewSupervisor, identity: u64) -> *mut HewActor {
+    // SAFETY: every caller keeps the supervisor live for this synchronous
+    // operation; `roster` is the roster authority.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let Some(index) = roster
+        .child_specs
+        .iter()
+        .position(|candidate| candidate.identity == identity)
+    else {
+        return ptr::null_mut();
+    };
+    let child = roster.children[index];
+    roster.children[index] = ptr::null_mut();
+    child
+}
+
+fn take_child_slot_for_event(
+    sup: *mut HewSupervisor,
+    index: usize,
+    actor_id: u64,
+) -> Option<(*mut HewActor, u64)> {
+    // SAFETY: dispatcher keeps `sup` live; the guard makes event validation,
+    // stable-spec capture, and slot detachment one roster transaction.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let child = roster.children.get(index).copied()?;
+    if child.is_null() {
+        return None;
+    }
+    // SAFETY: the non-null roster slot owns the actor for this critical section.
+    if unsafe { (*child).id } != actor_id {
+        return None;
+    }
+    let identity = roster.child_specs.get(index)?.identity;
+    roster.children[index] = ptr::null_mut();
+    Some((child, identity))
+}
+
 /// Stop this supervisor, notify waiters, and escalate to the parent if present.
-fn stop_and_maybe_escalate(sup: &mut HewSupervisor) {
-    sup.restart_timers.cancel();
-    sup.running.store(0, Ordering::Release);
+fn stop_and_maybe_escalate(sup: *mut HewSupervisor) {
+    // SAFETY: callers keep the allocation live through cancellation.
+    publish_supervisor_cancellation(sup);
+    // SAFETY: callers keep the allocation live through these field operations.
+    unsafe { (*sup).running.store(0, Ordering::Release) };
     notify_restart(sup);
-    if !sup.parent.is_null() {
+    // SAFETY: callers keep the supervisor allocation live through escalation.
+    if unsafe { !(*sup).parent.is_null() } {
         escalate_to_parent(sup);
     }
 }
@@ -1711,7 +1881,7 @@ fn spawn_owned_deferred_supervisor_stop(
 /// register the `JoinHandle` in the deferred-teardown registry.
 ///
 /// The siblings are still tracked in `LIVE_ACTORS` until this thread runs the
-/// restart-aware free on each. Like the supervisor-stop teardown sites, leaving
+/// authority-aware free on each. Like the supervisor-stop teardown sites, leaving
 /// the thread detached would let `cleanup_all_actors` sweep those allocations
 /// out from under an in-flight crash-restart free — a use-after-free /
 /// double-free. Registering the handle puts the teardown under the same
@@ -1725,12 +1895,12 @@ fn spawn_deferred_restart_free(deferred: Vec<DeferredFree>) {
         .spawn(move || {
             for d in deferred {
                 // SAFETY: actor was stopped; supervisor no longer references it.
-                // Use the restart-aware free path so the codegen state-drop does
-                // NOT run on field pointers that are still byte-aliased by
-                // `spec.init_state` and about to be reused by
-                // `restart_child_from_spec`. See
-                // `actor::free_actor_resources_with_options`.
-                unsafe { actor::hew_actor_free_for_restart(d.0) };
+                // Explicit provenance plus the actor's one-shot
+                // `state_drop_consumed` bit decide typed-drop authority. A
+                // stopped fresh sibling did not consume crash escrow, a
+                // sibling that did is already marked, and a shallow-template
+                // borrower never owned it; the common path handles all three.
+                unsafe { actor::hew_actor_free(d.0) };
             }
         }) {
         Ok(handle) => {
@@ -1820,13 +1990,20 @@ fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
     if sup.is_null() {
         return false;
     }
-    // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
-    unsafe {
-        (&*sup)
-            .teardown_claimed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    // SAFETY: callers guarantee a live allocation; copy its stable authority
+    // without creating a whole-supervisor reference.
+    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
+    if runtime.is_null() {
+        return false;
     }
+    // SAFETY: a live supervisor's runtime authority outlives its control.
+    let Some(control) = (unsafe { &*runtime })
+        .local_handles
+        .supervisor_control_for_raw(token, sup)
+    else {
+        return false;
+    };
+    control.claim_teardown()
 }
 
 fn release_supervisor_teardown(sup: *mut HewSupervisor) {
@@ -1835,8 +2012,16 @@ fn release_supervisor_teardown(sup: *mut HewSupervisor) {
     }
     // SAFETY: only used to roll back a failed deferred-spawn attempt while the
     // supervisor is still live and owned by the caller.
-    unsafe {
-        (&*sup).teardown_claimed.store(false, Ordering::Release);
+    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
+    if runtime.is_null() {
+        return;
+    }
+    // SAFETY: the live allocation keeps its runtime authority installed.
+    if let Some(control) = (unsafe { &*runtime })
+        .local_handles
+        .supervisor_control_for_raw(token, sup)
+    {
+        control.release_teardown();
     }
 }
 
@@ -1844,11 +2029,19 @@ fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
     if sup.is_null() {
         return;
     }
+    publish_supervisor_cancellation(sup);
     // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
+    unsafe { (*sup).running.store(0, Ordering::Release) };
+}
+
+fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
+    // Publish the wait-free mirror first. Timer callbacks that already own the
+    // control mutex observe this bit and skip their send; acquiring the control
+    // next wakes sleepers and waits out any raw access already in progress.
+    // SAFETY: callers keep `sup` live for these projected field operations.
     unsafe {
-        let s = &*sup;
-        s.restart_timers.cancel();
-        s.running.store(0, Ordering::Release);
+        (*sup).cancelled.store(true, Ordering::Release);
+        (*sup).restart_timers.cancel();
     }
 }
 
@@ -1870,14 +2063,14 @@ fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor, deadline: I
 
     // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
     unsafe {
-        let s = &*sup;
-        if s.self_actor.is_null() {
+        let self_actor = (*sup).self_actor;
+        if self_actor.is_null() {
             return true;
         }
 
-        actor::hew_actor_stop(s.self_actor);
+        actor::hew_actor_stop(self_actor);
         loop {
-            if actor_is_supervisor_quiescent(s.self_actor) {
+            if actor_is_supervisor_quiescent(self_actor) {
                 return true;
             }
             if supervisor_quiescence_expired(deadline) {
@@ -1919,10 +2112,93 @@ unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     }
 }
 
+/// Race for a nested supervisor's teardown authority while its parent still
+/// owns the roster entry. Only the winner detaches and publishes a cleanup
+/// root. The stable-token pin keeps the allocation live through the claim, so
+/// a losing parent can discard its roster word without dereferencing a pointer
+/// the token-based winner may immediately reclaim.
+///
+/// # Safety
+///
+/// `sup` and `token` must be the parallel values extracted from one parent
+/// roster critical section.
+unsafe fn claim_nested_supervisor_for_detach(
+    sup: *mut HewSupervisor,
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> bool {
+    if sup.is_null() {
+        return false;
+    }
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(token);
+    let control = if let Some(pin) = pin.as_ref() {
+        if pin.supervisor() != sup {
+            return false;
+        }
+        pin.control()
+    } else {
+        let Some(control) =
+            crate::lifetime::local_handles::current_supervisor_control_for_raw(token, sup)
+        else {
+            return false;
+        };
+        // Cleanup may close this nested route before the parent's already-
+        // admitted teardown owner resumes. Only use the raw parent ownership
+        // edge after closure has also drained every admitted dereference.
+        if !control.is_closed_and_drained() {
+            return false;
+        }
+        control
+    };
+    if !control.claim_teardown() {
+        return false;
+    }
+    // SAFETY: the stable pin proves the allocation live and the successful
+    // claim makes this path the only authority allowed to detach/publish it.
+    // On the cleanup fallback, the exact control proves access is closed and
+    // fully drained while the parent roster retains allocation ownership.
+    unsafe { (*sup).parent = ptr::null_mut() };
+    // SAFETY: the claimed detached allocation remains live through stop or a
+    // fail-closed handoff back to canonical cleanup.
+    unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+    drop(pin);
+    true
+}
+
+fn take_nested_supervisor_roster(
+    sup: *mut HewSupervisor,
+) -> Vec<(
+    *mut HewSupervisor,
+    crate::lifetime::local_handles::HewLocalPidId,
+    Option<SupervisorChildSpec>,
+)> {
+    // SAFETY: callers keep `sup` live and transfer the complete nested roster
+    // as one lock-protected ownership unit.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    debug_assert_eq!(
+        roster.child_supervisors.len(),
+        roster.child_supervisor_tokens.len()
+    );
+    debug_assert_eq!(
+        roster.child_supervisors.len(),
+        roster.child_supervisor_specs.len()
+    );
+    let supervisors = std::mem::take(&mut roster.child_supervisors);
+    let tokens = std::mem::take(&mut roster.child_supervisor_tokens);
+    let specs = std::mem::take(&mut roster.child_supervisor_specs);
+    supervisors
+        .into_iter()
+        .zip(tokens)
+        .zip(specs)
+        .map(|((supervisor, token), spec)| (supervisor, token, spec))
+        .collect()
+}
+
 unsafe fn stop_supervisor_owned(
     sup: *mut HewSupervisor,
     teardown: &crate::lifetime::local_handles::SupervisorTeardownLease,
 ) {
+    // ROSTER-EXCLUSIVE: access admission is closed and all stable pins drain
+    // before the Box-owned teardown traversal below begins.
     // Every raw destructor path closes handle admission and drains outstanding
     // dereferences before the allocation may reach `Box::from_raw`.
     // SAFETY: the caller transfers a live supervisor allocation to this owner.
@@ -1963,21 +2239,24 @@ unsafe fn stop_supervisor_owned(
     let mut s = unsafe { Box::from_raw(sup) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Recursively stop all child supervisors first.
-    for child_sup in std::mem::take(&mut s.child_supervisors) {
+    for (child_sup, child_token, _child_spec) in take_nested_supervisor_roster(&raw mut *s) {
         if !child_sup.is_null() {
-            // Ownership has been detached from `s`. If scheduler shutdown makes
-            // the child's stop hand back to canonical cleanup, it must register
-            // as an independent root rather than relying on this now-empty list.
-            // SAFETY: teardown ownership for `s` is exclusive.
-            unsafe { (*child_sup).parent = ptr::null_mut() };
-            // SAFETY: child_sup is a valid supervisor added via
-            // hew_supervisor_add_child_supervisor.
-            unsafe { stop_supervisor_with_teardown(child_sup, teardown.clone()) };
+            // Claim while the parent-owned roster extraction and stable token
+            // still jointly identify the allocation. A losing path does not
+            // touch `child_sup`; the concurrent winner owns reclamation.
+            // SAFETY: pointer/token are one extracted parallel entry.
+            if unsafe { claim_nested_supervisor_for_detach(child_sup, child_token) } {
+                // SAFETY: the claim above is the unique child teardown authority.
+                unsafe {
+                    stop_supervisor_with_teardown_authority(child_sup, teardown.clone(), true);
+                };
+            }
         }
     }
     // Stop all children and wait for each to reach a terminal state.
-    for i in 0..s.child_count {
-        let child = take_child_slot(&mut s, i);
+    let child_count = s.roster.lock_or_recover().child_count;
+    for i in 0..child_count {
+        let child = take_child_slot(&raw mut *s, i);
         if !child.is_null() {
             // SAFETY: child pointer is valid.
             unsafe { actor::hew_actor_stop(child) };
@@ -1986,7 +2265,7 @@ unsafe fn stop_supervisor_owned(
                 // `take_child_slot` detached this still-live child. Restore it
                 // before returning ownership, otherwise canonical cleanup could
                 // free the supervisor while the child remains unowned/live.
-                store_child_slot(&mut s, i, child);
+                store_child_slot(&raw mut *s, i, child);
                 let sup = Box::into_raw(s);
                 // SAFETY: Box ownership is converted back to the raw pointer
                 // expected by canonical runtime cleanup.
@@ -2034,9 +2313,18 @@ unsafe fn stop_supervisor_owned(
         unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
     }
 
+    let (pools, config_buf, config_drop_fn) = {
+        let mut roster = s.roster.lock_or_recover();
+        let pools = std::mem::take(&mut roster.pool_slots);
+        let config_buf = std::mem::replace(&mut roster.config_buf, ptr::null_mut());
+        let config_drop_fn = roster.config_drop_fn.take();
+        roster.config_size = 0;
+        (pools, config_buf, config_drop_fn)
+    };
+
     // Free pool slots. Each pool was Box-allocated by hew_supervisor_pool_add_slot;
     // pool_specs Drop impl handles name deallocation.
-    for pool in std::mem::take(&mut s.pool_slots) {
+    for pool in pools {
         if !pool.is_null() {
             // SAFETY: pool was created by Box::into_raw in hew_supervisor_pool_add_slot.
             unsafe { drop(Box::from_raw(pool)) }; // ALLOCATOR-PAIRING: GlobalAlloc
@@ -2048,7 +2336,7 @@ unsafe fn stop_supervisor_owned(
     // holds only a BORROW of this pointer, and the thunks only ever read it.
     // After every child actor and spec is dropped above, no live thunk can run,
     // so the buffer has no remaining readers.
-    if !s.config_buf.is_null() {
+    if !config_buf.is_null() {
         // The config buffer is a flat snapshot of the moved-in config value, so
         // it OWNS the config struct's inner owned fields (`string`/`bytes`/…) —
         // the thunks only CLONE from them into actor state (the actors'
@@ -2058,21 +2346,18 @@ unsafe fn stop_supervisor_owned(
         // reclaims only the wrapper). `None` for an all-scalar config (no inner
         // owned field to drop). No live thunk can run at this point (every child
         // actor and spec is dropped above), so this is the sole final reader.
-        if let Some(drop_fn) = s.config_drop_fn {
+        if let Some(drop_fn) = config_drop_fn {
             // SAFETY: drop_fn is the codegen-emitted
             // `__hew_record_drop_inplace_<ConfigTy>` for this buffer's config
             // struct; config_buf points at a fully-initialised instance of that
             // struct. Runs exactly once (config_buf is freed + nulled below).
-            unsafe { drop_fn(s.config_buf) };
+            unsafe { drop_fn(config_buf) };
         }
         // SAFETY: config_buf was a libc::malloc'd buffer adopted (ownership
         // transferred) from codegen via hew_supervisor_add_child_spec /
         // hew_supervisor_set_child_init_fn. Inner owned fields were released by
         // config_drop_fn above; this free reclaims the config wrapper itself.
-        unsafe { libc::free(s.config_buf) }; // ALLOCATOR-PAIRING: libc
-        s.config_buf = ptr::null_mut();
-        s.config_size = 0;
-        s.config_drop_fn = None;
+        unsafe { libc::free(config_buf) }; // ALLOCATOR-PAIRING: libc
     }
     drop(s);
     finish_supervisor_reclamation(&access);
@@ -2085,14 +2370,159 @@ unsafe fn stop_supervisor_owned(
 /// `sup` must be valid and `index` must be within `child_count` (for
 /// restarts) or equal to `child_count` (for initial spawns, where the
 /// caller is responsible for pushing the result onto the `children` vec).
-unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
-    // Copy scalar fields out before any mutable borrow of child_specs.
-    let child_sys_dispatch = sup.child_specs[index].sys_dispatch;
-    let (opts, state_drop_fn, state_clone_fn, lifecycle_fn, init_fn, config) = {
-        let spec = &sup.child_specs[index];
+fn restart_snapshot_is_current(
+    sup: *mut HewSupervisor,
+    index: usize,
+    spec_identity: u64,
+    spec_revision: u64,
+    template: &Arc<ChildStateTemplate>,
+) -> bool {
+    // SAFETY: caller keeps the supervisor allocation live for this operation.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    roster.child_specs.get(index).is_some_and(|spec| {
+        spec.identity == spec_identity
+            && spec.revision == spec_revision
+            && Arc::ptr_eq(&spec.state_template, template)
+    })
+}
+
+fn fail_restart_snapshot(
+    sup: *mut HewSupervisor,
+    index: usize,
+    spec_identity: u64,
+    spec_revision: u64,
+    template: &Arc<ChildStateTemplate>,
+) {
+    // SAFETY: caller keeps the allocation live; roster mutation is serialized.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let child_specs = &mut roster.child_specs;
+    let Some(spec) = child_specs.get_mut(index) else {
+        return;
+    };
+    if spec.identity != spec_identity
+        || spec.revision != spec_revision
+        || !Arc::ptr_eq(&spec.state_template, template)
+    {
+        return;
+    }
+    apply_restart_backoff(spec);
+    // SAFETY: the same roster guard protects child-slot mutation.
+    if let Some(slot) = roster.children.get_mut(index) {
+        *slot = ptr::null_mut();
+    }
+}
+
+fn publish_restart_snapshot(
+    sup: *mut HewSupervisor,
+    index: usize,
+    spec_identity: u64,
+    spec_revision: u64,
+    template: &Arc<ChildStateTemplate>,
+    child: *mut HewActor,
+) -> bool {
+    // SAFETY: caller keeps the allocation live; roster mutation is serialized.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: caller keeps the allocation live through this guarded publish.
+    let sup_actor_id = supervisor_actor_id(sup);
+    // SAFETY: the roster guard above provides exclusive spec access.
+    let child_specs = &mut roster.child_specs;
+    let Some(spec) = child_specs.get_mut(index) else {
+        return false;
+    };
+    if spec.identity != spec_identity
+        || spec.revision != spec_revision
+        || !Arc::ptr_eq(&spec.state_template, template)
+    {
+        return false;
+    }
+
+    // Complete registration while the exact-generation check and slot store
+    // are still indivisible. A state-drop setter may have published into the
+    // shared descriptor after this restart's initial snapshot; reload it here
+    // so no late actor can replace the back-filled predecessor with `None`.
+    if !child.is_null() {
+        if let Some(drop_fn) = template.allocation.state_drop.load() {
+            // SAFETY: `child` is the unpublished actor built from this exact
+            // spec generation and the descriptor matches its state layout.
+            unsafe { actor::hew_actor_set_state_drop(child, drop_fn) };
+        }
+        if let Some(clone_fn) = template.clone_fn {
+            // SAFETY: same exact-generation argument as the drop descriptor.
+            unsafe { actor::hew_actor_set_state_clone(child, clone_fn) };
+        }
+    }
+    circuit_breaker_record_success(spec, sup_actor_id);
+    // SAFETY: the same roster guard protects child-slot mutation.
+    if let Some(slot) = roster.children.get_mut(index) {
+        *slot = child;
+    }
+    true
+}
+
+unsafe fn discard_unpublished_restart(child: *mut HewActor) {
+    if child.is_null() {
+        return;
+    }
+    // SAFETY: the child was freshly spawned but never published in a roster
+    // slot, so this thread is its only lifecycle owner.
+    unsafe {
+        actor::hew_actor_stop(child);
+        let _ = actor::hew_actor_free(child);
+    }
+}
+
+unsafe fn restart_child_from_spec(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
+    // SAFETY: forwards the caller's liveness contract; no identity constraint
+    // is needed for construction and direct index-based administrative calls.
+    unsafe { restart_child_from_spec_expected(sup, index, None) }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear restart transaction keeps snapshot, spawn, registration, lifecycle, and exact-generation publish visibly ordered"
+)]
+unsafe fn restart_child_from_spec_expected(
+    sup: *mut HewSupervisor,
+    mut index: usize,
+    expected_identity: Option<u64>,
+) -> *mut HewActor {
+    // Snapshot every spec scalar and retain the immutable template generation
+    // under the roster lock. The Arc is the template lifetime lease: setters
+    // may publish a replacement generation and remove_child may extract/drop
+    // the spec immediately after this section, but neither can reclaim the
+    // bytes this restart will read. Clone/init callbacks deliberately run after
+    // the lock is released so unsafe out-of-tree callbacks may re-enter a
+    // supervisor API without self-deadlocking.
+    let (
+        spec_identity,
+        spec_revision,
+        template,
+        child_sys_dispatch,
+        opts,
+        state_drop_fn,
+        lifecycle_fn,
+        init_fn,
+        config,
+    ) = {
+        // SAFETY: caller guarantees `sup` is live; the guard serializes roster access.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        let child_specs = &roster.child_specs;
+        if let Some(identity) = expected_identity {
+            let Some(current_index) = child_specs
+                .iter()
+                .position(|candidate| candidate.identity == identity)
+            else {
+                return ptr::null_mut();
+            };
+            index = current_index;
+        }
+        let Some(spec) = child_specs.get(index) else {
+            return ptr::null_mut();
+        };
+        let template = Arc::clone(&spec.state_template);
         let opts = HewActorOpts {
-            init_state: spec.init_state,
-            state_size: spec.init_state_size,
+            init_state: template.allocation.state,
+            state_size: template.allocation.size,
             dispatch: spec.dispatch,
             mailbox_capacity: spec.mailbox_capacity,
             overflow: spec.overflow,
@@ -2104,14 +2534,23 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             message_drop_fn: spec.message_drop_fn,
         };
         (
+            spec.identity,
+            spec.revision,
+            template,
+            spec.sys_dispatch,
             opts,
-            spec.state_drop_fn,
-            spec.state_clone_fn,
+            spec.state_template.allocation.state_drop.load(),
             spec.lifecycle_fn,
             spec.init_fn,
             spec.config,
         )
     };
+    run_restart_spec_snapshot_hook_for_test();
+    let state_clone_fn = template.clone_fn;
+    let borrows_shallow_template = init_fn.is_none()
+        && state_clone_fn.is_none()
+        && opts.state_size != 0
+        && !opts.init_state.is_null();
 
     // ── v0.6 init-closure restart model — the leading branch ────────────
     //
@@ -2153,8 +2592,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
         let res = unsafe { init_fn(config.cast_const()) };
         if res.state.is_null() {
             // Thunk OOM: fail closed (mirror the clone-OOM policy exactly).
-            apply_restart_backoff(&mut sup.child_specs[index]);
-            store_child_slot(sup, index, ptr::null_mut());
+            fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
             return ptr::null_mut();
         }
         // Build opts around the thunk-produced state and adopt it (no second
@@ -2219,8 +2657,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
                     // circuit-breaker success. The crash that triggered this
                     // restart was already counted by `record_restart` at the
                     // outer level.
-                    apply_restart_backoff(&mut sup.child_specs[index]);
-                    store_child_slot(sup, index, ptr::null_mut());
+                    fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
                     return ptr::null_mut();
                 }
                 // SAFETY: opts is valid; ownership of `cloned` is transferred.
@@ -2237,8 +2674,9 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
             // and rejects owned-handle init args at compile time before this path is
             // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
-            // and register `state_drop_fn` without `state_clone_fn` will encounter the
-            // use-after-free silently in this path.
+            // and register `state_drop_fn` without `state_clone_fn` receive borrowed
+            // provenance: typed drop is suppressed and the aliased owned fields leak
+            // fail-closed rather than being freed through multiple incarnations.
             //
             // WHY this is not a debug_assert: the assert would fire in existing tests
             // that probe the legacy byte-copy path directly (see
@@ -2264,8 +2702,16 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
                 reason = "child index fits in i32 for any reasonable child count"
             )]
             {
-                (*new_child).supervisor = std::ptr::from_mut::<HewSupervisor>(sup).cast::<c_void>();
+                (*new_child).supervisor = sup.cast::<c_void>();
                 (*new_child).supervisor_child_index = index as i32;
+            }
+            if borrows_shallow_template {
+                // The legacy spawn copied only wrapper bytes from the
+                // persistent spec. Its embedded owned fields remain spec
+                // aliases, so this incarnation starts without typed-drop
+                // authority. Fresh init/clone branches deliberately retain
+                // the actor allocator's default owned provenance.
+                actor::mark_state_drop_borrowed(new_child);
             }
         }
 
@@ -2294,9 +2740,16 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             unsafe { actor::hew_actor_set_state_clone(new_child, clone_fn) };
         }
 
-        // Record successful restart for circuit breaker.
-        let sup_actor_id = supervisor_actor_id(sup);
-        circuit_breaker_record_success(&mut sup.child_specs[index], sup_actor_id);
+        // Claim the lifecycle linearization point only while this exact spec
+        // and template generation still occupy the slot. A remove that wins
+        // first prevents the callback; a remove that starts after this check
+        // linearizes after lifecycle began. The actor remains unpublished, so
+        // a later identity mismatch simply tears it down below.
+        if !restart_snapshot_is_current(sup, index, spec_identity, spec_revision, &template) {
+            // SAFETY: the actor has not been stored in the supervisor roster.
+            unsafe { discard_unpublished_restart(new_child) };
+            return ptr::null_mut();
+        }
 
         // Fire the actor's lifecycle wrapper (`init()` / `#[on(start)]`).
         //
@@ -2325,9 +2778,25 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
         }
     }
 
-    // Update existing slot (restarts). For initial spawns, the caller
-    // pushes the returned pointer onto the children vec.
-    store_child_slot(sup, index, new_child);
+    // Publish and record circuit success only if both roster identity and the
+    // immutable template generation still match after lifecycle. This closes
+    // remove/swap and concurrent-setter races without holding the roster lock
+    // across arbitrary lifecycle code. For initial spawns the child vec has no
+    // slot yet; identity validation still succeeds and the caller pushes it.
+    if !new_child.is_null()
+        && !publish_restart_snapshot(
+            sup,
+            index,
+            spec_identity,
+            spec_revision,
+            &template,
+            new_child,
+        )
+    {
+        // SAFETY: publication failed, so no supervisor slot owns this actor.
+        unsafe { discard_unpublished_restart(new_child) };
+        return ptr::null_mut();
+    }
     new_child
 }
 
@@ -2338,18 +2807,26 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
 ///
 /// `sup` must be valid and `index` must be within `child_supervisors`.
 unsafe fn restart_child_supervisor_from_spec(
-    sup: &mut HewSupervisor,
+    sup: *mut HewSupervisor,
     index: usize,
 ) -> *mut HewSupervisor {
-    let Some(spec) = sup
-        .child_supervisor_specs
-        .get(index)
-        .and_then(Option::as_ref)
-    else {
-        return ptr::null_mut();
+    let (init_fn, old_child, old_token) = {
+        // SAFETY: caller keeps `sup` live and the guard protects all three
+        // parallel nested-supervisor vectors.
+        let guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: `sup` remains live for this scoped, lock-protected read.
+        let s = &*guard;
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
+        let Some(spec) = s.child_supervisor_specs.get(index).and_then(Option::as_ref) else {
+            return ptr::null_mut();
+        };
+        (
+            spec.init_fn,
+            s.child_supervisors[index],
+            s.child_supervisor_tokens[index],
+        )
     };
-    let init_fn = spec.init_fn;
-    let old_child = sup.child_supervisors[index];
 
     // SAFETY: `init_fn` was registered alongside this child supervisor.
     let new_child = unsafe { init_fn() };
@@ -2359,13 +2836,39 @@ unsafe fn restart_child_supervisor_from_spec(
 
     // SAFETY: `new_child` and `sup` are valid pointers.
     unsafe {
-        (*new_child).parent = std::ptr::from_mut::<HewSupervisor>(sup);
+        (*new_child).parent = sup;
         (*new_child).index_in_parent = index;
         crate::shutdown::hew_shutdown_unregister_supervisor(new_child);
     }
-    sup.child_supervisors[index] = new_child;
+    // SAFETY: `new_child` is the live allocation returned by `init_fn`.
+    let new_token = unsafe { (*new_child).local_pid_id };
+    {
+        // Publish pointer+token as one exact replacement. If another teardown
+        // already removed/replaced this entry while init ran, return the new
+        // allocation to top-level cleanup instead of corrupting its roster.
+        // SAFETY: caller keeps `sup` live through this publication attempt.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable roster access.
+        let s = &mut *guard;
+        if s.child_supervisors.get(index).copied() != Some(old_child)
+            || s.child_supervisor_tokens.get(index).copied() != Some(old_token)
+        {
+            // SAFETY: publication failed, so restore top-level ownership of
+            // the still-live, otherwise-unpublished allocation.
+            unsafe {
+                (*new_child).parent = ptr::null_mut();
+                crate::shutdown::hew_shutdown_register_supervisor(new_child);
+            }
+            return ptr::null_mut();
+        }
+        s.child_supervisors[index] = new_child;
+        s.child_supervisor_tokens[index] = new_token;
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
+    }
 
     if !old_child.is_null() && old_child != new_child {
+        debug_assert_ne!(old_token, new_token);
         defer_stop_child_supervisor(old_child);
     }
 
@@ -2377,40 +2880,74 @@ unsafe fn restart_child_supervisor_from_spec(
 /// # Safety
 ///
 /// `sup` must be valid.
-unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index: usize) {
-    if failed_index >= sup.child_count {
-        return;
-    }
+unsafe fn restart_with_budget_and_strategy(sup: *mut HewSupervisor, failed_identity: u64) {
+    // SAFETY: caller keeps the allocation live; these scalar policy fields are
+    // immutable after construction.
+    let (strategy, max_restarts, window_secs) =
+        unsafe { ((*sup).strategy, (*sup).max_restarts, (*sup).window_secs) };
+    let sup_actor_id = supervisor_actor_id(sup);
+    let (strategy, identities, failed_index, recent, max_restarts, sup_actor_id) = {
+        // SAFETY: caller keeps `sup` live; budget bookkeeping and roster
+        // snapshot are serialized with dynamic roster mutation.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable supervisor access.
+        let s = &mut *guard;
+        let Some(failed_index) = s
+            .child_specs
+            .iter()
+            .position(|spec| spec.identity == failed_identity)
+        else {
+            return;
+        };
+        let recent = restart_within_window(window_secs, s);
+        if recent < max_restarts {
+            record_restart(s);
+        }
+        (
+            strategy,
+            s.child_specs
+                .iter()
+                .map(|spec| spec.identity)
+                .collect::<Vec<_>>(),
+            failed_index,
+            recent,
+            max_restarts,
+            sup_actor_id,
+        )
+    };
 
-    let recent = restart_within_window(sup);
-    if recent >= sup.max_restarts {
+    if recent >= max_restarts {
         // Observability (AFTER the max-restart-intensity decision, BEFORE the
         // escalate): record that the budget was exhausted, carrying the
         // within-window restart count.
         crate::tracing::record_supervisor_event(
-            supervisor_actor_id(sup),
+            sup_actor_id,
             crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
             recent,
         );
+        // SAFETY: caller keeps `sup` live; no roster reference crosses this
+        // cancellation/escalation operation.
         stop_and_maybe_escalate(sup);
         return;
     }
 
-    record_restart(sup);
     crate::observe::record_actor_restart();
     // Observability (AFTER the restart decision is taken): record the restart,
     // carrying the restart strategy in the discriminator. Read-only side
     // effect; never gates control flow.
     crate::tracing::record_supervisor_event(
-        supervisor_actor_id(sup),
+        sup_actor_id,
         crate::tracing::SPAN_SUPERVISOR_RESTART,
-        sup.strategy,
+        strategy,
     );
 
-    match sup.strategy {
+    match strategy {
         STRATEGY_ONE_FOR_ONE => {
-            // SAFETY: index is valid.
-            unsafe { restart_child_from_spec(sup, failed_index) };
+            // SAFETY: the stable identity prevents a concurrent swap-remove
+            // from retargeting this restart to a sibling.
+            unsafe {
+                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]));
+            };
         }
         STRATEGY_ONE_FOR_ALL => {
             // Stop all other children, then restart all.
@@ -2418,9 +2955,9 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             // when the scheduler has a single worker (hew_actor_free spin-waits
             // and would block the only worker running this dispatch).
             let mut deferred: Vec<DeferredFree> = Vec::new();
-            for i in 0..sup.child_count {
+            for (i, identity) in identities.iter().copied().enumerate() {
                 if i != failed_index {
-                    let child = take_child_slot(sup, i);
+                    let child = take_child_slot_by_identity(sup, identity);
                     if child.is_null() {
                         continue;
                     }
@@ -2430,17 +2967,18 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                 }
             }
             spawn_deferred_restart_free(deferred);
-            for i in 0..sup.child_count {
-                // SAFETY: index is valid.
-                unsafe { restart_child_from_spec(sup, i) };
+            for (i, identity) in identities.iter().copied().enumerate() {
+                // SAFETY: identity lookup and exact-generation publication
+                // refuse if concurrent removal retired this spec.
+                unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
             }
         }
         STRATEGY_REST_FOR_ONE => {
             // Stop children after the failed one, then restart them.
             // Deferred free as in ONE_FOR_ALL to avoid single-worker deadlock.
             let mut deferred: Vec<DeferredFree> = Vec::new();
-            for i in (failed_index + 1)..sup.child_count {
-                let child = take_child_slot(sup, i);
+            for identity in identities.iter().copied().skip(failed_index + 1) {
+                let child = take_child_slot_by_identity(sup, identity);
                 if !child.is_null() {
                     // SAFETY: child pointer is valid.
                     unsafe { actor::hew_actor_stop(child) };
@@ -2448,9 +2986,10 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                 }
             }
             spawn_deferred_restart_free(deferred);
-            for i in failed_index..sup.child_count {
-                // SAFETY: index is valid.
-                unsafe { restart_child_from_spec(sup, i) };
+            for (i, identity) in identities.iter().copied().enumerate().skip(failed_index) {
+                // SAFETY: identity lookup and exact-generation publication
+                // refuse if concurrent removal retired this spec.
+                unsafe { restart_child_from_spec_expected(sup, i, Some(identity)) };
             }
         }
         STRATEGY_SIMPLE_ONE_FOR_ONE => {
@@ -2466,7 +3005,9 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
             // with no stale PID cached (LESSONS
             // `replaceable-resource-handle-is-fungible-reference`).
             // SAFETY: index is valid (bounds-checked at the top of this fn).
-            unsafe { restart_child_from_spec(sup, failed_index) };
+            unsafe {
+                restart_child_from_spec_expected(sup, failed_index, Some(identities[failed_index]));
+            };
         }
         unknown => {
             // Fail-closed: any non-listed strategy is a codegen/runtime ABI
@@ -2480,6 +3021,8 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
         }
     }
 
+    // SAFETY: caller keeps `sup` live and notification state is independent of
+    // the roster references, all of which were dropped above.
     notify_restart(sup);
 }
 
@@ -2490,52 +3033,72 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
 /// # Safety
 ///
 /// `sup` must be valid and `failed_index` must be within `child_supervisors`.
-unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_index: usize) {
-    if failed_index >= sup.child_supervisors.len() {
+unsafe fn restart_child_supervisor_with_budget(sup: *mut HewSupervisor, failed_index: usize) {
+    // SAFETY: these policy scalars are immutable after construction.
+    let (max_restarts, window_secs, strategy) =
+        unsafe { ((*sup).max_restarts, (*sup).window_secs, (*sup).strategy) };
+    let sup_actor_id = supervisor_actor_id(sup);
+    let (restartable, recent, max_restarts, sup_actor_id, strategy) = {
+        // SAFETY: caller keeps `sup` live; nested-roster validation and budget
+        // bookkeeping are one synchronized snapshot.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable supervisor access.
+        let s = &mut *guard;
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
+        let restartable = s
+            .child_supervisor_specs
+            .get(failed_index)
+            .and_then(Option::as_ref)
+            .is_some();
+        let recent = if restartable {
+            restart_within_window(window_secs, s)
+        } else {
+            0
+        };
+        if restartable && recent < max_restarts {
+            record_restart(s);
+        }
+        (restartable, recent, max_restarts, sup_actor_id, strategy)
+    };
+
+    if !restartable {
+        // SAFETY: no roster reference crosses cancellation/escalation.
         stop_and_maybe_escalate(sup);
         return;
     }
 
-    if sup
-        .child_supervisor_specs
-        .get(failed_index)
-        .and_then(Option::as_ref)
-        .is_none()
-    {
-        stop_and_maybe_escalate(sup);
-        return;
-    }
-
-    let recent = restart_within_window(sup);
-    if recent >= sup.max_restarts {
+    if recent >= max_restarts {
         // Observability (AFTER the max-restart-intensity decision): record
         // budget exhaustion on the child-supervisor recovery path too.
         crate::tracing::record_supervisor_event(
-            supervisor_actor_id(sup),
+            sup_actor_id,
             crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
             recent,
         );
+        // SAFETY: no roster reference crosses cancellation/escalation.
         stop_and_maybe_escalate(sup);
         return;
     }
 
-    record_restart(sup);
     crate::observe::record_actor_restart();
     // Observability (AFTER the restart decision): record the child-supervisor
     // subtree restart, carrying the strategy discriminator.
     crate::tracing::record_supervisor_event(
-        supervisor_actor_id(sup),
+        sup_actor_id,
         crate::tracing::SPAN_SUPERVISOR_RESTART,
-        sup.strategy,
+        strategy,
     );
 
     // SAFETY: `failed_index` is validated above and `sup` is the live parent
     // supervisor whose child-supervisor slot we are replacing.
     if unsafe { restart_child_supervisor_from_spec(sup, failed_index) }.is_null() {
+        // SAFETY: restart returned without leaving a nested-roster borrow.
         stop_and_maybe_escalate(sup);
         return;
     }
 
+    // SAFETY: caller keeps `sup` live for notification.
     notify_restart(sup);
 }
 
@@ -2610,162 +3173,119 @@ unsafe fn invoke_on_crash_handler(
 ///
 /// `sup` must be valid.
 unsafe fn apply_restart(
-    sup: &mut HewSupervisor,
-    failed_index: usize,
+    sup: *mut HewSupervisor,
+    failed_identity: u64,
     exit_state: c_int,
     crash_code: c_int,
     ctx: *mut crate::execution_context::HewExecutionContext,
 ) {
-    // Capture the supervisor's actor id before borrowing `child_specs` so the
-    // emission helpers can attribute events without re-borrowing `sup`.
-    let sup_actor_id = supervisor_actor_id(sup);
-    let spec = &mut sup.child_specs[failed_index];
-
-    // Record crash if it was a crash (not a normal stop). `crash_code` is the
-    // real trap-kind integer (`HEW_TRAP_*`, 201–205) captured from the child
-    // actor's `error_code` slot at the moment of the trap; if no specific code
-    // is available it is `0` (unknown). Historically this site passed the
-    // literal `11` (a SIGSEGV stand-in) which made crash-stats lie about why
-    // the actor died — we plumb the real value through now.
-    if exit_state == HewActorState::Crashed as c_int {
-        circuit_breaker_record_crash(spec, crash_code, sup_actor_id);
-
-        // ── on(crash) handler invocation ─────────────────────────────────
-        //
-        // If the user declared `#[on(crash)]` on the child actor, codegen
-        // populated `spec.on_crash` (S1 ABI slot + S2 MIR symbol + S3
-        // codegen pointer); fire the handler now, BEFORE the restart-policy
-        // gate. The handler runs in the supervisor's own actor-dispatch
-        // context (`ctx`), which is the same context the surrounding
-        // `supervisor_dispatch` is executing under. The crashed child's
-        // actor was already torn down by `take_child_slot` in
-        // `supervisor_dispatch`, so there is no risk of re-entering the
-        // crashed dispatch.
-        //
-        // Arguments:
-        //   - `ctx`: supervisor's execution context, threaded down from
-        //     `supervisor_dispatch`. Re-using the supervisor ctx
-        //     preserves task-scope cancellation propagation; do not
-        //     synthesise a fresh ctx (cf. `f4df6354`).
-        //   - `crash_code`: the trap-kind integer captured above. Cast to
-        //     `c_int` for the C ABI; the handler receives a single i32
-        //     register matching the MIR lowering of `PanicInfo { code: i64 }`
-        //     (`hew-types/src/check/items.rs:887-906`).
-        //   - `spec.init_state`: pointer to the *new* (template) seed state
-        //     the next-restarted actor will be cloned from. The crashed
-        //     actor's last-seen state is gone with the actor. Handler-side
-        //     mutations to this pointer therefore persist across EVERY
-        //     subsequent restart of this child slot, not just the next
-        //     one. v0.6 may revisit ("last-seen-state" semantics, fresh
-        //     template clone per crash) once the design is ratified.
-        //
-        // Fail-closed mechanism:
-        //   - The handler ABI is `extern "C"` (non-unwinding). If the
-        //     handler itself traps via `hew_trap_with_code`, the longjmp
-        //     unwinds into the SUPERVISOR's recovery frame (we are inside
-        //     the supervisor's dispatch), which surfaces as a supervisor-
-        //     level crash that the parent restart-budget escalates per
-        //     `restart_within_window`. We deliberately do NOT wrap this
-        //     call in `std::panic::catch_unwind` — there is nothing to
-        //     catch across a non-unwinding ABI, and silently swallowing
-        //     would violate the `boundary-fail-closed` invariant.
-        //
-        // `CrashAction` return channel (M-3 ABI) + honouring (M-4):
-        //   `std/failure.hew` declares `#[on(crash)]` returning a
-        //   `CrashAction` variant (Restart/Escalate/Kill). The `HewOnCrashFn`
-        //   ABI carries that decision back; the supervisor now HONOURS it
-        //   (below) — the hook's at-crash-time decision takes precedence over
-        //   the static `restart_policy`. `None` when no hook is installed (the
-        //   policy alone decides). SAFETY: `ctx` is the live supervisor
-        //   execution context for the in-flight dispatch.
-        let crash_action_tag =
-            unsafe { invoke_on_crash_handler(spec.on_crash, spec.init_state, crash_code, ctx) };
-
-        // ── Honour the hook's CrashAction return (M-4) ───────────────────
-        //
-        // The hook return takes PRECEDENCE over the static `restart_policy`:
-        // it is the at-crash-time decision; the policy is the registration
-        // default. `Escalate`/`Kill` short-circuit the restart path entirely;
-        // `Restart` (and any out-of-range tag, fail-closed) falls through to
-        // the existing policy/budget machinery below.
-        match crash_action_tag {
-            Some(CRASH_ACTION_KILL) => {
-                // Terminate permanently: null the slot, do not restart.
-                // Mirrors the RESTART_TEMPORARY terminal arm.
-                store_child_slot(sup, failed_index, ptr::null_mut());
-                return;
-            }
-            Some(CRASH_ACTION_ESCALATE) => {
-                // Propagate the failure to the supervisor's supervisor instead
-                // of restarting locally. A root supervisor has no parent to
-                // escalate to; treat escalation with no parent as a safe
-                // no-op rather than dereferencing a null parent pointer.
-                if !sup.parent.is_null() {
-                    escalate_to_parent(sup);
-                }
-                return;
-            }
-            // Some(CRASH_ACTION_RESTART) or any out-of-range tag (fail-closed
-            // to Restart) or None (no hook): fall through to the existing
-            // restart-policy + budget path below.
-            _ => {}
+    let crashed = exit_state == HewActorState::Crashed as c_int;
+    let (spec_identity, template, on_crash, sup_actor_id) = {
+        // SAFETY: caller keeps `sup` live; crash accounting and callback
+        // snapshot are serialized with setters and dynamic removal.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable roster access.
+        let s = &mut *guard;
+        let sup_actor_id = supervisor_actor_id(sup);
+        let Some(spec) = s
+            .child_specs
+            .iter_mut()
+            .find(|candidate| candidate.identity == failed_identity)
+        else {
+            return;
+        };
+        if crashed {
+            circuit_breaker_record_crash(spec, crash_code, sup_actor_id);
         }
+        (
+            spec.identity,
+            Arc::clone(&spec.state_template),
+            spec.on_crash,
+            sup_actor_id,
+        )
+    };
 
-        // Apply exponential backoff delay after crash (only for subsequent crashes)
-        if spec.restart_delay_ms > 0 {
+    // The arbitrary on-crash callback runs without `roster`. The Arc
+    // lease keeps the exact template generation alive across a concurrent
+    // clone setter or remove_child.
+    let crash_action_tag = if crashed {
+        // SAFETY: `ctx` is the live supervisor dispatch context and `template`
+        // leases the state allocation for the complete synchronous callback.
+        unsafe { invoke_on_crash_handler(on_crash, template.allocation.state, crash_code, ctx) }
+    } else {
+        None
+    };
+
+    match crash_action_tag {
+        Some(CRASH_ACTION_KILL) => return,
+        Some(CRASH_ACTION_ESCALATE) => {
+            // SAFETY: the caller keeps `sup` live; only non-roster parent state
+            // is inspected after the callback lease has been released.
+            if unsafe { !(*sup).parent.is_null() } {
+                // SAFETY: no roster reference crosses escalation.
+                escalate_to_parent(sup);
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let delay_ms = {
+        // SAFETY: caller keeps `sup` live; find the stable identity again so a
+        // concurrent swap-remove cannot apply policy to a sibling.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable roster access.
+        let s = &mut *guard;
+        let Some(spec) = s
+            .child_specs
+            .iter_mut()
+            .find(|candidate| candidate.identity == spec_identity)
+        else {
+            return;
+        };
+
+        if crashed && spec.restart_delay_ms > 0 {
             apply_restart_backoff(spec);
         }
-    }
+        if spec.restart_policy == RESTART_TEMPORARY
+            || (spec.restart_policy == RESTART_TRANSIENT
+                && exit_state == HewActorState::Stopped as c_int)
+            || !circuit_breaker_should_restart(spec, sup_actor_id)
+        {
+            return;
+        }
+        if restart_delay_allows_restart(spec) {
+            if crashed && spec.restart_delay_ms == 0 {
+                spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
+            }
+            None
+        } else {
+            let remaining = spec
+                .next_restart_time_ns
+                .saturating_sub(monotonic_time_ns());
+            Some((remaining / 1_000_000).max(1))
+        }
+    };
 
-    // Check restart policy.
-    if spec.restart_policy == RESTART_TEMPORARY {
-        store_child_slot(sup, failed_index, ptr::null_mut());
-        return;
-    }
-    if spec.restart_policy == RESTART_TRANSIENT && exit_state == HewActorState::Stopped as c_int {
-        store_child_slot(sup, failed_index, ptr::null_mut());
-        return;
-    }
-
-    // Check circuit breaker
-    if !circuit_breaker_should_restart(spec, sup_actor_id) {
-        store_child_slot(sup, failed_index, ptr::null_mut());
-        return;
-    }
-
-    // Check restart delay — if backoff delay hasn't elapsed, schedule a
-    // delayed restart by posting a system message to the supervisor's own
-    // mailbox after the delay. This funnels budget accounting through the
-    // single-threaded actor dispatch, avoiding a data race when multiple
-    // timer threads fire concurrently.
-    if !restart_delay_allows_restart(spec) {
-        let delay_remaining_ns = spec
-            .next_restart_time_ns
-            .saturating_sub(monotonic_time_ns());
-        let delay_ms = (delay_remaining_ns / 1_000_000).max(1);
-        // Observability (AFTER the backoff-schedule decision, BEFORE spawning
-        // the timer): record that a delayed restart was scheduled, carrying the
-        // delay in ms (saturated to i32). Read-only; never gates control flow.
+    if let Some(delay_ms) = delay_ms {
         crate::tracing::record_supervisor_event(
             sup_actor_id,
             crate::tracing::SPAN_SUPERVISOR_BACKOFF,
             i32::try_from(delay_ms).unwrap_or(i32::MAX),
         );
+        // The caller keeps the supervisor live; scheduling retains its own
+        // timer lease and carries the stable child identity, never an index.
         schedule_delayed_restart(
             sup,
-            failed_index,
+            spec_identity,
             std::time::Duration::from_millis(delay_ms),
         );
         return;
     }
 
-    // Set the initial delay for the next restart
-    if exit_state == HewActorState::Crashed as c_int && spec.restart_delay_ms == 0 {
-        spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
-    }
-
-    // SAFETY: supervisor and failed_index were validated by caller.
-    unsafe { restart_with_budget_and_strategy(sup, failed_index) };
+    // SAFETY: budget/strategy resolves the stable identity under the roster
+    // lock and refuses if dynamic removal retired it.
+    unsafe { restart_with_budget_and_strategy(sup, spec_identity) };
 }
 
 /// The supervisor's [`HewSysDispatchFn`] — its SYSTEM entry point.
@@ -2800,10 +3320,10 @@ unsafe fn supervisor_sys_dispatch_impl(
     if state.is_null() {
         return;
     }
-    // SAFETY: state points to a valid HewSupervisor.
-    let sup = unsafe { &mut *state.cast::<HewSupervisor>() };
+    let sup = state.cast::<HewSupervisor>();
 
-    if sup.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: state points to the live supervisor backing this dispatch.
+    if unsafe { (*sup).running.load(Ordering::Acquire) } == 0 {
         return;
     }
 
@@ -2833,14 +3353,21 @@ unsafe fn supervisor_sys_dispatch_impl(
             crate::tracing::ensure_supervisor_trace_root();
 
             let idx = event.child_index as usize;
-            if idx >= sup.child_count {
+            let Some((child, spec_identity)) = take_child_slot_for_event(sup, idx, event.child_id)
+            else {
                 return;
-            }
+            };
 
             // Free the old child.
-            let child = take_child_slot(sup, idx);
             if !child.is_null() {
-                // SAFETY: child pointer is valid.
+                // Explicit provenance plus the retiring incarnation's atomic
+                // `state_drop_consumed` bit are the typed-drop authority.
+                // Crash escrow sets consumed only after actually consuming
+                // state; pre-dispatch crashes, normal stops, init-thunk state
+                // and clone-produced state retain their final-drop authority,
+                // while shallow-template borrowers never acquire it.
+                // SAFETY: child is quiescent and no longer referenced by its
+                // supervisor slot.
                 unsafe { actor::hew_actor_free(child) };
             }
 
@@ -2848,7 +3375,7 @@ unsafe fn supervisor_sys_dispatch_impl(
             // context, threaded through so a registered on_crash handler
             // receives the supervisor's ctx (preserves task-scope
             // cancellation propagation per f4df6354).
-            unsafe { apply_restart(sup, idx, event.exit_state, event.crash_code, ctx) };
+            unsafe { apply_restart(sup, spec_identity, event.exit_state, event.crash_code, ctx) };
         }
         HewSysMsg::ChildSupervisorEscalated => {
             if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorEscalation>() {
@@ -2858,28 +3385,60 @@ unsafe fn supervisor_sys_dispatch_impl(
             let event = unsafe { &*data.cast::<ChildSupervisorEscalation>() };
             crate::tracing::ensure_supervisor_trace_root();
             let idx = event.supervisor_index as usize;
-            if idx >= sup.child_supervisors.len() {
-                stop_and_maybe_escalate(sup);
-                return;
-            }
             // SAFETY: parent supervisor is valid for the lifetime of this dispatch.
             unsafe { restart_child_supervisor_with_budget(sup, idx) };
         }
         HewSysMsg::SupervisorStop => {
-            sup.restart_timers.cancel();
-            sup.running.store(0, Ordering::Release);
-            // Stop child supervisors recursively.
-            for child_sup in &sup.child_supervisors {
+            // SAFETY: dispatch keeps the supervisor live.
+            unsafe {
+                publish_supervisor_cancellation(sup);
+                (*sup).running.store(0, Ordering::Release);
+            }
+            let mut retained = Vec::new();
+            for (child_sup, child_token, child_spec) in take_nested_supervisor_roster(sup) {
                 if !child_sup.is_null() {
-                    // SAFETY: child_sup is a valid supervisor.
-                    unsafe { hew_supervisor_stop(*child_sup) };
+                    // Admission failure means no teardown winner exists yet;
+                    // retain the parent ownership edge for the later canonical
+                    // parent stop. Once admission succeeds, the stable-token
+                    // claim decides ownership: only its winner detaches and
+                    // publishes, while a loser never touches the child pointer.
+                    let Some(teardown) =
+                        crate::lifetime::local_handles::begin_current_supervisor_teardown()
+                    else {
+                        retained.push((child_sup, child_token, child_spec));
+                        continue;
+                    };
+                    // SAFETY: pointer/token are one extracted parent entry.
+                    if unsafe { claim_nested_supervisor_for_detach(child_sup, child_token) } {
+                        // SAFETY: the successful claim is passed explicitly;
+                        // this stop path must not race the claim a second time.
+                        unsafe {
+                            stop_supervisor_with_teardown_authority(child_sup, teardown, true);
+                        };
+                    }
                 }
             }
-            sup.child_supervisors.clear();
-            for i in 0..sup.child_count {
-                if !sup.children[i].is_null() {
+            if !retained.is_empty() {
+                // SAFETY: dispatch keeps `sup` live through this re-publication.
+                let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+                // SAFETY: the guard serializes this scoped mutable roster access.
+                let s = &mut *guard;
+                for (child_sup, child_token, child_spec) in retained {
+                    s.child_supervisors.push(child_sup);
+                    s.child_supervisor_tokens.push(child_token);
+                    s.child_supervisor_specs.push(child_spec);
+                }
+            }
+            // Stop each retained actor while the roster lock prevents dynamic
+            // removal from reclaiming the pointer being stopped.
+            // SAFETY: dispatch keeps `sup` live for the critical section.
+            let guard = unsafe { &(*sup).roster }.lock_or_recover();
+            // SAFETY: the guard protects this scoped roster traversal.
+            let s = &*guard;
+            for child in &s.children {
+                if !child.is_null() {
                     // SAFETY: child pointer is valid.
-                    unsafe { actor::hew_actor_stop(sup.children[i]) };
+                    unsafe { actor::hew_actor_stop(*child) };
                 }
             }
         }
@@ -2889,15 +3448,13 @@ unsafe fn supervisor_sys_dispatch_impl(
             }
             // SAFETY: data is valid for at least sizeof(DelayedRestartEvent).
             let event = unsafe { &*data.cast::<DelayedRestartEvent>() };
-            let idx = event.child_index;
-            if idx < sup.child_count {
-                // S3: establish a sampled root for the delayed-restart span too
-                // (this dispatch was woken by a timer-thread sys-send, which may
-                // carry a zero trace context).
-                crate::tracing::ensure_supervisor_trace_root();
-                // SAFETY: sup is valid, idx is within bounds.
-                unsafe { restart_with_budget_and_strategy(sup, idx) };
-            }
+            // S3: establish a sampled root for the delayed-restart span too
+            // (this dispatch was woken by a timer-thread sys-send, which may
+            // carry a zero trace context).
+            crate::tracing::ensure_supervisor_trace_root();
+            // SAFETY: the stable identity is resolved under the roster lock;
+            // retired dynamic children are ignored.
+            unsafe { restart_with_budget_and_strategy(sup, event.child_identity) };
         }
         // A supervisor's own actor is never linked or monitored by the runtime.
         HewSysMsg::Exit | HewSysMsg::Down => {}
@@ -2926,28 +3483,31 @@ pub unsafe extern "C" fn hew_supervisor_new(
         strategy,
         max_restarts,
         window_secs,
-        children: Vec::with_capacity(SUP_INITIAL_CAPACITY),
-        child_specs: Vec::with_capacity(SUP_INITIAL_CAPACITY),
-        child_count: 0,
-        child_supervisors: Vec::new(),
-        child_supervisor_specs: Vec::new(),
         parent: ptr::null_mut(),
         index_in_parent: 0,
-        restart_times: [0u64; MAX_RESTARTS_TRACK],
-        restart_count: 0,
-        restart_head: 0,
         running: AtomicI32::new(0),
-        teardown_claimed: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
         restart_timers: Arc::new(RestartTimerControl::new()),
         self_actor: ptr::null_mut(),
-        children_lock: Mutex::new(()),
-        restart_notify: Some(Arc::new((Mutex::new(0), Condvar::new()))),
+        roster: Mutex::new(SupervisorRoster {
+            children: Vec::with_capacity(SUP_INITIAL_CAPACITY),
+            child_specs: Vec::with_capacity(SUP_INITIAL_CAPACITY),
+            child_count: 0,
+            next_child_spec_identity: 1,
+            child_supervisors: Vec::new(),
+            child_supervisor_tokens: Vec::new(),
+            child_supervisor_specs: Vec::new(),
+            restart_times: [0u64; MAX_RESTARTS_TRACK],
+            restart_count: 0,
+            restart_head: 0,
+            restart_notify: Some(Arc::new((Mutex::new(0), Condvar::new()))),
+            pool_slots: Vec::new(),
+            pool_specs: Vec::new(),
+            config_buf: ptr::null_mut(),
+            config_size: 0,
+            config_drop_fn: None,
+        }),
         restart_await_waiters: Mutex::new(Vec::new()),
-        pool_slots: Vec::new(),
-        pool_specs: Vec::new(),
-        config_buf: ptr::null_mut(),
-        config_size: 0,
-        config_drop_fn: None,
     });
     let raw = Box::into_raw(sup); // ALLOCATOR-PAIRING: GlobalAlloc
     let publication = match crate::lifetime::local_handles::begin_supervisor_publication_in(
@@ -3000,12 +3560,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     spec: *const HewChildSpec,
 ) -> c_int {
     cabi_guard!(sup.is_null() || spec.is_null(), -1);
-    // SAFETY: caller guarantees both pointers are valid.
-    let s = unsafe { &mut *sup };
     // SAFETY: caller guarantees `spec` is a valid, aligned, initialized `HewChildSpec` pointer.
     let sp = unsafe { &*spec };
-
-    let i = s.child_count;
 
     // The v0.6 init-closure restart model: when the spec carries an `init_fn`,
     // the thunk is THE state source on the initial spawn and every restart.
@@ -3013,38 +3569,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // ignores `init_state` on the thunk path, and capturing a template here
     // would re-introduce the owned-field aliasing hazard the thunk model fixes.
     let has_init_fn = sp.init_fn.is_some();
-
-    // Adopt the supervisor's construction-time config buffer on the first
-    // init_fn child that carries one. The buffer is supervisor-owned, shared
-    // by borrow with every thunk, and freed once at teardown. Re-registration
-    // with the same pointer is idempotent; a conflicting non-null pointer is an
-    // ABI error (codegen emits one config buffer per supervisor).
-    if has_init_fn && !sp.config.is_null() {
-        if s.config_buf.is_null() {
-            s.config_buf = sp.config;
-            s.config_size = sp.config_size;
-        } else if s.config_buf != sp.config {
-            // Conflicting non-null config pointer: a SECOND, different buffer.
-            // Correct codegen emits ONE config buffer per supervisor (every
-            // config child carries the same pointer), so this is unreachable
-            // from in-tree codegen — debug_assert catches a codegen bug loudly.
-            // In release, fail closed by FREEing the rejected duplicate (it will
-            // never be adopted, so leaking it would be the only alternative).
-            // Safe: the conflict branch only fires for a pointer that is NOT the
-            // adopted buffer, so this cannot double-free the supervisor's buffer.
-            debug_assert!(
-                false,
-                "hew_supervisor: child {i} carries a config buffer ({:p}) that differs from \
-                 the supervisor's adopted buffer ({:p}); codegen must emit ONE config buffer \
-                 per supervisor",
-                sp.config, s.config_buf
-            );
-            // SAFETY: sp.config is a libc::malloc'd buffer (ALLOCATOR-PAIRING:
-            // libc) distinct from the adopted s.config_buf; freeing the orphan
-            // rejected duplicate is sound.
-            unsafe { libc::free(sp.config) };
-        }
-    }
 
     // Deep-copy init state — only when there is no init_fn (the thunk path
     // produces state directly, leaving init_state null).
@@ -3076,12 +3600,22 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         unsafe { crate::cabi::cstr_strdup(sp.name) }
     };
 
-    s.child_specs.push(InternalChildSpec {
+    let mut internal_spec = InternalChildSpec {
+        identity: 0,
+        revision: 1,
         name: name_copy,
-        init_state: state_copy,
-        // On the thunk path the state size is produced by the thunk result, not
-        // the spec; keep it 0 so no template path can read a stale size.
-        init_state_size: if has_init_fn { 0 } else { sp.init_state_size },
+        state_template: Arc::new(ChildStateTemplate {
+            allocation: Arc::new(ChildStateTemplateAllocation {
+                state: state_copy,
+                // On the thunk path the state size is produced by the thunk
+                // result, not the spec; keep it 0 so no template path can read
+                // a stale size.
+                size: if has_init_fn { 0 } else { sp.init_state_size },
+                owns_typed_fields: false,
+                state_drop: Arc::new(ChildStateDropDescriptor::new()),
+            }),
+            clone_fn: None,
+        }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
@@ -3097,10 +3631,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
         on_crash: sp.on_crash,
-        // Registered by hew_supervisor_set_child_state_drop after this call.
-        state_drop_fn: None,
-        // Registered by hew_supervisor_set_child_state_clone after this call.
-        state_clone_fn: None,
         // Carried IN the spec literal (like on_crash) so the initial supervised
         // spawn — which happens inside this call via restart_child_from_spec —
         // fires the lifecycle wrapper. A post-hoc setter would run too late to
@@ -3110,19 +3640,49 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         // below uses the thunk — the load-bearing first-spawn carrier. The
         // post-hoc setter is back-fill/symmetry only.
         init_fn: sp.init_fn,
-        // Borrow of the supervisor-owned config buffer (adopted above).
-        config: if has_init_fn {
-            s.config_buf
-        } else {
-            ptr::null_mut()
-        },
-    });
+        // Installed from the exact adopted supervisor config in the reservation
+        // transaction below.
+        config: ptr::null_mut(),
+    };
 
-    // Spawn the child actor.
-    // SAFETY: spec is valid.
-    let spawned = unsafe { restart_child_from_spec(s, i) };
-    push_child_slot(s, spawned);
-    s.child_count += 1;
+    // Reserve a complete null child/spec slot in one roster critical section.
+    // No callback runs under the lock; restart below validates the reserved
+    // identity and publishes into the placeholder.
+    let i = {
+        // SAFETY: caller keeps `sup` live; config adoption and complete roster
+        // reservation are one lock-protected transaction.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable supervisor access.
+        let s = &mut *guard;
+        if has_init_fn && !sp.config.is_null() {
+            if s.config_buf.is_null() {
+                s.config_buf = sp.config;
+                s.config_size = sp.config_size;
+            } else if s.config_buf != sp.config {
+                set_last_error("hew_supervisor_add_child_spec: conflicting config buffer");
+                // SAFETY: `sp.config` is a libc-allocated orphan distinct from
+                // the already-adopted buffer (ALLOCATOR-PAIRING: libc).
+                unsafe { libc::free(sp.config) };
+                return -1;
+            }
+            internal_spec.config = s.config_buf;
+        }
+        let i = s.child_count;
+        internal_spec.identity = s.next_child_spec_identity;
+        let Some(next_identity) = s.next_child_spec_identity.checked_add(1) else {
+            set_last_error("hew_supervisor_add_child_spec: child-spec identity exhausted");
+            return -1;
+        };
+        s.next_child_spec_identity = next_identity;
+        s.child_specs.push(internal_spec);
+        s.children.push(ptr::null_mut());
+        s.child_count += 1;
+        debug_assert_eq!(s.children.len(), s.child_specs.len());
+        i
+    };
+
+    // SAFETY: the exact identity-backed placeholder was reserved above.
+    unsafe { restart_child_from_spec(sup, i) };
     0
 }
 
@@ -3134,10 +3694,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int {
     cabi_guard!(sup.is_null(), -1);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
-    s.running.store(1, Ordering::Release);
+    // SAFETY: caller guarantees sup is valid and start is a construction edge.
+    unsafe { (*sup).running.store(1, Ordering::Release) };
 
     // Create the supervisor's own actor. We pass a dummy state (the sup
     // pointer itself) and override it after spawn.
@@ -3154,7 +3712,8 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
         )
     };
     if self_actor.is_null() {
-        s.running.store(0, Ordering::Release);
+        // SAFETY: caller keeps `sup` live through start failure rollback.
+        unsafe { (*sup).running.store(0, Ordering::Release) };
         return -1;
     }
     // SAFETY: `self_actor` is the freshly spawned supervisor actor; no other
@@ -3175,11 +3734,13 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
         (*self_actor).state_size = 0; // mark as non-owned
     }
 
-    s.self_actor = self_actor;
+    // SAFETY: construction has exclusive authority over the self-actor slot.
+    unsafe { (*sup).self_actor = self_actor };
 
     // Auto-register top-level supervisors for graceful shutdown so they
     // are cleaned up even if the generated code omits an explicit stop.
-    if s.parent.is_null() {
+    // SAFETY: construction has exclusive authority over the parent edge.
+    if unsafe { (*sup).parent.is_null() } {
         // SAFETY: sup is valid and will remain valid until shutdown.
         unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
     }
@@ -3207,9 +3768,9 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     crash_code: c_int,
 ) {
     cabi_guard!(sup.is_null());
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-    if s.self_actor.is_null() {
+    // SAFETY: caller keeps `sup` live through this notification.
+    let self_actor = unsafe { (*sup).self_actor };
+    if self_actor.is_null() {
         return;
     }
 
@@ -3229,7 +3790,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
         let _ = actor::send_system_message(
-            s.self_actor,
+            self_actor,
             kind,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildEvent>(),
@@ -3258,9 +3819,9 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
     crash_code: c_int,
 ) {
     cabi_guard!(sup.is_null());
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-    if s.self_actor.is_null() {
+    // SAFETY: caller keeps `sup` live through this notification.
+    let self_actor = unsafe { (*sup).self_actor };
+    if self_actor.is_null() {
         return;
     }
 
@@ -3273,7 +3834,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
         let _ = actor::send_system_message(
-            s.self_actor,
+            self_actor,
             HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildSupervisorEscalation>(),
@@ -3326,9 +3887,10 @@ unsafe fn stop_claimed_supervisor(
     true
 }
 
-unsafe fn stop_supervisor_with_teardown(
+unsafe fn stop_supervisor_with_teardown_authority(
     sup: *mut HewSupervisor,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+    preclaimed: bool,
 ) {
     request_supervisor_shutdown(sup);
     // SAFETY: the caller's teardown lease keeps runtime cleanup from reclaiming
@@ -3346,7 +3908,7 @@ unsafe fn stop_supervisor_with_teardown(
         set_last_error("hew_supervisor_stop: handle pins did not drain");
         return;
     }
-    if !claim_supervisor_teardown(sup) {
+    if !preclaimed && !claim_supervisor_teardown(sup) {
         return;
     }
     // SAFETY: teardown ownership was claimed above and remains unique.
@@ -3370,7 +3932,7 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 
     // SAFETY: the public raw-pointer contract guarantees a live supervisor;
     // the acquired lease remains visible to cleanup through final reclamation.
-    unsafe { stop_supervisor_with_teardown(sup, teardown) };
+    unsafe { stop_supervisor_with_teardown_authority(sup, teardown, false) };
 }
 
 /// Return the stable direct identity for one supervisor allocation.
@@ -3399,12 +3961,10 @@ pub extern "C" fn hew_local_pid_supervisor_is_running(
     };
     run_supervisor_access_hook_for_test();
     let sup = pin.supervisor();
-    // SAFETY: the pin prevents reclamation through this load.
-    let supervisor = unsafe { &*sup };
-    c_int::from(
-        supervisor.running.load(Ordering::Acquire) != 0
-            && !supervisor.restart_timers.is_cancelled(),
-    )
+    // SAFETY: the pin prevents reclamation through these atomic loads.
+    c_int::from(unsafe {
+        (*sup).running.load(Ordering::Acquire) != 0 && !(*sup).cancelled.load(Ordering::Acquire)
+    })
 }
 
 /// Stop a supervisor through its stable local identity.
@@ -3453,15 +4013,40 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
         set_last_error("supervisor token stop: handle pins did not drain");
         return 2;
     }
+    // Reclamation removes the registry's final control reference. Do not keep
+    // the token-stop owner's local reference alive across the teardown lease:
+    // runtime cleanup may proceed as soon as that lease is relinquished and
+    // must observe the control registry fully drained.
+    drop(control);
     // SAFETY: this token operation claimed teardown while pinned and already
     // removed the supervisor from the runtime cleanup root set.
     c_int::from(!unsafe { stop_claimed_supervisor(sup, top_level, teardown) }) * 2
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(
+    unused_unsafe,
+    reason = "test-owned raw supervisors often group several unsafe operations"
+)]
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    /// Test-only shorthand that still obtains the typed roster guard. Tests
+    /// own each supervisor for the complete guard lifetime.
+    macro_rules! locked_roster {
+        ($sup:expr) => {{
+            // SAFETY: each use is scoped to a test-owned live supervisor.
+            unsafe { &(*$sup).roster }.lock_or_recover()
+        }};
+    }
+
+    unsafe fn teardown_is_claimed(sup: *mut HewSupervisor) -> bool {
+        // SAFETY: callers pass a test-owned live supervisor.
+        let token = unsafe { (*sup).local_pid_id };
+        crate::lifetime::local_handles::current_supervisor_control_for_raw(token, sup)
+            .is_some_and(|control| control.teardown_is_claimed())
+    }
 
     struct OwnedDeferredSupervisorSpawnFailureGuard;
 
@@ -3519,6 +4104,25 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    static BORROWED_NORMAL_DISPATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static BORROWED_NORMAL_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C-unwind" fn counted_borrowed_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        BORROWED_NORMAL_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+        ptr::null_mut()
+    }
+
+    unsafe extern "C" fn count_borrowed_normal_drop(_state: *mut c_void) {
+        BORROWED_NORMAL_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
     unsafe fn make_supervisor_with_child() -> (*mut HewSupervisor, *mut HewActor, *mut HewActor) {
         // SAFETY: this helper creates a fresh supervisor tree for the test and
         // returns the owned raw pointers without publishing them elsewhere.
@@ -3549,7 +4153,7 @@ mod tests {
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
 
-            let child = (&(*sup).children)[0];
+            let child = locked_roster!(sup).children[0];
             let self_actor = (*sup).self_actor;
             (sup, child, self_actor)
         }
@@ -3608,11 +4212,7 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
             let timers = Arc::clone(&(*sup).restart_timers);
-            schedule_delayed_restart(
-                sup.as_ref().expect("live supervisor"),
-                0,
-                Duration::from_secs(30),
-            );
+            schedule_delayed_restart(sup, 0, Duration::from_secs(30));
             assert_eq!(
                 timers.pending_for_test(),
                 1,
@@ -3642,7 +4242,7 @@ mod tests {
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
             let timers = Arc::clone(&(*sup).restart_timers);
-            schedule_delayed_restart(&*sup, 0, Duration::from_secs(30));
+            schedule_delayed_restart(sup, 0, Duration::from_secs(30));
             assert_eq!(timers.pending_for_test(), 1);
 
             let started = Instant::now();
@@ -3666,7 +4266,7 @@ mod tests {
             let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
             assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
             let timers = Arc::clone(&(*nested).restart_timers);
-            schedule_delayed_restart(&*nested, 0, Duration::from_secs(30));
+            schedule_delayed_restart(nested, 0, Duration::from_secs(30));
             assert_eq!(timers.pending_for_test(), 1);
 
             let started = Instant::now();
@@ -3681,6 +4281,211 @@ mod tests {
                 crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
                 "nested timer cancellation must finish in the initial cleanup pass"
             );
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_detaches_timed_out_child_before_cleanup_handoff() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns both fresh supervisors. A deliberately retained
+        // production timer lease forces the nested stop through its bounded
+        // fail-closed handoff; releasing it then lets canonical cleanup reclaim
+        // both independent roots.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+            let timer = (*nested)
+                .restart_timers
+                .begin()
+                .expect("fresh nested supervisor accepts a timer lease");
+
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                parent.cast::<c_void>(),
+                HewSysMsg::SupervisorStop as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            assert!(
+                (*nested).parent.is_null(),
+                "child must detach before a bounded stop can return it to cleanup"
+            );
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(nested),
+                "timed-out detached child must become an independent cleanup root"
+            );
+            assert!(
+                locked_roster!(parent).child_supervisors.is_empty(),
+                "parent must not retain a second ownership edge"
+            );
+
+            drop(timer);
+            crate::scheduler::hew_runtime_cleanup();
+            assert!(crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null());
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_retains_child_when_teardown_admission_is_closed() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns both supervisors and closes admission only in
+        // its isolated runtime immediately before canonical cleanup.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+
+            crate::runtime::rt_current()
+                .local_handles
+                .close_supervisor_teardown_admission();
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                parent.cast::<c_void>(),
+                HewSysMsg::SupervisorStop as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            assert_eq!((*nested).parent, parent);
+            assert_eq!(locked_roster!(parent).child_supervisors, vec![nested]);
+            assert!(
+                !crate::shutdown::is_supervisor_registered_for_test(nested),
+                "without teardown admission the original parent edge remains the sole root"
+            );
+            crate::scheduler::hew_runtime_cleanup();
+        }
+    }
+
+    #[test]
+    fn nested_parent_claim_wins_before_token_stop_without_root_imbalance() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the parent dispatch owns roster extraction; the barrier holds
+        // the claimed child live at the canonical teardown edge.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+            let token = (*nested).local_pid_id;
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let entered_hook = Arc::clone(&entered);
+            let release_hook = Arc::clone(&release);
+            let hook_guard = install_supervisor_teardown_hook_for_test(Arc::new(move || {
+                entered_hook.wait();
+                release_hook.wait();
+            }));
+
+            let parent_addr = parent as usize;
+            let stop = std::thread::spawn(move || {
+                supervisor_sys_dispatch_impl(
+                    ptr::null_mut(),
+                    (parent_addr as *mut HewSupervisor).cast::<c_void>(),
+                    HewSysMsg::SupervisorStop as i32,
+                    ptr::null_mut(),
+                    0,
+                );
+            });
+            entered.wait();
+
+            assert_eq!(hew_local_pid_supervisor_stop(token), 1);
+            assert!(locked_roster!(parent).child_supervisors.is_empty());
+            assert!(!crate::shutdown::is_supervisor_registered_for_test(nested));
+            assert_eq!(
+                crate::shutdown::registered_supervisor_count_for_test(),
+                1,
+                "parent remains the only cleanup root after its child claim wins"
+            );
+
+            release.wait();
+            stop.join().expect("parent-owned nested stop");
+            drop(hook_guard);
+            hew_supervisor_stop(parent);
+            assert_eq!(crate::shutdown::registered_supervisor_count_for_test(), 0);
+        }
+    }
+
+    #[test]
+    fn nested_token_stop_wins_before_parent_claim_without_dangling_root() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the token pin is held across the barrier, proving the parent
+        // can lose without dereferencing or publishing the nested pointer.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+            let token = (*nested).local_pid_id;
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let entered_hook = Arc::clone(&entered);
+            let release_hook = Arc::clone(&release);
+            let hook_guard = install_supervisor_close_hook_for_test(Arc::new(move || {
+                entered_hook.wait();
+                release_hook.wait();
+            }));
+            let token_stop = std::thread::spawn(move || hew_local_pid_supervisor_stop(token));
+            entered.wait();
+
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                parent.cast::<c_void>(),
+                HewSysMsg::SupervisorStop as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            assert!(locked_roster!(parent).child_supervisors.is_empty());
+            assert!(!crate::shutdown::is_supervisor_registered_for_test(nested));
+            assert_eq!(
+                crate::shutdown::registered_supervisor_count_for_test(),
+                1,
+                "token-owned nested stop must not publish a second root while parent remains"
+            );
+            release.wait();
+            assert_eq!(token_stop.join().expect("token-owned nested stop"), 0);
+            drop(hook_guard);
+            hew_supervisor_stop(parent);
+            assert_eq!(crate::shutdown::registered_supervisor_count_for_test(), 0);
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_detaches_child_before_deferred_spawn_failure() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test installs one nested child as current actor solely to
+        // select the production deferred-stop branch.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+            let fail_guard = fail_owned_deferred_supervisor_spawn();
+            let ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: nested_child,
+                actor_id: (*nested_child).id,
+                ..HewExecutionContext::default()
+            });
+
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                parent.cast::<c_void>(),
+                HewSysMsg::SupervisorStop as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            assert!((*nested).parent.is_null());
+            assert!(locked_roster!(parent).child_supervisors.is_empty());
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(nested),
+                "deferred spawn failure must leave the detached child rooted"
+            );
+
+            drop(ctx);
+            drop(fail_guard);
+            crate::scheduler::hew_runtime_cleanup();
         }
     }
 
@@ -3733,7 +4538,7 @@ mod tests {
         // metrics caller before stopping it.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
-            (&mut (*sup).child_specs)[0].restart_policy = RESTART_PERMANENT;
+            locked_roster!(sup).child_specs[0].restart_policy = RESTART_PERMANENT;
             hew_supervisor_set_restart_notify(sup);
 
             let started = Arc::new(std::sync::Barrier::new(2));
@@ -3869,24 +4674,23 @@ mod tests {
         }
     }
 
-    static TEARDOWN_RACE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+    #[test]
+    fn borrowed_legacy_actor_dispatches_normal_message_without_drop_authority() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = RealSchedulerGuard::new();
+        BORROWED_NORMAL_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+        BORROWED_NORMAL_DROP_COUNT.store(0, Ordering::SeqCst);
 
-    unsafe extern "C" fn count_teardown_race_state_drop(_state: *mut c_void) {
-        TEARDOWN_RACE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
-    }
-
-    unsafe fn make_supervisor_with_counted_child() -> *mut HewSupervisor {
-        // SAFETY: this helper owns the fresh supervisor and the runtime copies
-        // the scalar child state during registration.
+        // SAFETY: this test exclusively owns the supervisor through stop.
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
             assert!(!sup.is_null());
-            let initial_state = 17_u64;
+            let state = 9_u64;
             let spec = HewChildSpec {
                 name: ptr::null(),
-                init_state: std::ptr::from_ref(&initial_state).cast_mut().cast(),
+                init_state: std::ptr::from_ref(&state).cast_mut().cast(),
                 init_state_size: std::mem::size_of::<u64>(),
-                dispatch: Some(noop_child_dispatch),
+                dispatch: Some(counted_borrowed_dispatch),
                 sys_dispatch: None,
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
@@ -3899,6 +4703,145 @@ mod tests {
                 on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
+            };
+            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
+            hew_supervisor_set_child_state_drop(sup, 0, count_borrowed_normal_drop);
+            let child = locked_roster!(sup).children[0];
+            assert!((*child).state_drop_borrowed.load(Ordering::Acquire));
+            assert!((*child).state_drop_fn.is_some());
+            assert!((*child).state_clone_fn.is_none());
+
+            actor::hew_actor_send(child, 77, ptr::null_mut(), 0);
+            assert!(
+                wait_for_condition(Duration::from_secs(2), || {
+                    BORROWED_NORMAL_DISPATCH_COUNT.load(Ordering::Acquire) == 1
+                }),
+                "legacy borrowed actor must complete an ordinary user dispatch"
+            );
+            assert!(
+                !(*child).state_drop_consumed.load(Ordering::Acquire),
+                "normal dispatch must not fabricate crash-escrow consumption"
+            );
+
+            hew_supervisor_stop(sup);
+            assert_eq!(BORROWED_NORMAL_DROP_COUNT.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn reserved_two_child_roster_targets_setter_by_exact_index() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: construction and inspection are single-threaded; the test
+        // owns the supervisor until stop.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            let states = [11_u64, 22_u64];
+            for state in &states {
+                let spec = HewChildSpec {
+                    name: ptr::null(),
+                    init_state: std::ptr::from_ref(state).cast_mut().cast(),
+                    init_state_size: std::mem::size_of::<u64>(),
+                    dispatch: Some(noop_child_dispatch),
+                    sys_dispatch: None,
+                    restart_policy: RESTART_TEMPORARY,
+                    mailbox_capacity: -1,
+                    overflow: OVERFLOW_DROP_NEW,
+                    coalesce_key_fn: None,
+                    coalesce_fallback: OVERFLOW_DROP_NEW,
+                    message_drop_fn: None,
+                    arena_cap_bytes: 0,
+                    cycle_capable: 0,
+                    on_crash: None,
+                    lifecycle_fn: None,
+                    init_fn: None,
+                    config: ptr::null_mut(),
+                    config_size: 0,
+                };
+                assert_eq!(
+                    hew_supervisor_add_child_spec(sup, &raw const spec),
+                    0,
+                    "static add remains a status-only ABI"
+                );
+            }
+
+            hew_supervisor_set_child_state_drop(sup, 1, count_borrowed_normal_drop);
+            assert!(locked_roster!(sup).child_specs[0]
+                .state_template
+                .allocation
+                .state_drop
+                .load()
+                .is_none());
+            assert!(locked_roster!(sup).child_specs[1]
+                .state_template
+                .allocation
+                .state_drop
+                .load()
+                .is_some());
+            assert!(locked_roster!(sup).children[0]
+                .as_ref()
+                .unwrap()
+                .state_drop_fn
+                .is_none());
+            assert!(locked_roster!(sup).children[1]
+                .as_ref()
+                .unwrap()
+                .state_drop_fn
+                .is_some());
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    static TEARDOWN_RACE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_teardown_race_state_drop(_state: *mut c_void) {
+        TEARDOWN_RACE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn init_counted_teardown_race_state(
+        _config: *const c_void,
+    ) -> HewChildInitResult {
+        // SAFETY: the runtime owns and later libc-frees this wrapper.
+        let state = unsafe { libc::malloc(std::mem::size_of::<u64>()) }.cast::<u64>();
+        if state.is_null() {
+            return HewChildInitResult {
+                state: ptr::null_mut(),
+                size: 0,
+            };
+        }
+        // SAFETY: state points to one freshly allocated u64.
+        unsafe { *state = 17 };
+        HewChildInitResult {
+            state: state.cast::<c_void>(),
+            size: std::mem::size_of::<u64>(),
+        }
+    }
+
+    unsafe fn make_supervisor_with_counted_child() -> *mut HewSupervisor {
+        // SAFETY: this helper owns the fresh supervisor; the init thunk gives
+        // each child independently-owned state so the callback is an actor-
+        // teardown counter, not a legacy shallow-template alias counter.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!sup.is_null());
+            let spec = HewChildSpec {
+                name: ptr::null(),
+                init_state: ptr::null_mut(),
+                init_state_size: 0,
+                dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
+                restart_policy: RESTART_TEMPORARY,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
+                lifecycle_fn: None,
+                init_fn: Some(init_counted_teardown_race_state),
                 config: ptr::null_mut(),
                 config_size: 0,
             };
@@ -4206,7 +5149,7 @@ mod tests {
         // The handoff remains claimed until canonical post-worker cleanup so a
         // racing worker cannot become a second destructor.
         // SAFETY: the restored root keeps `sup` live until cleanup below.
-        assert!(unsafe { (*sup).teardown_claimed.load(Ordering::Acquire) });
+        assert!(unsafe { teardown_is_claimed(sup) });
         drop(teardown);
         crate::scheduler::hew_runtime_cleanup();
     }
@@ -4363,7 +5306,7 @@ mod tests {
                 "shutdown-aware deferred stop must restore the top-level root"
             );
             assert!(
-                (*sup).teardown_claimed.load(Ordering::Acquire),
+                teardown_is_claimed(sup),
                 "handoff must keep teardown claimed until canonical cleanup"
             );
 
@@ -4443,8 +5386,8 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The ONE_FOR_ALL / REST_FOR_ONE restart arms free stopped siblings on
-        // a background "deferred-free" thread that runs
-        // `hew_actor_free_for_restart` on actors still tracked in
+        // a background "deferred-free" thread that runs ordinary exact-
+        // authority actor teardown on actors still tracked in
         // `LIVE_ACTORS`. `cleanup_all_actors` must join that teardown before
         // sweeping the registry, or the sweep races the in-flight free into a
         // use-after-free / double-free. This drives the production restart spawn
@@ -4462,7 +5405,7 @@ mod tests {
             // Detach the sibling from the supervisor exactly as the restart
             // arms do via `take_child_slot`, then drive it to a quiescent
             // terminal state and gate its terminate open.
-            let taken = take_child_slot(&mut *sup, 0);
+            let taken = take_child_slot(&raw mut *sup, 0);
             assert_eq!(taken, child);
             let child_ref = &*child;
             child_ref
@@ -4476,7 +5419,7 @@ mod tests {
 
             // Release the gated terminate while the drain below is joining the
             // deferred-free thread. The teardown blocks in
-            // `free_actor_resources_with_options` on `terminate_finished`
+            // actor resource teardown on `terminate_finished`
             // before reclaiming the sibling, so this store happens-before the
             // free.
             let child_addr = child as usize;
@@ -4574,7 +5517,7 @@ mod tests {
                 "second stop caller should not race into teardown ownership"
             );
             assert_eq!(
-                (*sup).child_supervisors.len(),
+                locked_roster!(sup).child_supervisors.len(),
                 1,
                 "deferred teardown must not mutate child supervisor vectors before self actor quiesces"
             );
@@ -4697,14 +5640,14 @@ mod tests {
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             let supervisor_token = (*sup).local_pid_id;
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let transient = hew_local_pid_supervisor_child_get(supervisor_token, 0);
             assert_eq!(transient.tag, 1);
             assert_eq!(transient.reason, ChildSlotReason::Restarting as u8);
             assert!(transient.handle.is_null());
 
-            store_child_slot(&mut *sup, 0, child);
+            store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }
     }
@@ -4740,7 +5683,7 @@ mod tests {
                 "the lookup handle word is the incarnation's stable token"
             );
 
-            let replacement = restart_child_from_spec(&mut *sup, 0);
+            let replacement = restart_child_from_spec(sup, 0);
             assert!(!replacement.is_null(), "replacement spawn must succeed");
             actor::hew_actor_stop(old_child);
 
@@ -4780,7 +5723,7 @@ mod tests {
             // from the slot and tear it down (worker-less runtime: force the
             // terminal state the drain would have produced, then free — the
             // free path retires the queued ask's sender ref).
-            let retired = take_child_slot(&mut *sup, 0);
+            let retired = take_child_slot(&raw mut *sup, 0);
             assert_eq!(retired, replacement);
             assert!(
                 scheduler::discard_queued_actor_for_test(retired),
@@ -4813,7 +5756,7 @@ mod tests {
     }
 
     /// The owner-scoped role ask resolves the slot and submits under ONE
-    /// `children_lock` critical section: the slot writers cannot interpose
+    /// `roster` critical section: the slot writers cannot interpose
     /// (probed at the seam), and the ask lands in the incarnation that was
     /// current at resolve time — never a later one, never nowhere.
     #[test]
@@ -4833,12 +5776,12 @@ mod tests {
                     // The supervisor outlives the ask call that fires this
                     // hook; the probe only touches the lock word.
                     let sup = sup_addr as *mut HewSupervisor;
-                    (*sup).children_lock.try_lock().is_err()
+                    (*sup).roster.try_lock().is_err()
                 });
                 let writer_excluded = handle.join().expect("lock probe thread");
                 assert!(
                     writer_excluded,
-                    "children_lock must be held at the resolve→submit seam so \
+                    "roster must be held at the resolve→submit seam so \
                      store_child_slot/take_child_slot cannot interpose"
                 );
                 probed_hook.store(true, Ordering::Release);
@@ -4862,7 +5805,7 @@ mod tests {
 
             // A replacement landing AFTER the owner-scoped submission cannot
             // repoint the already-enqueued ask.
-            let replacement = restart_child_from_spec(&mut *sup, 0);
+            let replacement = restart_child_from_spec(sup, 0);
             assert!(!replacement.is_null());
 
             let old_mb = (*old_child).mailbox.cast::<mailbox::HewMailbox>();
@@ -4911,7 +5854,7 @@ mod tests {
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             let supervisor_token = (*sup).local_pid_id;
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let before = crate::reply_channel::active_channel_count();
             let ch = crate::reply_channel::hew_reply_channel_new();
@@ -4943,7 +5886,7 @@ mod tests {
             );
             crate::reply_channel::hew_reply_channel_free(ch);
 
-            store_child_slot(&mut *sup, 0, child);
+            store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }
     }
@@ -4981,21 +5924,21 @@ mod tests {
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
 
-            let child = (&(*sup).children)[0];
+            let child = locked_roster!(sup).children[0];
             let self_actor = (*sup).self_actor;
             (sup, child, self_actor)
         }
     }
 
     /// LOCK-ORDER INVARIANT: the role-ask enqueue — including a Block-policy
-    /// capacity WAIT — never runs under `children_lock`. Holding the lock
+    /// capacity WAIT — never runs under `roster`. Holding the lock
     /// across the wait closes a cycle: the submitter waits for the child to
     /// drain its full mailbox, while the child's own handler can be blocked
-    /// acquiring `children_lock` for a stable-role ask of its own. The pinned
+    /// acquiring `roster` for a stable-role ask of its own. The pinned
     /// hook proves the lock is FREE at submission time, and a full Block
     /// mailbox is then drained by the test to complete the waiting enqueue.
     #[test]
-    fn role_ask_block_mailbox_wait_runs_outside_children_lock() {
+    fn role_ask_block_mailbox_wait_runs_outside_roster() {
         let _rt = crate::runtime_test_guard();
         // SAFETY: the test owns the supervisor tree; thread coordination uses
         // barriers and joins only (no sleeps).
@@ -5016,14 +5959,14 @@ mod tests {
             let lock_free_at_submit = Arc::new(AtomicBool::new(false));
             let lock_free_hook = Arc::clone(&lock_free_at_submit);
             *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() = Some(Arc::new(move || {
-                // The resolve phase released children_lock before this point;
+                // The resolve phase released roster before this point;
                 // probe from a joined helper thread (try_lock from the owning
                 // thread is not the invariant under test).
                 let probe = std::thread::spawn(move || {
                     let sup = sup_addr as *mut HewSupervisor;
                     // The supervisor outlives the ask that fires this hook;
                     // the probe only touches the lock word.
-                    (*sup).children_lock.try_lock().is_ok()
+                    (*sup).roster.try_lock().is_ok()
                 });
                 lock_free_hook.store(probe.join().expect("lock probe"), Ordering::Release);
                 entered_hook.wait();
@@ -5051,11 +5994,11 @@ mod tests {
             *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() = None;
             assert!(
                 lock_free_at_submit.load(Ordering::Acquire),
-                "children_lock must be FREE during the role-ask submission \
+                "roster must be FREE during the role-ask submission \
                  (the Block-policy capacity wait must not run under the slot lock)"
             );
             assert!(
-                (*sup).children_lock.try_lock().is_ok(),
+                (*sup).roster.try_lock().is_ok(),
                 "slot writers must not be excluded while the enqueue waits"
             );
 
@@ -5117,7 +6060,7 @@ mod tests {
                 // The supervisor outlives the ask firing this hook; the
                 // retired incarnation is exclusively owned once pulled from
                 // the slot.
-                let retired = take_child_slot(&mut *sup, 0);
+                let retired = take_child_slot(&raw mut *sup, 0);
                 assert!(!retired.is_null(), "hook must find the live incarnation");
                 (*retired)
                     .actor_state
@@ -5159,7 +6102,7 @@ mod tests {
 
             // Blocking twin: re-arm the slot with a fresh incarnation, retire
             // it at the same seam, and require the null + AskError refusal.
-            let respawned = restart_child_from_spec(&mut *sup, 0);
+            let respawned = restart_child_from_spec(sup, 0);
             assert!(!respawned.is_null());
             *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() = Some(retire_hook);
             let reply = hew_supervisor_role_ask(supervisor_token, 0, 7, ptr::null_mut(), 0);
@@ -5212,7 +6155,7 @@ mod tests {
             unsafe {
                 // Retire the resolved incarnation A and free it, so its masked
                 // `id` is vacant in LIVE_ACTORS for reuse.
-                let retired = take_child_slot(&mut *sup, 0);
+                let retired = take_child_slot(&raw mut *sup, 0);
                 assert!(!retired.is_null(), "hook must find the live incarnation");
                 let a_id = (*retired).id;
                 let a_serial = (*retired).spawn_serial;
@@ -5301,7 +6244,7 @@ mod tests {
                 assert_eq!(actor::hew_actor_free(b_channel), 0);
 
                 // ── Blocking twin: null reply + AskError::ActorStopped. ──
-                let respawned = restart_child_from_spec(&mut *sup, 0);
+                let respawned = restart_child_from_spec(sup, 0);
                 assert!(!respawned.is_null());
                 *ROLE_ASK_PINNED_SUBMIT_HOOK.lock_or_recover() =
                     Some(make_role_ask_alias_hook(sup_addr, Arc::clone(&alias_out)));
@@ -5398,7 +6341,7 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
 
             // Simulate the restart-in-progress window: null the slot under lock.
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let result = hew_supervisor_child_get(sup, 0);
             assert_eq!(result.tag, 1, "expected Transient (tag=1)");
@@ -5406,7 +6349,7 @@ mod tests {
             assert!(result.handle.is_null());
 
             // Restore the slot so teardown can reach the actor.
-            store_child_slot(&mut *sup, 0, child);
+            store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }
     }
@@ -5483,7 +6426,7 @@ mod tests {
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             // Null the slot under lock → child_get returns Transient(Restarting).
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let slot = crate::read_slot::hew_read_slot_new();
             // A null actor is fine: the wake path re-validates via enqueue_resume,
@@ -5501,8 +6444,8 @@ mod tests {
             );
 
             // Restore the slot (the restart completed) and fire the notify wake.
-            store_child_slot(&mut *sup, 0, child);
-            notify_restart(&*sup);
+            store_child_slot(&raw mut *sup, 0, child);
+            notify_restart(sup);
 
             assert!(
                 (*sup).restart_await_waiters.lock_or_recover().is_empty(),
@@ -5528,7 +6471,7 @@ mod tests {
         // SAFETY: test owns the supervisor tree.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             let slot = crate::read_slot::hew_read_slot_new();
             let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
@@ -5550,8 +6493,8 @@ mod tests {
             crate::read_slot::hew_read_slot_free(slot);
 
             // A later notify has nothing to wake (the waiter is gone).
-            store_child_slot(&mut *sup, 0, child);
-            notify_restart(&*sup);
+            store_child_slot(&raw mut *sup, 0, child);
+            notify_restart(sup);
             assert!((*sup).restart_await_waiters.lock_or_recover().is_empty());
 
             hew_supervisor_stop(sup);
@@ -5590,7 +6533,7 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             // Null the slot so the pre-park `child_get` classifies it Transient
             // and the awaiting call proceeds toward parking.
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             // The racing restart, fired from the gap hook: restore the slot to
             // Live and complete the restart cycle (bump counter + drain waiters).
@@ -5602,8 +6545,8 @@ mod tests {
                 // SAFETY: the test keeps `sup`/`child` alive until after the
                 // awaiting call returns; the hook runs synchronously within it.
                 let sup = sup_addr as *mut HewSupervisor;
-                store_child_slot(&mut *sup, 0, child_addr as *mut HewActor);
-                notify_restart(&*sup);
+                store_child_slot(&raw mut *sup, 0, child_addr as *mut HewActor);
+                notify_restart(sup);
             });
             *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = Some(hook);
 
@@ -5644,7 +6587,7 @@ mod tests {
         // SAFETY: the test owns the supervisor tree for its whole lifetime.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
             // Two barriers coordinate the cross-thread interleaving precisely:
             //  - `in_gap` releases the notifier once the awaiting thread is in the
@@ -5679,8 +6622,8 @@ mod tests {
             // restart cycle (restore Live + bump counter + drain the still-empty
             // registry), then release the awaiting thread to proceed to its push.
             in_gap.wait();
-            store_child_slot(&mut *sup, 0, child);
-            notify_restart(&*sup);
+            store_child_slot(&raw mut *sup, 0, child);
+            notify_restart(sup);
             notified.wait();
 
             // Bounded teeth: poll for the awaiting thread to finish. WITHOUT the
@@ -5770,8 +6713,8 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
 
             // Null the slot and open the circuit breaker.
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
-            (&mut (*sup).child_specs)[0].circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
+            locked_roster!(sup).child_specs[0].circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
 
             let result = hew_supervisor_child_get(sup, 0);
             assert_eq!(result.tag, 1, "expected Transient (tag=1)");
@@ -5779,8 +6722,8 @@ mod tests {
             assert!(result.handle.is_null());
 
             // Restore before teardown.
-            (&mut (*sup).child_specs)[0].circuit_breaker.state = 0; // HEW_CIRCUIT_BREAKER_CLOSED
-            store_child_slot(&mut *sup, 0, child);
+            locked_roster!(sup).child_specs[0].circuit_breaker.state = 0; // HEW_CIRCUIT_BREAKER_CLOSED
+            store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }
     }
@@ -5795,9 +6738,9 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
 
             // Null the slot and set the backoff deadline far in the future.
-            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            store_child_slot(&raw mut *sup, 0, ptr::null_mut());
             // 1 hour from now in nanoseconds
-            (&mut (*sup).child_specs)[0].next_restart_time_ns =
+            locked_roster!(sup).child_specs[0].next_restart_time_ns =
                 monotonic_time_ns().saturating_add(3_600_000_000_000);
 
             let result = hew_supervisor_child_get(sup, 0);
@@ -5806,8 +6749,8 @@ mod tests {
             assert!(result.handle.is_null());
 
             // Restore before teardown.
-            (&mut (*sup).child_specs)[0].next_restart_time_ns = 0;
-            store_child_slot(&mut *sup, 0, child);
+            locked_roster!(sup).child_specs[0].next_restart_time_ns = 0;
+            store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }
     }
@@ -5969,6 +6912,54 @@ mod tests {
         })
     }
 
+    #[allow(
+        clippy::unnecessary_box_returns,
+        reason = "the returned template keeps explicit source ownership in these tests"
+    )]
+    unsafe fn add_heap_child(
+        sup: *mut HewSupervisor,
+        restart_policy: c_int,
+        register_clone: bool,
+    ) -> Box<HeapState> {
+        let template = make_heap_template();
+        let spec = HewChildSpec {
+            name: ptr::null(),
+            init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
+            init_state_size: std::mem::size_of::<HeapState>(),
+            dispatch: Some(noop_child_dispatch),
+            sys_dispatch: None,
+            restart_policy,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
+        };
+        assert_eq!(
+            // SAFETY: caller owns `sup`; `spec` and its template are live for the call.
+            unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+            0
+        );
+        // SAFETY: successful registration added exactly one child to live `sup`.
+        let index = c_int::try_from(unsafe { locked_roster!(sup).child_count - 1 })
+            .expect("test child index fits c_int");
+        // SAFETY: the child was just added at `index`.
+        unsafe {
+            hew_supervisor_set_child_state_drop(sup, index, heap_state_drop);
+            if register_clone {
+                hew_supervisor_set_child_state_clone(sup, index, heap_state_clone);
+            }
+        }
+        template
+    }
+
     unsafe fn make_supervisor_with_heap_child(
         register_clone: bool,
     ) -> (*mut HewSupervisor, Box<HeapState>) {
@@ -5976,34 +6967,167 @@ mod tests {
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 4, 1);
             assert!(!sup.is_null());
-
-            let template = make_heap_template();
-            let spec = HewChildSpec {
-                name: ptr::null(),
-                init_state: std::ptr::from_ref(&*template).cast_mut().cast::<c_void>(),
-                init_state_size: std::mem::size_of::<HeapState>(),
-                dispatch: Some(noop_child_dispatch),
-                sys_dispatch: None,
-                restart_policy: RESTART_PERMANENT,
-                mailbox_capacity: -1,
-                overflow: OVERFLOW_DROP_NEW,
-                coalesce_key_fn: None,
-                coalesce_fallback: OVERFLOW_DROP_NEW,
-                message_drop_fn: None,
-                arena_cap_bytes: 0,
-                cycle_capable: 0,
-                on_crash: None,
-                lifecycle_fn: None,
-                init_fn: None,
-                config: ptr::null_mut(),
-                config_size: 0,
-            };
-            assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-            hew_supervisor_set_child_state_drop(sup, 0, heap_state_drop);
-            if register_clone {
-                hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
-            }
+            let template = add_heap_child(sup, RESTART_PERMANENT, register_clone);
             (sup, template)
+        }
+    }
+
+    unsafe fn dispatch_terminal_child_event(
+        sup: *mut HewSupervisor,
+        child_index: usize,
+        kind: HewSysMsg,
+        terminal_state: HewActorState,
+    ) {
+        // SAFETY: caller owns live `sup` and supplies a valid child index.
+        let child = unsafe { locked_roster!(sup).children[child_index] };
+        assert!(!child.is_null());
+        // The production scheduler establishes the terminal state before it
+        // sends this event to the supervisor system mailbox.
+        // SAFETY: `sup`, `child`, and the stack event remain live for this
+        // synchronous call; this is the same implementation reached by the
+        // system mailbox.
+        unsafe {
+            (*child)
+                .actor_state
+                .store(terminal_state as i32, Ordering::Release);
+            (*sup).running.store(1, Ordering::Release);
+            let event = ChildEvent {
+                child_index: u32::try_from(child_index).expect("test index fits u32"),
+                child_id: (*child).id,
+                exit_state: terminal_state as c_int,
+                crash_code: 0,
+            };
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                sup.cast::<c_void>(),
+                kind as i32,
+                (&raw const event).cast_mut().cast::<c_void>(),
+                std::mem::size_of::<ChildEvent>(),
+            );
+        }
+    }
+
+    #[test]
+    fn production_child_events_apply_exact_state_drop_authority() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        for (terminal_state, consumed) in [
+            (HewActorState::Crashed, false),
+            (HewActorState::Crashed, true),
+            (HewActorState::Stopped, false),
+        ] {
+            reset_clone_counters();
+            // SAFETY: each loop iteration exclusively owns its supervisor.
+            unsafe {
+                let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 4, 1);
+                assert!(!sup.is_null());
+                let _template = add_heap_child(sup, RESTART_TEMPORARY, true);
+                let child = locked_roster!(sup).children[0];
+                assert!(
+                    !(*child).state_drop_borrowed.load(Ordering::Acquire),
+                    "clone-backed state must carry final-drop authority"
+                );
+
+                if consumed {
+                    // Model the dispatch crash escrow consuming the typed
+                    // state before it publishes ChildCrashed.
+                    heap_state_drop((*child).state);
+                    actor::record_dispatch_state_drop_consumed(child);
+                }
+
+                let kind = if terminal_state == HewActorState::Crashed {
+                    HewSysMsg::ChildCrashed
+                } else {
+                    HewSysMsg::ChildStopped
+                };
+                dispatch_terminal_child_event(sup, 0, kind, terminal_state);
+
+                assert_eq!(
+                    DROP_CALL_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "{terminal_state:?}, consumed={consumed}: production event must invoke exactly one typed drop"
+                );
+                assert!(locked_roster!(sup).children[0].is_null());
+                hew_supervisor_stop(sup);
+            }
+        }
+    }
+
+    #[test]
+    fn one_for_all_fresh_sibling_keeps_its_final_drop_authority() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+
+        // SAFETY: the test owns the complete supervisor tree.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ALL, 8, 60);
+            assert!(!sup.is_null());
+            let _template0 = add_heap_child(sup, RESTART_PERMANENT, true);
+            let _template1 = add_heap_child(sup, RESTART_PERMANENT, true);
+            let failed = locked_roster!(sup).children[0];
+            let sibling = locked_roster!(sup).children[1];
+            assert!(!(*failed).state_drop_borrowed.load(Ordering::Acquire));
+            assert!(!(*sibling).state_drop_borrowed.load(Ordering::Acquire));
+
+            // The failed actor's escrow consumes one authority. The normally
+            // stopped sibling must independently consume its own authority in
+            // deferred teardown; neither is a shallow-template alias.
+            heap_state_drop((*failed).state);
+            actor::record_dispatch_state_drop_consumed(failed);
+            dispatch_terminal_child_event(sup, 0, HewSysMsg::ChildCrashed, HewActorState::Crashed);
+            crate::lifetime::live_actors::drain_deferred_teardown_threads();
+
+            assert_eq!(
+                DROP_CALL_COUNT.load(Ordering::SeqCst),
+                2,
+                "one consumed crash plus one fresh stopped sibling must drop exactly twice"
+            );
+            assert!(!locked_roster!(sup).children[0].is_null());
+            assert!(!locked_roster!(sup).children[1].is_null());
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn rest_for_one_fresh_sibling_drops_once_and_fault_escrow_is_suppressed() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+
+        // SAFETY: the test owns the complete supervisor tree.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_REST_FOR_ONE, 8, 60);
+            assert!(!sup.is_null());
+            let _template0 = add_heap_child(sup, RESTART_PERMANENT, true);
+            let _template1 = add_heap_child(sup, RESTART_PERMANENT, true);
+            let failed = locked_roster!(sup).children[0];
+            let fresh_sibling = locked_roster!(sup).children[1];
+
+            // Crash escrow consumes the failed incarnation exactly once. The
+            // later sibling stops normally and retains its independent final
+            // drop authority through deferred REST_FOR_ONE teardown.
+            heap_state_drop((*failed).state);
+            actor::record_dispatch_state_drop_consumed(failed);
+            dispatch_terminal_child_event(sup, 0, HewSysMsg::ChildCrashed, HewActorState::Crashed);
+            crate::lifetime::live_actors::drain_deferred_teardown_threads();
+
+            assert_eq!(
+                DROP_CALL_COUNT.load(Ordering::SeqCst),
+                2,
+                "REST_FOR_ONE must suppress the consumed fault escrow and drop the fresh sibling once"
+            );
+            assert!(!locked_roster!(sup).children[0].is_null());
+            assert!(!locked_roster!(sup).children[1].is_null());
+            assert_ne!(locked_roster!(sup).children[1], fresh_sibling);
+            hew_supervisor_stop(sup);
         }
     }
 
@@ -6029,10 +7153,13 @@ mod tests {
                 "set_child_state_clone must re-clone the spec template once to break initial byte-alias"
             );
 
-            let initial_child = (&(*sup).children)[0];
+            let initial_child = locked_roster!(sup).children[0];
             assert!(!initial_child.is_null());
             let initial_state_ptr = (*initial_child).state;
-            let spec_template_after_reg = (&(*sup).child_specs)[0].init_state;
+            let spec_template_after_reg = locked_roster!(sup).child_specs[0]
+                .state_template
+                .allocation
+                .state;
             assert_ne!(
                 initial_state_ptr, spec_template_after_reg,
                 "spec.init_state must be re-cloned to a distinct allocation; actor.state still byte-copied from original"
@@ -6040,7 +7167,7 @@ mod tests {
 
             // Drive a restart. The supervisor sees state_clone_fn=Some and
             // routes through hew_actor_spawn_opts_adopt.
-            let restarted = restart_child_from_spec(&mut *sup, 0);
+            let restarted = restart_child_from_spec(sup, 0);
             assert!(!restarted.is_null(), "restart must succeed");
             assert_eq!(
                 CLONE_CALL_COUNT.load(Ordering::SeqCst),
@@ -6075,6 +7202,95 @@ mod tests {
     }
 
     #[test]
+    fn restart_snapshot_cannot_publish_across_clone_generation_replacement() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+
+        // SAFETY: the test owns the supervisor and joins the only racing
+        // restart before reclaiming either incarnation.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(false);
+            let initial = locked_roster!(sup).children[0];
+            assert!((*initial).state_drop_borrowed.load(Ordering::Acquire));
+
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let entered_hook = Arc::clone(&entered);
+            let release_hook = Arc::clone(&release);
+            let hook = install_restart_spec_snapshot_hook_for_test(Arc::new(move || {
+                entered_hook.wait();
+                release_hook.wait();
+            }));
+
+            let sup_addr = sup as usize;
+            let stale_restart = std::thread::spawn(move || {
+                // SAFETY: the parent thread keeps `sup` live through join.
+                restart_child_from_spec(sup_addr as *mut HewSupervisor, 0) as usize
+            });
+            entered.wait();
+
+            hew_supervisor_set_child_state_clone(sup, 0, heap_state_clone);
+            assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), 1);
+            let stored = (*initial)
+                .state_clone_fn
+                .expect("setter must install clone authority before ownership");
+            assert!(std::ptr::fn_addr_eq(
+                stored,
+                heap_state_clone as actor::HewStateCloneFn
+            ));
+            assert!(
+                !(*initial).state_drop_borrowed.load(Ordering::Acquire),
+                "successful generation replacement transfers the then-current actor to owned"
+            );
+
+            release.wait();
+            assert_eq!(stale_restart.join().expect("stale restart"), 0);
+            assert_eq!(
+                locked_roster!(sup).children[0],
+                initial,
+                "old-generation restart must not replace the back-filled incarnation"
+            );
+            drop(hook);
+
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            assert!(!(*replacement).state_drop_borrowed.load(Ordering::Acquire));
+            assert!((*replacement).state_clone_fn.is_some());
+
+            actor::hew_actor_stop(initial);
+            assert_eq!(actor::hew_actor_free(initial), 0);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn remove_child_drops_clone_backed_actor_and_template_exactly_once_each() {
+        let _rt = crate::runtime_test_guard();
+        let _serial = CLONE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_clone_counters();
+
+        // SAFETY: this test exclusively owns the supervisor and its sole slot.
+        unsafe {
+            let (sup, _source_template) = make_supervisor_with_heap_child(true);
+            assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 0);
+            assert_eq!(hew_supervisor_remove_child(sup, 0), 0);
+            assert_eq!(
+                DROP_CALL_COUNT.load(Ordering::SeqCst),
+                2,
+                "remove must route actor state and independently-owned spec template through one typed drop each"
+            );
+            assert_eq!(hew_supervisor_remove_child(sup, 0), -1);
+            hew_supervisor_stop(sup);
+            assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
     fn state_clone_fn_failure_blocks_restart() {
         let _rt = crate::runtime_test_guard();
         // clone_fn returns null. Verify: restart returns null, child slot
@@ -6091,11 +7307,11 @@ mod tests {
             // transition the state back to CLOSED. Observing HALF_OPEN
             // unchanged is the strongest available signal that the success
             // path was NOT taken.
-            (&mut (*sup).child_specs)[0].circuit_breaker.state = 2; // HEW_CIRCUIT_BREAKER_HALF_OPEN
+            locked_roster!(sup).child_specs[0].circuit_breaker.state = 2; // HEW_CIRCUIT_BREAKER_HALF_OPEN
             let baseline_clone_calls = CLONE_CALL_COUNT.load(Ordering::SeqCst);
 
             CLONE_FORCE_NULL.store(true, Ordering::SeqCst);
-            let restarted = restart_child_from_spec(&mut *sup, 0);
+            let restarted = restart_child_from_spec(sup, 0);
             assert!(
                 restarted.is_null(),
                 "null-clone-return must propagate as a failed restart"
@@ -6106,12 +7322,12 @@ mod tests {
                 "clone_fn must be called exactly once before the null-return short-circuit"
             );
             assert_eq!(
-                (&(*sup).child_specs)[0].circuit_breaker.state,
+                locked_roster!(sup).child_specs[0].circuit_breaker.state,
                 2,
                 "circuit-breaker must remain HALF_OPEN; null-clone must NOT call record_success"
             );
             assert!(
-                (&(*sup).children)[0].is_null(),
+                locked_roster!(sup).children[0].is_null(),
                 "child slot must be null after a blocked restart"
             );
 
@@ -6142,7 +7358,7 @@ mod tests {
                 "no clone fn registered => no clone calls"
             );
 
-            let restarted = restart_child_from_spec(&mut *sup, 0);
+            let restarted = restart_child_from_spec(sup, 0);
             assert!(
                 !restarted.is_null(),
                 "legacy byte-copy restart must still succeed"
@@ -6178,7 +7394,7 @@ mod tests {
         // SAFETY: test owns the supervisor tree.
         unsafe {
             let (sup, _template) = make_supervisor_with_heap_child(true);
-            let child = (&(*sup).children)[0];
+            let child = locked_roster!(sup).children[0];
             assert!(!child.is_null());
 
             // Simulate the actor reallocating its `payload` (Vec growth):
@@ -6196,7 +7412,11 @@ mod tests {
             // Critically, the spec template was re-cloned at registration
             // time; its `payload` points to an independent allocation that
             // is unaffected by the mutation above.
-            let spec_template = &*(&(*sup).child_specs)[0].init_state.cast::<HeapState>();
+            let spec_template = &*locked_roster!(sup).child_specs[0]
+                .state_template
+                .allocation
+                .state
+                .cast::<HeapState>();
             assert_ne!(
                 spec_template.payload, actor_state.payload,
                 "post-registration: spec.init_state.payload must be independent from actor.state.payload"
@@ -6210,7 +7430,7 @@ mod tests {
             // Restart: clone_fn reads spec.init_state (clean), not
             // actor.state (mutated). Must not UAF.
             let baseline_clones = CLONE_CALL_COUNT.load(Ordering::SeqCst);
-            let restarted = restart_child_from_spec(&mut *sup, 0);
+            let restarted = restart_child_from_spec(sup, 0);
             assert!(!restarted.is_null());
             assert_eq!(CLONE_CALL_COUNT.load(Ordering::SeqCst), baseline_clones + 1);
 
@@ -6235,7 +7455,11 @@ mod tests {
     const GUARD_MALLOC_DYLIB: &str = "/usr/lib/libgmalloc.dylib";
 
     unsafe fn free_spec_template_payload(sup: *mut HewSupervisor) -> *mut u8 {
-        let spec_template = (&mut (*sup).child_specs)[0].init_state.cast::<HeapState>();
+        let spec_template = locked_roster!(sup).child_specs[0]
+            .state_template
+            .allocation
+            .state
+            .cast::<HeapState>();
         assert!(!spec_template.is_null());
         let payload = (*spec_template).payload;
         assert!(!payload.is_null());
@@ -6250,7 +7474,7 @@ mod tests {
         let (sup, _template) = make_supervisor_with_heap_child(false);
         let dangling_payload = free_spec_template_payload(sup);
 
-        let restarted = restart_child_from_spec(&mut *sup, 0);
+        let restarted = restart_child_from_spec(sup, 0);
         assert!(
             !restarted.is_null(),
             "legacy byte-copy restart must produce an actor"
@@ -6310,7 +7534,7 @@ mod tests {
         // SAFETY: test owns the supervisor tree and mutates only its test state.
         unsafe {
             let (sup, _template) = make_supervisor_with_heap_child(true);
-            let child = (&(*sup).children)[0];
+            let child = locked_roster!(sup).children[0];
             assert!(!child.is_null());
 
             // Poison the source every restart path actually reads:
@@ -6319,7 +7543,7 @@ mod tests {
             let baseline_clones = CLONE_CALL_COUNT.load(Ordering::SeqCst);
 
             CLONE_FORCE_NULL.store(true, Ordering::SeqCst);
-            let restarted = restart_child_from_spec(&mut *sup, 0);
+            let restarted = restart_child_from_spec(sup, 0);
             assert!(
                 restarted.is_null(),
                 "null-clone policy must block the restart instead of byte-copying a freed spec payload"
@@ -6330,11 +7554,16 @@ mod tests {
                 "restart must call clone_fn once before the null-return short-circuit"
             );
             assert!(
-                (&(*sup).children)[0].is_null(),
+                locked_roster!(sup).children[0].is_null(),
                 "blocked restart must leave the child slot null"
             );
             assert_eq!(
-                (&*(&(*sup).child_specs)[0].init_state.cast::<HeapState>()).payload,
+                (&*locked_roster!(sup).child_specs[0]
+                    .state_template
+                    .allocation
+                    .state
+                    .cast::<HeapState>())
+                    .payload,
                 dangling_payload,
                 "test setup must leave the freed spec payload in place as the byte-copy falsifier"
             );
@@ -6345,8 +7574,12 @@ mod tests {
             // the dangling pointer.  The falsifier assertion above already verified
             // it was in place; the test's correctness doesn't depend on it surviving
             // past that point.
-            (&mut *(&(*sup).child_specs)[0].init_state.cast::<HeapState>()).payload =
-                ptr::null_mut();
+            (&mut *locked_roster!(sup).child_specs[0]
+                .state_template
+                .allocation
+                .state
+                .cast::<HeapState>())
+                .payload = ptr::null_mut();
             assert_eq!(actor::hew_actor_free(child), 0);
             hew_supervisor_stop(sup);
         }
@@ -6392,7 +7625,7 @@ mod tests {
                 config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-            let child = (&(*sup).children)[0];
+            let child = locked_roster!(sup).children[0];
             assert!(!child.is_null());
             assert!(
                 (*child).state_clone_fn.is_none(),
@@ -6433,8 +7666,11 @@ mod tests {
 ///
 /// Returns `false` when a delayed-restart timer still borrows this tree. The
 /// incomplete tree remains registered and its runtime/actors must stay alive
-/// until a later cleanup retry can safely reclaim it.
+/// rather than being freed unsafely. There is no automatic retry; an embedder
+/// may explicitly invoke cleanup again after the borrower drains.
 pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool {
+    // ROSTER-EXCLUSIVE: runtime cleanup runs after workers join and closes
+    // supervisor access before traversing or dropping roster storage.
     // SAFETY: canonical cleanup still owns a live raw supervisor allocation.
     let Some(access) = (unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) })
     else {
@@ -6448,27 +7684,29 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
     // access until cancellation acquires the control mutex.
     // SAFETY: caller guarantees sup is valid.
     let restart_timers = Arc::clone(unsafe { &(*sup).restart_timers });
-    restart_timers.cancel();
+    // SAFETY: the allocation remains live through the bounded drain below.
+    publish_supervisor_cancellation(sup);
     let deadline = Instant::now() + SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT;
     if !wait_for_pending_restart_timers(&restart_timers, deadline) {
         set_last_error("runtime cleanup retained supervisor with pending restart timers");
-        // The timer thread still owns a raw borrow.  Retain this root so a
-        // later cleanup attempt can reclaim it after the borrow drains; freeing
-        // now would be a use-after-free in the delayed-restart thread.
+        // The timer thread still owns a raw borrow. Retain this root; an
+        // explicit later cleanup may reclaim it after the borrow drains, while
+        // a one-shot teardown leaks it fail-closed. Freeing now would be a
+        // use-after-free in the delayed-restart thread.
         // SAFETY: canonical cleanup still owns the live top-level allocation.
         unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
         return false;
     }
     // SAFETY: every timer raw borrow drained above; canonical cleanup now has
     // exclusive access to the supervisor allocation.
-    let s = unsafe { &mut *sup };
-    if !s.self_actor.is_null() {
+    let self_actor = unsafe { (*sup).self_actor };
+    if !self_actor.is_null() {
         // Null out state so cleanup_all_actors won't libc::free it
         // (state points to the supervisor Box, not malloc'd memory).
         // SAFETY: self_actor is non-null (checked above) and valid for the supervisor's lifetime.
         unsafe {
-            (*s.self_actor).state = ptr::null_mut();
-            (*s.self_actor).state_size = 0;
+            (*self_actor).state = ptr::null_mut();
+            (*self_actor).state_size = 0;
         }
     }
 
@@ -6476,14 +7714,14 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
     // restart timer becomes an independent root before its parent Box is
     // dropped, so it never retains a dangling parent pointer.
     let mut complete = true;
-    for child_sup in &s.child_supervisors {
+    for (child_sup, _child_token, _child_spec) in take_nested_supervisor_roster(sup) {
         if !child_sup.is_null() {
             // SAFETY: child_sup is non-null (checked above), workers are joined,
             // and the parent still owns the child supervisor allocation.
-            unsafe { (**child_sup).parent = ptr::null_mut() };
+            unsafe { (*child_sup).parent = ptr::null_mut() };
             // SAFETY: ownership was detached above; the child either frees now
             // or re-registers itself as an independent retained root.
-            complete &= unsafe { free_supervisor_resources(*child_sup) };
+            complete &= unsafe { free_supervisor_resources(child_sup) };
         }
     }
     // Drop the Box — child spec Drop impls free names + init_state.
@@ -6508,44 +7746,33 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     child: *mut HewActor,
 ) {
     cabi_guard!(sup.is_null() || child.is_null());
-    // SAFETY: caller guarantees both pointers are valid.
-    let s = unsafe { &*sup };
-    // SAFETY: caller guarantees `child` is a valid HewActor pointer.
-    let child_ref = unsafe { &*child };
-
-    // Find the child index in the supervisor's children array. An unassigned
-    // index (the `-1` initial value) means this actor is not a supervised
-    // child of anyone: refuse rather than reinterpret.
-    let Ok(child_index) = u32::try_from(child_ref.supervisor_child_index) else {
-        return;
+    let (child_index, child_id, exit_state, crash_code) = {
+        // SAFETY: caller keeps `sup` live; the guard prevents remove/restart
+        // from reclaiming `child` while its event scalars are copied out.
+        let guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: roster access is serialized by the guard.
+        let s = &*guard;
+        let Some(index) = s.children.iter().position(|candidate| *candidate == child) else {
+            return;
+        };
+        let Ok(child_index) = u32::try_from(index) else {
+            return;
+        };
+        // SAFETY: the matching roster slot owns this live child for the
+        // duration of the critical section.
+        let child_ref = unsafe { &*child };
+        (
+            child_index,
+            child_ref.id,
+            child_ref.actor_state.load(Ordering::Acquire),
+            child_ref.error_code.load(Ordering::Acquire),
+        )
     };
-    let index = child_index as usize;
-    if index >= s.child_count {
-        return;
-    }
-    // The child must actually occupy the slot it names. A stale index left
-    // behind by the swap-remove in `hew_supervisor_remove_child` would
-    // otherwise mis-target a live sibling.
-    if s.children[index] != child {
-        return;
-    }
-
-    let exit_state = child_ref.actor_state.load(Ordering::Acquire);
-    // Read the child's recorded trap code (set by `hew_actor_trap` before the
-    // state transition). `0` for non-crash exits or when no specific code was
-    // recorded — we propagate the honest unknown rather than fabricating.
-    let crash_code = child_ref.error_code.load(Ordering::Acquire);
 
     // Notify the supervisor actor via the event system.
     // SAFETY: sup is valid and child_id / exit_state are read from valid memory.
     unsafe {
-        hew_supervisor_notify_child_actor_event(
-            sup,
-            child_index,
-            child_ref.id,
-            exit_state,
-            crash_code,
-        );
+        hew_supervisor_notify_child_actor_event(sup, child_index, child_id, exit_state, crash_code);
     }
 }
 
@@ -6569,10 +7796,17 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor(
     if parent.is_null() || child.is_null() || parent == child {
         return -1;
     }
-    // SAFETY: caller guarantees parent is valid.
-    let p = unsafe { &mut *parent };
+    // SAFETY: caller guarantees `child` is live through this construction edge.
+    let child_token = unsafe { (*child).local_pid_id };
+    // SAFETY: caller keeps parent live through this registration.
+    let mut guard = unsafe { &(*parent).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable parallel-roster access.
+    let p = &mut *guard;
+    debug_assert_eq!(p.child_supervisors.len(), p.child_supervisor_tokens.len());
+    debug_assert_eq!(p.child_supervisors.len(), p.child_supervisor_specs.len());
     let idx = p.child_supervisors.len();
     p.child_supervisors.push(child);
+    p.child_supervisor_tokens.push(child_token);
     p.child_supervisor_specs.push(None);
     // Set parent back-pointer on the child supervisor.
     // SAFETY: caller guarantees child is valid.
@@ -6605,10 +7839,17 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
     if parent.is_null() || child.is_null() || parent == child {
         return -1;
     }
-    // SAFETY: caller guarantees parent and child are valid.
-    let p = unsafe { &mut *parent };
+    // SAFETY: caller guarantees `child` is live through this construction edge.
+    let child_token = unsafe { (*child).local_pid_id };
+    // SAFETY: caller keeps parent live through this registration.
+    let mut guard = unsafe { &(*parent).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable parallel-roster access.
+    let p = &mut *guard;
+    debug_assert_eq!(p.child_supervisors.len(), p.child_supervisor_tokens.len());
+    debug_assert_eq!(p.child_supervisors.len(), p.child_supervisor_specs.len());
     let idx = p.child_supervisors.len();
     p.child_supervisors.push(child);
+    p.child_supervisor_tokens.push(child_token);
     p.child_supervisor_specs
         .push(Some(SupervisorChildSpec { init_fn }));
     // SAFETY: child and parent are valid pointers per caller contract.
@@ -6636,10 +7877,13 @@ pub unsafe extern "C" fn hew_supervisor_get_child_supervisor(
     if sup.is_null() || index < 0 {
         return ptr::null_mut();
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
     #[expect(clippy::cast_sign_loss, reason = "guarded by index >= 0 check above")]
     let i = index as usize;
+    // SAFETY: caller keeps `sup` live through this nested-roster read.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped parallel-roster access.
+    let s = &*guard;
+    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
     if i >= s.child_supervisors.len() {
         return ptr::null_mut();
     }
@@ -6659,14 +7903,9 @@ pub unsafe extern "C" fn hew_supervisor_get_child(
     if sup.is_null() || index < 0 {
         return ptr::null_mut();
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
     #[expect(clippy::cast_sign_loss, reason = "guarded by index >= 0 check above")]
     let i = index as usize;
-    if i >= s.child_count {
-        return ptr::null_mut();
-    }
-    load_child_slot(s, i)
+    load_child_slot(sup, i)
 }
 
 /// Return the child actor pointer at `index`, waiting up to `timeout_ms`
@@ -6687,21 +7926,20 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
     if sup.is_null() || index < 0 {
         return ptr::null_mut();
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
     #[expect(clippy::cast_sign_loss, reason = "guarded by index >= 0 check above")]
     let i = index as usize;
-    if i >= s.child_count {
-        return ptr::null_mut();
-    }
-
-    let pair = match s.restart_notify {
-        Some(ref p) => Arc::clone(p),
-        None => return ptr::null_mut(),
+    let pair = {
+        // SAFETY: caller keeps `sup` live; restart notification publication is
+        // serialized with child roster metadata.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        match &roster.restart_notify {
+            Some(pair) => Arc::clone(pair),
+            None => return ptr::null_mut(),
+        }
     };
 
     // Fast path: child is already available.
-    let child = load_child_slot(s, i);
+    let child = load_child_slot(sup, i);
     if !child.is_null() {
         return child;
     }
@@ -6716,12 +7954,13 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
         std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
     let mut guard = pair.0.lock_or_recover();
     loop {
-        let child = load_child_slot(s, i);
+        let child = load_child_slot(sup, i);
         if !child.is_null() {
             return child;
         }
         // If the supervisor was cancelled, don't wait forever.
-        if s.restart_timers.is_cancelled() {
+        // SAFETY: caller keeps `sup` live for this atomic read.
+        if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
             return ptr::null_mut();
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -6731,7 +7970,7 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
         let (new_guard, wait_result) = pair.1.wait_timeout_or_recover(guard, remaining);
         guard = new_guard;
         if wait_result.timed_out() {
-            return load_child_slot(s, i);
+            return load_child_slot(sup, i);
         }
     }
 }
@@ -6752,14 +7991,18 @@ pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> 
         set_last_error("hew_supervisor_child_count: supervisor is null");
         return -1;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
+    // SAFETY: caller keeps `sup` live through this roster-count read.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped parallel-roster access.
+    let s = &*guard;
+    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
     (s.child_count + s.child_supervisors.len()) as c_int
 }
 
 /// Look up a static child by its compile-time-assigned slot index.
 ///
-/// Non-blocking. Acquires `children_lock` briefly to read the slot pointer
+/// Non-blocking. Acquires `roster` briefly to read the slot pointer
 /// and discriminator fields atomically, then releases it and returns a
 /// [`ChildLookupResult`] reflecting the slot state at observation time.
 ///
@@ -6798,10 +8041,7 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     if sup.is_null() {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-
-    child_get_from_supervisor(s, key, ChildHandleKind::RawPointer)
+    child_get_from_supervisor(sup, key, ChildHandleKind::RawPointer)
 }
 
 #[derive(Clone, Copy)]
@@ -6813,22 +8053,21 @@ enum ChildHandleKind {
 /// Resolve one static child while the supervisor allocation is known live.
 ///
 /// Both public lookup ABIs share this discriminator authority. The stable form
-/// copies the current incarnation's `LocalPid` token while `children_lock` is
+/// copies the current incarnation's `LocalPid` token while `roster` is
 /// held, so no caller can retain or dereference the child allocation after the
 /// restart machinery replaces it.
 fn child_get_from_supervisor(
-    s: &HewSupervisor,
+    sup: *mut HewSupervisor,
     key: u32,
     handle_kind: ChildHandleKind,
 ) -> ChildLookupResult {
     // Fast-path: supervisor-level shutdown check (no lock required — atomics).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: caller keeps `sup` live for these atomic reads.
+    // SAFETY: caller keeps the allocation live through this atomic re-check.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
-    }
-
-    let i = key as usize;
-    if i >= s.child_count {
-        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
     // Critical section: read the slot pointer AND the per-slot discriminator
@@ -6837,17 +8076,29 @@ fn child_get_from_supervisor(
     //
     // The default scheduler runs one worker per core, so readers here race the
     // restart machinery (store_child_slot / restart_child_from_spec) on other
-    // workers; `children_lock` is the exclusion that keeps the discriminator
+    // workers; `roster` is the exclusion that keeps the discriminator
     // triple coherent. Future optimization: migrate to AtomicPtr<HewActor> +
     // atomic discriminator fields so readers can avoid the mutex on the common
     // Live path.
-    let _guard = s.children_lock.lock_or_recover();
+    // SAFETY: caller keeps `sup` live through the classified roster lookup.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped child/spec access.
+    let s = &*guard;
 
     // Re-check shutdown under the lock (the supervisor could have been
     // cancelled or run out of budget between the atomic check above and
     // acquiring the lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: the stable-identity pin keeps the allocation live through this
+    // atomic re-check.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+
+    let i = key as usize;
+    if i >= s.child_count {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
     let slot = s.children.get(i).copied().unwrap_or(ptr::null_mut());
@@ -6877,10 +8128,12 @@ fn child_get_from_supervisor(
 /// Classify a null child slot from its per-child spec (the FSM in §2.2):
 /// circuit-breaker cooldown, backoff timer pending, or an active restart.
 /// Shared by the classified lookups and the owner-scoped role ask so both
-/// surfaces name the same slot state. Caller holds `children_lock`;
+/// surfaces name the same slot state. Caller holds `roster`;
 /// `child_specs` is parallel to `children` after `hew_supervisor_start`, so
 /// the index is always valid here.
-fn classify_null_child_slot(s: &HewSupervisor, i: usize) -> ChildLookupResult {
+fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildLookupResult {
+    // ROSTER-GUARDED-HELPER: every caller holds this supervisor's
+    // `roster` for the complete borrowed-spec classification.
     let spec = &s.child_specs[i];
 
     // CB OPEN = circuit breaker is suppressing restarts during cooldown.
@@ -6906,7 +8159,7 @@ fn classify_null_child_slot(s: &HewSupervisor, i: usize) -> ChildLookupResult {
 ///
 /// The returned `handle` word encodes the current child's stable `LocalPid`
 /// token, never a child allocation pointer. Supervisor access is pinned for the
-/// complete classified lookup; the child token is copied under `children_lock`.
+/// complete classified lookup; the child token is copied under `roster`.
 /// A restart after return retires that exact token, so a subsequent token send
 /// fails closed instead of retargeting reused storage.
 #[cfg(not(target_arch = "wasm32"))]
@@ -6919,9 +8172,7 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     };
     let sup = pin.supervisor();
-    // SAFETY: the stable-identity pin prevents supervisor reclamation through
-    // the complete lookup, including the children-lock critical section.
-    let result = child_get_from_supervisor(unsafe { &*sup }, key, ChildHandleKind::StableLocalPid);
+    let result = child_get_from_supervisor(sup, key, ChildHandleKind::StableLocalPid);
     drop(pin);
     result
 }
@@ -6939,7 +8190,7 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
 
 /// Test-only hook fired inside [`role_resolve_current_child_id`] in the gap
 /// between resolving the current child slot and returning its ID — with
-/// `children_lock` HELD. The forced-interleaving regression installs a closure
+/// `roster` HELD. The forced-interleaving regression installs a closure
 /// that probes the lock from another thread at this exact point, proving the
 /// restart machinery's slot writers (`store_child_slot` / `take_child_slot`)
 /// cannot interpose inside the classified-resolution critical section.
@@ -6954,9 +8205,9 @@ fn fire_role_ask_submit_gap_hook() {
     }
 }
 
-/// Test-only hook fired by the role-ask entry points AFTER `children_lock` is
+/// Test-only hook fired by the role-ask entry points AFTER `roster` is
 /// released and BEFORE the ID-pinned submission. Two regressions install it:
-/// the lock-order test probes `children_lock` from a helper thread and asserts
+/// the lock-order test probes `roster` from a helper thread and asserts
 /// it is FREE (the enqueue — including a Block-policy capacity wait — never
 /// runs under the slot lock), and the retirement-interleaving test frees the
 /// resolved incarnation here and asserts the submission fails closed instead
@@ -7004,15 +8255,15 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
 }
 
 /// Resolve the CURRENT incarnation of a stable-role slot to its actor ID
-/// under ONE `children_lock` critical section, with every refusal classified
+/// under ONE `roster` critical section, with every refusal classified
 /// by slot state (see [`role_ask_refuse`]).
 ///
 /// This is phase one of the owner-scoped role ask. The lock covers resolution
 /// and classification ONLY — never the mailbox submission. LOCK-ORDER
-/// INVARIANT: `children_lock` must not be held across a mailbox enqueue,
+/// INVARIANT: `roster` must not be held across a mailbox enqueue,
 /// because a Block-policy mailbox at capacity WAITS for space
 /// (`mailbox.rs` `HewOverflowPolicy::Block`), and the child draining that
-/// mailbox may itself issue a stable-role ask that acquires `children_lock` —
+/// mailbox may itself issue a stable-role ask that acquires `roster` —
 /// holding the lock across the wait closes a cycle (submitter waits for the
 /// drainer, drainer waits for the lock). Phase two therefore submits against
 /// the returned ID via the `LIVE_ACTORS` send pin (`with_actor_send_by_id`),
@@ -7029,7 +8280,7 @@ fn role_ask_refuse(reason: u8, key: u32) -> i32 {
 /// past `pid::MAX_ACTOR_SERIAL` rather than wrapping, so the collision is not
 /// reachable in production; the serial match is what keeps wrong-actor delivery
 /// unrepresentable at this seam regardless. Both scalars are copied out under
-/// `children_lock`; no pointer crosses the lock boundary.
+/// `roster`; no pointer crosses the lock boundary.
 #[cfg(not(target_arch = "wasm32"))]
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -7042,31 +8293,38 @@ fn role_resolve_current_child_id(
         ));
     };
     let sup = pin.supervisor();
-    // SAFETY: the stable-identity pin prevents supervisor reclamation for the
-    // complete classified lookup, including the children-lock section.
-    let s = unsafe { &*sup };
 
     // Fast-path shutdown check (atomics, no lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: the stable-identity pin keeps `sup` live for these atomic reads.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return Err(role_ask_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
         ));
     }
-    let i = key as usize;
-    if i >= s.child_count {
-        return Err(role_ask_refuse(ChildSlotReason::UnknownSlot as u8, key));
-    }
-
-    let _guard = s.children_lock.lock_or_recover();
+    // SAFETY: the stable-identity pin keeps `sup` live through this lookup.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped child/spec roster access.
+    let s = &*guard;
 
     // Re-check shutdown under the lock (the supervisor can be cancelled
     // between the atomic check above and acquiring the lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: the stable-identity pin keeps the allocation live through this
+    // atomic re-check.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return Err(role_ask_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
         ));
+    }
+
+    let i = key as usize;
+    if i >= s.child_count {
+        return Err(role_ask_refuse(ChildSlotReason::UnknownSlot as u8, key));
     }
 
     let child = s.children.get(i).copied().unwrap_or(ptr::null_mut());
@@ -7083,7 +8341,7 @@ fn role_resolve_current_child_id(
     fire_role_ask_submit_gap_hook();
 
     // SAFETY: `child` is the slot's live incarnation and cannot be replaced or
-    // reclaimed while `children_lock` is held; only the scalar id + full serial
+    // reclaimed while `roster` is held; only the scalar id + full serial
     // are copied out — no pointer crosses the lock boundary. The full serial is
     // the aliasing-proof discriminator phase two re-checks against the pinned
     // actor (the packed id alone can alias after 2^48 allocations).
@@ -7114,11 +8372,11 @@ fn role_ask_refuse_retired(key: u32) -> i32 {
 /// at the join site:
 ///
 /// 1. [`role_resolve_current_child_id`]: resolve + classify under
-///    `children_lock`; only the incarnation's scalar ID leaves the lock.
+///    `roster`; only the incarnation's scalar ID leaves the lock.
 /// 2. ID-pinned submission via `with_actor_send_by_id`: the `LIVE_ACTORS` pin
 ///    keeps the allocation live for the complete enqueue (including a
 ///    Block-policy capacity wait, which deliberately runs OUTSIDE
-///    `children_lock` — see the lock-order invariant on phase one). A
+///    `roster` — see the lock-order invariant on phase one). A
 ///    retirement interposing between the phases fails closed with a named
 ///    refusal; an ask accepted and then retired before dispatch resolves
 ///    through the classified-null machinery (`hew_reply_channel_failure_kind`).
@@ -7160,7 +8418,7 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
 
 /// Blocking twin of [`hew_supervisor_role_ask_with_channel`] for callers with
 /// no parkable continuation (`main` / free functions): resolve the role under
-/// `children_lock` (classified refusals), then run the ID-pinned blocking ask
+/// `roster` (classified refusals), then run the ID-pinned blocking ask
 /// (`hew_actor_ask_by_id` — the same pin + reply-wait protocol every by-ID ask
 /// uses).
 ///
@@ -7258,23 +8516,26 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
     if sup.is_null() {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: caller keeps `sup` live for these atomic reads.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
     let i = key as usize;
+    // SAFETY: caller keeps `sup` live through this nested-roster lookup.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped parallel-roster access.
+    let s = &*guard;
+    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
     if i >= s.child_supervisors.len() {
         return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
-    // child_supervisors is not protected by children_lock (it uses its own
-    // replacement pattern via child_supervisor_specs). Read it without the
-    // lock — the pointer is set during supervisor construction or restart
-    // under single-threaded scheduling. This is safe for v0.5; the SMP
-    // migration note from hew_supervisor_child_get applies here too.
+    // The pointer and its stable token are one parallel-roster entry protected
+    // by `roster`; restart, nested stop, and public lookup cannot observe
+    // different generations of the pair.
     let child_sup = s.child_supervisors[i];
     if !child_sup.is_null() {
         // Reinterpret the supervisor pointer as HewActor* for the shared
@@ -7299,9 +8560,8 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_is_running(sup: *mut HewSupervisor) -> c_int {
     cabi_guard!(sup.is_null(), 0);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-    s.running.load(Ordering::Acquire)
+    // SAFETY: caller guarantees sup is valid for this atomic load.
+    unsafe { (*sup).running.load(Ordering::Acquire) }
 }
 
 /// Configure circuit breaker settings for a child.
@@ -7322,15 +8582,16 @@ pub unsafe extern "C" fn hew_supervisor_set_circuit_breaker(
         return -1;
     }
 
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let index = child_index as usize;
 
+    // SAFETY: caller keeps `sup` live through this metadata update.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable roster access.
+    let s = &mut *guard;
     if index >= s.child_count {
         return -1;
     }
@@ -7360,15 +8621,16 @@ pub unsafe extern "C" fn hew_supervisor_get_child_circuit_state(
         return -1;
     }
 
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let index = child_index as usize;
 
+    // SAFETY: caller keeps `sup` live through this metadata read.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped roster access.
+    let s = &*guard;
     if index >= s.child_count {
         return -1;
     }
@@ -7420,8 +8682,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     spec: *const HewChildSpec,
 ) -> c_int {
     cabi_guard!(sup.is_null() || spec.is_null(), -1);
-    // SAFETY: caller guarantees both pointers are valid.
-    let s = unsafe { &mut *sup };
     // SAFETY: caller guarantees `spec` is valid.
     let sp = unsafe { &*spec };
 
@@ -7429,29 +8689,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     // produces its state via the thunk; skip the byte-copy template (mirror
     // hew_supervisor_add_child_spec).
     let has_init_fn = sp.init_fn.is_some();
-
-    // Adopt the supervisor config buffer (idempotent on the same pointer).
-    if has_init_fn && !sp.config.is_null() {
-        if s.config_buf.is_null() {
-            s.config_buf = sp.config;
-            s.config_size = sp.config_size;
-        } else if s.config_buf != sp.config {
-            // Conflicting non-null config pointer — unreachable from correct
-            // codegen (one buffer per supervisor). debug_assert in debug; in
-            // release free the rejected duplicate (fail closed, no leak). The
-            // pointer differs from the adopted buffer, so this cannot
-            // double-free it.
-            debug_assert!(
-                false,
-                "hew_supervisor_add_child_dynamic: config buffer ({:p}) differs from the \
-                 supervisor's adopted buffer ({:p})",
-                sp.config, s.config_buf
-            );
-            // SAFETY: sp.config is a libc::malloc'd orphan distinct from the
-            // adopted buffer (ALLOCATOR-PAIRING: libc).
-            unsafe { libc::free(sp.config) };
-        }
-    }
 
     // Deep-copy init state — only on the template (non-init_fn) path.
     let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
@@ -7482,12 +8719,19 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         unsafe { crate::cabi::cstr_strdup(sp.name) }
     };
 
-    let i = s.child_count;
-
-    s.child_specs.push(InternalChildSpec {
+    let mut internal_spec = InternalChildSpec {
+        identity: 0,
+        revision: 1,
         name: name_copy,
-        init_state: state_copy,
-        init_state_size: if has_init_fn { 0 } else { sp.init_state_size },
+        state_template: Arc::new(ChildStateTemplate {
+            allocation: Arc::new(ChildStateTemplateAllocation {
+                state: state_copy,
+                size: if has_init_fn { 0 } else { sp.init_state_size },
+                owns_typed_fields: false,
+                state_drop: Arc::new(ChildStateDropDescriptor::new()),
+            }),
+            clone_fn: None,
+        }),
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
@@ -7503,13 +8747,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
         on_crash: sp.on_crash,
-        // Registered by the caller via hew_supervisor_set_child_state_drop
-        // immediately after this call returns. See the function doc comment
-        // for the race-window analysis and calling contract.
-        state_drop_fn: None,
-        // Registered by the caller via hew_supervisor_set_child_state_clone
-        // immediately after this call returns.
-        state_clone_fn: None,
         // Carried IN the spec literal (like on_crash) so the dynamic child's
         // initial spawn — which also routes through restart_child_from_spec —
         // fires the lifecycle wrapper.
@@ -7517,23 +8754,59 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         // Carried IN the spec literal so the dynamic child's initial spawn uses
         // the thunk (the load-bearing first-spawn carrier).
         init_fn: sp.init_fn,
-        config: if has_init_fn {
-            s.config_buf
-        } else {
-            ptr::null_mut()
-        },
-    });
+        // The exact adopted buffer is installed atomically with roster
+        // reservation below. No supervisor borrow crosses this construction.
+        config: ptr::null_mut(),
+    };
+
+    let (i, should_spawn) = {
+        // SAFETY: caller keeps `sup` live; this guard is the sole authority for
+        // config adoption and the complete child/spec placeholder reservation.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable supervisor access.
+        let s = &mut *guard;
+
+        // Adopt the supervisor config buffer (idempotent on the same pointer)
+        // in the same transaction that publishes the spec borrowing it.
+        if has_init_fn && !sp.config.is_null() {
+            if s.config_buf.is_null() {
+                s.config_buf = sp.config;
+                s.config_size = sp.config_size;
+            } else if s.config_buf != sp.config {
+                set_last_error(
+                    "hew_supervisor_add_child_dynamic: conflicting supervisor config buffer",
+                );
+                // SAFETY: `sp.config` is a libc-allocated orphan distinct from
+                // the already-adopted buffer (ALLOCATOR-PAIRING: libc).
+                unsafe { libc::free(sp.config) };
+                return -1;
+            }
+            internal_spec.config = s.config_buf;
+        }
+
+        let i = s.child_count;
+        internal_spec.identity = s.next_child_spec_identity;
+        let Some(next_identity) = s.next_child_spec_identity.checked_add(1) else {
+            set_last_error("hew_supervisor_add_child_dynamic: child-spec identity exhausted");
+            return -1;
+        };
+        s.next_child_spec_identity = next_identity;
+        s.child_specs.push(internal_spec);
+        s.children.push(ptr::null_mut());
+        s.child_count += 1;
+        debug_assert_eq!(s.children.len(), s.child_specs.len());
+        // SAFETY: caller keeps `sup` live; running is atomic and independent of
+        // the mutex-protected roster transaction.
+        (i, unsafe { (*sup).running.load(Ordering::Acquire) != 0 })
+    };
+
+    run_dynamic_child_reserved_hook_for_test();
 
     // Spawn the child if the supervisor is running.
-    let spawned = if s.running.load(Ordering::Acquire) != 0 {
+    if should_spawn {
         // SAFETY: spec is valid.
-        unsafe { restart_child_from_spec(s, i) }
-    } else {
-        ptr::null_mut()
-    };
-    push_child_slot(s, spawned);
-    s.child_count += 1;
-
+        unsafe { restart_child_from_spec(sup, i) };
+    }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -7564,66 +8837,74 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     if sup.is_null() || child_index < 0 {
         return -1;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let idx = child_index as usize;
 
-    if idx >= s.child_count {
-        return -1;
-    }
+    // Extract the complete ownership unit under the same lock used by restart
+    // snapshots and setters. `InternalChildSpec` (including its Arc template)
+    // is then dropped normally outside the lock; no manual wrapper-only free
+    // can bypass typed template teardown.
+    let (child, removed_spec) = {
+        // SAFETY: caller guarantees `sup` live; roster references exist only
+        // inside this lock scope.
+        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard serializes this scoped mutable roster access.
+        let s = &mut *guard;
+        if idx >= s.child_count {
+            return -1;
+        }
+        debug_assert_eq!(s.children.len(), s.child_specs.len());
+        debug_assert_eq!(s.child_count, s.children.len());
 
-    // Stop and free the child actor.
-    let child = s.children[idx];
+        let previous_last = s.child_count - 1;
+        let child = s.children.swap_remove(idx);
+        let removed_spec = s.child_specs.swap_remove(idx);
+        s.child_count -= 1;
+
+        // Static-backed pool membership names child roster indices. Apply the
+        // same swap-remove mapping atomically: remove the retired membership,
+        // then retarget references to the former last child to its new slot.
+        for pool_spec in &mut s.pool_specs {
+            pool_spec.static_members.retain(|member| *member != idx);
+            if idx != previous_last {
+                for member in &mut pool_spec.static_members {
+                    if *member == previous_last {
+                        *member = idx;
+                    }
+                }
+            }
+        }
+
+        if idx < s.child_count {
+            let swapped = s.children[idx];
+            if !swapped.is_null() {
+                // SAFETY: the swapped child remains live and is now owned by
+                // the roster slot at `idx`.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    reason = "child index fits in i32 for any reasonable child count"
+                )]
+                // SAFETY: `swapped` is the live actor retained in the roster.
+                unsafe {
+                    (*swapped).supervisor_child_index = idx as i32;
+                }
+            }
+        }
+        (child, removed_spec)
+    };
+
+    // Stop and free the extracted actor after releasing the roster lock.
     if !child.is_null() {
         // SAFETY: child pointer is valid.
         unsafe { actor::hew_actor_stop(child) };
         // SAFETY: child was stopped.
         unsafe { actor::hew_actor_free(child) };
     }
-
-    // Free the spec's resources.
-    let spec = &mut s.child_specs[idx];
-    if !spec.init_state.is_null() {
-        // SAFETY: init_state was allocated with libc::malloc.
-        unsafe { libc::free(spec.init_state) }; // ALLOCATOR-PAIRING: libc
-        spec.init_state = ptr::null_mut();
-    }
-    if !spec.name.is_null() {
-        // SAFETY: name was allocated with libc::strdup.
-        unsafe { libc::free(spec.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
-        spec.name = ptr::null_mut();
-    }
-
-    // Swap-remove to avoid shifting all elements.
-    let last = s.child_count - 1;
-    if idx != last {
-        s.children.swap(idx, last);
-        s.child_specs.swap(idx, last);
-
-        // Update the supervisor_child_index on the swapped child.
-        let swapped = s.children[idx];
-        if !swapped.is_null() {
-            // SAFETY: swapped child is valid.
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "child index fits in i32 for any reasonable child count"
-            )]
-            // SAFETY: swapped child pointer was validated as non-null above.
-            unsafe {
-                (*swapped).supervisor_child_index = idx as i32;
-            }
-        }
-    }
-
-    s.children.pop();
-    s.child_specs.pop();
-    s.child_count -= 1;
+    drop(removed_spec);
     0
 }
 
@@ -7654,26 +8935,28 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_drop(
     if sup.is_null() || child_index < 0 {
         return;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let idx = child_index as usize;
 
+    // Publish the descriptor and back-fill the current incarnation in one
+    // roster critical section. Every immutable template generation shares the
+    // same atomic descriptor, so an outstanding restart lease also observes it.
+    // SAFETY: caller guarantees `sup` live; mutation is scoped to this roster
+    // critical section.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable roster access.
+    let s = &mut *guard;
     if idx >= s.child_count {
         return;
     }
-
-    s.child_specs[idx].state_drop_fn = Some(state_drop_fn);
-
-    // Guard the children-slot read so a concurrent supervisor restart on
-    // another thread cannot replace s.children[idx] between the load and
-    // the hew_actor_set_state_drop call (which would leave the new actor
-    // without a state-drop registration).
-    let _guard = s.children_lock.lock_or_recover();
+    s.child_specs[idx]
+        .state_template
+        .allocation
+        .state_drop
+        .store(state_drop_fn);
 
     // Register on the already-spawned actor for its first run (the initial
     // spawn happens inside add_child_spec before this setter is called).
@@ -7720,22 +9003,29 @@ pub unsafe extern "C" fn hew_supervisor_set_child_lifecycle(
     if sup.is_null() || child_index < 0 {
         return;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let idx = child_index as usize;
 
+    // SAFETY: caller guarantees `sup` live; lifecycle metadata is part of the
+    // synchronized child spec roster.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable roster access.
+    let s = &mut *guard;
     if idx >= s.child_count {
         return;
     }
 
     // Store only. The initial-spawn fire already ran inside add_child_spec
     // (reading the literal-carried pointer); do NOT re-fire here.
+    let Some(next_revision) = s.child_specs[idx].revision.checked_add(1) else {
+        set_last_error("hew_supervisor_set_child_lifecycle: child-spec revision exhausted");
+        return;
+    };
     s.child_specs[idx].lifecycle_fn = Some(lifecycle_fn);
+    s.child_specs[idx].revision = next_revision;
 }
 
 /// Register a state-clone callback for a child actor spec, breaking the
@@ -7792,67 +9082,99 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
     if sup.is_null() || child_index < 0 {
         return;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let idx = child_index as usize;
 
-    if idx >= s.child_count {
-        return;
-    }
-
-    s.child_specs[idx].state_clone_fn = Some(state_clone_fn);
-
-    // Break the initial-spawn byte-alias by re-cloning the spec template
-    // in place. Safe to do BEFORE locking children because we only read
-    // immutable spec fields here; the actor's `state` is a sibling
-    // byte-copy and is untouched by this re-clone.
-    let (template_ptr, template_size) = {
-        let spec = &s.child_specs[idx];
-        (spec.init_state, spec.init_state_size)
+    // Lease the current immutable generation under the roster lock, then run
+    // the unsafe callback lock-free. The Arc keeps `template_ptr` alive across
+    // concurrent replacement/removal and permits callback re-entrancy.
+    let (spec_identity, old_template) = {
+        // SAFETY: caller guarantees `sup` live; this roster reference is
+        // released before invoking the callback below.
+        let guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard protects this scoped immutable roster access.
+        let s = &*guard;
+        if idx >= s.child_count {
+            return;
+        }
+        (
+            s.child_specs[idx].identity,
+            Arc::clone(&s.child_specs[idx].state_template),
+        )
     };
-    if template_size > 0 && !template_ptr.is_null() {
+
+    let template_ptr = old_template.allocation.state;
+    let template_size = old_template.allocation.size;
+    let mut transferred_initial_state_ownership = false;
+    let new_allocation = if template_size > 0 && !template_ptr.is_null() {
         // SAFETY: template_ptr is a malloc'd wrapper of template_size bytes
         // produced by hew_supervisor_add_child_spec's byte-copy; the
         // contract of state_clone_fn admits reading from such a wrapper as
         // long as it has not yet been mutated. The race-window analysis in
         // the doc comment justifies the no-mutation precondition.
         let fresh = unsafe { state_clone_fn(template_ptr.cast_const()) };
-        if !fresh.is_null() {
-            // Replace spec.init_state with the independently-owned clone.
-            // The OLD template's owned-field pointers byte-alias the
-            // running actor's `state` fields, so we must raw-libc::free the
-            // wrapper *without* calling state_drop_fn — letting the actor
-            // remain the sole owner of those heap allocations until it
-            // crashes or stops.
-            // SAFETY: old template was allocated with libc::malloc in
-            // hew_supervisor_add_child_spec / _add_child_dynamic.
-            unsafe {
-                libc::free(template_ptr); // ALLOCATOR-PAIRING: libc
-            }
-            s.child_specs[idx].init_state = fresh;
+        if fresh.is_null() {
+            Arc::clone(&old_template.allocation)
+        } else {
+            transferred_initial_state_ownership = true;
+            Arc::new(ChildStateTemplateAllocation {
+                state: fresh,
+                size: template_size,
+                owns_typed_fields: true,
+                state_drop: Arc::clone(&old_template.allocation.state_drop),
+            })
         }
-        // If `fresh.is_null()` (clone OOM at registration time), leave the
-        // byte-copy template in place. The state_clone_fn is still stored;
-        // the next restart will retry the clone-aware path.
-    }
+    } else {
+        Arc::clone(&old_template.allocation)
+    };
 
-    // Guard the children-slot read so a concurrent supervisor restart on
-    // another thread cannot replace s.children[idx] between the load and
-    // the hew_actor_set_state_clone call.
-    let _guard = s.children_lock.lock_or_recover();
+    let new_template = Arc::new(ChildStateTemplate {
+        allocation: new_allocation,
+        clone_fn: Some(state_clone_fn),
+    });
+
+    // Install only if this exact spec still occupies the slot. A remove/swap
+    // or competing setter may have advanced it while the callback ran.
+    // SAFETY: callback returned and no supervisor reference crossed it;
+    // reacquire before creating a scoped mutable roster reference.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable roster access.
+    let s = &mut *guard;
+    if s.child_specs
+        .get(idx)
+        .is_none_or(|spec| spec.identity != spec_identity)
+    {
+        return;
+    }
+    let Some(next_revision) = s.child_specs[idx].revision.checked_add(1) else {
+        set_last_error("hew_supervisor_set_child_state_clone: child-spec revision exhausted");
+        return;
+    };
+    s.child_specs[idx].state_template = new_template;
+    s.child_specs[idx].revision = next_revision;
 
     // Register on the already-spawned actor for its first run (the initial
     // spawn happens inside add_child_spec before this setter is called).
     let child = s.children[idx];
     if !child.is_null() {
+        // Install the clone descriptor before publishing owned provenance. A
+        // dispatch that observes owned provenance therefore cannot observe a
+        // half-registered actor.
         // SAFETY: child is a valid actor pointer; state_clone_fn has the
         // correct signature.
         unsafe { actor::hew_actor_set_state_clone(child, state_clone_fn) };
+        if transferred_initial_state_ownership {
+            // The old shallow template wrapper is gone and its field owners
+            // now belong solely to the initial actor. Clear only the borrowed
+            // provenance bit; a racing crash-escrow consumption remains set in
+            // its independent atomic authority.
+            // SAFETY: child is the live initial incarnation whose alias was
+            // broken by the successful clone immediately above.
+            unsafe { actor::mark_state_drop_owned(child) };
+        }
     }
 }
 
@@ -7898,18 +9220,25 @@ pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
     if sup.is_null() || child_index < 0 {
         return;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
-
     #[expect(
         clippy::cast_sign_loss,
         reason = "child_index is checked to be non-negative"
     )]
     let idx = child_index as usize;
 
+    // SAFETY: caller guarantees `sup` live; init/config publication is part of
+    // the child spec roster and never calls `init_fn` under this lock.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable roster access.
+    let s = &mut *guard;
     if idx >= s.child_count {
         return;
     }
+
+    let Some(next_revision) = s.child_specs[idx].revision.checked_add(1) else {
+        set_last_error("hew_supervisor_set_child_init_fn: child-spec revision exhausted");
+        return;
+    };
 
     // Adopt the supervisor-owned config buffer once; idempotent on the same
     // pointer. (The literal carrier already adopted it inside add_child_spec for
@@ -7940,6 +9269,7 @@ pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
 
     s.child_specs[idx].init_fn = Some(init_fn);
     s.child_specs[idx].config = s.config_buf;
+    s.child_specs[idx].revision = next_revision;
 }
 
 /// Register the config struct's drop-inplace glue so the supervisor releases the
@@ -7970,8 +9300,11 @@ pub unsafe extern "C" fn hew_supervisor_set_config_drop_fn(
     if sup.is_null() {
         return;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
+    // SAFETY: caller guarantees sup is valid; config ownership is serialized
+    // with the child specs whose init thunks borrow it.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable metadata access.
+    let s = &mut *guard;
     debug_assert!(
         s.config_drop_fn
             .is_none_or(|f| std::ptr::fn_addr_eq(f, drop_fn)),
@@ -8041,19 +9374,14 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
         return RESTART_AWAIT_READY;
     }
 
-    // SAFETY: caller guarantees `sup` is valid.
-    let s = unsafe { &*sup };
-
     // Snapshot the restart counter BEFORE the pre-park check. `notify_restart`
     // bumps this counter (under `restart_notify.0`) before it drains waiters
     // (under `restart_await_waiters`), so re-reading it inside the registration
     // critical section detects a restart that completed in the gap between the
     // pre-park check and the push — the lost-wakeup guard (mirrors the `baseline`
     // discipline in `hew_supervisor_restart_await_blocking`).
-    let baseline = s
-        .restart_notify
-        .as_ref()
-        .map_or(0, |pair| *pair.0.lock_or_recover());
+    let notify = restart_notify_snapshot(sup);
+    let baseline = notify.as_ref().map_or(0, |pair| *pair.0.lock_or_recover());
 
     // Pre-park state check (R4 / issue #2124): inspect the current slot before
     // parking so a Live child resumes immediately and a permanently-Dead child
@@ -8080,9 +9408,9 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     // before it acquires `restart_await_waiters` to drain, so if its drain already
     // ran (finding our waiter absent), the bump it performed is visible here and
     // we resolve READY instead of parking against a wake that already fired.
-    let mut waiters = s.restart_await_waiters.lock_or_recover();
-    let advanced = s
-        .restart_notify
+    // SAFETY: caller keeps `sup` live while its waiter registry is updated.
+    let mut waiters = unsafe { &(*sup).restart_await_waiters }.lock_or_recover();
+    let advanced = notify
         .as_ref()
         .is_none_or(|pair| *pair.0.lock_or_recover() != baseline);
     if advanced {
@@ -8123,9 +9451,8 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_detach(
     if sup.is_null() || slot.is_null() {
         return;
     }
-    // SAFETY: caller guarantees `sup` is valid.
-    let s = unsafe { &*sup };
-    let mut waiters = s.restart_await_waiters.lock_or_recover();
+    // SAFETY: caller keeps `sup` live while its waiter registry is updated.
+    let mut waiters = unsafe { &(*sup).restart_await_waiters }.lock_or_recover();
     if let Some(pos) = waiters.iter().position(|w| w.slot == slot) {
         waiters.swap_remove(pos);
         drop(waiters);
@@ -8162,9 +9489,6 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
     if sup.is_null() {
         return;
     }
-    // SAFETY: caller guarantees `sup` is valid.
-    let s = unsafe { &*sup };
-
     // Snapshot the restart counter at entry. `await_restart` resolves on EITHER:
     //   (a) a restart cycle completing after the call (the counter advances) —
     //       this is the "I crashed the child, wait for it to come back" path,
@@ -8178,10 +9502,8 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
     // A permanently-Dead slot returns immediately (R4 fail-closed). The fungible
     // re-resolve on the subsequent send is the liveness authority; this barrier
     // only ensures an in-flight restart has landed before we re-fetch.
-    let baseline = s
-        .restart_notify
-        .as_ref()
-        .map_or(0, |pair| *pair.0.lock_or_recover());
+    let notify = restart_notify_snapshot(sup);
+    let baseline = notify.as_ref().map_or(0, |pair| *pair.0.lock_or_recover());
 
     // The grace window bounds case (c): if the slot is Live and no restart lands
     // within it, conclude no restart is coming and return. Short enough to stay
@@ -8205,7 +9527,7 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
             _ => {}
         }
 
-        if let Some(ref pair) = s.restart_notify {
+        if let Some(ref pair) = notify {
             let count = pair.0.lock_or_recover();
             // (a) a restart completed since entry.
             if *count > baseline {
@@ -8243,8 +9565,11 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervisor) {
     cabi_guard!(sup.is_null());
-    // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
-    let s = unsafe { &mut *sup };
+    // SAFETY: caller keeps `sup` live; notification option publication shares
+    // the roster lock with all readers.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped option mutation.
+    let s = &mut *guard;
     if let Some(ref pair) = s.restart_notify {
         let mut count = pair.0.lock_or_recover();
         *count = 0;
@@ -8269,11 +9594,8 @@ pub unsafe extern "C" fn hew_supervisor_wait_restart(
     timeout_ms: u64,
 ) -> usize {
     cabi_guard!(sup.is_null(), 0);
-    // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
-    let s = unsafe { &*sup };
-    let pair = match s.restart_notify {
-        Some(ref p) => Arc::clone(p),
-        None => return 0,
+    let Some(pair) = restart_notify_snapshot(sup) else {
+        return 0;
     };
     let timeout = std::time::Duration::from_millis(timeout_ms);
     let deadline = std::time::Instant::now() + timeout;
@@ -8319,8 +9641,6 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
     max_members: usize,
 ) -> c_int {
     cabi_guard!(sup.is_null(), -1);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
 
     let pool_strategy = match strategy {
         1 => PoolStrategy::Random,
@@ -8352,13 +9672,17 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         return -1;
     }
 
+    // SAFETY: caller keeps `sup` live; pool metadata shares the roster lock so
+    // static membership cannot race dynamic child removal.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes this scoped mutable pool-roster access.
+    let s = &mut *guard;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         reason = "pool slot count fits in c_int for any realistic supervisor"
     )]
     let index = s.pool_slots.len() as c_int;
-
     s.pool_slots.push(pool);
     s.pool_specs.push(InternalPoolSpec {
         name: name_copy,
@@ -8387,8 +9711,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_add(
     actor_pid: u64,
 ) -> c_int {
     cabi_guard!(sup.is_null(), -1);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
+    // SAFETY: caller keeps `sup` live through this membership update.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects the pool roster and selected pool lifetime.
+    let s = &*guard;
     let i = pool_key as usize;
     if i >= s.pool_slots.len() {
         set_last_error("hew_supervisor_pool_member_add: pool_key out of range");
@@ -8437,8 +9763,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_add_static(
     static_idx: u32,
 ) -> c_int {
     cabi_guard!(sup.is_null(), -1);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &mut *sup };
+    // SAFETY: caller keeps `sup` live through this static membership update.
+    let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard serializes child bounds and pool membership together.
+    let s = &mut *guard;
     let i = pool_key as usize;
     if i >= s.pool_slots.len() {
         set_last_error("hew_supervisor_pool_member_add_static: pool_key out of range");
@@ -8477,8 +9805,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_remove(
     actor_pid: u64,
 ) -> c_int {
     cabi_guard!(sup.is_null(), -1);
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
+    // SAFETY: caller keeps `sup` live through this membership update.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects the pool roster and selected pool lifetime.
+    let s = &*guard;
     let i = pool_key as usize;
     if i >= s.pool_slots.len() {
         set_last_error("hew_supervisor_pool_member_remove: pool_key out of range");
@@ -8531,11 +9861,11 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     if sup.is_null() {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
-
     // Fast-path: supervisor-level shutdown.
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    // SAFETY: caller keeps `sup` live for these atomic reads.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
@@ -8553,6 +9883,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     };
 
     let i = pool_key as usize;
+    // SAFETY: caller keeps `sup` live through this pool/child roster lookup.
+    let roster_guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped pool/child roster access.
+    let s = &*roster_guard;
     if i >= s.pool_slots.len() {
         return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
@@ -8578,13 +9912,14 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
             // Index beyond the member count → out of bounds (Vec[i] OOB parity).
             return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
         };
-        // Resolve through the static slot resolver, which holds `children_lock`
+        // Resolve through the static slot resolver, which holds `roster`
         // and reads the (pointer, CB-state, backoff) triple coherently.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "static child count is always small; u32 is the ABI key type"
         )]
         let key = static_idx as u32;
+        drop(roster_guard);
         // SAFETY: sup is valid (checked above); the resolver re-checks bounds.
         return unsafe { hew_supervisor_child_get(sup, key) };
     }
@@ -8627,8 +9962,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
     if sup.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
+    // SAFETY: caller keeps `sup` live through this pool-roster read.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the guard protects this scoped pool metadata access.
+    let s = &*guard;
     let i = pool_key as usize;
     if i >= s.pool_slots.len() {
         return -1;
@@ -8650,6 +9987,10 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    unused_unsafe,
+    reason = "test-owned raw supervisors often group several unsafe operations"
+)]
 #[expect(
     clippy::undocumented_unsafe_blocks,
     reason = "pool slot unit tests — safety invariants are documented per-test in comments"
@@ -8666,18 +10007,32 @@ mod pool_slot_tests {
     use std::ffi::c_void;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    macro_rules! locked_roster {
+        ($sup:expr) => {{
+            unsafe { &(*$sup).roster }
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }};
+    }
 
     use super::{
-        actor, restart_child_from_spec, restart_with_budget_and_strategy, take_child_slot,
-        ChildSlotReason, HewChildInitResult, HewChildSpec, HewSupervisor, OVERFLOW_DROP_NEW,
-        RESTART_PERMANENT,
+        actor, install_dynamic_child_reserved_hook_for_test, restart_child_from_spec,
+        restart_with_budget_and_strategy, supervisor_sys_dispatch_impl, take_child_slot,
+        ChildEvent, ChildSlotReason, HewChildInitResult, HewChildSpec, HewSupervisor,
+        OVERFLOW_DROP_NEW, RESTART_PERMANENT, RESTART_TEMPORARY,
     };
+    use crate::internal::types::HewActorState;
+    use crate::mailbox_header::HewSysMsg;
     use crate::supervisor::{
-        hew_supervisor_add_child_spec, hew_supervisor_new, hew_supervisor_pool_add_slot,
-        hew_supervisor_pool_child_get, hew_supervisor_pool_len, hew_supervisor_pool_member_add,
-        hew_supervisor_pool_member_add_static, hew_supervisor_pool_member_remove,
+        hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_new,
+        hew_supervisor_pool_add_slot, hew_supervisor_pool_child_get, hew_supervisor_pool_len,
+        hew_supervisor_pool_member_add, hew_supervisor_pool_member_add_static,
+        hew_supervisor_pool_member_remove, hew_supervisor_remove_child,
         hew_supervisor_set_child_state_drop, hew_supervisor_start, hew_supervisor_stop,
     };
+    use crate::util::MutexExt;
 
     const STRATEGY_ONE_FOR_ONE: std::ffi::c_int = 0;
     const STRATEGY_SIMPLE_ONE_FOR_ONE: std::ffi::c_int = 3;
@@ -8703,6 +10058,88 @@ mod pool_slot_tests {
     /// Mark the supervisor running so `pool_child_get` doesn't short-circuit.
     unsafe fn mark_running(sup: *mut HewSupervisor) {
         unsafe { (*sup).running.store(1, Ordering::Release) };
+    }
+
+    #[test]
+    fn dynamic_add_reservation_cannot_publish_into_removed_or_swapped_slot() {
+        let _rt = crate::runtime_test_guard();
+        let sup = unsafe { make_sup() };
+        assert!(!sup.is_null());
+        let base = HewChildSpec {
+            name: ptr::null(),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            dispatch: Some(noop_child_dispatch),
+            sys_dispatch: None,
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            coalesce_key_fn: None,
+            coalesce_fallback: OVERFLOW_DROP_NEW,
+            message_drop_fn: None,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
+        };
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup, &raw const base) },
+            0
+        );
+        unsafe { mark_running(sup) };
+
+        let rendezvous = Arc::new(Barrier::new(2));
+        let hook_gate = Arc::clone(&rendezvous);
+        let _hook = install_dynamic_child_reserved_hook_for_test(Arc::new(move || {
+            hook_gate.wait();
+            hook_gate.wait();
+        }));
+        let sup_addr = sup as usize;
+        let add = std::thread::spawn(move || {
+            let sup = sup_addr as *mut HewSupervisor;
+            let dynamic = HewChildSpec {
+                name: ptr::null(),
+                init_state: ptr::null_mut(),
+                init_state_size: 0,
+                dispatch: Some(noop_child_dispatch),
+                sys_dispatch: None,
+                restart_policy: RESTART_PERMANENT,
+                mailbox_capacity: -1,
+                overflow: OVERFLOW_DROP_NEW,
+                coalesce_key_fn: None,
+                coalesce_fallback: OVERFLOW_DROP_NEW,
+                message_drop_fn: None,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
+                lifecycle_fn: None,
+                init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
+            };
+            unsafe { hew_supervisor_add_child_dynamic(sup, &raw const dynamic) }
+        });
+
+        // Dynamic add has atomically reserved slot 1 but has not spawned. Remove
+        // slot 0, which swap-moves the reserved identity to slot 0, then restart
+        // that exact current slot. The stale add continuation must not publish a
+        // second actor into its former index 1.
+        rendezvous.wait();
+        assert_eq!(unsafe { hew_supervisor_remove_child(sup, 0) }, 0);
+        let published = unsafe { restart_child_from_spec(sup, 0) };
+        assert!(!published.is_null());
+        rendezvous.wait();
+        assert_eq!(add.join().expect("dynamic add thread panicked"), 1);
+
+        let roster_guard = unsafe { &(*sup).roster }.lock_or_recover();
+        let s = &*roster_guard;
+        assert_eq!(s.child_count, 1);
+        assert_eq!(s.children, vec![published]);
+        drop(roster_guard);
+        unsafe { hew_supervisor_stop(sup) };
     }
 
     #[test]
@@ -9084,10 +10521,10 @@ mod pool_slot_tests {
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 1);
 
         // The byte-copy template was BYPASSED: the spec carries no init_state.
-        unsafe {
-            let s = &*sup;
-            assert!(s.child_specs[0].init_state.is_null());
-            assert_eq!(s.child_specs[0].init_state_size, 0);
+        {
+            let s = locked_roster!(sup);
+            assert!(s.child_specs[0].state_template.allocation.state.is_null());
+            assert_eq!(s.child_specs[0].state_template.allocation.size, 0);
             assert!(s.child_specs[0].init_fn.is_some());
             // The config buffer was adopted by the supervisor.
             assert_eq!(s.config_buf, cfg);
@@ -9095,7 +10532,7 @@ mod pool_slot_tests {
 
         // The child actor holds the thunk-produced state with the config seed.
         unsafe {
-            let child = (&*sup).children[0];
+            let child = locked_roster!(sup).children[0];
             assert!(!child.is_null());
             let st = (*child).state.cast::<InitClosureState>();
             assert!(!st.is_null());
@@ -9109,6 +10546,61 @@ mod pool_slot_tests {
             0,
             "no leak: the owned alloc was freed exactly once at teardown"
         );
+    }
+
+    #[test]
+    fn production_crash_event_drops_fresh_init_fn_state() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5) };
+        assert!(!sup.is_null());
+        let (cfg, cfg_size) = make_config_buf(257);
+        let mut spec = init_closure_spec(cfg, cfg_size);
+        spec.restart_policy = RESTART_TEMPORARY;
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup, 0, init_closure_drop) };
+        let child = unsafe { locked_roster!(sup).children[0] };
+        assert!(!child.is_null());
+        assert!(
+            !unsafe { (*child).state_drop_borrowed.load(Ordering::Acquire) },
+            "init-thunk state is independently owned"
+        );
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 1);
+
+        // No crash escrow consumed this state: the production terminal-event
+        // path must therefore perform its one exact final drop.
+        unsafe {
+            (*child)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            (*sup).running.store(1, Ordering::Release);
+            let event = ChildEvent {
+                child_index: 0,
+                child_id: (*child).id,
+                exit_state: HewActorState::Crashed as i32,
+                crash_code: 0,
+            };
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                sup.cast::<c_void>(),
+                HewSysMsg::ChildCrashed as i32,
+                (&raw const event).cast_mut().cast::<c_void>(),
+                std::mem::size_of::<ChildEvent>(),
+            );
+        }
+        assert_eq!(
+            INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst),
+            0,
+            "an unconsumed init-thunk incarnation must be dropped by terminal-event teardown"
+        );
+        assert!(unsafe { locked_roster!(sup).children[0].is_null() });
+        unsafe { hew_supervisor_stop(sup) };
     }
 
     #[test]
@@ -9152,7 +10644,7 @@ mod pool_slot_tests {
         );
 
         // Restart: the thunk re-runs and produces fresh state #2.
-        let new_child = unsafe { restart_child_from_spec(&mut *sup_ptr, 0) };
+        let new_child = unsafe { restart_child_from_spec(sup_ptr, 0) };
         assert!(!new_child.is_null(), "restart re-spawned the child");
         assert_eq!(
             INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
@@ -9209,19 +10701,20 @@ mod pool_slot_tests {
 
         // Free the live child, then make the next thunk call fail (OOM).
         unsafe {
-            let old = take_child_slot(&mut *sup_ptr, 0);
+            let old = take_child_slot(sup_ptr, 0);
             actor::hew_actor_free(old);
         }
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
 
-        let breaker_state_before = unsafe { (&*sup_ptr).child_specs[0].circuit_breaker.state };
+        let breaker_state_before =
+            unsafe { locked_roster!(sup_ptr).child_specs[0].circuit_breaker.state };
         INIT_CLOSURE_FAIL_NEXT.store(true, Ordering::SeqCst);
 
         // Restart with a failing thunk: fail closed (null new_child, null slot).
-        let new_child = unsafe { restart_child_from_spec(&mut *sup_ptr, 0) };
+        let new_child = unsafe { restart_child_from_spec(sup_ptr, 0) };
         assert!(new_child.is_null(), "thunk OOM => fail closed (null child)");
-        unsafe {
-            let s = &*sup_ptr;
+        {
+            let s = locked_roster!(sup_ptr);
             assert!(
                 s.children[0].is_null(),
                 "the slot is left null on fail-closed"
@@ -9264,9 +10757,9 @@ mod pool_slot_tests {
         unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
         unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 1, init_closure_drop) };
 
-        unsafe {
+        {
             // Both specs borrow the same single supervisor-owned buffer.
-            let s = &*sup_ptr;
+            let s = locked_roster!(sup_ptr);
             assert_eq!(s.config_buf, cfg);
             assert_eq!(s.child_specs[0].config, cfg);
             assert_eq!(s.child_specs[1].config, cfg);
@@ -9332,7 +10825,7 @@ mod pool_slot_tests {
         for idx in 0..3u32 {
             let r = unsafe { hew_supervisor_pool_child_get(sup, 0, u64::from(idx)) };
             assert!(r.is_live(), "member {idx} should be Live");
-            let expected = unsafe { (&(*sup).children)[idx as usize] };
+            let expected = unsafe { locked_roster!(sup).children[idx as usize] };
             assert_eq!(
                 r.handle, expected,
                 "member {idx} resolves to its live static-slot actor"
@@ -9383,12 +10876,11 @@ mod pool_slot_tests {
         assert!(before.is_live());
         let crashed_actor = before.handle;
         let thunks_before = INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst);
-
         // Crash member 1: free its static slot (mirrors the crash teardown), then
         // restart it through the per-child helper (the SIMPLE_ONE_FOR_ONE arm
         // calls exactly this).
         unsafe {
-            let old = take_child_slot(&mut *sup, 1);
+            let old = take_child_slot(&raw mut *sup, 1);
             assert_eq!(old, crashed_actor);
             actor::hew_actor_free(old);
         }
@@ -9401,7 +10893,7 @@ mod pool_slot_tests {
             "a null slot must not resolve as Live (no stale PID)"
         );
 
-        let new_actor = unsafe { restart_child_from_spec(&mut *sup, 1) };
+        let new_actor = unsafe { restart_child_from_spec(sup, 1) };
         assert!(!new_actor.is_null(), "member 1 restarted");
         assert_eq!(
             INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
@@ -9419,7 +10911,7 @@ mod pool_slot_tests {
             after.handle, new_actor,
             "pool re-resolves to the restarted actor through the live static slot"
         );
-        assert_eq!(after.handle, unsafe { (&(*sup).children)[1] });
+        assert_eq!(after.handle, unsafe { locked_roster!(sup).children[1] });
 
         // Member 0 is untouched by the SIMPLE_ONE_FOR_ONE per-member restart.
         let member0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
@@ -9459,13 +10951,14 @@ mod pool_slot_tests {
         unsafe { (*sup).running.store(1, Ordering::Release) };
 
         let thunks_before = INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst);
+        let failed_identity = unsafe { (*sup).roster.lock_or_recover().child_specs[0].identity };
         // Crash member 0: free its slot, then drive the strategy arm (which now
         // routes SIMPLE_ONE_FOR_ONE → restart_child_from_spec for the member).
         unsafe {
-            let old = take_child_slot(&mut *sup, 0);
+            let old = take_child_slot(sup, 0);
             actor::hew_actor_free(old);
         }
-        unsafe { restart_with_budget_and_strategy(&mut *sup, 0) };
+        unsafe { restart_with_budget_and_strategy(sup, failed_identity) };
 
         assert_eq!(
             INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
@@ -9477,7 +10970,7 @@ mod pool_slot_tests {
             after.is_live(),
             "member 0 is Live again after the arm restart"
         );
-        assert_eq!(after.handle, unsafe { (&(*sup).children)[0] });
+        assert_eq!(after.handle, unsafe { locked_roster!(sup).children[0] });
 
         unsafe { hew_supervisor_stop(sup) };
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);

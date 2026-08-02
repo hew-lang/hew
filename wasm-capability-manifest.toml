@@ -6,7 +6,8 @@
 # non-runnable curated-example decisions; runnable examples remain proven by
 # the real WASI E2E loop. `hew-capability-gen` validates this typed schema and
 # generates the Rust checker carrier, playground decision input, and the full
-# feature-policy table in docs/wasm-capability-matrix.md.
+# feature-policy and current WASI summary tables in
+# docs/wasm-capability-matrix.md.
 #
 # Schema:
 #

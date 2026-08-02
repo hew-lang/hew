@@ -1187,7 +1187,7 @@ pub(super) fn elaborate(
     // OR consume-retracted owners) so BOTH shapes are covered; this locates where
     // each candidate enters the return flow so the elaborator can restore its
     // scope-exit drop on exactly the `Return` exits that transfer cannot reach.
-    let returned_member_candidates = builder.owned_locals_returned_candidates();
+    let returned_member_candidates = builder.owned_locals_exit_candidates();
     let returned_member_transfer_blocks = derive_returned_member_transfer_blocks(
         &checked.blocks,
         &returned_member_candidates,
@@ -1314,8 +1314,14 @@ pub(super) fn elaborate(
                     == Some(*local)
             })
     });
+    // A `ConsumedAt` disposition proves the value is absent only AFTER its
+    // consuming instruction.  It can still be live at an earlier Return or a
+    // coroutine-abandon edge, so the LIFO template must retain it and let the
+    // CFG state filter select the exact owning exits.  `BodyEndReleased`,
+    // `ScopeReleased`, and interior aliases stay excluded by this view.
+    let owned_locals_exit_candidates = builder.owned_locals_exit_candidates();
     let lifo_drops = build_lifo_drops(
-        &owned_locals_snapshot,
+        &owned_locals_exit_candidates,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
@@ -2837,6 +2843,20 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 if let Some(root) = cx.tracked_root(*arg) {
                     obligation_entry(state, root).ambiguous_discharge();
                 }
+            }
+        }
+        Instr::RcIntrinsic {
+            op: hew_types::RcIntrinsicOp::New | hew_types::RcIntrinsicOp::Set,
+            value: Some(value),
+            ..
+        } => {
+            // `Rc::new(value)` and `Rc::set(value)` take the payload by
+            // ownership.  The resulting/newly-installed Rc payload is the
+            // sole successor authority, so the source mint is discharged
+            // exactly here rather than left as an anonymous producer at the
+            // function exit.
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).definite_discharge();
             }
         }
         Instr::CallRuntimeAbi(call) => {
@@ -4710,193 +4730,7 @@ pub(super) fn resource_drop_fn(
     }
 }
 #[cfg(test)]
-mod typed_resource_close_authority {
-    use super::*;
-    use hew_hir::OpaqueResourceLifecycle;
-    use hew_types::ffi_contracts::ReleaseDischargeDepth;
-    use hew_types::runtime_call::RuntimeDropDescriptor;
-    use std::collections::BTreeSet;
-
-    fn admit_lifecycle(classes: &mut hew_hir::TypeClassTable, ty: &str, close: &str) {
-        classes
-            .admit_opaque_resource_lifecycle(OpaqueResourceLifecycle {
-                resource_declaration: hew_types::DefId::new(ty),
-                close_declaration: hew_types::DefId::new(format!("{ty}::close")),
-                release_declaration: hew_types::DefId::new(format!(
-                    "hew_release_{}",
-                    ty.replace('.', "_")
-                )),
-                close_symbol: close.to_string(),
-                release_symbol: format!("hew_release_{}", ty.replace('.', "_")),
-                discharge_depth: ReleaseDischargeDepth::Shallow,
-                producer_declarations: BTreeSet::default(),
-                producer_symbols: BTreeSet::default(),
-                producer_modules: BTreeSet::default(),
-            })
-            .expect("test lifecycle is unique");
-    }
-
-    #[test]
-    fn builtin_identity_selects_runtime_close_without_type_class_spelling() {
-        let classes = hew_hir::TypeClassTable::new();
-        for (builtin, expected) in [
-            (BuiltinType::Duplex, RuntimeDropDescriptor::DuplexClose),
-            (BuiltinType::Stream, RuntimeDropDescriptor::StreamClose),
-            (BuiltinType::Sink, RuntimeDropDescriptor::SinkClose),
-            (BuiltinType::Sender, RuntimeDropDescriptor::SenderClose),
-            (BuiltinType::Receiver, RuntimeDropDescriptor::ReceiverClose),
-            (
-                BuiltinType::LambdaActorHandle,
-                RuntimeDropDescriptor::LambdaActorHandleClose,
-            ),
-            (
-                BuiltinType::LambdaPid,
-                RuntimeDropDescriptor::LambdaActorHandleClose,
-            ),
-            (BuiltinType::SendHalf, RuntimeDropDescriptor::SendHalfClose),
-            (BuiltinType::RecvHalf, RuntimeDropDescriptor::RecvHalfClose),
-            (
-                BuiltinType::CancellationToken,
-                RuntimeDropDescriptor::CancellationTokenRelease,
-            ),
-            (
-                BuiltinType::MonitorRef,
-                RuntimeDropDescriptor::MonitorRefClose,
-            ),
-        ] {
-            let ty = ResolvedTy::named_builtin("Handle", builtin, vec![ResolvedTy::String]);
-            assert!(matches!(
-                resource_drop_fn(&ty, &classes),
-                Some(crate::model::DropFnSpec::Runtime(actual)) if actual == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn legacy_user_resources_remain_explicit_closes_but_not_opaque_registry_entries() {
-        let collisions = [
-            ("Duplex", "close"),
-            ("Stream", "close"),
-            ("Sink", "close"),
-            ("Sender", "close"),
-            ("Receiver", "close"),
-            ("LambdaActorHandle", "close"),
-            ("SendHalf", "close"),
-            ("RecvHalf", "close"),
-            ("CancellationToken", "release"),
-            ("MonitorRef", "close"),
-        ];
-        let mut classes = hew_hir::TypeClassTable::new();
-        for (name, method) in collisions {
-            classes.insert(
-                name.to_string(),
-                (ResourceMarker::Resource, Some(method.to_string())),
-            );
-        }
-        let registry = resource_opaque_close_registry(&classes);
-        assert!(
-            registry.is_empty(),
-            "the opaque registry must contain only checker-admitted lifecycle facts"
-        );
-        for (name, method) in collisions {
-            let symbol = format!("{name}::{method}");
-            assert_eq!(
-                resource_drop_fn(&ResolvedTy::named_user(name, vec![]), &classes),
-                Some(crate::model::DropFnSpec::UserClose(symbol)),
-                "user resource `{name}` must retain generated-function close authority"
-            );
-        }
-    }
-
-    #[test]
-    fn same_leaf_opaque_resources_keep_distinct_qualified_close_authority() {
-        let mut classes = hew_hir::TypeClassTable::new();
-        classes.insert(
-            "Receiver".to_string(),
-            (ResourceMarker::Resource, Some("close".to_string())),
-        );
-        classes.insert(
-            "foo.Receiver".to_string(),
-            (ResourceMarker::Resource, Some("close".to_string())),
-        );
-        classes.insert(
-            "bar.Receiver".to_string(),
-            (ResourceMarker::Resource, Some("close".to_string())),
-        );
-        admit_lifecycle(&mut classes, "foo.Receiver", "foo.Receiver::close");
-        admit_lifecycle(&mut classes, "bar.Receiver", "bar.Receiver::dispose");
-        let registry = resource_opaque_close_registry(&classes);
-        assert_eq!(
-            registry,
-            vec![
-                (
-                    "bar.Receiver".to_string(),
-                    "bar.Receiver::dispose".to_string()
-                ),
-                (
-                    "foo.Receiver".to_string(),
-                    "foo.Receiver::close".to_string()
-                ),
-            ]
-        );
-        assert_eq!(
-            resource_drop_fn(
-                &ResolvedTy::named_opaque("bar.Receiver".to_string(), Vec::new()),
-                &classes,
-            ),
-            Some(crate::model::DropFnSpec::UserClose(
-                "bar.Receiver::dispose".to_string()
-            ))
-        );
-        assert_eq!(
-            resource_drop_fn(
-                &ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
-                &classes,
-            ),
-            None,
-            "an opaque leaf spelling must not inherit either qualified lifecycle"
-        );
-        assert_eq!(
-            resource_drop_fn(
-                &ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
-                &classes,
-            ),
-            Some(crate::model::DropFnSpec::UserClose(
-                "foo.Receiver::close".to_string()
-            ))
-        );
-    }
-
-    #[test]
-    fn nonopaque_resource_close_never_crosses_same_leaf_owner() {
-        let mut classes = hew_hir::TypeClassTable::new();
-        classes.insert(
-            "left.Socket".to_string(),
-            (ResourceMarker::Resource, Some("close".to_string())),
-        );
-        // Models a legacy bare spelling in the table. The foreign qualified
-        // type must not inherit it through a short-name fallback.
-        classes.insert(
-            "Socket".to_string(),
-            (ResourceMarker::Resource, Some("legacy_close".to_string())),
-        );
-        assert_eq!(
-            resource_drop_fn(&ResolvedTy::named_user("left.Socket", Vec::new()), &classes),
-            Some(crate::model::DropFnSpec::UserClose(
-                "left.Socket::close".to_string()
-            )),
-            "the declaration's exact owner retains its close"
-        );
-        assert_eq!(
-            resource_drop_fn(
-                &ResolvedTy::named_user("right.Socket", Vec::new()),
-                &classes
-            ),
-            None,
-            "a same-leaf foreign type must not acquire left.Socket::close"
-        );
-    }
-}
+mod typed_resource_close_authority;
 /// Place-aware override of the type-derived `drop_fn`.
 ///
 /// `Place::LambdaActorHandle(N)` carries a `ResolvedTy::Named { name: "Duplex" }`
@@ -9770,6 +9604,34 @@ mod obligation_balance_validator {
         assert!(
             findings.is_empty(),
             "aggregation is not a definite leak: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn rc_new_consumes_its_payload_owner() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::RcIntrinsic {
+                    dest: Place::Local(2),
+                    op: hew_types::RcIntrinsicOp::New,
+                    payload_ty: ResolvedTy::Unit,
+                    receiver: None,
+                    value: Some(Place::Local(1)),
+                    result_ty: ResolvedTy::Unit,
+                },
+            ],
+            Terminator::Return,
+        )];
+        let findings = run(
+            blocks,
+            vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            &[(1, "rc payload")],
+        );
+        assert!(
+            findings.is_empty(),
+            "Rc::new must take ownership of its payload: {findings:?}"
         );
     }
 

@@ -79,7 +79,10 @@ with tempfile.TemporaryDirectory() as temp:
         'const DECOY: &str = "short_name(name); name.rsplit(\\"::\\")";\n'
         'fn macro_decoy() { format!("short_name(name) name.rsplit"); }\n'
     )
-    assert run(work).returncode == 0, "comments and strings must not create findings"
+    result = run(work)
+    assert result.returncode == 0, (
+        "comments and strings must not create findings: " + result.stderr
+    )
 
     target.write_text("fn authority() { let _ = short_name(name); }\n")
     result = run(work)
@@ -104,6 +107,31 @@ with tempfile.TemporaryDirectory() as temp:
     assert run(work).returncode == 0, (
         "the canonical catalog helper is the green control"
     )
+
+    # A raw linker spelling must never select a codegen-special lowering. The
+    # carrier's derived linkage assertion is the narrowly permitted control.
+    codegen = work / "hew-codegen-rs/src/llvm.rs"
+    codegen.parent.mkdir(parents=True)
+    codegen.write_text('fn lower_terminator() { if callee == "hew_bytes_get" { } }\n')
+    result = run(work)
+    assert result.returncode != 0
+    codegen.write_text("fn lower_terminator() { if family.c_symbol() != callee { } }\n")
+    assert run(work).returncode == 0, "carrier linkage assertion is the green control"
+    codegen.write_text(
+        'fn lower_terminator() { match callee.as_str() { "hew_bytes_get" => {}, _ => {} } }\n'
+    )
+    result = run(work)
+    assert result.returncode != 0, "raw match dispatch must fail the carrier gate"
+    codegen.write_text(
+        'fn lower_terminator() { if matches!(callee, "hew_bytes_get") { } }\n'
+    )
+    result = run(work)
+    assert result.returncode != 0, "raw matches! dispatch must fail the carrier gate"
+    codegen.write_text(
+        "fn lower_terminator() { if kind.expected_callee() == callee { } }\n"
+    )
+    assert run(work).returncode == 0, "compiler carrier linkage assertion is green"
+    codegen.unlink()
 
     enum_authority.write_text(
         "struct BuiltinEnumAbi { name: &'static str }\n"
@@ -173,6 +201,22 @@ with tempfile.TemporaryDirectory() as temp:
         "#[cfg(not(test))]\nfn non_test_guard() { let _ = short_name(name); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
+
+    target.write_text(
+        "fn bypass() { let _ = Ty::names_match_qualified(left, right); }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "semantic suffix matching outside its authority must fail"
+    )
+    assert "forbidden context-free nominal authority" in result.stderr
+
+    target.write_text("fn bypass() { let _ = unify(&mut subst, left, right); }\n")
+    result = run(work)
+    assert result.returncode != 0, (
+        "raw checker unification outside its owner guard must fail"
+    )
+    assert "forbidden context-free nominal authority" in result.stderr
 
     # RC1 carrier inventories are syntax-node based: comments and strings do
     # not create a checker fact, call target, suspend, or retirement finding.

@@ -338,9 +338,9 @@ impl Checker {
     /// no name is rewritten and no variable is bound, so nothing leaks into a
     /// `Subst` binding or the downstream checker→HIR/MIR name handoff (the
     /// record-layout registry keeps single-module references bare on purpose).
-    /// Fire only when both sides are fully concrete after substitution, so an
-    /// already-bound generic `T` inferred to a callee-frame type is seen as the
-    /// type it denotes. A genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
+    /// Resolve existing substitutions first, then inspect every corresponding
+    /// nominal node even when another generic argument remains unresolved. A
+    /// genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
     /// `MonitorError` ↔ `link_monitor.MonitorError`, builtin `HashSet` ↔
     /// `collections.HashSet`) is owner-identical and passes straight through to
     /// `unify`; a real structural mismatch is not suffix-equal and is left for
@@ -349,10 +349,7 @@ impl Checker {
     fn reject_nominal_owner_conflict(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
         let expected_resolved = self.subst.resolve(expected);
         let actual_resolved = self.subst.resolve(actual);
-        if expected_resolved.has_inference_var()
-            || actual_resolved.has_inference_var()
-            || !self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
-        {
+        if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
         self.report_error(
@@ -370,12 +367,49 @@ impl Checker {
         true
     }
 
+    /// Run a non-diagnostic unification probe without bypassing nominal-owner
+    /// identity. Callers that use unification for inference, coercion trials,
+    /// or associated-type projection must route through this helper; raw
+    /// suffix unification has no lexical/import context and cannot distinguish
+    /// a legal alias from a same-leaf foreign owner.
+    pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let expected_resolved = self.normalize_for_use(expected);
+        let actual_resolved = self.normalize_for_use(actual);
+        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
+            return false;
+        }
+        unify(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
+    }
+
+    /// Commit an inference unification without losing the source inference
+    /// variable that owns a literal-backed binding.
+    ///
+    /// `normalize_for_use` deliberately resolves substitutions before a normal
+    /// type boundary. That is correct for nominal identity, but it turns a
+    /// `Var -> IntLiteral` binding into `IntLiteral` and leaves no variable for
+    /// `unify` to promote when its first concrete use is discovered. Preserve
+    /// the raw carrier here while applying the same owner-aware guard first.
+    /// Callers must use this only when their syntax has already established an
+    /// inference variable is the intended authority (rather than a general
+    /// coercion path).
+    pub(super) fn try_unify_inference_with_owner_identity(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> bool {
+        let expected_resolved = self.normalize_for_use(expected);
+        if self.nominal_owner_conflict(&expected_resolved, actual) {
+            return false;
+        }
+        unify(&mut self.subst, &expected_resolved, actual).is_ok()
+    }
+
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract
         // bases pass through unchanged and may collapse on a later call.
-        let expected_projected = self.project_assoc_types(expected);
-        let actual_projected = self.project_assoc_types(actual);
+        let expected_projected = self.normalize_for_use(expected);
+        let actual_projected = self.normalize_for_use(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
         // Reject the issue #2651 nominal collision at the type boundary before

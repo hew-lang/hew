@@ -519,6 +519,19 @@ unsafe fn frame_is_tracked(frame: *mut c_void) -> bool {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn frame_has_tracked_header_for_test(frame: *mut c_void) -> bool {
+    // SAFETY: test callers pass a live handle allocated by the continuation
+    // frame allocator; this counterfactual proves synthetic executor frames
+    // carry the private header before cross-worker resume probes it.
+    unsafe { frame_is_tracked(frame) }
+}
+
+#[cfg(test)]
+pub(crate) const fn frame_alignment_for_test() -> usize {
+    FRAME_ALIGN
+}
+
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "the allocator guarantees 16-byte base alignment and the registry word is at offset 16"
@@ -565,6 +578,16 @@ unsafe fn take_frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRe
     registry
 }
 
+/// Run one arbitrary crash-cleanup callback without allowing its unwind to
+/// escape the runtime's recovery boundary.
+fn run_quarantined_crash_cleanup(callback: impl FnOnce()) -> bool {
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) else {
+        return false;
+    };
+    crate::util::quarantine_panic_payload(payload);
+    true
+}
+
 unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) -> bool {
     if entry.is_null() {
         return false;
@@ -589,18 +612,10 @@ unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) -> 
         // Rust-authored test/plugin boundary) is quarantined here. Generated
         // LLVM thunks call plain-C runtime symbols, whose Rust panic policy is
         // process-fatal before this catch can observe an Err.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        faulted = run_quarantined_crash_cleanup(|| unsafe {
             (entry.thunk)(cleanup_slot);
-        }));
+        });
         entry.run_state = CrashCleanupRunState::Done;
-        if let Err(payload) = result {
-            // A panic payload can itself own a hostile Drop implementation.
-            // Forget it so cleanup recovery cannot double-panic while trying
-            // to release diagnostic data. The process/scheduler records the
-            // finalizer fault independently of that payload.
-            std::mem::forget(payload);
-            faulted = true;
-        }
     }
     if !entry.snapshot.is_null() {
         // SAFETY: snapshot storage, when present, was allocated by arm with the
@@ -627,16 +642,12 @@ unsafe fn free_dispatch_state_snapshot(registry: &mut CrashCleanupRegistry, run:
             // This catch remains defensive for a callback that can genuinely
             // cross C-unwind. Current generated state-drop thunks call plain-C
             // runtime symbols and therefore have process-fatal panic behavior.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            faulted = run_quarantined_crash_cleanup(|| {
                 // SAFETY: the state snapshot and generated descriptor remain
                 // live for this detached registry's exclusive drain.
                 unsafe { drop(snapshot.cast()) };
-            }));
+            });
             registry.state_run_state = CrashCleanupRunState::Done;
-            if let Err(payload) = result {
-                std::mem::forget(payload);
-                faulted = true;
-            }
         }
     }
     // SAFETY: begin allocated the escrow with this exact size/alignment.
@@ -2060,6 +2071,7 @@ mod tests {
     thread_local! {
         static CRASH_CLEANUP_TEST_DROPS: RefCell<Vec<u64>> =
             const { RefCell::new(Vec::new()) };
+        static CRASH_CLEANUP_PANIC_PAYLOAD_DROPS: Cell<u64> = const { Cell::new(0) };
     }
 
     static MIGRATED_CRASH_CLEANUP_VALUE: AtomicU64 = AtomicU64::new(0);
@@ -2094,10 +2106,29 @@ mod tests {
         unsafe { hew_cont_frame_free(nested) };
     }
 
+    struct CleanupPanicPayload {
+        _allocation_marker: u64,
+    }
+
+    impl Drop for CleanupPanicPayload {
+        fn drop(&mut self) {
+            CRASH_CLEANUP_PANIC_PAYLOAD_DROPS.with(|drops| drops.set(drops.get() + 1));
+            // Payload disposal is itself arbitrary Rust code. This second
+            // panic must also remain inside the cleanup quarantine.
+            panic!("intentional panic-payload destructor fault");
+        }
+    }
+
+    fn take_crash_cleanup_panic_payload_drops() -> u64 {
+        CRASH_CLEANUP_PANIC_PAYLOAD_DROPS.with(|drops| drops.replace(0))
+    }
+
     unsafe extern "C-unwind" fn record_u64_cleanup_then_panic(slot: *mut c_void) {
         // SAFETY: tests register initialized u64 snapshots.
         unsafe { record_u64_cleanup(slot) };
-        panic!("intentional crash-cleanup finalizer fault");
+        std::panic::panic_any(CleanupPanicPayload {
+            _allocation_marker: 0x4845_5750_414e_4943,
+        });
     }
 
     #[cfg(unix)]
@@ -2480,7 +2511,7 @@ mod tests {
             sibling: Box::into_raw(Box::new(72)),
         };
         let stale_old = state.updated;
-        let replacement = Box::into_raw(Box::new(73));
+        let replacement: *mut u64 = Box::into_raw(Box::new(73));
         // SAFETY: the initialized state remains live through matching recovery;
         // prepared escrow owns replacement while the stale live field is raw.
         unsafe {
@@ -2786,9 +2817,13 @@ mod tests {
         }
     }
 
+    // This verifies Rust unwinding through a `C-unwind` cleanup callback.
+    // WASI uses aborting panics, so there is no in-process unwind contract.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rust_c_unwind_cleanup_panic_is_quarantined_and_siblings_run_once() {
         let _ = take_crash_cleanup_test_drops();
+        let _ = take_crash_cleanup_panic_payload_drops();
         let mut state = 99_u64;
         let mut older = 11_u64;
         let mut faulty = 22_u64;
@@ -2834,6 +2869,69 @@ mod tests {
             take_crash_cleanup_test_drops(),
             [22, 11, 99],
             "the failed entry is never retried; independent sibling and state drops continue once"
+        );
+        assert_eq!(
+            take_crash_cleanup_panic_payload_drops(),
+            1,
+            "the caught entry payload must be disposed even when its destructor also panics"
+        );
+    }
+
+    // The actor-state snapshot is drained after every lexical owner. Exercise
+    // its independent callback path with the same hostile payload used above:
+    // the old mem::forget counterfactual leaves the observed drop count at 0.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rust_c_unwind_state_cleanup_panic_is_quarantined_after_siblings_run_once() {
+        let _ = take_crash_cleanup_test_drops();
+        let _ = take_crash_cleanup_panic_payload_drops();
+        let mut state = 99_u64;
+        let mut older = 11_u64;
+        let mut newer = 22_u64;
+        // SAFETY: state and both lexical snapshots remain initialized until
+        // the detached drain consumes their sole cleanup authorities.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            let registry = active_dispatch_cleanup_registry()
+                .expect("dispatch begin must publish its cleanup registry");
+            // Substitute a genuinely unwind-capable Rust test callback. The
+            // production field normally contains a generated plain-C thunk.
+            (*registry).state_drop = Some(record_u64_cleanup_then_panic);
+            for slot in [
+                ptr::from_mut(&mut older).cast(),
+                ptr::from_mut(&mut newer).cast(),
+            ] {
+                assert_ne!(
+                    hew_cont_crash_cleanup_arm(
+                        0,
+                        slot,
+                        size_of::<u64>() as u64,
+                        align_of::<u64>() as u64,
+                        Some(record_u64_cleanup),
+                        CrashCleanupStorage::Snapshot as u32,
+                        CrashCleanupRelocation::Bitwise as u32,
+                    ),
+                    CRASH_CLEANUP_ARM_FAILED
+                );
+            }
+            let outcome = recover_dispatch_crash_cleanup_with_outcome(true);
+            assert!(outcome.registry_found);
+            assert!(outcome.state_authority_consumed);
+            assert!(outcome.finalizer_faulted);
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [22, 11, 99],
+            "lexical siblings run once before the failed state snapshot and are never retried"
+        );
+        assert_eq!(
+            take_crash_cleanup_panic_payload_drops(),
+            1,
+            "the caught state payload must be disposed even when its destructor also panics"
         );
     }
 
@@ -3313,6 +3411,9 @@ mod tests {
         }
     }
 
+    // Cross-worker migration is the native M:N scheduler contract.  The
+    // wasm32 runtime has no OS-thread worker migration to exercise.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn crash_cleanup_registry_survives_cross_worker_frame_migration() {
         MIGRATED_CRASH_CLEANUP_VALUE.store(0, Ordering::Release);

@@ -203,6 +203,8 @@ pub(crate) fn emit_spawn_task_direct(
 /// * `None` — BitCopy, nothing to release.
 /// * `String` — the env owns an independent `hew_string_clone`; release
 ///   via `hew_string_drop`.
+/// * `StrongLambdaActorHandle` — the env owns an independent
+///   `hew_lambda_actor_clone`; release via `hew_lambda_actor_release`.
 /// * `WeakSelfHandle` — the downgraded self handle from the
 ///   MakeLambdaActor back-fill; release via `hew_lambda_actor_weak_drop`
 ///   (a weak drop never releases the actor itself). Null-safe at the
@@ -236,6 +238,10 @@ pub(crate) fn emit_lambda_env_dropper<'ctx>(
             LambdaEnvFieldDrop::String => (
                 "hew_string_drop",
                 ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ),
+            LambdaEnvFieldDrop::StrongLambdaActorHandle => (
+                "hew_lambda_actor_release",
+                ctx.i32_type().fn_type(&[ptr_ty.into()], false),
             ),
             LambdaEnvFieldDrop::WeakSelfHandle => (
                 "hew_lambda_actor_weak_drop",

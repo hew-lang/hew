@@ -192,6 +192,34 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
 #[must_use]
 pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<NominalInstance> {
     match ty {
+        ResolvedTy::Named {
+            args,
+            builtin: Some(builtin),
+            ..
+        } => {
+            // Builtin trait impls are registered from `std/builtins.hew`
+            // under checker-owned nominal identities. Select those identities
+            // from the closed builtin discriminator, never from the source
+            // leaf: a user `type HashMapIter` carries `builtin: None` and stays
+            // on the ordinary user-nominal arm below.
+            let nominal = match builtin {
+                hew_types::BuiltinType::VecIter => "std.builtins.VecIter",
+                hew_types::BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+                hew_types::BuiltinType::Generator => "Generator",
+                hew_types::BuiltinType::AsyncGenerator => "AsyncGenerator",
+                hew_types::BuiltinType::Vec => "Vec",
+                hew_types::BuiltinType::HashMap => "HashMap",
+                hew_types::BuiltinType::LocalPid => "LocalPid",
+                hew_types::BuiltinType::RemotePid => "RemotePid",
+                hew_types::BuiltinType::NodeId => "NodeId",
+                hew_types::BuiltinType::Location => "Location",
+                _ => return None,
+            };
+            Some(NominalInstance {
+                nominal: NominalId::new(nominal),
+                args: args.clone(),
+            })
+        }
         ResolvedTy::Named { .. } => ty.nominal_instance(),
         ResolvedTy::I8 => Some(NominalInstance {
             nominal: NominalId::new("i8"),
@@ -276,8 +304,11 @@ pub fn receiver_self_type_for_impl_lookup(ty: &ResolvedTy) -> Option<(String, Ve
 
 #[cfg(test)]
 mod tests {
-    use super::{lookup_trait_impl_entry_by_id, TraitImplKey, TraitImplMethodEntry};
-    use hew_types::{DefId, NominalId, NominalInstance, ResolvedTy};
+    use super::{
+        lookup_trait_impl_entry_by_id, receiver_self_type_for_impl_lookup_instance, TraitImplKey,
+        TraitImplMethodEntry,
+    };
+    use hew_types::{BuiltinType, DefId, NominalId, NominalInstance, ResolvedTy};
     use std::collections::HashMap;
 
     fn entry(method: &DefId, symbol: &str) -> TraitImplMethodEntry {
@@ -380,5 +411,30 @@ mod tests {
                 .map(|entry| entry.method_symbol.as_str()),
             Some("Box::show__generic")
         );
+    }
+
+    #[test]
+    fn builtin_impl_receiver_identity_requires_the_typed_discriminator() {
+        let builtin = ResolvedTy::named_builtin(
+            "HashMapIter",
+            BuiltinType::HashMapIter,
+            vec![ResolvedTy::I64, ResolvedTy::String],
+        );
+        let user = ResolvedTy::named_user("HashMapIter", vec![ResolvedTy::I64, ResolvedTy::String]);
+
+        let builtin_instance = receiver_self_type_for_impl_lookup_instance(&builtin)
+            .expect("the compiler cursor has an exact std impl identity");
+        assert_eq!(
+            builtin_instance.nominal.full_path(),
+            "std.builtins.HashMapIter"
+        );
+        assert_eq!(
+            receiver_self_type_for_impl_lookup_instance(&user)
+                .expect("the user nominal remains independently dispatchable")
+                .nominal
+                .full_path(),
+            "HashMapIter"
+        );
+        assert_ne!(builtin_instance.nominal.full_path(), "HashMapIter");
     }
 }

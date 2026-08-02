@@ -1,0 +1,36 @@
+fn main() {
+    let narrow_lo: i32 = -2;
+    let narrow_hi: i32 = 2;
+    let wide_lo: i64 = -1;
+    let wide_hi: i64 = 2;
+
+    for value in narrow_lo .. wide_hi {
+        println(value);
+    }
+    for value in wide_lo ..= narrow_hi {
+        println(value);
+    }
+    for value in (narrow_lo .. wide_hi).rev() {
+        println(value);
+    }
+    for value in (wide_lo ..= narrow_hi).rev() {
+        println(value);
+    }
+
+    let unsigned_lo: u16 = 65534;
+    let unsigned_hi: u64 = 65537;
+    for value in unsigned_lo .. unsigned_hi {
+        println(value);
+    }
+
+    let signed_branch = if true { narrow_lo } else { wide_hi };
+    println(signed_branch);
+    let unsigned_branch = if true { unsigned_lo } else { unsigned_hi };
+    println(unsigned_branch);
+    let float_branch = if true { narrow_lo } else { 4.5 };
+    println(float_branch);
+
+    let present: Option<i64> = Some(1);
+    let signed_if_let = if let Some(_) = present { narrow_lo } else { wide_hi };
+    println(signed_if_let);
+}

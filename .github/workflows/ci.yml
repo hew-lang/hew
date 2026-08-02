@@ -291,9 +291,14 @@ jobs:
         run: make lint-wasm-todo
 
       - name: Codegen carried-identity gate
-        # Assert the codegen carried-identity invariants. Also a `make lint`
-        # prerequisite that no CI job invoked.
+        # Assert the codegen carried-identity invariants with a focused step;
+        # the aggregate lint edge below also owns it as a prerequisite.
         run: make codegen-carried-identity-gate
+
+      - name: Run complete lint authority graph
+        # Keep a real edge to the aggregate target so additions to lint's
+        # prerequisite graph cannot become local-only gates.
+        run: make lint
 
       - name: Orchestration-token leak scan
         # Scan tracked source files and commit-message bodies of all PR commits

@@ -30,7 +30,7 @@ use hew_mir::{
     StateFieldCloneKind, Terminator,
 };
 use hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use hew_types::{BuiltinType, ResolvedTy, Ty};
+use hew_types::{BuiltinType, ResolvedTy};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
@@ -1010,6 +1010,10 @@ pub(crate) fn collection_layout_witness(
     })
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -1717,6 +1721,10 @@ pub(crate) fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'sta
 // Byte-identical IR before and after.
 
 /// True for the W5.016 owned-element Vec runtime symbols.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2533,7 +2541,7 @@ fn finalize_layout_facts_against_pipeline(
     for mir_fn in &pipeline.raw_mir {
         for block in &mir_fn.blocks {
             let Terminator::Call {
-                builtin: Some(family),
+                authority: hew_mir::CallAuthority::Runtime(family),
                 args,
                 dest,
                 ..
@@ -2781,6 +2789,10 @@ pub(crate) fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) ->
 /// Recognise the two C-3a synthesis probe callees.  Distinct from the
 /// runtime-symbol predicates because they are a descriptor-synthesis seam, not
 /// a runtime ABI call.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
@@ -2799,6 +2811,10 @@ pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
 /// (`hew_hashmap_get_layout` — slice-iii), or the free helpers
 /// (`*_free_layout` — actor-state drop-plan reroute handled in
 /// `drop_helper_for_kind`, slice-ii).
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2806,6 +2822,10 @@ pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
         .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashCollectionLayoutOp)
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_get_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -4810,15 +4830,15 @@ pub(crate) fn lower_hashmap_layout_direct_call(
     Ok(())
 }
 
-/// Compare checker-approved type spellings across a MIR call boundary.
+/// Compare resolved types across a layout-backed runtime ABI boundary.
 ///
-/// Imports can leave one side bare (`Key<T>`) and the other owner-qualified
-/// (`arena.Key<T>`). Raw `ResolvedTy` equality rejects that legal alias, while
-/// LLVM-layout equality alone is too permissive for distinct nominal types
-/// with the same ABI. This comparison admits only the checker's qualified-name
-/// alias rule and applies it recursively through the composite shapes these
-/// container operations can carry. The checker has already rejected ambiguous
-/// bare-name ownership before MIR; two distinct qualified owners never match.
+/// `ResolvedTy` is the checker→HIR identity carrier: its nominal spelling has
+/// already been canonicalised to the selected declaration owner. Codegen has
+/// neither the checker import table nor lexical scope needed to decide whether
+/// a bare `Key<T>` aliases `arena.Key<T>` or is a distinct root declaration.
+/// It must therefore require exact nominal identities here. Re-applying the
+/// checker's permissive suffix rule would let malformed MIR select a layout
+/// descriptor for a same-leaf foreign owner.
 fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy) -> bool {
     if expected == actual {
         return true;
@@ -4840,7 +4860,7 @@ fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy)
         ) => {
             expected_builtin == actual_builtin
                 && expected_opaque == actual_opaque
-                && Ty::names_match_qualified(expected_name, actual_name)
+                && expected_name == actual_name
                 && expected_args.len() == actual_args.len()
                 && expected_args
                     .iter()
@@ -4893,7 +4913,7 @@ mod checked_alias_tests {
     }
 
     #[test]
-    fn accepts_bare_and_qualified_spelling_recursively() {
+    fn rejects_bare_and_qualified_same_leaf_without_checker_owner_proof() {
         let bare = ResolvedTy::Tuple(vec![
             named("Key", vec![ResolvedTy::String]),
             ResolvedTy::I64,
@@ -4902,7 +4922,11 @@ mod checked_alias_tests {
             named("arena.Key", vec![ResolvedTy::String]),
             ResolvedTy::I64,
         ]);
-        assert!(resolved_ty_matches_checked_alias(&bare, &qualified));
+        assert!(
+            !resolved_ty_matches_checked_alias(&bare, &qualified),
+            "codegen must not reconstruct checker-only bare/qualified aliases: \
+             a root `Key` and `arena.Key` can have incompatible layouts"
+        );
     }
 
     #[test]

@@ -173,6 +173,11 @@ pub(crate) fn is_supervisor_registered_for_test(
     with_supervisor_roots(|sups| sups.iter().any(|candidate| candidate.0 == sup))
 }
 
+#[cfg(test)]
+pub(crate) fn registered_supervisor_count_for_test() -> usize {
+    with_supervisor_roots(|sups| sups.len())
+}
+
 /// Free all registered top-level supervisors without waiting for actors.
 ///
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker
@@ -182,7 +187,9 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// separately by [`crate::actor::cleanup_all_actors`].
 ///
 /// Returns `false` if a delayed-restart timer still borrows a supervisor. The
-/// caller must leave the runtime and actors installed for a later retry.
+/// caller must leave the runtime and actors installed. There is no automatic
+/// retry; an embedder may explicitly invoke cleanup again after the borrower
+/// drains, while one-shot process teardown leaks the retained state fail-closed.
 pub(crate) unsafe fn free_registered_supervisors() -> bool {
     let to_free = with_supervisor_roots(std::mem::take);
     let mut complete = true;
@@ -280,9 +287,14 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
         Err(_) => {
             // Spawn failed — run shutdown synchronously on current thread.
             // This ensures shutdown completes even if thread spawning fails.
-            let _ = run_shutdown_with_panic_handling(|| {
+            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
                 shutdown_orchestrate_mode(timeout, cancel_parked_waits);
-            });
+            }) {
+                // The synchronous fallback is reached from an extern "C"
+                // entry point, so unlike the worker-thread path it cannot
+                // deliberately resume the unwind across its caller.
+                crate::util::quarantine_panic_payload(panic_payload);
+            }
         }
     }
 }

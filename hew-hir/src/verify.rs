@@ -381,7 +381,9 @@ impl Verifier {
                 if let (Some(result_ty), Some(source_ty)) =
                     (self.site_types.get(site), self.site_types.get(source))
                 {
-                    if result_ty != source_ty {
+                    if result_ty != source_ty
+                        && !source_ty.can_implicitly_numeric_normalize_to(result_ty)
+                    {
                         self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "produced value identity".to_string(),
@@ -392,7 +394,7 @@ impl Verifier {
                             self.site_spans
                                 .get(site)
                                 .map_or(0..0, |source| source.span.clone()),
-                            "identity ownership transfer requires type-congruent source and result storage",
+                            "identity ownership transfer requires type-congruent storage or a checker-admitted numeric normalization",
                         ));
                     }
                 }
@@ -401,7 +403,9 @@ impl Verifier {
                 if let Some(result_ty) = self.site_types.get(site) {
                     for source in sources {
                         if let Some(source_ty) = self.site_types.get(source) {
-                            if source_ty != result_ty {
+                            if source_ty != result_ty
+                                && !source_ty.can_implicitly_numeric_normalize_to(result_ty)
+                            {
                                 self.diagnostics.push(self.diagnostic(
                                     HirDiagnosticKind::CheckerBoundaryViolation {
                                         name: "produced value join".to_string(),
@@ -412,7 +416,7 @@ impl Verifier {
                                     self.site_spans
                                         .get(site)
                                         .map_or(0..0, |source| source.span.clone()),
-                                    "join ownership convergence requires type-congruent source and result storage",
+                                    "join ownership convergence requires type-congruent storage or a checker-admitted numeric normalization",
                                 ));
                             }
                         }

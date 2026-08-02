@@ -548,7 +548,7 @@ impl HewTask {
                     unsafe { f(env_ptr) };
                 }));
                 if let Err(panic_payload) = result {
-                    let msg = crate::util::panic_payload_message(panic_payload.as_ref());
+                    let msg = crate::util::take_panic_payload_message(panic_payload);
                     let error_msg = format!("task_scope cancel_cleanup_fn panicked: {msg}");
                     crate::set_last_error(error_msg.clone());
                     #[cfg(test)]
@@ -587,7 +587,7 @@ fn reap_detached_scope_tasks(
         if let Err(panic_payload) = handle.join() {
             let error_msg = format!(
                 "task_scope detached worker panicked during teardown: {}",
-                crate::util::panic_payload_message(panic_payload.as_ref())
+                crate::util::take_panic_payload_message(panic_payload)
             );
             crate::set_last_error(error_msg.clone());
             // Background reapers have a separate thread-local error slot, so
@@ -3575,6 +3575,45 @@ mod tests {
             msg.contains("cancel_cleanup intentional panic"),
             "error message must contain the original panic payload; got: {msg:?}"
         );
+    }
+
+    #[test]
+    fn hostile_cancel_cleanup_payload_is_quarantined_and_task_finishes() {
+        use std::sync::atomic::AtomicUsize;
+
+        static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        struct HostilePayload;
+        impl Drop for HostilePayload {
+            fn drop(&mut self) {
+                PAYLOAD_DROPS.fetch_add(1, Ordering::SeqCst);
+                panic!("hostile cancellation payload destructor");
+            }
+        }
+
+        unsafe extern "C-unwind" fn hostile_cleanup(_env: *mut c_void) {
+            std::panic::panic_any(HostilePayload);
+        }
+        unsafe extern "C" fn noop_drop(_: *mut u8) {}
+
+        PAYLOAD_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: test exclusively owns the scope/task allocations.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_cancel_cleanup_fn(task, Some(hostile_cleanup));
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(noop_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+            hew_task_scope_cancel(scope);
+
+            assert_eq!(PAYLOAD_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            hew_task_scope_destroy(scope);
+        }
     }
 
     #[test]

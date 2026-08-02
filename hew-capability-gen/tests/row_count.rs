@@ -68,6 +68,27 @@ fn markdown_table(md: &str, start_heading: &str, end_heading: &str) -> String {
     table
 }
 
+fn delimited_contents(md: &str, begin_marker: &str, end_marker: &str) -> String {
+    let mut in_section = false;
+    let mut contents = String::new();
+    for line in md.lines() {
+        if line == begin_marker {
+            assert!(!in_section, "duplicate begin marker {begin_marker:?}");
+            in_section = true;
+            continue;
+        }
+        if line == end_marker {
+            assert!(in_section, "end marker precedes begin marker");
+            return contents;
+        }
+        if in_section {
+            contents.push_str(line);
+            contents.push('\n');
+        }
+    }
+    panic!("missing generated section markers {begin_marker:?} / {end_marker:?}");
+}
+
 #[test]
 fn manifest_row_counts_match_prose_matrix() {
     let root = repo_root();
@@ -134,6 +155,27 @@ fn manifest_feature_policy_table_matches_byte_for_byte() {
         table,
         manifest.render_feature_policy_table(),
         "feature policy table drifted from the sole manifest authority"
+    );
+}
+
+#[test]
+fn manifest_playground_wasi_summary_matches_byte_for_byte() {
+    const BEGIN: &str = "<!-- BEGIN GENERATED: playground-wasi-capability-summary -->";
+    const END: &str = "<!-- END GENERATED: playground-wasi-capability-summary -->";
+
+    let root = repo_root();
+    let manifest_src = read(&root.join("wasm-capability-manifest.toml"));
+    let playground_manifest = read(&root.join("examples/playground/manifest.json"));
+    let matrix_src = read(&root.join("docs/wasm-capability-matrix.md"));
+    let manifest = hew_capability_gen::Manifest::parse(&manifest_src)
+        .expect("wasm-capability-manifest.toml parses");
+    let table = delimited_contents(&matrix_src, BEGIN, END);
+    assert_eq!(
+        table,
+        manifest
+            .render_playground_wasi_summary(&playground_manifest)
+            .expect("playground authorities agree"),
+        "current WASI summary drifted from the typed exclusions and runnable playground truth"
     );
 }
 

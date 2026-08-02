@@ -1002,6 +1002,19 @@ impl Checker {
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
         // I/O and system
+        // `instant::now` has no source declaration, but it is an ordinary
+        // compiler-provided runtime call.  Register its joined parser spelling
+        // here so the checker publishes the same typed runtime target that
+        // HIR and MIR consume for every other builtin call.
+        self.register_builtin_fn(
+            "instant::now",
+            vec![],
+            Ty::Named {
+                name: "instant".to_string(),
+                args: vec![],
+                builtin: Some(BuiltinType::Instant),
+            },
+        );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         self.register_builtin_fn(
             "sleep_until",
@@ -1780,7 +1793,14 @@ impl Checker {
         // can contain user and imported-source functions.  No call-site may
         // infer a runtime endpoint merely because a signature happens to have
         // a runtime-looking name.
-        let runtime_symbol = format!("hew_{name}");
+        // Namespace separators are source syntax, not ABI spelling.  The
+        // only compiler builtin with a namespace-qualified source name today
+        // is `instant::now`; retain an explicit mapping rather than making
+        // arbitrary source names look like runtime symbols.
+        let runtime_symbol = match name {
+            "instant::now" => "hew_instant_now".to_string(),
+            _ => format!("hew_{name}"),
+        };
         if let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)
         {
             self.runtime_builtin_targets
@@ -2106,7 +2126,7 @@ impl Checker {
             .or_else(|| decl.path.last().cloned())
             .unwrap_or_else(|| owner.rsplit('.').next().unwrap_or(owner).to_string());
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashNotification", "CrashKind"],
+            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
             "std.link_monitor" => &[
                 "MonitorId",
                 "DownTarget",
@@ -2164,7 +2184,7 @@ impl Checker {
             return;
         }
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashNotification", "CrashKind"],
+            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
             "std.link_monitor" => &[
                 "MonitorId",
                 "DownTarget",
@@ -2984,11 +3004,8 @@ impl Checker {
                         .current_module
                         .as_ref()
                         .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
-                    let return_type = Ty::Named {
-                        builtin: None,
-                        name: declaration_name,
-                        args: enum_return_args.clone(),
-                    };
+                    let return_type =
+                        self.variant_nominal_ty(declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.clone(), VariantDef::Unit);
@@ -3278,11 +3295,8 @@ impl Checker {
                         .current_module
                         .as_ref()
                         .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
-                    let return_type = Ty::Named {
-                        builtin: None,
-                        name: declaration_name,
-                        args: enum_return_args.clone(),
-                    };
+                    let return_type =
+                        self.variant_nominal_ty(declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.clone(), VariantDef::Unit);
@@ -5318,7 +5332,13 @@ impl Checker {
             // The trait component of the binding key is declaration-owned. An
             // alias or prelude spelling is only a lookup surface; projection
             // carriers and consumers use this same canonical key end-to-end.
-            let tb_key = self.trait_defs_key_for_bound(&tb.name);
+            // Associated-type bindings are consumed through
+            // `trait_ref_lookup_key` in projection.  Register with that same
+            // source-owned identity; `trait_defs_key_for_bound` is a
+            // declaration-table compatibility key and may retain a bare
+            // presentation spelling while the consumer has already resolved
+            // the trait through its canonical module owner.
+            let tb_key = self.trait_ref_lookup_key(&tb.name);
             let assoc_names: Vec<String> = self
                 .trait_defs
                 .get(&tb_key)
@@ -6846,12 +6866,15 @@ impl Checker {
             .as_deref()
             .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
         let returns_self_type = match return_type {
-            Ty::Named { name, args, .. }
-                if name == "Self" || Ty::names_match_qualified(name, type_name) =>
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } if name == "Self"
+                || self.strict_names_same_owner(name, *builtin, type_name, None) =>
             {
                 self.current_self_type
                     .as_ref()
-                    .filter(|(self_name, _)| Ty::names_match_qualified(self_name, type_name))
                     .is_none_or(|(_, self_args)| {
                         args.len() == self_args.len()
                             && args.iter().zip(self_args).all(|(actual, expected)| {
@@ -7537,23 +7560,31 @@ impl Checker {
         //     reference not in the loaded graph; the downstream method-set / sig
         //     check fires honestly against an absent/empty set — fail-closed).
         let suffix = format!(".{name}");
-        let mut owners: Vec<&str> = self
+        let mut owners: Vec<String> = self
             .trait_defs
             .keys()
             .filter_map(|k| k.strip_suffix(&suffix))
             .filter(|module| {
                 !module.is_empty()
                     && (self.modules.contains(*module)
+                        || self.canonical_std_module_sources.contains(*module)
+                        || self.canonical_std_root_sources.contains(*module)
                         || self
                             .current_module
                             .as_deref()
                             .is_some_and(|current| crate::short_name(current) == *module))
             })
+            .map(|module| {
+                self.module_import_bindings
+                    .get(&(self.current_module.clone(), module.to_string()))
+                    .cloned()
+                    .unwrap_or_else(|| module.to_string())
+            })
             .collect();
         owners.sort_unstable();
         owners.dedup();
         let owner = match owners.as_slice() {
-            [single] => Some((*single).to_string()),
+            [single] => Some(single.clone()),
             _ => None,
         };
         ResolvedTraitIdentity {
@@ -7692,7 +7723,13 @@ impl Checker {
         identity
             .owner
             .as_ref()
-            .map(|owner| format!("{owner}.{}", identity.source_trait_name))
+            .map(|owner| {
+                let canonical_owner = self
+                    .module_import_bindings
+                    .get(&(self.current_module.clone(), owner.clone()))
+                    .map_or(owner.as_str(), String::as_str);
+                format!("{canonical_owner}.{}", identity.source_trait_name)
+            })
             .filter(|q| self.trait_defs.contains_key(q))
             .unwrap_or_else(|| identity.source_trait_name.clone())
     }
@@ -7767,13 +7804,13 @@ impl Checker {
     }
 
     /// Recover a trait identity from a `trait_defs` key. An owner-qualified
-    /// `{module}.{Trait}` key whose module is in scope yields
+    /// `{module}.{Trait}` key registered by the checker yields
     /// `owner = Some(module)`, `source = Trait`; a bare key yields a local
     /// identity (`is_local = true`, no owner). Used to re-anchor the signature
     /// lookup on a declaring SUPERTRAIT reached through the super chain.
     fn identity_from_trait_defs_key(&self, key: &str) -> ResolvedTraitIdentity {
         match key.rsplit_once('.') {
-            Some((module, source)) if self.modules.contains(module) => ResolvedTraitIdentity {
+            Some((module, source)) if self.trait_defs.contains_key(key) => ResolvedTraitIdentity {
                 owner: Some(module.to_string()),
                 source_trait_name: source.to_string(),
                 is_local: false,
@@ -8448,7 +8485,7 @@ impl Checker {
             // importer's local type names do not change what the trait requires.
             let canon_expected_params: Vec<Ty> = expected_params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx, false))
+                .map(|t| canonicalize_type_identity(&self.normalize_for_use(t), &ctx, false))
                 .collect();
             // ACTUAL is the impl's written signature: a bare name that shadows a
             // local type keeps its local identity (`preserve_local_shadow =
@@ -8457,10 +8494,15 @@ impl Checker {
             let canon_actual_params: Vec<Ty> = impl_sig
                 .params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx, true))
+                .map(|t| canonicalize_type_identity(&self.normalize_for_use(t), &ctx, true))
                 .collect();
-            let canon_expected_return = canonicalize_type_identity(&expected_return, &ctx, false);
-            let canon_actual_return = canonicalize_type_identity(&impl_sig.return_type, &ctx, true);
+            let canon_expected_return =
+                canonicalize_type_identity(&self.normalize_for_use(&expected_return), &ctx, false);
+            let canon_actual_return = canonicalize_type_identity(
+                &self.normalize_for_use(&impl_sig.return_type),
+                &ctx,
+                true,
+            );
             (
                 canon_expected_params,
                 canon_actual_params,
@@ -9408,9 +9450,16 @@ impl Checker {
                     // inline programs we use the embedded source instead.  Parsing
                     // it here registers `Closable` in `trait_defs` and `CloseError`
                     // in `type_defs`.  The `register_stdlib_hew_items` loop then
-                    // fires the `tr.name == "Closable"` arm which wires
-                    // `"Closable::close"` into `consume_receiver_methods`.
+                    // fires the `tr.name == "Closable"` arm which wires its
+                    // exact source-owned trait method into
+                    // `consume_receiver_methods`.
                     if module_path == "std::io::closable" && decl.resolved_items.is_none() {
+                        // This embedded source is the shipped module selected by
+                        // the import resolver, not a user module that happens
+                        // to share its spelling.  Preserve that provenance so
+                        // bare `Closable` resolves to its exact owner.
+                        self.canonical_std_module_sources
+                            .insert("std.io.closable".to_string());
                         let identity = format!("module:{module_path}");
                         if !self
                             .registered_stdlib_hew_sources
@@ -9908,7 +9957,7 @@ impl Checker {
                     // phantom consume markers.
                     if tr.name == "Closable" {
                         self.consume_receiver_methods
-                            .insert("Closable::close".to_string());
+                            .insert(format!("{module_full_path}.{}::close", tr.name));
                     }
                 }
                 Item::Function(fd) => {
@@ -10145,19 +10194,31 @@ impl Checker {
                     }
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
+                    self.record_module_type_export(module_full_path, &td.name);
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
                         continue;
                     }
                     self.register_qualified_type_alias(module_short, &md.name);
-                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                    let event_name = format!("{}Event", md.name);
+                    self.register_qualified_type_alias(module_short, &event_name);
+                    // A public machine publishes its generated event enum as
+                    // part of the same declaration surface.  Keep the export
+                    // ledger paired with the qualified aliases so import
+                    // validation, checker resolution, and HIR all agree that
+                    // `module.MachineEvent::Payload` is callable.
+                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, &event_name);
+                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, &event_name);
                 }
                 Item::Actor(ad) => {
                     // The dotted `{module_short}.{name}` entry is authored
                     // directly by `register_actor_base`; only the export
                     // record is added here.
                     self.record_module_type_export(module_short, &ad.name);
+                    self.record_module_type_export(module_full_path, &ad.name);
                 }
                 _ => {}
             }

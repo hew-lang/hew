@@ -75,8 +75,9 @@ use hew_mir::{
     EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
     IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst,
     MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, ResourceCloseAuthority, SourceOrigin, StateFieldCloneKind,
-    Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
+    RecordLayout, RegexLiteral, ResourceCloseAuthority, RuntimeCall, SourceOrigin,
+    StateFieldCloneKind, Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind,
+    Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -162,15 +163,11 @@ use crate::runtime_abi::{
 // dispatch still drives these emitters, so re-import the entry points to keep
 // the call sites unqualified.
 use crate::layout::{
-    is_bytes_constructor_symbol, is_hashmap_constructor_symbol, is_hashmap_layout_get_symbol,
-    is_hashmap_layout_probe_symbol, is_hashmap_layout_runtime_symbol, is_owned_vec_runtime_symbol,
     lower_bool_vec_direct_call, lower_bytes_constructor_call, lower_bytes_get_option_call,
-    lower_hashmap_constructor_call, lower_hashmap_get_layout_call, lower_hashmap_index_trap_call,
-    lower_hashmap_layout_direct_call, lower_hashmap_layout_probe, lower_hashmap_remove_take_call,
-    lower_layout_vec_direct_call, lower_owned_vec_direct_call, lower_string_get_option_call,
-    lower_string_sentinel_option_call, lower_supervisor_pool_get_option_call,
-    lower_vec_constructor_call, lower_vec_get_clone_call, lower_vec_i32_get_set,
-    verify_hashmap_lowering_facts_consistent,
+    lower_hashmap_constructor_call, lower_hashmap_get_layout_call,
+    lower_hashmap_layout_direct_call, lower_layout_vec_direct_call, lower_owned_vec_direct_call,
+    lower_string_get_option_call, lower_string_sentinel_option_call, lower_vec_constructor_call,
+    lower_vec_i32_get_set, verify_hashmap_lowering_facts_consistent,
 };
 
 // Mirrored from `hew-runtime/src/execution_context.rs`'s HEW_CTX_OFFSET_* and
@@ -1410,9 +1407,15 @@ fn wasm_excluded_call_family(
         | F::WebSocketAttachLocal
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecAppend
+        | F::VecClear
+        | F::VecClone
         | F::VecContainsLayout
         | F::VecContainsOwned
+        | F::VecContainsScalar(_)
         | F::VecGet(_)
+        | F::VecIsEmpty
+        | F::VecJoinStr
         | F::VecLen
         | F::VecNew
         | F::VecPopBool
@@ -1422,11 +1425,11 @@ fn wasm_excluded_call_family(
         | F::VecPushLayout
         | F::VecPushOwned
         | F::VecPushOwnedMove
+        | F::VecScalar { .. }
         | F::VecRemoveAtBool
         | F::VecRemoveAtLayout
         | F::VecRemoveAtOwned
         | F::VecSetBool
-        | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
         | F::VecSetOwnedMove
@@ -3193,6 +3196,30 @@ pub(crate) fn resolve_ty<'ctx>(
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Location | BuiltinType::RemotePid),
+            ..
+        }
+    ) {
+        // `Location` and its phantom-typed `RemotePid<T>` view share the
+        // runtime's stable 32-byte C layout: node id (two i64 limbs), slot,
+        // incarnation, and reserved.  The carrier bit is the authority here;
+        // a user `RemotePid` remains a D10 rejection below.
+        return Ok(ctx
+            .struct_type(
+                &[
+                    ctx.i64_type().into(),
+                    ctx.i64_type().into(),
+                    ctx.i64_type().into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                ],
+                false,
+            )
+            .into());
+    }
     if let ResolvedTy::Named {
         name,
         args,
@@ -3271,12 +3298,12 @@ pub(crate) fn resolve_ty<'ctx>(
         // one-authority rule structurally intact — a future raw-args layout-key
         // mangle introduced near this block is the regression the
         // `mangle_with_shortened_args`-routing guard catches.
-        let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
-            std::borrow::Cow::Borrowed(name.as_str())
-        } else {
-            std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
-        };
-        if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
+        let lookup_key = hew_hir::layout_key_for_named(name, args, *builtin).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
+            ))
+        })?;
+        if let Some(st) = record_layouts.get(lookup_key.as_str()) {
             return Ok((*st).into());
         }
         // Machine layouts use the class-tagged machine-mono projection rather
@@ -3462,6 +3489,21 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             builtin: Some(hew_types::BuiltinType::CloseError),
             ..
         } => Ok(ctx.i32_type().into()),
+        // `CrashKind` is the canonical lifecycle enum discriminator carried
+        // by exit/down payloads.  Its source spelling is deliberately not an
+        // ABI selector: only the checker/HIR builtin carrier reaches this arm,
+        // while a same-leaf user enum remains a D10 rejection below.
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::CrashKind),
+            ..
+        } => Ok(ctx.i32_type().into()),
+        // `MonitorId` is the source-owned lifecycle newtype around the
+        // runtime's u64 registration id.  Keep the representation selected by
+        // the canonical carrier bit, never by the `MonitorId` spelling.
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::MonitorId),
+            ..
+        } => Ok(ctx.i64_type().into()),
         ResolvedTy::Named { name, args, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` with args {args:?} reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
@@ -13857,16 +13899,20 @@ fn lower_instruction_with_cancel_drops(
                 // WHEN obsolete: when the supervisor accessor MIR is redesigned
                 // to carry a ptr-typed handle field directly.
                 use inkwell::types::BasicTypeEnum;
-                // Slice 5: integer width mismatch (iW → iN where N >= W)
-                // arises when Slice 4b's dispatch tree moves a narrow
-                // machine tag (iW from `Place::MachineTag`) into an I64
-                // scratch local for comparison. Emit a `zext` load+store
-                // so the dispatch keeps its I64 invariant without forcing
-                // each tag-width to introduce a new MIR-level narrow type.
+                // Integer-width repair is reserved for enum/machine TAG
+                // storage. Tags are unsigned discriminants, so widening them
+                // into the dispatch tree's i64 scratch slot is necessarily a
+                // zext, and construction writes truncate the i64 scratch value
+                // back to the declared tag width. Ordinary integer values must
+                // carry signedness authority in `Instr::NumericCast`; accepting
+                // a generic local-to-local mismatch here would silently zext a
+                // negative i8/i16/i32 value.
                 if let (BasicTypeEnum::IntType(src_int), BasicTypeEnum::IntType(dest_int)) =
                     (src_ty, dest_ty)
                 {
-                    if src_int.get_bit_width() < dest_int.get_bit_width() {
+                    let tag_read = matches!(src, Place::MachineTag(_) | Place::EnumTag(_))
+                        && matches!(dest, Place::Local(_));
+                    if tag_read && src_int.get_bit_width() < dest_int.get_bit_width() {
                         let narrow = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load")
@@ -13887,7 +13933,9 @@ fn lower_instruction_with_cancel_drops(
                     // The transition body's `MachineVariantCtor` emits an
                     // `Instr::ConstI64` into an I64 local then moves it
                     // into the tag slot.
-                    if src_int.get_bit_width() > dest_int.get_bit_width() {
+                    let tag_write = matches!(dest, Place::MachineTag(_) | Place::EnumTag(_))
+                        && matches!(src, Place::Local(_));
+                    if tag_write && src_int.get_bit_width() > dest_int.get_bit_width() {
                         let wide = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load_wide")
@@ -15418,16 +15466,15 @@ pub(crate) fn record_struct_for<'ctx>(
                     false,
                 ));
             }
-            let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
-                std::borrow::Cow::Borrowed(name.as_str())
-            } else {
-                // The shared layout-key authority preserves the declaration
-                // owner and every named argument in the generic spine.
-                std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
-            };
+            let lookup_key =
+                hew_hir::layout_key_for_named(name, args, *builtin).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                    "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
+                ))
+                })?;
             fn_ctx
                 .record_layouts
-                .get(lookup_key.as_ref())
+                .get(lookup_key.as_str())
                 .copied()
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(
@@ -19367,31 +19414,6 @@ fn emit_closure_env_heap_box<'ctx>(
     Ok(env_data)
 }
 
-/// True when this `Terminator::Call` is a pointer-element Vec op whose
-/// element operand/dest is the two-pointer closure pair — the structural
-/// signal that the closure-pair boxing marshalling must run instead of the
-/// generic pointer-element path.
-fn is_closure_pair_vec_call(
-    fn_ctx: &FnCtx<'_, '_>,
-    callee: &str,
-    args: &[Place],
-    dest: Option<&Place>,
-) -> CodegenResult<bool> {
-    let probe = match callee {
-        "hew_vec_push_ptr" => args.get(1).copied(),
-        "hew_vec_set_ptr" => args.get(2).copied(),
-        "hew_vec_get_ptr" | "hew_vec_pop_ptr" => dest.copied(),
-        _ => return Ok(false),
-    };
-    let Some(place) = probe else {
-        return Ok(false);
-    };
-    Ok(matches!(
-        place_resolved_ty(fn_ctx, place)?,
-        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
-    ))
-}
-
 /// Box a closure pair for Vec ingress using the target ABI size/alignment.
 /// The box becomes the vec slot's owned element.
 fn emit_box_closure_pair<'ctx>(
@@ -19960,6 +19982,10 @@ pub(crate) fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
         .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecBool)
 }
 
+#[expect(
+    dead_code,
+    reason = "runtime family dispatch now owns this classification"
+)]
 fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -19967,6 +19993,10 @@ fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
         .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::VecI32GetSet)
 }
 
+#[expect(
+    dead_code,
+    reason = "runtime family dispatch now owns this classification"
+)]
 fn is_vec_constructor_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -22043,9 +22073,20 @@ fn collect_helper_crash_cleanup_descriptors(
         }
         let terminator_writes = hew_mir::dataflow::terminator_write_places(&block.terminator);
         match &block.terminator {
-            Terminator::Call { callee, .. }
-                if matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. }))
-                    || callee == "hew_vec_get_clone" =>
+            Terminator::Call {
+                callee, authority, ..
+            } if (matches!(
+                authority,
+                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern
+            ) && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
+                || matches!(
+                    authority,
+                    hew_mir::CallAuthority::Runtime(
+                        hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                            hew_types::runtime_call::VecGetElem::Clone
+                        )
+                    )
+                ) =>
             {
                 supported_producers.extend(terminator_writes);
             }
@@ -23091,8 +23132,69 @@ fn emit_helper_crash_cleanup_retire_before_place_drop(
     emit_helper_crash_cleanup_retire_before_drop(fn_ctx, &owner.descriptor)
 }
 
+fn emit_helper_crash_cleanup_retire_stale_return_token<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    owner: &HelperCrashCleanupOwner<'ctx>,
+    local: u32,
+    merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("helper return sweep has no parent".into()))?;
+    let retire_bb = fn_ctx.ctx.append_basic_block(
+        parent,
+        &format!("helper_crash_cleanup_return_retire_{local}"),
+    );
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            &format!("helper_crash_cleanup_return_token_{local}"),
+        )
+        .llvm_ctx("helper return stale token load")?
+        .into_int_value();
+    let has_token = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            token,
+            fn_ctx.ctx.i64_type().const_zero(),
+            &format!("helper_crash_cleanup_return_has_token_{local}"),
+        )
+        .llvm_ctx("helper return stale token compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(has_token, retire_bb, merge_bb)
+        .llvm_ctx("helper return stale token branch")?;
+    fn_ctx.builder.position_at_end(retire_bb);
+    emit_checked_crash_cleanup_token_call(
+        fn_ctx,
+        "hew_cont_crash_cleanup_retire",
+        token,
+        &format!("helper_crash_cleanup_return_retire_{local}"),
+    )?;
+    fn_ctx
+        .builder
+        .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
+        .llvm_ctx("helper return stale token clear")?;
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("helper return stale active clear")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("helper return stale-token merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
 fn emit_helper_crash_cleanup_retire_remaining_on_return(
     fn_ctx: &FnCtx<'_, '_>,
+    return_block: u32,
 ) -> CodegenResult<()> {
     let mut owners = fn_ctx
         .helper_crash_cleanup_owners
@@ -23108,6 +23210,45 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
             Place::Local(local) => local,
             _ => u32::MAX,
         };
+        // `emit_elab_drops` runs before the Return terminator. When this exact
+        // owner is already present in the Return block's ordinary plan, that
+        // emission retires its token and owns the sole normal-path destructor
+        // site. Synthesising the residual-owner branch as well would duplicate
+        // the typed drop ritual in the function. A deactivated owner can still
+        // carry a nonzero stale token, however, so a planned owner keeps a
+        // retire-only token sweep after its ordinary destructor.
+        let mut has_return_drop = false;
+        for drop in fn_ctx
+            .drop_plans
+            .iter()
+            .filter(
+                |(exit, _)| matches!(exit, ExitPath::Return { block } if *block == return_block),
+            )
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| drop.place == place)
+        {
+            if drop != &owner.descriptor {
+                return Err(CodegenError::FailClosed(format!(
+                    "return drop descriptor drift at {place:?}: planned {drop:?}, \
+                     registered {:?}",
+                    owner.descriptor
+                )));
+            }
+            has_return_drop = true;
+        }
+        if has_return_drop {
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or_else(|| CodegenError::Llvm("helper return sweep has no parent".into()))?;
+            let merge_bb = fn_ctx.ctx.append_basic_block(
+                parent,
+                &format!("helper_crash_cleanup_return_merge_{local}"),
+            );
+            emit_helper_crash_cleanup_retire_stale_return_token(fn_ctx, &owner, local, merge_bb)?;
+            continue;
+        }
         let parent = fn_ctx
             .builder
             .get_insert_block()
@@ -23120,10 +23261,6 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
         let active_drop_bb = fn_ctx
             .ctx
             .append_basic_block(parent, &format!("helper_crash_cleanup_return_drop_{local}"));
-        let retire_bb = fn_ctx.ctx.append_basic_block(
-            parent,
-            &format!("helper_crash_cleanup_return_retire_{local}"),
-        );
         let merge_bb = fn_ctx.ctx.append_basic_block(
             parent,
             &format!("helper_crash_cleanup_return_merge_{local}"),
@@ -23160,48 +23297,7 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
             .llvm_ctx("helper return active cleanup merge branch")?;
 
         fn_ctx.builder.position_at_end(inactive_bb);
-        let token = fn_ctx
-            .builder
-            .build_load(
-                fn_ctx.ctx.i64_type(),
-                owner.token_slot,
-                &format!("helper_crash_cleanup_return_token_{local}"),
-            )
-            .llvm_ctx("helper return token load")?
-            .into_int_value();
-        let has_token = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                token,
-                fn_ctx.ctx.i64_type().const_zero(),
-                &format!("helper_crash_cleanup_return_has_token_{local}"),
-            )
-            .llvm_ctx("helper return token compare")?;
-        fn_ctx
-            .builder
-            .build_conditional_branch(has_token, retire_bb, merge_bb)
-            .llvm_ctx("helper return token branch")?;
-        fn_ctx.builder.position_at_end(retire_bb);
-        emit_checked_crash_cleanup_token_call(
-            fn_ctx,
-            "hew_cont_crash_cleanup_retire",
-            token,
-            &format!("helper_crash_cleanup_return_retire_{local}"),
-        )?;
-        fn_ctx
-            .builder
-            .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
-            .llvm_ctx("helper return retired token clear")?;
-        fn_ctx
-            .builder
-            .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
-            .llvm_ctx("helper return retired active clear")?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(merge_bb)
-            .llvm_ctx("helper return retire merge branch")?;
-        fn_ctx.builder.position_at_end(merge_bb);
+        emit_helper_crash_cleanup_retire_stale_return_token(fn_ctx, &owner, local, merge_bb)?;
     }
     Ok(())
 }
@@ -23371,6 +23467,19 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             builtin: Some(_),
             ..
         } if args.is_empty() => Ok(name.clone()),
+        ResolvedTy::Named {
+            args,
+            builtin:
+                Some(
+                    builtin @ (hew_types::BuiltinType::VecIter
+                    | hew_types::BuiltinType::HashMapIter),
+                ),
+            ..
+        } => hew_hir::synthetic_cursor_layout_key(*builtin, args).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordInPlace drop has no synthetic cursor layout key for {ty:?}"
+            ))
+        }),
         other => Err(CodegenError::FailClosed(format!(
             "RecordInPlace drop requires a user record type; got {other:?}"
         ))),
@@ -28386,13 +28495,13 @@ fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
 /// this predicate congruent with the early-return dispatch below and fail
 /// closed when such a destination has a typed crash-cleanup obligation.
 fn call_bypasses_crash_cleanup_common_tail(
-    fn_ctx: &FnCtx<'_, '_>,
-    callee: &str,
-    builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
-    args: &[Place],
-    dest: Option<&Place>,
+    authority: hew_mir::CallAuthority,
 ) -> CodegenResult<bool> {
     use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
+
+    // `Direct` is an open linkage class.  It must never inherit a structural
+    // intercept merely because its spelling collides with an internal helper.
+    let builtin = authority.runtime_family();
 
     let family_intercept = matches!(
         builtin,
@@ -28411,44 +28520,28 @@ fn call_bypasses_crash_cleanup_common_tail(
                 | RtFamily::MathIntrinsic(_)
         )
     );
-    let identity_intercept = matches!(
-        callee,
-        "Node::id"
-            | "hew_node_id_display"
-            | "hew_location_node_id"
-            | "hew_location_slot"
-            | "hew_location_incarnation"
-            | "hew_location_display"
-            | "hew_remote_pid_location"
-            | "hew_remote_pid_node_id"
-            | "hew_remote_pid_slot"
-            | "hew_remote_pid_incarnation"
-            | "hew_remote_pid_display"
-    );
-    let collection_intercept = is_closure_pair_vec_call(fn_ctx, callee, args, dest)?
-        || is_bool_vec_runtime_symbol(callee)
-        || is_vec_constructor_symbol(callee)
-        || crate::layout::is_layout_vec_runtime_symbol(callee)
-        || is_owned_vec_runtime_symbol(callee)
-        || is_vec_i32_get_set_symbol(callee)
-        || is_hashmap_layout_probe_symbol(callee)
-        || is_hashmap_layout_runtime_symbol(callee)
-        || is_hashmap_layout_get_symbol(callee)
-        || matches!(
-            callee,
-            "hew_hashmap_remove_take_layout"
-                | "hew_bytes_get"
-                | "hew_string_get"
-                | "hew_supervisor_pool_get_option"
-                | "hew_string_find"
-                | "hew_string_char_at"
-                | "hew_string_char_at_utf8"
-                | "hew_hashmap_get_clone_layout"
-        )
-        || is_hashmap_constructor_symbol(callee)
-        || is_bytes_constructor_symbol(callee);
+    let compiler_intercept = matches!(authority, hew_mir::CallAuthority::Compiler(_));
+    let collection_intercept = builtin.is_some_and(|family| {
+        use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as F};
 
-    Ok(family_intercept || identity_intercept || collection_intercept)
+        matches!(
+            family.abi_shape(),
+            Shape::VecBool
+                | Shape::VecConstructor
+                | Shape::VecLayout
+                | Shape::VecOwned
+                | Shape::VecI32GetSet
+                | Shape::HashCollectionLayoutOp
+                | Shape::HashMapLayoutGet
+                | Shape::HashCollectionConstructor
+                | Shape::BytesConstructor
+        ) || matches!(
+            family,
+            F::BytesGet | F::StringGet | F::StringFind | F::StringCharAt | F::StringCharAtUtf8
+        )
+    });
+
+    Ok(family_intercept || compiler_intercept || collection_intercept)
 }
 
 fn lower_terminator<'ctx>(
@@ -28468,7 +28561,7 @@ fn lower_terminator<'ctx>(
     fn_ctx.suspend_abandon_block.set(block_id);
     match term {
         Terminator::Return => {
-            emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx)?;
+            emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx, block_id)?;
             // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler
@@ -28807,21 +28900,35 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             dest,
             next,
         } => {
             use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
+            let builtin = authority.runtime_family();
+            match authority {
+                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern => {}
+                hew_mir::CallAuthority::Runtime(family) => {
+                    if family.c_symbol() != callee {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Terminator::Call runtime family {family:?} emits `{}`, not carried callee `{callee}`",
+                            family.c_symbol()
+                        )));
+                    }
+                }
+                hew_mir::CallAuthority::Compiler(kind) => {
+                    if kind.expected_callee() != callee {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Terminator::Call compiler authority {kind:?} emits `{}`, not carried callee `{callee}`",
+                            kind.expected_callee()
+                        )));
+                    }
+                }
+            }
             if let Some(dest) = dest {
                 if fn_ctx.helper_crash_cleanup_owners.contains_key(dest)
-                    && call_bypasses_crash_cleanup_common_tail(
-                        fn_ctx,
-                        callee,
-                        *builtin,
-                        args,
-                        Some(dest),
-                    )?
+                    && call_bypasses_crash_cleanup_common_tail(*authority)?
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "typed crash cleanup for call destination {dest:?} cannot \
@@ -28838,7 +28945,7 @@ fn lower_terminator<'ctx>(
             // in-place around the runtime's aggregate out-parameter. The generic
             // FnSymbol::Real arm cannot synthesize that Result shape, so handle it
             // before symbol lookup. See `emit_node_lookup_call`.
-            if *builtin == Some(RtFamily::NodeLookup) {
+            if builtin == Some(RtFamily::NodeLookup) {
                 emit_node_lookup_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -28856,26 +28963,72 @@ fn lower_terminator<'ctx>(
             // `Result<(), SendError>` construction in-place.
             // Dispatch is family-keyed (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
-            if *builtin == Some(RtFamily::RemotePidSend) {
+            if builtin == Some(RtFamily::RemotePidSend) {
                 emit_remote_pid_send_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if matches!(
-                callee.as_str(),
-                "Node::id"
-                    | "hew_node_id_display"
-                    | "hew_location_node_id"
-                    | "hew_location_slot"
-                    | "hew_location_incarnation"
-                    | "hew_location_display"
-                    | "hew_remote_pid_location"
-                    | "hew_remote_pid_node_id"
-                    | "hew_remote_pid_slot"
-                    | "hew_remote_pid_incarnation"
-                    | "hew_remote_pid_display"
+                authority,
+                hew_mir::CallAuthority::Compiler(hew_mir::CompilerCallKind::IdentityAggregate(_))
             ) {
                 identity::emit_identity_aggregate_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
+            }
+            match authority {
+                hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption,
+                ) => {
+                    lower_hashmap_get_layout_call(fn_ctx, args, dest.as_ref(), *next)?;
+                    return Ok(());
+                }
+                hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex,
+                ) => {
+                    crate::layout::lower_hashmap_index_trap_call(
+                        fn_ctx,
+                        args,
+                        dest.as_ref(),
+                        *next,
+                    )?;
+                    return Ok(());
+                }
+                hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
+                ) => {
+                    crate::layout::lower_hashmap_remove_take_call(
+                        fn_ctx,
+                        args,
+                        dest.as_ref(),
+                        *next,
+                    )?;
+                    return Ok(());
+                }
+                hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::SupervisorPoolGetOption,
+                ) => {
+                    crate::layout::lower_supervisor_pool_get_option_call(
+                        fn_ctx,
+                        args,
+                        dest.as_ref(),
+                        *next,
+                    )?;
+                    return Ok(());
+                }
+                hew_mir::CallAuthority::Compiler(hew_mir::CompilerCallKind::LayoutProbe(_)) => {
+                    crate::layout::lower_hashmap_layout_probe(
+                        fn_ctx,
+                        callee,
+                        args,
+                        dest.as_ref(),
+                        *next,
+                    )?;
+                    return Ok(());
+                }
+                hew_mir::CallAuthority::Compiler(hew_mir::CompilerCallKind::ClosurePairVec(_)) => {
+                    lower_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                    return Ok(());
+                }
+                _ => {}
             }
             // Typed TCP/TLS/WebSocket attach calls carry distinct runtime-call
             // families. Codegen resolves the concrete actor from the handler's
@@ -29047,40 +29200,7 @@ fn lower_terminator<'ctx>(
                     .llvm_ctx_with(|| format!("{callee} br next"))?;
                 return Ok(());
             }
-            // Producer-gap backstop (fail-closed): the five intercepts above
-            // dispatch on the carried `builtin` family. A callee whose NAME
-            // is one of those intercept identities but which arrived with
-            // `builtin: None` means a MIR producer minted the call without
-            // threading the checker-resolved family — refuse loudly here
-            // with the gap named, instead of falling through to the generic
-            // symbol path (which would fail closed too, but with an
-            // unrelated "no declared symbol" / dest-shape message that
-            // hides the real defect). LESSONS `boundary-fail-closed`.
-            if builtin.is_none() {
-                if let Some(family) = RtFamily::from_c_symbol(callee) {
-                    if matches!(
-                        family,
-                        RtFamily::NodeLookup
-                            | RtFamily::RemotePidSend
-                            | RtFamily::TcpAttachLocal
-                            | RtFamily::TlsAttachLocal
-                            | RtFamily::WebSocketAttachLocal
-                            | RtFamily::StreamNextLayout
-                            | RtFamily::StreamTryNextLayout
-                            | RtFamily::ChannelRecvLayout
-                            | RtFamily::ChannelTryRecvLayout
-                            | RtFamily::ChannelSendLayout
-                            | RtFamily::StreamSendLayout
-                    ) {
-                        return Err(CodegenError::FailClosed(format!(
-                            "Terminator::Call to intercept callee `{callee}` arrived without \
-                             its typed builtin family ({family:?}); the MIR producer must \
-                             carry the checker-resolved RuntimeCallFamily on the call"
-                        )));
-                    }
-                }
-            }
-            if let Some(RtFamily::MathIntrinsic(intrinsic)) = *builtin {
+            if let Some(RtFamily::MathIntrinsic(intrinsic)) = builtin {
                 emit_math_intrinsic_call(fn_ctx, callee, intrinsic, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -29094,79 +29214,109 @@ fn lower_terminator<'ctx>(
             // pair out, frees the element box; the popped pair keeps the
             // env, whose free obligation the consumer's `let` admission
             // tracks). Scope-exit release is descriptor-driven.
-            if is_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref())? {
-                lower_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+            if matches!(
+                builtin,
+                Some(RtFamily::VecGet(hew_types::runtime_call::VecGetElem::Clone))
+            ) {
+                crate::layout::lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_bool_vec_runtime_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::VecBool
+            }) {
                 lower_bool_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_vec_constructor_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::VecConstructor
+            }) {
                 lower_vec_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if crate::layout::is_layout_vec_runtime_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::VecLayout
+            }) {
                 lower_layout_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_owned_vec_runtime_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::VecOwned
+            }) {
                 lower_owned_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_vec_i32_get_set_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::VecI32GetSet
+            }) {
                 lower_vec_i32_get_set(fn_ctx, fn_symbols, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_hashmap_layout_probe_symbol(callee) {
-                lower_hashmap_layout_probe(fn_ctx, callee, args, dest.as_ref(), *next)?;
-                return Ok(());
-            }
-            if is_hashmap_layout_runtime_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape()
+                    == hew_types::runtime_call::RuntimeCallAbiShape::HashCollectionLayoutOp
+            }) {
                 lower_hashmap_layout_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_hashmap_layout_get_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::HashMapLayoutGet
+            }) {
                 lower_hashmap_get_layout_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if callee == "hew_hashmap_remove_take_layout" {
-                lower_hashmap_remove_take_call(fn_ctx, args, dest.as_ref(), *next)?;
-                return Ok(());
-            }
-            if callee == "hew_vec_get_clone" {
-                lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
-                return Ok(());
-            }
-            if callee == "hew_bytes_get" {
+            if matches!(builtin, Some(RtFamily::BytesGet)) {
                 lower_bytes_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if callee == "hew_string_get" {
+            if matches!(builtin, Some(RtFamily::StringGet)) {
                 lower_string_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if callee == "hew_supervisor_pool_get_option" {
-                lower_supervisor_pool_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
-                return Ok(());
-            }
             if matches!(
-                callee.as_str(),
-                "hew_string_find" | "hew_string_char_at" | "hew_string_char_at_utf8"
+                builtin,
+                Some(RtFamily::StringFind | RtFamily::StringCharAt | RtFamily::StringCharAtUtf8)
             ) {
                 lower_string_sentinel_option_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if callee == "hew_hashmap_get_clone_layout" {
-                lower_hashmap_index_trap_call(fn_ctx, args, dest.as_ref(), *next)?;
-                return Ok(());
-            }
-            if is_hashmap_constructor_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape()
+                    == hew_types::runtime_call::RuntimeCallAbiShape::HashCollectionConstructor
+            }) {
                 lower_hashmap_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_bytes_constructor_symbol(callee) {
+            if builtin.is_some_and(|family| {
+                family.abi_shape() == hew_types::runtime_call::RuntimeCallAbiShape::BytesConstructor
+            }) {
                 lower_bytes_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            // Catalog-backed runtime calls may arrive as `Terminator::Call`
+            // because they have source call syntax, while the same ABI family
+            // is normally lowered through `Instr::CallRuntimeAbi`. Route every
+            // non-pre-staged family through that shared typed ABI authority
+            // instead of requiring a fabricated user-function declaration.
+            // The family is carried by MIR; `RuntimeCall::from_family`
+            // revalidates its derived ABI symbol without reverse-parsing the
+            // callee spelling.
+            let runtime_family = builtin.filter(|family| family.is_mir_emitter_family());
+            if let Some(family) = runtime_family {
+                let runtime_call = RuntimeCall::from_family(family, args.clone(), *dest).map_err(
+                    |error| {
+                        CodegenError::FailClosed(format!(
+                            "Terminator::Call builtin family {family:?} has no admitted runtime ABI for `{callee}`: {error:?}"
+                        ))
+                    },
+                )?;
+                crate::runtime_abi::lower_call_runtime_abi(fn_ctx, &runtime_call)?;
+                let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx_with(|| format!("{callee} runtime ABI br"))?;
                 return Ok(());
             }
             let callee_symbol_entry = *fn_symbols.get(callee).ok_or_else(|| {
@@ -30136,6 +30286,35 @@ fn lower_terminator<'ctx>(
                                     .builder
                                     .build_store(field_ptr, owned)
                                     .llvm_ctx("lambda env string clone store")?;
+                            }
+                            LambdaEnvFieldDrop::StrongLambdaActorHandle => {
+                                let field_ptr = fn_ctx
+                                    .builder
+                                    .build_struct_gep(
+                                        env_struct,
+                                        heap_env,
+                                        field_idx,
+                                        &format!("lambda_env_actor_{idx}_ptr"),
+                                    )
+                                    .llvm_ctx("lambda env actor field gep")?;
+                                let alias = fn_ctx
+                                    .builder
+                                    .build_load(
+                                        ptr_ty,
+                                        field_ptr,
+                                        &format!("lambda_env_actor_{idx}_alias"),
+                                    )
+                                    .llvm_ctx("lambda env actor alias load")?;
+                                let owned = fn_ctx.call_runtime_basic(
+                                    "hew_lambda_actor_clone",
+                                    &[alias.into()],
+                                    &format!("lambda_env_actor_{idx}_clone"),
+                                    "hew_lambda_actor_clone call",
+                                )?;
+                                fn_ctx
+                                    .builder
+                                    .build_store(field_ptr, owned)
+                                    .llvm_ctx("lambda env actor clone store")?;
                             }
                             LambdaEnvFieldDrop::WeakSelfHandle => {
                                 let field_ptr = fn_ctx

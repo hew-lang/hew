@@ -616,9 +616,7 @@ pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>)
     for handle in finished {
         // Ordering: only handles that reported `is_finished() == true`
         // under the lock above reach here, so this join is non-blocking.
-        if handle.join().is_err() {
-            eprintln!("hew: warning: deferred teardown thread panicked");
-        }
+        crate::util::report_join_panic("deferred teardown thread", handle.join());
     }
 }
 
@@ -636,9 +634,7 @@ pub(crate) fn drain_deferred_teardown_threads() {
         });
         let Some(handles) = handles else { return };
         for handle in handles {
-            if handle.join().is_err() {
-                eprintln!("hew: warning: deferred teardown thread panicked");
-            }
+            crate::util::report_join_panic("deferred teardown thread", handle.join());
         }
     }
 }

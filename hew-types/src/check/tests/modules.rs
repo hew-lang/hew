@@ -68,6 +68,57 @@ fn nested_module_leaf_is_not_a_nominal_self_qualifier() {
 }
 
 #[test]
+fn source_owned_bare_impl_target_matches_its_full_return_owner_only() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.encoding.yaml".to_string());
+    checker.local_type_defs.insert("Value".to_string());
+
+    assert!(
+        checker.strict_names_same_owner("std.encoding.yaml.Value", None, "Value", None),
+        "a module's bare impl target and its resolved full source return owner are one nominal"
+    );
+    assert!(
+        !checker.strict_names_same_owner("other.Value", None, "Value", None),
+        "the source-owner exception must not collapse a foreign same-leaf type"
+    );
+}
+
+#[test]
+fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.encoding.yaml".to_string());
+    checker.type_defs.insert(
+        "std.encoding.yaml.ParseError".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "ParseError".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    let expected = Ty::Named {
+        name: "std.encoding.yaml.ParseError".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+
+    assert!(checker.variant_surface_owner_matches("ParseError::Invalid", &expected));
+    assert!(!checker.variant_surface_owner_matches("other.ParseError::Invalid", &expected));
+
+    checker.current_module = None;
+    assert!(
+        checker.variant_surface_owner_matches("ParseError::Invalid", &expected),
+        "a bare associated-pattern owner is resolved from its exact expected enum"
+    );
+}
+
+#[test]
 fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());
@@ -87,6 +138,33 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         "the unique compatibility surface must project through the proven exact std owner"
     );
 
+    // A registration seed for a nearby module is not a declaration of
+    // `std.net.tls.NetError`. Finalising the TLS helper's branch result must
+    // still follow the exact `net` import owner, rather than leaving a bare
+    // child that disagrees with its `net.NetError` join type.
+    checker.source_type_defs.insert("NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        Some("std.net.NetError".to_string()),
+        "a stale bare registration seed must not block the canonical module binding"
+    );
+    checker.source_type_defs.remove("NetError");
+
+    checker.known_types.insert("std.net.NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        Some("std.net.NetError".to_string()),
+        "compatibility and canonical registrations of one declaration are not ambiguous"
+    );
+
+    checker.local_type_defs.insert("NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        None,
+        "a local same-leaf enum wins even when the imported owner is otherwise unique"
+    );
+    checker.local_type_defs.remove("NetError");
+
     checker.module_import_bindings.insert(
         (Some("std.net.tls".to_string()), "sibling".to_string()),
         "acme.net".to_string(),
@@ -103,6 +181,58 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         checker.canonical_nominal_name("NetError"),
         None,
         "a local same-leaf enum shadows imported compatibility surfaces"
+    );
+}
+
+#[test]
+fn generic_same_leaf_owner_conflict_is_rejected_before_inference_binds() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Envelope".to_string());
+    checker.source_type_defs.insert("Envelope".to_string());
+
+    let element = TypeVar::fresh();
+    let local = Ty::Named {
+        name: "Envelope".to_string(),
+        args: vec![Ty::Var(element)],
+        builtin: None,
+    };
+    let foreign = Ty::Named {
+        name: "foreign.Envelope".to_string(),
+        args: vec![Ty::I64],
+        builtin: None,
+    };
+
+    checker.expect_type(&local, &foreign, &(10..20));
+
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "the outer nominal owner must be rejected even while an inner argument is unresolved"
+    );
+    assert_eq!(
+        checker.subst.resolve(&Ty::Var(element)),
+        Ty::Var(element),
+        "a rejected cross-owner probe must not bind the nested inference variable"
+    );
+}
+
+#[test]
+fn expected_constructor_args_do_not_cross_same_leaf_nominal_owners() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Envelope".to_string());
+    checker.source_type_defs.insert("Envelope".to_string());
+    let expected = Ty::Named {
+        name: "Envelope".to_string(),
+        args: vec![Ty::String],
+        builtin: None,
+    };
+
+    assert_eq!(
+        checker.expected_constructor_type_args(&expected, "foreign.Envelope", 1),
+        None,
+        "expected-type inference must not lend local generic arguments to a foreign constructor"
     );
 }
 
@@ -678,6 +808,25 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
 #[cfg(test)]
 mod module_body_diagnostic_envelope {
     use super::*;
+
+    #[test]
+    fn generated_enum_owner_and_discriminator_still_require_selected_std_source() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.canonical_std_module_sources.clear();
+        checker.canonical_lifecycle_import_authority.clear();
+        checker.in_stdlib_registration = false;
+
+        assert_eq!(
+            crate::lookup_builtin_type("std.failure.CrashAction"),
+            Some(BuiltinType::CrashAction),
+            "the counterfactual must retain both catalog axes"
+        );
+        assert_eq!(
+            checker.source_authorized_generated_enum_builtin("std.failure.CrashAction"),
+            None,
+            "canonical spelling plus discriminator cannot replace selected-source provenance"
+        );
+    }
 
     // ── helpers ────────────────────────────────────────────────────────────────
 

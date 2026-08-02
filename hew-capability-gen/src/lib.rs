@@ -19,8 +19,15 @@ pub const RUST_OUTPUT: &str = "hew-types/src/wasm_capabilities_generated.rs";
 /// Repository-relative path of the generated playground WASI decisions.
 pub const PLAYGROUND_OUTPUT: &str = "examples/playground/wasm-capabilities.json";
 
+/// Repository-relative path of the runnable playground manifest truth.
+pub const PLAYGROUND_MANIFEST: &str = "examples/playground/manifest.json";
+
 /// Repository-relative path whose feature-policy table is generated.
 pub const MATRIX_OUTPUT: &str = "docs/wasm-capability-matrix.md";
+
+const PLAYGROUND_SUMMARY_BEGIN: &str =
+    "<!-- BEGIN GENERATED: playground-wasi-capability-summary -->";
+const PLAYGROUND_SUMMARY_END: &str = "<!-- END GENERATED: playground-wasi-capability-summary -->";
 
 /// Fully typed manifest schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -153,6 +160,25 @@ pub enum PlaygroundWasiStatus {
     Unsupported,
 }
 
+/// The minimal typed projection consumed from `examples/playground/manifest.json`.
+#[derive(Debug, Clone, Deserialize)]
+struct PlaygroundManifestEntry {
+    id: String,
+    capabilities: PlaygroundCapabilities,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PlaygroundCapabilities {
+    wasi: PlaygroundManifestWasiStatus,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum PlaygroundManifestWasiStatus {
+    Runnable,
+    Unsupported,
+}
+
 /// A generated repository output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedOutput {
@@ -241,6 +267,28 @@ impl Manifest {
                         ));
                     }
                 }
+            }
+            match feature.checker {
+                CheckerDisposition::Warn if feature.runtime != RuntimeDisposition::Cooperative => {
+                    return Err(format!(
+                        "warning feature `{}` must have cooperative runtime disposition",
+                        feature.id
+                    ));
+                }
+                CheckerDisposition::Reject
+                    if matches!(
+                        feature.runtime,
+                        RuntimeDisposition::Implemented
+                            | RuntimeDisposition::HostDependent
+                            | RuntimeDisposition::Cooperative
+                    ) =>
+                {
+                    return Err(format!(
+                        "reject feature `{}` has runnable runtime disposition {:?}",
+                        feature.id, feature.runtime
+                    ));
+                }
+                _ => {}
             }
             if (!feature.native_only_modules.is_empty()
                 || !feature.native_only_functions.is_empty())
@@ -412,6 +460,81 @@ impl Manifest {
             .expect("String write");
         }
         out
+    }
+
+    /// Render the complete curated-example WASI summary from both authorities.
+    ///
+    /// Unsupported rows obtain their identity and reason from
+    /// `[[playground_wasi]]`; runnable rows are accepted only from the checked
+    /// playground manifest that the real WASI E2E loop consumes. The two
+    /// sources must agree exactly on every unsupported entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JSON-schema, duplicate-identity, or cross-authority mismatch
+    /// diagnostic.
+    pub fn render_playground_wasi_summary(
+        &self,
+        playground_manifest: &str,
+    ) -> Result<String, String> {
+        let entries: Vec<PlaygroundManifestEntry> = serde_json::from_str(playground_manifest)
+            .map_err(|err| format!("parse {PLAYGROUND_MANIFEST}: {err}"))?;
+        let unsupported: BTreeMap<&str, &PlaygroundWasi> = self
+            .playground_wasi
+            .iter()
+            .map(|row| (row.id.as_str(), row))
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut out = String::from(
+            "| Example | `capabilities.wasi` | Reason |\n\
+             |---------|---------------------|--------|\n",
+        );
+
+        for entry in entries {
+            if !seen.insert(entry.id.clone()) {
+                return Err(format!(
+                    "{PLAYGROUND_MANIFEST}: duplicate example id `{}`",
+                    entry.id
+                ));
+            }
+            let (status, reason) = match entry.capabilities.wasi {
+                PlaygroundManifestWasiStatus::Runnable => {
+                    if unsupported.contains_key(entry.id.as_str()) {
+                        return Err(format!(
+                            "playground example `{}` is runnable but [[playground_wasi]] declares it unsupported",
+                            entry.id
+                        ));
+                    }
+                    (
+                        "runnable",
+                        "Runnable in the playground manifest and exercised by the WASI E2E gate",
+                    )
+                }
+                PlaygroundManifestWasiStatus::Unsupported => {
+                    let row = unsupported.get(entry.id.as_str()).ok_or_else(|| {
+                        format!(
+                            "playground example `{}` is unsupported without a [[playground_wasi]] authority row",
+                            entry.id
+                        )
+                    })?;
+                    ("unsupported", row.reason.as_str())
+                }
+            };
+            writeln!(
+                out,
+                "| `{}` | `{status}` | {} |",
+                markdown_cell(&entry.id),
+                markdown_cell(reason),
+            )
+            .expect("String write");
+        }
+
+        if let Some(missing) = unsupported.keys().find(|id| !seen.contains(**id)) {
+            return Err(format!(
+                "[[playground_wasi]] entry `{missing}` is absent from {PLAYGROUND_MANIFEST}"
+            ));
+        }
+        Ok(out)
     }
 
     fn checker_features(&self) -> impl Iterator<Item = &Feature> {
@@ -616,21 +739,28 @@ pub fn load_manifest(root: &Path) -> Result<Manifest, String> {
     Manifest::parse(&src).map_err(|err| format!("{}: {err}", path.display()))
 }
 
+fn load_playground_manifest(root: &Path) -> Result<String, String> {
+    let path = root.join(PLAYGROUND_MANIFEST);
+    std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))
+}
+
 /// Write all generated outputs beneath `root`.
 ///
 /// # Errors
 ///
 /// Returns an I/O diagnostic when an output cannot be written.
 pub fn write_outputs(root: &Path, manifest: &Manifest) -> Result<(), String> {
+    let matrix_path = root.join(MATRIX_OUTPUT);
+    let matrix = std::fs::read_to_string(&matrix_path)
+        .map_err(|err| format!("read {}: {err}", matrix_path.display()))?;
+    let playground_manifest = load_playground_manifest(root)?;
+    let rendered = replace_matrix_generated_sections(&matrix, manifest, &playground_manifest)?;
+
     for output in manifest.generated_outputs() {
         let path = root.join(output.path);
         std::fs::write(&path, output.contents)
             .map_err(|err| format!("write {}: {err}", path.display()))?;
     }
-    let matrix_path = root.join(MATRIX_OUTPUT);
-    let matrix = std::fs::read_to_string(&matrix_path)
-        .map_err(|err| format!("read {}: {err}", matrix_path.display()))?;
-    let rendered = replace_feature_policy_table(&matrix, manifest)?;
     std::fs::write(&matrix_path, rendered)
         .map_err(|err| format!("write {}: {err}", matrix_path.display()))?;
     Ok(())
@@ -654,9 +784,12 @@ pub fn stale_outputs(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>, S
         }
     }
     let matrix_path = root.join(MATRIX_OUTPUT);
+    let playground_manifest = load_playground_manifest(root)?;
     match std::fs::read_to_string(&matrix_path) {
         Ok(existing) => {
-            if replace_feature_policy_table(&existing, manifest)? != existing {
+            if replace_matrix_generated_sections(&existing, manifest, &playground_manifest)?
+                != existing
+            {
                 stale.push(matrix_path);
             }
         }
@@ -664,6 +797,20 @@ pub fn stale_outputs(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>, S
         Err(err) => return Err(format!("read {}: {err}", matrix_path.display())),
     }
     Ok(stale)
+}
+
+fn replace_matrix_generated_sections(
+    source: &str,
+    manifest: &Manifest,
+    playground_manifest: &str,
+) -> Result<String, String> {
+    let source = replace_feature_policy_table(source, manifest)?;
+    replace_delimited_section(
+        &source,
+        PLAYGROUND_SUMMARY_BEGIN,
+        PLAYGROUND_SUMMARY_END,
+        &manifest.render_playground_wasi_summary(playground_manifest)?,
+    )
 }
 
 fn replace_feature_policy_table(source: &str, manifest: &Manifest) -> Result<String, String> {
@@ -695,6 +842,39 @@ fn replace_feature_policy_table(source: &str, manifest: &Manifest) -> Result<Str
     for line in &lines[table_end..] {
         rendered.push_str(line);
     }
+    Ok(rendered)
+}
+
+fn replace_delimited_section(
+    source: &str,
+    begin_marker: &str,
+    end_marker: &str,
+    contents: &str,
+) -> Result<String, String> {
+    if source.matches(begin_marker).count() != 1 || source.matches(end_marker).count() != 1 {
+        return Err(format!(
+            "{MATRIX_OUTPUT}: expected exactly one `{begin_marker}` and `{end_marker}` marker"
+        ));
+    }
+    let begin = source
+        .find(begin_marker)
+        .expect("marker count validated before replacement");
+    let after_begin = begin + begin_marker.len();
+    let content_start = after_begin + source[after_begin..].strip_prefix('\n').map_or(0, |_| 1);
+    if content_start == after_begin {
+        return Err(format!(
+            "{MATRIX_OUTPUT}: `{begin_marker}` must end its own line"
+        ));
+    }
+    let end = content_start
+        + source[content_start..]
+            .find(end_marker)
+            .ok_or_else(|| format!("{MATRIX_OUTPUT}: `{end_marker}` precedes `{begin_marker}`"))?;
+
+    let mut rendered = String::with_capacity(source.len() + contents.len());
+    rendered.push_str(&source[..content_start]);
+    rendered.push_str(contents);
+    rendered.push_str(&source[end..]);
     Ok(rendered)
 }
 

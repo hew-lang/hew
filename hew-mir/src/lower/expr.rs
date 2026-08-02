@@ -5,14 +5,14 @@ use super::{
     cmp_select_by_signedness, context_reader_offset, describe_vec_element,
     dyn_rebind_source_binding, field_override_uses_record_field_drop, float_width,
     integer_bit_width, integer_signedness, is_self_expr, is_string_const_ty, machine_emit_type_id,
-    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, named_layout_key,
-    numeric_method_op, numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr,
-    signed_min_value, ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum,
-    ty_is_stream_handle, unary_op_label, unresolved_fn_sig_reason, user_record_layout_key,
-    ActorStateLoadMode, BinaryOp, BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs,
-    CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr,
-    HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness,
-    IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
+    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
+    numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, signed_min_value,
+    ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum, ty_is_stream_handle,
+    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode, BinaryOp,
+    BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs, CmpPred, Disposition,
+    FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
+    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
     ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
     ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
     VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
@@ -22,6 +22,121 @@ use super::{
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
 use crate::model::ActorStateStoreHandoff;
 
+/// Compiler-owned primitive `Display::fmt` implementations live in the
+/// catalog, not as emitted Hew impl bodies.  Static dispatch reaches here only
+/// after the checker has selected the exact Display method declaration, so map
+/// that declaration plus the substituted primitive type to its catalog call.
+/// Other traits and user-defined `Display` impls continue through the
+/// declaration-keyed impl registry below.
+fn primitive_display_static_callee(
+    target: &hew_types::CallTarget,
+    receiver: &ResolvedTy,
+    explicit_arg_count: usize,
+) -> Option<&'static str> {
+    let hew_types::CallTarget::StaticTraitMethod {
+        declaring_trait,
+        method,
+    } = target
+    else {
+        return None;
+    };
+    if explicit_arg_count != 0
+        || declaring_trait.full_path() != "std.builtins.Display"
+        || method.full_path() != "std.builtins.Display::fmt"
+    {
+        return None;
+    }
+    match receiver {
+        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => Some("to_string_i32"),
+        ResolvedTy::I64 | ResolvedTy::Isize => Some("to_string_i64"),
+        ResolvedTy::U8 => Some("to_string_u8"),
+        ResolvedTy::U16 | ResolvedTy::U32 => Some("to_string_u32"),
+        ResolvedTy::U64 | ResolvedTy::Usize => Some("to_string_u64"),
+        ResolvedTy::F64 => Some("to_string_f64"),
+        ResolvedTy::Bool => Some("to_string_bool"),
+        ResolvedTy::Char => Some("to_string_char"),
+        ResolvedTy::String => Some("to_string_str"),
+        _ => None,
+    }
+}
+
+/// The stdlib's generic `Iterator::next` body reaches MIR as static trait
+/// dispatch after its `I` parameter is monomorphised. `VecIter<T>` is a
+/// compiler-owned cursor, though: its concrete next operation is the same
+/// checked clone-out state machine HIR uses for a direct `iter.next()` call.
+///
+/// Keep this discriminator declaration-keyed and builtin-tagged. A user type
+/// named `VecIter`, a different `next` trait, or an iterator with arguments
+/// must continue through ordinary impl dispatch rather than borrowing this
+/// runtime protocol.
+fn builtin_vec_iter_static_next_element<'a>(
+    target: &hew_types::CallTarget,
+    receiver: &'a ResolvedTy,
+    explicit_arg_count: usize,
+) -> Option<&'a ResolvedTy> {
+    let hew_types::CallTarget::StaticTraitMethod {
+        declaring_trait,
+        method,
+    } = target
+    else {
+        return None;
+    };
+    if explicit_arg_count != 0
+        || declaring_trait.full_path() != "std.builtins.Iterator"
+        || method.full_path() != "std.builtins.Iterator::next"
+    {
+        return None;
+    }
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(BuiltinType::VecIter),
+        ..
+    } = receiver
+    else {
+        return None;
+    };
+    (args.len() == 1).then(|| &args[0])
+}
+
+#[cfg(test)]
+mod builtin_vec_iter_static_next_tests {
+    use super::*;
+
+    fn iterator_next_target() -> hew_types::CallTarget {
+        hew_types::CallTarget::static_trait(
+            hew_types::DefId::new("std.builtins.Iterator"),
+            hew_types::DefId::new("std.builtins.Iterator::next"),
+        )
+    }
+
+    #[test]
+    fn builtin_vec_iter_next_requires_exact_builtin_and_declaration_identities() {
+        let builtin_cursor =
+            ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::I64]);
+        assert_eq!(
+            builtin_vec_iter_static_next_element(&iterator_next_target(), &builtin_cursor, 0),
+            Some(&ResolvedTy::I64),
+            "the builtin Iterator::next identity selects the VecIter state machine"
+        );
+
+        let user_spoof = ResolvedTy::named_user("VecIter", vec![ResolvedTy::I64]);
+        assert!(
+            builtin_vec_iter_static_next_element(&iterator_next_target(), &user_spoof, 0).is_none(),
+            "a user VecIter spelling must not acquire the builtin cursor protocol"
+        );
+
+        let other_iterator_method = hew_types::CallTarget::static_trait(
+            hew_types::DefId::new("std.builtins.Iterator"),
+            hew_types::DefId::new("std.builtins.Iterator::peek"),
+        );
+        assert!(
+            builtin_vec_iter_static_next_element(&other_iterator_method, &builtin_cursor, 0)
+                .is_none(),
+            "a different Iterator method must remain ordinary static dispatch"
+        );
+    }
+}
+
 pub(super) fn binding_seeds_drop_elaboration(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -29,7 +144,223 @@ pub(super) fn binding_seeds_drop_elaboration(
     ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
 }
 
+/// The specialised terminal either does not apply, or it owns the call site
+/// completely (including a possible diagnostic/lowering failure).
+enum VecIterStaticNextLowering {
+    NotApplicable,
+    Lowered(Option<Place>),
+}
+
 impl Builder {
+    /// Lower the exact builtin `Iterator::next` dispatch for `VecIter<T>`.
+    ///
+    /// HIR expands direct `cursor.next()` syntax before generic functions are
+    /// specialised. A call originating in `std::iter::fold<I: Iterator>` is
+    /// necessarily still a static-trait call in HIR, so after `I = VecIter<T>`
+    /// substitution MIR materialises the identical cursor state machine here:
+    /// compare `idx` with the snapshot Vec length, clone the current element
+    /// into `Some`, advance `idx`, or construct `None`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cursor advancement must emit a contiguous CFG: split helpers would obscure the ownership and block transitions"
+    )]
+    fn lower_builtin_vec_iter_static_next(
+        &mut self,
+        receiver: &HirExpr,
+        elem_ty: &ResolvedTy,
+        ret_ty: &ResolvedTy,
+        site: SiteId,
+    ) -> Option<Place> {
+        if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`VecIter<{}>` clone-out", elem_ty.user_facing()),
+                    site,
+                },
+                note: format!(
+                    "`VecIter::next()` must clone each element into an independent owner, \
+                     but {reason}; MIR refuses to lower the generic Iterator dispatch"
+                ),
+            });
+            return None;
+        }
+
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            name,
+        } = &receiver.kind
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: "builtin VecIter Iterator::next receiver is not a binding".to_string(),
+                },
+                note: "the builtin cursor state machine mutates the receiver's existing local slot"
+                    .to_string(),
+            });
+            return None;
+        };
+        let Some(cursor) = self.binding_locals.get(binding).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedPlace {
+                    binding: *binding,
+                    name: name.clone(),
+                    site: receiver.site,
+                },
+                note: "builtin VecIter Iterator::next receiver has no MIR place".to_string(),
+            });
+            return None;
+        };
+        // `VecIter::next` advances the cursor in place; it does not transfer
+        // the cursor out of its binding.  The generic `var self` HIR carrier
+        // models an ordinary method's dual-return write-back as Consume, but
+        // this builtin intercept replaces that carrier with field mutation, so
+        // record the read directly and keep the VecIter scope owner live.
+        self.statements.push(MirStatement::Use {
+            binding: *binding,
+            name: name.clone(),
+            site: receiver.site,
+            ty: self.subst_ty(&receiver.ty),
+            intent: IntentKind::Read,
+        });
+        let vec_ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem_ty.clone()]);
+        let vec = self.alloc_local(vec_ty);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: cursor,
+            field_offset: FieldOffset(0),
+            dest: vec,
+        });
+        let idx = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: cursor,
+            field_offset: FieldOffset(1),
+            dest: idx,
+        });
+
+        let len = self.alloc_local(ResolvedTy::I64);
+        let after_len = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_len".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecLen,
+            ),
+            args: vec![vec],
+            dest: Some(len),
+            next: after_len,
+        });
+        self.start_block(after_len);
+
+        let exhausted = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: CmpPred::SignedGreaterEq,
+            lhs: idx,
+            rhs: len,
+            dest: exhausted,
+        });
+        let none_bb = self.alloc_block();
+        let some_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+        let result = self.alloc_local(ret_ty.clone());
+        self.finish_current_block(Terminator::Branch {
+            cond: exhausted,
+            then_target: none_bb,
+            else_target: some_bb,
+        });
+
+        self.start_block(none_bb);
+        let none_tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: none_tag,
+            value: 1,
+        });
+        let Place::Local(result_local) = result else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        self.push_instr(Instr::Move {
+            dest: Place::EnumTag(result_local),
+            src: none_tag,
+        });
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(some_bb);
+        let after_get = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_get_clone".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                    hew_types::runtime_call::VecGetElem::Clone,
+                ),
+            ),
+            args: vec![vec, idx],
+            dest: Some(result),
+            next: after_get,
+        });
+        self.start_block(after_get);
+        let one = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: one,
+            value: 1,
+        });
+        let next_idx = self.alloc_local(ResolvedTy::I64);
+        let overflow = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntArithChecked {
+            op: IntArithOp::Add,
+            signed: IntSignedness::Signed,
+            dest: next_idx,
+            lhs: idx,
+            rhs: one,
+            overflow_flag: overflow,
+        });
+        let overflow_bb = self.alloc_block();
+        let advance_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow,
+            then_target: overflow_bb,
+            else_target: advance_bb,
+        });
+        self.start_block(overflow_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        self.start_block(advance_bb);
+        self.push_instr(Instr::RecordFieldStore {
+            record: cursor,
+            field_offset: FieldOffset(1),
+            src: next_idx,
+        });
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(join_bb);
+        Some(result)
+    }
+
+    /// Recognises only the exact builtin `VecIter<T>::Iterator::next`
+    /// terminal after substitution. Every adapter stays on ordinary
+    /// declaration-indexed static dispatch.
+    fn lower_builtin_vec_iter_static_next_if_applicable(
+        &mut self,
+        receiver_type_param: &str,
+        receiver: &HirExpr,
+        call_target: &hew_types::CallTarget,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        site: SiteId,
+    ) -> VecIterStaticNextLowering {
+        let Some(concrete_ty) = self.subst.get(receiver_type_param).cloned() else {
+            return VecIterStaticNextLowering::NotApplicable;
+        };
+        let Some(elem_ty) =
+            builtin_vec_iter_static_next_element(call_target, &concrete_ty, args.len())
+        else {
+            return VecIterStaticNextLowering::NotApplicable;
+        };
+        VecIterStaticNextLowering::Lowered(self.lower_builtin_vec_iter_static_next(
+            receiver,
+            elem_ty,
+            &self.subst_ty(ret_ty),
+            site,
+        ))
+    }
+
     /// The `let` / `var` binder's combined seed-and-provenance gate.
     ///
     /// `Some(warrant)` when this binding earns a scope-exit owner: its type
@@ -1882,7 +2213,7 @@ impl Builder {
                             );
                         }
                     }
-                    self.retire_provisional_owner_for_bound_value(binding.id, src);
+                    self.retire_provisional_owner_for_bound_value(binding.id, &binding.name, src);
                 }
                 // #1933 / #1941 — allocate the path-sensitive drop-flag for a
                 // non-idempotent user `#[resource]` binding now that its backend
@@ -2336,12 +2667,17 @@ impl Builder {
                 } else {
                     target_symbol.as_str()
                 };
-                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(
-                    effective_symbol,
-                );
+                // `effective_symbol` is selected from the checker's resolved
+                // Vec method family, including the owned-move refinement above;
+                // carry its closed runtime identity rather than asking codegen
+                // to recognise a linker spelling.
+                let builtin =
+                    hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(effective_symbol);
                 self.finish_current_block(Terminator::Call {
                     callee: effective_symbol.to_string(),
-                    builtin,
+                    authority: builtin
+                        .map(crate::CallAuthority::Runtime)
+                        .unwrap_or_default(),
                     args: arg_places,
                     dest: None,
                     next,
@@ -2633,11 +2969,15 @@ impl Builder {
                     return;
                 };
                 let next = self.alloc_block();
-                let builtin =
-                    hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(&symbol);
+                // The index-assignment target came from the checker-owned
+                // collection method family; preserve that closed runtime
+                // identity on the call terminator.
+                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol);
                 self.finish_current_block(Terminator::Call {
                     callee: symbol,
-                    builtin,
+                    authority: builtin
+                        .map(crate::CallAuthority::Runtime)
+                        .unwrap_or_default(),
                     args: vec![vec_place, index_place, src],
                     dest: None,
                     next,
@@ -2669,7 +3009,7 @@ impl Builder {
                 let family = hew_types::runtime_call::RuntimeCallFamily::HashMapInsertLayout;
                 self.finish_current_block(Terminator::Call {
                     callee: family.c_symbol().to_string(),
-                    builtin: Some(family),
+                    authority: crate::CallAuthority::Runtime(family),
                     args: vec![map_place, key_place, src],
                     dest: None,
                     next,
@@ -3585,10 +3925,7 @@ impl Builder {
                     // env-source entry is the routing signal — the loaded env
                     // field is the handle value.
                     if self.capture_env_sources.contains_key(binding_id)
-                        && matches!(
-                            &callee.ty,
-                            ResolvedTy::Named { name, .. } if name == "LambdaPid"
-                        )
+                        && callee.ty.is_builtin(BuiltinType::LambdaPid)
                     {
                         return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
                     }
@@ -3724,13 +4061,33 @@ impl Builder {
                             });
                             return None;
                         }
-                        return self.lower_direct_call(
+                        // Catalog linkage is the authority for a compiled FFI
+                        // boundary.  Some concrete ABI shims intentionally sit
+                        // outside `RuntimeCallFamily` (for example
+                        // `hew_string_length`), so treating a missing runtime
+                        // family as an ordinary direct call loses the checked
+                        // borrowing contract in imported bodies.  Join the
+                        // endpoint to its catalog linkage and require the
+                        // ItemId-projected symbol to agree; this never grants
+                        // `Extern` authority based on a user-controlled symbol
+                        // spelling.
+                        let authority = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                             callee_symbol,
-                            None,
+                        )
+                        .map(crate::CallAuthority::Runtime)
+                        .or_else(|| {
+                            hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
+                                .filter(|symbol| *symbol == callee_symbol)
+                                .map(|_| crate::CallAuthority::Extern)
+                        })
+                        .unwrap_or_default();
+                        return self.lower_direct_call_with_authority(
+                            callee_symbol,
                             callee_item,
                             args,
                             &expr.ty,
                             expr.site,
+                            authority,
                         );
                     }
                     hew_types::CallTarget::ImplMethod(declaration) => {
@@ -3776,13 +4133,20 @@ impl Builder {
                     hew_types::CallTarget::Extern {
                         declaration: _,
                         endpoint,
+                        trusted_compiled_stdlib,
                     } => {
                         // The endpoint was validated and attached by the
                         // checker-side extern-symbol rewrite.  It is not a
                         // source declaration lookup and therefore must not be
                         // routed through the impl-body symbol map.
-                        return self
-                            .lower_direct_call(endpoint, None, None, args, &expr.ty, expr.site);
+                        let authority = if *trusted_compiled_stdlib {
+                            crate::CallAuthority::Extern
+                        } else {
+                            crate::CallAuthority::Direct
+                        };
+                        return self.lower_direct_call_with_authority(
+                            endpoint, None, args, &expr.ty, expr.site, authority,
+                        );
                     }
                     hew_types::CallTarget::Unsupported { reason } => {
                         self.diagnostics.push(MirDiagnostic {
@@ -5777,14 +6141,50 @@ impl Builder {
                     Some(self.alloc_local(ret_ty.clone()))
                 };
                 let next = self.alloc_block();
-                // Recover only families intentionally carried on MIR calls.
-                // Codegen-only collection partitions remain typed in
-                // RuntimeCallFamily without widening the MIR dump surface.
-                let builtin =
-                    hew_types::runtime_call::RuntimeCallFamily::from_mir_builtin_symbol(&callee);
+                // The checked collection verdict selected this concrete ABI.
+                // Preserve both the verdict and its derived runtime family;
+                // structural clone/move chokes are an explicit compiler-owned
+                // exception, never a spelling-based codegen fallback.
+                let authority = match callee.as_str() {
+                    "hew_hashmap_get_clone_layout" => crate::CallAuthority::Compiler(
+                        crate::CompilerCallKind::HashMapGetCloneLayoutOption,
+                    ),
+                    "hew_hashmap_remove_take_layout" => crate::CallAuthority::Compiler(
+                        crate::CompilerCallKind::HashMapRemoveTakeLayout,
+                    ),
+                    _ => {
+                        if let Some(kind) = closure_pair_vec_kind(
+                            *target_family,
+                            &callee,
+                            &self.subst_ty(&receiver.ty),
+                        ) {
+                            crate::CallAuthority::Compiler(crate::CompilerCallKind::ClosurePairVec(
+                                kind,
+                            ))
+                        } else {
+                            let Some(runtime) =
+                                runtime_authority_for_collection(*target_family, &callee)
+                            else {
+                                self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "collection call `{callee}` has no runtime authority"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "the checked collection verdict must materialise either a \
+                                       catalogued runtime family or an explicit compiler structural \
+                                       call kind before codegen".to_string(),
+                            });
+                                return None;
+                            };
+                            crate::CallAuthority::Runtime(runtime)
+                        }
+                    }
+                };
                 self.finish_current_block(Terminator::Call {
                     callee,
-                    builtin,
+                    authority,
                     args: arg_places,
                     dest,
                     next,
@@ -5890,6 +6290,18 @@ impl Builder {
                     });
                     return None;
                 };
+                if let Some(callee) =
+                    primitive_display_static_callee(target, &concrete_ty, args.len())
+                {
+                    return self.lower_direct_call(
+                        callee,
+                        None,
+                        None,
+                        std::slice::from_ref(receiver),
+                        &resolved_ret_ty,
+                        expr.site,
+                    );
+                }
                 // (3) structured registry lookup by checker-owned IDs. The
                 // only fallback inside the HIR index is the exact same nominal's
                 // generic implementation; there is no string/leaf retry.
@@ -5977,7 +6389,7 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: callee_symbol,
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: arg_places,
                     dest,
                     next,
@@ -6324,12 +6736,17 @@ impl Builder {
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
                 let step_layout_key = match &receiver.ty {
-                    ResolvedTy::Named { name, args, .. } => named_layout_key(name, args),
+                    // The machine-mono registry and synthetic step emitter
+                    // both use the class-tagged machine layout key.  A plain
+                    // named-layout key drops that class/owner authority and
+                    // sends imported or generic machines to an undeclared
+                    // `<leaf>__step` symbol.
+                    ResolvedTy::Named { name, args, .. } => hew_hir::machine_layout_key(name, args),
                     _ => machine_name.clone(),
                 };
                 self.finish_current_block(Terminator::Call {
                     callee: mangle_machine_step(&step_layout_key),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
                     next,
@@ -6381,7 +6798,16 @@ impl Builder {
                 };
                 let dest = self.alloc_local(ResolvedTy::String);
                 self.push_instr(Instr::MachineStateName {
-                    machine_name: machine_name.clone(),
+                    // State-name tables are emitted per concrete machine
+                    // layout, not per declaration leaf.  Carry the same
+                    // class-tagged instance key used by `.step()` so generic
+                    // imported machines select `mc$$owner$$Machine$$T`.
+                    machine_name: match &receiver.ty {
+                        ResolvedTy::Named { name, args, .. } => {
+                            hew_hir::machine_layout_key(name, args)
+                        }
+                        _ => machine_name.clone(),
+                    },
                     src_local,
                     dest,
                 });
@@ -6755,7 +7181,7 @@ impl Builder {
                     let next = self.alloc_block();
                     self.finish_current_block(Terminator::Call {
                         callee: "hew_string_clone".to_string(),
-                        builtin: None,
+                        authority: crate::model::CallAuthority::default(),
                         args: vec![src_place],
                         dest: Some(dest),
                         next,
@@ -7046,6 +7472,112 @@ impl Builder {
         }
     }
 
+    /// Materialise the checker-selected common type for a pair of integer
+    /// operands. HIR records the common result type, but each child expression
+    /// still carries its independently resolved type; without this boundary a
+    /// legal `i64 + i32` reaches codegen as two different LLVM integer widths.
+    ///
+    /// This mirrors `hew-types::check::coerce::common_integer_type` for the
+    /// post-checker `ResolvedTy` domain: fixed-width integers of matching
+    /// signedness choose the wider type, while platform-sized integers combine
+    /// only with their exact own type. Invalid combinations fail closed rather
+    /// than manufacturing an implicit cast the checker does not admit.
+    fn normalize_integer_binary_operands(
+        &mut self,
+        lhs: Place,
+        rhs: Place,
+        lhs_ty: &ResolvedTy,
+        rhs_ty: &ResolvedTy,
+        result_ty: Option<&ResolvedTy>,
+        site: hew_hir::SiteId,
+    ) -> Option<(Place, Place, ResolvedTy)> {
+        debug_assert!(lhs_ty.is_integer() && rhs_ty.is_integer());
+
+        let common_ty = if lhs_ty == rhs_ty {
+            lhs_ty.clone()
+        } else {
+            if matches!(lhs_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+                || matches!(rhs_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "implicit integer coercion between `{}` and `{}`",
+                            lhs_ty.user_facing(),
+                            rhs_ty.user_facing()
+                        ),
+                        site,
+                    },
+                    note: "platform-sized integers combine only with the exact same type; use an explicit conversion"
+                        .to_string(),
+                });
+                return None;
+            }
+            let lhs_sign = integer_signedness(lhs_ty);
+            let rhs_sign = integer_signedness(rhs_ty);
+            let lhs_width = integer_bit_width(lhs_ty, self.pointer_width);
+            let rhs_width = integer_bit_width(rhs_ty, self.pointer_width);
+            if lhs_sign.is_none()
+                || lhs_sign != rhs_sign
+                || lhs_width.is_none()
+                || rhs_width.is_none()
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "implicit integer coercion between `{}` and `{}`",
+                            lhs_ty.user_facing(),
+                            rhs_ty.user_facing()
+                        ),
+                        site,
+                    },
+                    note: "integer operands must have compatible signedness and width; use an explicit conversion"
+                        .to_string(),
+                });
+                return None;
+            }
+            if lhs_width >= rhs_width {
+                lhs_ty.clone()
+            } else {
+                rhs_ty.clone()
+            }
+        };
+
+        if let Some(result_ty) = result_ty {
+            if result_ty != &common_ty {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: format!(
+                            "integer binary result `{}` disagrees with common operand type `{}`",
+                            result_ty.user_facing(),
+                            common_ty.user_facing()
+                        ),
+                    },
+                    note: "the checker and MIR integer-coercion authorities must select the same result type"
+                        .to_string(),
+                });
+                return None;
+            }
+        }
+
+        let mut cast_operand = |src: Place, from_ty: &ResolvedTy| {
+            if from_ty == &common_ty {
+                return src;
+            }
+            let dest = self.alloc_local(common_ty.clone());
+            self.push_instr(Instr::NumericCast {
+                dest,
+                src,
+                from_ty: from_ty.clone(),
+                to_ty: common_ty.clone(),
+            });
+            dest
+        };
+        let lhs = cast_operand(lhs, lhs_ty);
+        let rhs = cast_operand(rhs, rhs_ty);
+        Some((lhs, rhs, common_ty))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "lower_binary is a flat dispatch over the BinaryOp enum; line count grows \
@@ -7066,7 +7598,43 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        let lhs_ty = self.subst_ty(lhs_ty);
+        let rhs_ty = self.subst_ty(rhs_ty);
+        let ty = self.subst_ty(ty);
         let dest = self.alloc_local(ty.clone());
+
+        // One post-checker coercion authority feeds every integer binary MIR
+        // instruction. Comparisons have a bool result and therefore derive the
+        // common type solely from their operands; all other integer operators
+        // additionally prove that HIR's result type is that same common type.
+        let is_comparison = matches!(
+            op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+        );
+        let (lhs, rhs) = if lhs_ty.is_integer() && rhs_ty.is_integer() {
+            let expected_result = (!is_comparison).then_some(&ty);
+            let Some((lhs, rhs, _common_ty)) = self.normalize_integer_binary_operands(
+                lhs,
+                rhs,
+                &lhs_ty,
+                &rhs_ty,
+                expected_result,
+                site,
+            ) else {
+                // No cast locals are allocated on the reject path, so the
+                // destination remains the last local and can be rolled back.
+                self.locals.pop();
+                return None;
+            };
+            (lhs, rhs)
+        } else {
+            (lhs, rhs)
+        };
         // Comparison binops: lower to `Instr::IntCmp` with a `CmpPred`
         // discriminator. The result Place is allocated to whatever type
         // HIR resolved for the expression (`ResolvedTy::Bool` for cmp
@@ -7091,8 +7659,6 @@ impl Builder {
             _ => None,
         };
         if let Some(pred) = cmp_pred {
-            let lhs_ty = self.subst_ty(lhs_ty);
-            let rhs_ty = self.subst_ty(rhs_ty);
             // Select the predicate signed/unsigned variant based on
             // operand signedness.  `Eq`/`NotEq` are signedness-agnostic
             // and pass through unchanged.  The checker rejects mixed-sign
@@ -7212,10 +7778,10 @@ impl Builder {
         // path below (which is only for `+`/`-`/`*`).
         match op {
             BinaryOp::Divide | BinaryOp::Modulo => {
-                return self.lower_div_rem(op, dest, lhs, rhs, ty, site);
+                return self.lower_div_rem(op, dest, lhs, rhs, &ty, site);
             }
             BinaryOp::Shl | BinaryOp::Shr => {
-                return self.lower_shift(op, dest, lhs, rhs, ty, site);
+                return self.lower_shift(op, dest, lhs, rhs, &ty, site);
             }
             _ => {}
         }
@@ -7262,7 +7828,7 @@ impl Builder {
         // Float `+` / `-` / `*`: emit `Instr::Float{Add,Sub,Mul}` directly —
         // no trap blocks, no overflow flag. IEEE 754 overflow produces
         // ±inf, not a runtime trap.
-        if let Some(width) = float_width(ty) {
+        if let Some(width) = float_width(&ty) {
             let float_instr = match arith_op {
                 IntArithOp::Add => Instr::FloatAdd {
                     dest,
@@ -7287,7 +7853,7 @@ impl Builder {
             return Some(dest);
         }
 
-        if matches!(op, BinaryOp::Add) && matches!(ty, ResolvedTy::String) {
+        if matches!(op, BinaryOp::Add) && matches!(&ty, ResolvedTy::String) {
             self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new("hew_string_concat", vec![lhs, rhs], Some(dest))
                     .expect("hew_string_concat is an allowlisted runtime symbol"),
@@ -7308,7 +7874,7 @@ impl Builder {
         // only emission). LESSONS `boundary-fail-closed` (P0 —
         // default arithmetic IS the boundary; trap-on-overflow is
         // fail-closed for accidental overflow).
-        let Some(signed) = integer_signedness(ty) else {
+        let Some(signed) = integer_signedness(&ty) else {
             // Non-integer, non-float reaching `+` / `-` / `*` is a
             // B-1 mixed-width or unsupported-type violation upstream.
             // Fail closed rather than emit unchecked arithmetic.
@@ -7838,6 +8404,13 @@ impl Builder {
         self.start_block(then_bb);
         let then_value = self.lower_composite_result_value(then_expr);
         if let Some(src) = then_value {
+            let src = self.normalize_checker_numeric_value(
+                src,
+                &then_expr.ty,
+                result_ty,
+                "if then branch",
+                then_expr.site,
+            )?;
             self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
@@ -7856,6 +8429,13 @@ impl Builder {
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_composite_result_value(else_expr);
             if let Some(src) = else_value {
+                let src = self.normalize_checker_numeric_value(
+                    src,
+                    &else_expr.ty,
+                    result_ty,
+                    "if else branch",
+                    else_expr.site,
+                )?;
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -7931,7 +8511,9 @@ impl Builder {
         // the trap-on-miss CFG.
         self.finish_current_block(Terminator::Call {
             callee: "hew_hashmap_get_clone_layout".to_string(),
-            builtin: None,
+            authority: crate::CallAuthority::Compiler(
+                crate::CompilerCallKind::HashMapGetCloneLayoutIndex,
+            ),
             args: vec![map_place, key_place],
             dest: Some(result_place),
             next,
@@ -8626,20 +9208,7 @@ impl Builder {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the var-self carrier is intentionally explicit across site, target, receiver, result, and writeback types"
-    )]
-    fn lower_var_self_method_call(
-        &mut self,
-        site: SiteId,
-        receiver: &HirExpr,
-        call_target: &hew_types::CallTarget,
-        target: &HirVarSelfMethodTarget,
-        args: &[HirExpr],
-        ret_ty: &ResolvedTy,
-        receiver_ty: &ResolvedTy,
-    ) -> Option<Place> {
+    fn var_self_receiver_slot(&mut self, receiver: &HirExpr) -> Option<(BindingId, String, Place)> {
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding_id),
             name: receiver_name,
@@ -8681,6 +9250,48 @@ impl Builder {
             });
             return None;
         }
+        Some((*binding_id, receiver_name.clone(), receiver_slot))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the var-self carrier is intentionally explicit across site, target, receiver, result, and writeback types"
+    )]
+    fn lower_var_self_method_call(
+        &mut self,
+        site: SiteId,
+        receiver: &HirExpr,
+        call_target: &hew_types::CallTarget,
+        target: &HirVarSelfMethodTarget,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        receiver_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let (binding_id, receiver_name, receiver_slot) = self.var_self_receiver_slot(receiver)?;
+        // Generic `Iterator::next(var self)` calls retain their static-trait
+        // HIR shape until the enclosing function is monomorphised.  Direct
+        // VecIter syntax was already rewritten by HIR, but the same concrete
+        // cursor reached through `std::iter::fold<I: Iterator>` arrives here.
+        // Intercept only the exact builtin declaration identity; all other
+        // static var-self calls still use the declaration-keyed impl registry.
+        if let HirVarSelfMethodTarget::StaticTrait {
+            receiver_type_param,
+            ..
+        } = target
+        {
+            if let VecIterStaticNextLowering::Lowered(result) = self
+                .lower_builtin_vec_iter_static_next_if_applicable(
+                    receiver_type_param,
+                    receiver,
+                    call_target,
+                    args,
+                    ret_ty,
+                    site,
+                )
+            {
+                return result;
+            }
+        }
         let callee_symbol = match target {
             HirVarSelfMethodTarget::Direct => {
                 self.resolve_var_self_direct_callee(call_target, site, receiver_ty)?
@@ -8712,7 +9323,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol,
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places,
             dest: Some(tuple_place),
             next,
@@ -8731,8 +9342,8 @@ impl Builder {
             dest: receiver_slot,
         });
         self.restore_var_self_receiver_binding(
-            *binding_id,
-            receiver_name,
+            binding_id,
+            &receiver_name,
             &resolved_receiver_ty,
             site,
         );
@@ -8754,6 +9365,31 @@ impl Builder {
         ret_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        self.lower_direct_call_with_authority(
+            callee_symbol,
+            callee_item,
+            hir_args,
+            ret_ty,
+            site,
+            builtin
+                .map(crate::CallAuthority::Runtime)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Lower a direct call using the checker/HIR-projected authority. The
+    /// `Extern` variant is the capability to read an audited FFI parameter
+    /// contract; it does not select a specialised codegen ABI.
+    fn lower_direct_call_with_authority(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        authority: crate::CallAuthority,
+    ) -> Option<Place> {
+        let builtin = authority.runtime_family();
         // `Terminator::Call` invariant (model.rs): a carried family IS the
         // callee identity — the symbol string must be its catalog
         // presentation. Enforced in all build profiles; a violation here
@@ -8913,7 +9549,7 @@ impl Builder {
         self.note_owned_call_site(callee_item, hir_args, &arg_places);
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
-            builtin,
+            authority,
             args: arg_places,
             dest,
             next,
@@ -9139,6 +9775,10 @@ impl Builder {
         ControlFlow::Continue(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "runtime-call lowering is the single typed authority dispatch boundary"
+    )]
     fn lower_runtime_call(
         &mut self,
         symbol: &str,
@@ -9207,9 +9847,27 @@ impl Builder {
             // Sentinel-wrapping string inspectors: the runtime returns `-1`
             // for miss/OOB; codegen intercepts the callee and materialises
             // `None` / `Some(...)` (D46 sentinel -> Option sweep).
-            "hew_string_find" | "hew_string_char_at" | "hew_string_char_at_utf8" => {
-                self.lower_string_sentinel_option(symbol, hir_args, site, context, result_ty)
-            }
+            "hew_string_find" => self.lower_string_sentinel_option(
+                hew_types::runtime_call::RuntimeCallFamily::StringFind,
+                hir_args,
+                site,
+                context,
+                result_ty,
+            ),
+            "hew_string_char_at" => self.lower_string_sentinel_option(
+                hew_types::runtime_call::RuntimeCallFamily::StringCharAt,
+                hir_args,
+                site,
+                context,
+                result_ty,
+            ),
+            "hew_string_char_at_utf8" => self.lower_string_sentinel_option(
+                hew_types::runtime_call::RuntimeCallFamily::StringCharAtUtf8,
+                hir_args,
+                site,
+                context,
+                result_ty,
+            ),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             // Cross-node monitor extern surface. Value-position
             // `monitor(RemotePid)` routes through `lower_node_monitor`.
@@ -9608,7 +10266,9 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_bytes_get".to_string(),
-            builtin: None,
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::BytesGet,
+            ),
             args: vec![buf, idx],
             dest: Some(result),
             next,
@@ -9674,7 +10334,9 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_string_get".to_string(),
-            builtin: None,
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::StringGet,
+            ),
             args: vec![s, idx],
             dest: Some(result),
             next,
@@ -9698,12 +10360,13 @@ impl Builder {
     /// `Some` payload is a scalar (Copy), so drop-safety is trivial.
     fn lower_string_sentinel_option(
         &mut self,
-        symbol: &str,
+        family: hew_types::runtime_call::RuntimeCallFamily,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
         result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
+        let symbol = family.c_symbol();
         if hir_args.len() != 2 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -9742,7 +10405,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: symbol.to_string(),
-            builtin: None,
+            authority: crate::CallAuthority::Runtime(family),
             args: vec![s, arg],
             dest: Some(result),
             next,
@@ -9837,114 +10500,6 @@ impl Builder {
         self.push_runtime_call("hew_string_concat", vec![lhs, rhs], Some(dest));
         let _ = context;
         Some(dest)
-    }
-
-    fn lower_observe_runtime_call(
-        &mut self,
-        symbol: &str,
-        hir_args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
-        context: RuntimeCallContext,
-    ) -> Option<Place> {
-        let (expected_arity, return_ty) = match symbol {
-            "hew_observe_read_u64" => (1, ResolvedTy::I64),
-            "hew_observe_scrape" | "hew_observe_series" => (0, ResolvedTy::String),
-            "hew_observe_barrier" => (0, ResolvedTy::I64),
-            _ => unreachable!("observe lowering called for non-observe symbol"),
-        };
-        if hir_args.len() != expected_arity {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` arity"),
-                    site,
-                },
-                note: format!(
-                    "`{symbol}` expects {expected_arity} argument(s), got {}",
-                    hir_args.len()
-                ),
-            });
-            return None;
-        }
-
-        let mut args = Vec::with_capacity(hir_args.len());
-        for arg in hir_args {
-            args.push(self.lower_value(arg)?);
-        }
-        // A transferred `string` result must materialise even in statement
-        // position. The shared fresh-owner temporary pass then sees the
-        // audited producer and emits its one `hew_string_drop` on the normal
-        // continuation. Omitting this destination used to discard the raw
-        // pointer before that machinery could account for it (a leak), while
-        // an observe-specific drop here would bypass the authority used by
-        // every other transferred extern result.
-        let dest = if matches!(return_ty, ResolvedTy::String)
-            || context == RuntimeCallContext::ValueNeeded
-        {
-            Some(self.alloc_local(return_ty))
-        } else {
-            None
-        };
-        self.push_runtime_call(symbol, args, dest);
-        dest
-    }
-
-    /// Lower the scalar `hew_metric_*` emit path that `std::metrics` reaches
-    /// through its `extern "C"` block.
-    ///
-    /// Only the scalar surface routes here: a metric name comes in as a Hew
-    /// `string` (lowered like any other string place), a handle and counter /
-    /// gauge value as `i64`, and a histogram observation as `f64`. The register
-    /// entry points return the `i64` slot handle (>= 0 valid, -1 on a cap /
-    /// charset / collision failure); the mutators return unit.
-    ///
-    /// The labelled `*Vec` registration and the bucketed histogram registration
-    /// take raw C arrays (`*const i64` / `*const *const c_char` plus a length)
-    /// and are intentionally NOT routed here — a Hew `extern "C"` declaration
-    /// marshals a `Vec<T>` to a single `*mut HewVec`, which does not match the
-    /// `(ptr, len)` ABI those symbols expose. They stay fail-closed in the
-    /// dispatch table until a `HewVec`-shaped ABI lands.
-    fn lower_metric_runtime_call(
-        &mut self,
-        symbol: &str,
-        hir_args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
-        context: RuntimeCallContext,
-    ) -> Option<Place> {
-        let (expected_arity, return_ty) = match symbol {
-            "hew_metric_counter_register"
-            | "hew_metric_gauge_register"
-            | "hew_metric_histogram_register_simple" => (1, Some(ResolvedTy::I64)),
-            "hew_metric_counter_inc" | "hew_metric_gauge_inc" | "hew_metric_gauge_dec" => (1, None),
-            "hew_metric_counter_add"
-            | "hew_metric_gauge_set"
-            | "hew_metric_gauge_add"
-            | "hew_metric_histogram_record" => (2, None),
-            _ => unreachable!("metric lowering called for non-scalar-metric symbol `{symbol}`"),
-        };
-        if hir_args.len() != expected_arity {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` arity"),
-                    site,
-                },
-                note: format!(
-                    "`{symbol}` expects {expected_arity} argument(s), got {}",
-                    hir_args.len()
-                ),
-            });
-            return None;
-        }
-
-        let mut args = Vec::with_capacity(hir_args.len());
-        for arg in hir_args {
-            args.push(self.lower_value(arg)?);
-        }
-        let dest = match return_ty {
-            Some(ty) if context == RuntimeCallContext::ValueNeeded => Some(self.alloc_local(ty)),
-            _ => None,
-        };
-        self.push_runtime_call(symbol, args, dest);
-        dest
     }
 
     /// Lower the `impl duration` receiver methods declared in
@@ -10063,6 +10618,144 @@ impl Builder {
         dest
     }
 }
+
+/// Materialise a catalogued runtime authority from a checked collection
+/// verdict.  The linker spelling is an input only: it must agree with the
+/// *operation* selected by the type checker, so `Vec::push` can never mint a
+/// `Vec::pop` ABI merely by supplying that symbol.
+fn runtime_authority_for_collection(
+    target: hew_types::MethodTargetFamily,
+    callee: &str,
+) -> Option<hew_types::runtime_call::RuntimeCallFamily> {
+    use hew_types::{
+        runtime_call::{RuntimeCallFamily as Rt, VecScalarOp},
+        VecMethod as VecOp,
+    };
+    use hew_types::{HashMapMethod as Map, HashSetMethod as Set, MethodTargetFamily as Family};
+
+    let runtime = Rt::from_c_symbol(callee)?;
+    let allowed = match target {
+        Family::HashMap(Map::Insert) => matches!(runtime, Rt::HashMapInsertLayout),
+        Family::HashMap(Map::Get) => matches!(runtime, Rt::HashMapGetLayout),
+        Family::HashMap(Map::ContainsKey) => matches!(runtime, Rt::HashMapContainsKeyLayout),
+        Family::HashMap(Map::Remove) => matches!(runtime, Rt::HashMapRemoveLayout),
+        Family::HashMap(Map::Len) => matches!(runtime, Rt::HashMapLenLayout),
+        Family::HashMap(Map::Keys) => matches!(runtime, Rt::HashMapKeysLayout),
+        Family::HashMap(Map::Values) => matches!(runtime, Rt::HashMapValuesLayout),
+        Family::HashMap(Map::Clone) => matches!(runtime, Rt::HashMapCloneLayout),
+        Family::HashMap(Map::Clear) => matches!(runtime, Rt::HashMapClearLayout),
+        Family::HashSet(Set::Insert) => matches!(runtime, Rt::HashSetInsertLayout),
+        Family::HashSet(Set::Contains) => matches!(runtime, Rt::HashSetContainsLayout),
+        Family::HashSet(Set::Remove) => matches!(runtime, Rt::HashSetRemoveLayout),
+        Family::HashSet(Set::Len) => matches!(runtime, Rt::HashSetLenLayout),
+        Family::HashSet(Set::IsEmpty) => matches!(runtime, Rt::HashSetIsEmptyLayout),
+        Family::HashSet(Set::Clone) => matches!(runtime, Rt::HashSetCloneLayout),
+        Family::HashSet(Set::ToVec) => matches!(runtime, Rt::HashSetToVecLayout),
+        Family::HashSet(Set::Clear) => matches!(runtime, Rt::HashSetClearLayout),
+        Family::Vec(VecOp::Push) => matches!(
+            runtime,
+            Rt::VecPushBool
+                | Rt::VecPushLayout
+                | Rt::VecPushOwned
+                | Rt::VecPushOwnedMove
+                | Rt::VecScalar {
+                    op: VecScalarOp::Push,
+                    ..
+                }
+        ),
+        Family::Vec(VecOp::Pop) => {
+            matches!(
+                runtime,
+                Rt::VecPopBool
+                    | Rt::VecPopLayout
+                    | Rt::VecPopOwned
+                    | Rt::VecScalar {
+                        op: VecScalarOp::Pop,
+                        ..
+                    }
+            )
+        }
+        Family::Vec(VecOp::Len) => matches!(runtime, Rt::VecLen),
+        Family::Vec(VecOp::IsEmpty) => matches!(runtime, Rt::VecIsEmpty),
+        Family::Vec(VecOp::Get) => matches!(runtime, Rt::VecGet(_)),
+        Family::Vec(VecOp::Set) => matches!(
+            runtime,
+            Rt::VecSetBool
+                | Rt::VecSetLayout
+                | Rt::VecSetOwned
+                | Rt::VecSetOwnedMove
+                | Rt::VecScalar {
+                    op: VecScalarOp::Set,
+                    ..
+                }
+        ),
+        Family::Vec(VecOp::Remove) => matches!(
+            runtime,
+            Rt::VecRemoveAtBool
+                | Rt::VecRemoveAtLayout
+                | Rt::VecRemoveAtOwned
+                | Rt::VecScalar {
+                    op: VecScalarOp::RemoveAt,
+                    ..
+                }
+        ),
+        Family::Vec(VecOp::Contains) => {
+            matches!(
+                runtime,
+                Rt::VecContainsLayout | Rt::VecContainsOwned | Rt::VecContainsScalar(_)
+            )
+        }
+        Family::Vec(VecOp::Clone) => matches!(
+            runtime,
+            Rt::VecClone | Rt::VecCloneLayout | Rt::VecCloneOwned
+        ),
+        Family::Vec(VecOp::Clear) => matches!(runtime, Rt::VecClear),
+        Family::Vec(VecOp::Append) => matches!(runtime, Rt::VecAppend),
+        Family::Vec(VecOp::Join) => matches!(runtime, Rt::VecJoinStr),
+    };
+    allowed.then_some(runtime)
+}
+
+/// Lift the closure-pair Vec special ABI from the checked Vec operation plus
+/// the substituted element representation.  The linker spelling cannot mint
+/// this authority on its own: it is merely verified against the exact kind.
+fn closure_pair_vec_kind(
+    target: hew_types::MethodTargetFamily,
+    callee: &str,
+    receiver_ty: &ResolvedTy,
+) -> Option<crate::ClosurePairVecKind> {
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::Vec),
+        args,
+        ..
+    } = receiver_ty
+    else {
+        return None;
+    };
+    if !matches!(
+        args.first(),
+        Some(ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+    ) {
+        return None;
+    }
+    match (target, callee) {
+        (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push), "hew_vec_push_ptr") => {
+            Some(crate::ClosurePairVecKind::Push)
+        }
+        (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set), "hew_vec_set_ptr") => {
+            Some(crate::ClosurePairVecKind::Set)
+        }
+        (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get), "hew_vec_get_ptr") => {
+            Some(crate::ClosurePairVecKind::Get)
+        }
+        (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Pop), "hew_vec_pop_ptr") => {
+            Some(crate::ClosurePairVecKind::Pop)
+        }
+        _ => None,
+    }
+}
+
+mod metrics_runtime_calls;
 
 #[cfg(test)]
 mod binding_ty_is_plain_vec_tuple;

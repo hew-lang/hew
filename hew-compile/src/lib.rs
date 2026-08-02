@@ -687,7 +687,7 @@ fn canonical_direct_stdlib_module_for_source(
         // (not a filename/module spelling) is what permits direct `hew check
         // std/net/net.hew` to retain its std.net provenance without granting
         // that authority to a user's net.hew.
-        .chain(["std.stream", "std.net"])
+        .chain(["std.stream", "std.net", "std.concurrency"])
     {
         let segments = dotted.split('.').collect::<Vec<_>>();
         if hew_types::module_registry::is_canonical_stdlib_module_source(source_file, dotted) {
@@ -1713,7 +1713,7 @@ fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Fro
             return Err(FrontendFailure::message_only(format!(
                 "Error: cannot read {}: {err}",
                 path.display()
-            )))
+            )));
         }
     };
     toml::from_str(&text).map(Some).map_err(|err| {
@@ -2120,6 +2120,61 @@ mod tests {
                 "generic imported impl `{symbol}` must lower its string specialization `{concrete}`"
             );
         }
+    }
+
+    #[test]
+    fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            r#"
+            actor Echo { receive fn handle(request: i64) -> i64 { request } }
+            impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
+            actor Client {
+                receive fn go(unused: i64) {
+                    let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                    match found {
+                        Ok(peer) => { let reply = peer.ask(7, 1000); },
+                        Err(_) => {},
+                    }
+                }
+            }
+            "#,
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("lookup fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("successful fixture has type output");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let mut pipeline = hew_mir::lower_hir_module(&hir.module);
+        pipeline.attach_lowering_facts(tco);
+        assert!(
+            !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_mir::MirDiagnosticKind::UnknownType { ref name } if name == "RemotePid"
+            )),
+            "RemotePid must retain its builtin discriminator through MIR: {:#?}",
+            pipeline.diagnostics
+        );
+        let codegen = hew_codegen_rs::validate_codegen_front(&pipeline);
+        assert!(
+            codegen.is_ok(),
+            "the full compiler boundary must accept RemotePid lookup output: {codegen:?}"
+        );
     }
 
     #[test]
@@ -2550,6 +2605,10 @@ fn main() {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the imported-body regression keeps root/imported parity and transitive-call controls together"
+    )]
     fn imported_impl_catalog_len_uses_emitted_borrowing_abi() {
         // `echo_len` is intentionally an imported impl method whose body is
         // the source builtin `len(s)`.  The HIR catalog endpoint is `len_str`,
@@ -2630,6 +2689,74 @@ fn main() {
             "the audited string-length ABI must not create an unproven \
              representation-mutation effect"
         );
+
+        // The same checker-selected catalog shim must retain its audited FFI
+        // authority whether its body is root-local or emitted from an imported
+        // package.  Keep this table alongside the imported-actor regression:
+        // imported-body lowering is the place where an authority handoff can
+        // otherwise silently degrade to `Direct`.
+        let direct_dir = tempfile::tempdir().expect("create direct-call fixture dir");
+        let direct_input = write_source(
+            direct_dir.path(),
+            "direct_len.hew",
+            "fn direct_len(s: string) -> i64 { len(s) }\nfn main() {}\n",
+        );
+        let direct_state = run_file_frontend_to_typecheck(
+            &direct_input,
+            &FrontendOptions {
+                project_dir: Some(repo_root.to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("root catalog-len fixture must type-check");
+        let direct_tco = direct_state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let direct_lowered = hew_hir::lower_program(
+            &direct_state.program,
+            direct_tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            direct_lowered.diagnostics.is_empty(),
+            "root catalog-len fixture must lower cleanly: {:#?}",
+            direct_lowered.diagnostics
+        );
+        let direct_pipeline = hew_mir::lower_hir_module(&direct_lowered.module);
+        assert!(
+            direct_pipeline.diagnostics.is_empty(),
+            "root catalog-len fixture must lower through MIR: {:#?}",
+            direct_pipeline.diagnostics
+        );
+        let direct_len = direct_pipeline
+            .raw_mir
+            .iter()
+            .find(|function| function.name == "direct_len")
+            .expect("root catalog-len body must be emitted");
+        for (origin, function) in [("root", direct_len), ("imported", echo_len)] {
+            let boundary = function
+                .decisions
+                .iter()
+                .find_map(|decision| match decision.strategy {
+                    hew_mir::Strategy::ParamBoundary(fact)
+                        if fact.param_index == 0 || fact.param_index == 1 =>
+                    {
+                        matches!(decision.ty, hew_types::ResolvedTy::String).then_some(fact)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    panic!("{origin} catalog-len body must retain its string boundary")
+                });
+            assert_eq!(
+                boundary.mode,
+                hew_mir::ParamBoundaryMode::BorrowReadOnly,
+                "{origin} catalog-len body must retain the same audited FFI borrow authority"
+            );
+        }
 
         let echo_tag = pipeline
             .raw_mir
@@ -2919,6 +3046,10 @@ fn main() {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this provenance integration test keeps positive and spoofed-source controls together"
+    )]
     fn direct_std_stream_provenance_is_exact_to_the_shipped_source() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -2947,6 +3078,24 @@ fn main() {
                 .map(|module| module.path),
             Some(vec!["std".to_string(), "net".to_string()]),
             "direct compilation of the shipped TCP module must retain std.net identity"
+        );
+
+        let shipped_lambda = repo_root.join("std/concurrency/lambda_actor.hew");
+        assert_eq!(
+            super::canonical_direct_stdlib_module_for_source(&shipped_lambda)
+                .map(|module| module.path),
+            Some(vec!["std".to_string(), "concurrency".to_string()]),
+            "a direct check of a canonical directory-module peer must retain std.concurrency identity"
+        );
+        fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
+        let user_lambda = write_source(
+            &dir.path().join("concurrency"),
+            "lambda_actor.hew",
+            "pub type LambdaActorHandle {}\n",
+        );
+        assert!(
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lambda)).is_none(),
+            "a same-named user directory peer must not acquire std.concurrency provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
         assert!(
@@ -4157,6 +4306,109 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "importing std::path and std::fs together must not produce \
              cross-module SpanKey collisions; got: {:#?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn bundled_empty_type_decls_publish_owner_qualified_mir_layouts() {
+        fn lower_to_mir(input: &str) -> hew_mir::IrPipeline {
+            let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
+                .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
+            let typecheck = state
+                .typecheck_result
+                .tco
+                .as_ref()
+                .expect("fixture must typecheck");
+            let lowered = hew_hir::lower_program(
+                &state.program,
+                typecheck,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "HIR must retain every bundled declaration: {:#?}",
+                lowered.diagnostics
+            );
+            hew_mir::lower_hir_module(&lowered.module)
+        }
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below repository root");
+        let direct = repo_root.join("std/concurrency/lambda_actor.hew");
+        let direct = lower_to_mir(direct.to_str().expect("std path is UTF-8"));
+
+        let dir = tempfile::tempdir().expect("create temp project");
+        let imported_input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std::concurrency::{ScopeError};\n\
+             fn main() {\n\
+                 let error: ScopeError<i64> = ScopeError {\n\
+                     primary: 1, also_failed: [], cancelled_count: 0\n\
+                 };\n\
+                 let _ = error;\n\
+             }\n",
+        );
+        let imported = lower_to_mir(&imported_input);
+
+        for (pipeline, owner) in [
+            (&direct, Some("std.concurrency")),
+            (&imported, Some("std.concurrency")),
+        ] {
+            assert!(
+                pipeline.diagnostics.is_empty(),
+                "bundled source must lower without MIR authority diagnostics: {:#?}",
+                pipeline.diagnostics
+            );
+            for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
+                let expected =
+                    owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
+                assert!(
+                    pipeline
+                        .record_layouts
+                        .iter()
+                        .any(|layout| layout.name == expected),
+                    "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
+                    pipeline.record_layouts
+                );
+            }
+        }
+
+        // A user package can legally use the same leaf name, but its source
+        // identity must never acquire the bundled lambda-actor layout.
+        write_source(dir.path(), "spoofed.hew", "pub type LambdaActorHandle {}\n");
+        let foreign_input = write_source(
+            dir.path(),
+            "foreign_main.hew",
+            "import spoofed::{LambdaActorHandle};\n\
+             fn main() { let _ = LambdaActorHandle {}; }\n",
+        );
+        let foreign = lower_to_mir(&foreign_input);
+        assert!(
+            foreign
+                .record_layouts
+                .iter()
+                .any(|layout| layout.name == "spoofed.LambdaActorHandle"),
+            "foreign declaration must retain its own owner: {:#?}",
+            foreign.record_layouts
+        );
+        assert!(
+            !foreign
+                .record_layouts
+                .iter()
+                .any(|layout| layout.name == "std.concurrency.LambdaActorHandle"),
+            "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
+            foreign.record_layouts
+        );
+        assert!(
+            foreign.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
+            )),
+            "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
+            foreign.diagnostics
         );
     }
 }

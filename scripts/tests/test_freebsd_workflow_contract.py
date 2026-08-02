@@ -57,6 +57,7 @@ FREEBSD_TOOL_PACKAGES = (
     "cmake",
     "ninja",
     "git",
+    "gmake",
     "bash",
     "pkgconf",
     "libffi",

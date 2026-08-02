@@ -397,6 +397,48 @@ impl ResolvedTy {
             || (*self == Self::Char && target.is_integer())
     }
 
+    /// Whether a checker-selected common numeric type may normalize this value
+    /// implicitly at a downstream HIR/MIR join boundary.
+    ///
+    /// This is deliberately narrower than an explicit `as` cast: fixed-width
+    /// integers must keep signedness and may only widen, platform-sized
+    /// integers combine only with their exact own type, floats may only widen,
+    /// and an integer may normalize to a concrete float selected by the
+    /// checker. Keeping this authority on `ResolvedTy` lets HIR verification
+    /// and MIR emission agree without inferring semantics from storage widths.
+    #[must_use]
+    pub fn can_implicitly_numeric_normalize_to(&self, target: &Self) -> bool {
+        fn fixed_width(ty: &ResolvedTy) -> Option<u8> {
+            match ty {
+                ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
+                ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
+                ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
+                ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
+                _ => None,
+            }
+        }
+
+        if self == target {
+            return self.is_numeric();
+        }
+        if matches!(self, Self::Isize | Self::Usize) || matches!(target, Self::Isize | Self::Usize)
+        {
+            return false;
+        }
+        if self.is_integer() && target.is_float() {
+            return true;
+        }
+        if self.is_float() && target.is_float() {
+            return matches!((self, target), (Self::F32, Self::F64));
+        }
+        if !(self.is_integer() && target.is_integer())
+            || self.is_signed_integer() != target.is_signed_integer()
+        {
+            return false;
+        }
+        matches!((fixed_width(self), fixed_width(target)), (Some(from), Some(to)) if from <= to)
+    }
+
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].
     ///
     /// This is the **single authorised conversion** from `Ty` to

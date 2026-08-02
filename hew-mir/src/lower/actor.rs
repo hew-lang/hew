@@ -1041,7 +1041,9 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: "hew_supervisor_pool_get_option".to_string(),
-                    builtin: None,
+                    authority: crate::CallAuthority::Compiler(
+                        crate::CompilerCallKind::SupervisorPoolGetOption,
+                    ),
                     args: vec![lookup],
                     dest: Some(result),
                     next,
@@ -1230,9 +1232,8 @@ impl Builder {
     ///
     /// HIR shape (from E1 bridge): `Call { callee: BindingRef("hew_duplex_send"),
     /// args: [receiver_expr, msg_expr] }` — receiver prepended by E1. The
-    /// checker records the `hew_duplex_send` rewrite for `.send` on every
-    /// `Duplex<S, R>` receiver, including lambda-actor handles (which type as
-    /// `Duplex<Msg, Reply>`).
+    /// checker records the `hew_duplex_send` rewrite for `.send` on both raw
+    /// `Duplex<S, R>` and `LambdaPid<Msg, Reply>` receivers.
     ///
     /// MIR emission:
     ///   1. Lower `receiver_expr` → `recv_place`. A lambda-actor binding
@@ -1240,13 +1241,14 @@ impl Builder {
     ///      handle lowers to `Place::DuplexHandle(N)`.
     ///   2. Lower `msg_expr` → `msg_place` (the integer value's `Local(K)`).
     ///   3. Emit `ConstI64 { dest: len_place, value: 8 }` — the byte-length.
-    ///   4. Select the runtime symbol by the receiver `Place` variant
-    ///      (`codegen-abi-authority`): `LambdaActorHandle` → the
-    ///      lambda-actor ABI `hew_lambda_actor_send`; anything else → the
-    ///      raw-duplex ABI `hew_duplex_send`. Routing each `Place` to exactly
-    ///      one correct symbol is load-bearing: passing a `LambdaActorHandle`
-    ///      to `hew_duplex_send` type-puns the handle and silently mis-delivers
-    ///      (`no-fail-open-fallback-after-authority`).
+    ///   4. Select the runtime symbol by the receiver's checker-authoritative
+    ///      type, retaining the specialised `Place::LambdaActorHandle` check
+    ///      for direct actor-lambda bindings. `LambdaPid` uses
+    ///      `hew_lambda_actor_send`; raw `Duplex` uses `hew_duplex_send`.
+    ///      Returned and parameter-carried lambda actors occupy ordinary local
+    ///      places, so the type is the stable identity across those boundaries.
+    ///      Passing either representation to `hew_duplex_send` type-puns the
+    ///      handle and invokes undefined behaviour.
     ///   5. Emit `CallRuntimeAbi { symbol, args: [recv, msg, len], dest }`.
     ///
     /// The receiver is NOT consumed (non-move send semantics); `owned_locals`
@@ -1279,18 +1281,19 @@ impl Builder {
             return None;
         };
 
-        // Route by receiver Place variant. A lambda-actor handle must use the
-        // lambda-actor ABI; a raw `Duplex` handle uses the duplex ABI. The two
-        // runtime symbols are distinct authorities for one `.send` surface, and
-        // a `LambdaActorHandle` routed through `hew_duplex_send` type-puns the
-        // handle and silently drops the message (Evidence #2). The `Place`
-        // variant is the canonical "which handle is this" signal — selecting on
-        // it (not on the receiver's type, which is `Duplex<Msg, Reply>` for
-        // both) keeps ABI selection on an explicit authority
-        // (`codegen-abi-authority`, `no-fail-open-fallback-after-authority`).
-        let symbol = match recv_place {
-            Place::LambdaActorHandle(_) => "hew_lambda_actor_send",
-            _ => "hew_duplex_send",
+        // `LambdaPid` is the canonical identity after the handle crosses a
+        // function boundary: a returned handle is represented by an ordinary
+        // local rather than `Place::LambdaActorHandle`. Keep the specialised
+        // Place check for directly-bound actor lambdas, but do not make that
+        // lowering detail the ABI authority. Routing a returned LambdaPid to
+        // `hew_duplex_send` would reinterpret the lambda lifecycle object as a
+        // duplex queue and corrupt its Mutex/Condvar state.
+        let is_lambda_actor = hir_args[0].ty.is_builtin(hew_types::BuiltinType::LambdaPid)
+            || matches!(recv_place, Place::LambdaActorHandle(_));
+        let symbol = if is_lambda_actor {
+            "hew_lambda_actor_send"
+        } else {
+            "hew_duplex_send"
         };
 
         // Materialize the runtime's i32 send status into a user-visible
@@ -1377,11 +1380,14 @@ impl Builder {
     /// Lower an explicit `.close()` call rewritten to `hew_duplex_close`.
     ///
     /// The checker records `"hew_duplex_close"` for every `.close()` call on a
-    /// `Duplex<S,R>`-typed receiver, including `LambdaPid<M,R>` handles (which
-    /// surface as `Duplex<M,R>`).  The `Place` variant on the receiver is the
-    /// authority for which runtime symbol to invoke:
+    /// `Duplex<S,R>`-typed receiver.  `LambdaPid<M,R>` is a separate ownership
+    /// type; its canonical builtin carrier, rather than a Duplex-equivalence
+    /// shortcut, selects the lambda release ABI.  A lambda captured in a
+    /// closure uses `Place::LambdaActorHandle`, while a lambda returned from a
+    /// function is an ordinary local carrying that same typed identity.
     ///
-    ///   - `Place::LambdaActorHandle(N)` → `hew_lambda_actor_release`.
+    ///   - `LambdaPid` receiver / `Place::LambdaActorHandle(N)` →
+    ///     `hew_lambda_actor_release`.
     ///     The release ABI takes only the handle pointer; codegen rejects
     ///     `dest: Some(...)` for this symbol, so the call is always `dest: None`.
     ///     The checker records `Unit` as the return type (the release never
@@ -1412,7 +1418,11 @@ impl Builder {
         };
         let recv_place = self.lower_value(receiver_expr)?;
 
-        if let Place::LambdaActorHandle(_) = recv_place {
+        if receiver_expr
+            .ty
+            .is_builtin(hew_types::BuiltinType::LambdaPid)
+            || matches!(recv_place, Place::LambdaActorHandle(_))
+        {
             // Explicit LambdaPid::close() → hew_lambda_actor_release.
             //
             // The release ABI is: hew_lambda_actor_release(handle: *mut HewLambdaActorHandle)
@@ -2420,7 +2430,7 @@ impl Builder {
         let after_channel = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_channel".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![capacity],
             dest: Some(pair),
             next: after_channel,
@@ -2431,7 +2441,7 @@ impl Builder {
         let after_sink = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_sink".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: Some(sink),
             next: after_sink,
@@ -2442,7 +2452,7 @@ impl Builder {
         let after_stream = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_stream".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: Some(stream),
             next: after_stream,
@@ -2454,7 +2464,7 @@ impl Builder {
         let after_free = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_free".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: None,
             next: after_free,

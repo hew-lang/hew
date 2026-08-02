@@ -1409,7 +1409,9 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
         return AliasBits::EMPTY;
     }
     match callee_ownership_contract(emitted_symbol).result {
-        ResultOwnership::FreshOwnedString | ResultOwnership::FreshOwnedBytes => AliasBits::EMPTY,
+        ResultOwnership::FreshOwnedString
+        | ResultOwnership::FreshOwnedBytes
+        | ResultOwnership::FreshOwnedVec => AliasBits::EMPTY,
         // `IndependentValue` stays OPAQUE here. It answers the OWNERSHIP
         // question (the caller may keep this value after the receiver dies),
         // which is weaker than the ALIAS question this function asks; the
@@ -5836,7 +5838,6 @@ pub(crate) mod tests {
             VecMethod::Clear,
             VecMethod::Clone,
             VecMethod::Append,
-            VecMethod::Join,
         ] {
             assert_eq!(
                 placeholder_method_return_provenance(
@@ -5848,6 +5849,15 @@ pub(crate) mod tests {
                  element must leave it fail-closed"
             );
         }
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_x_FAMILY",
+                MethodTargetFamily::Vec(VecMethod::Join),
+            ),
+            Some(AliasBits::EMPTY),
+            "join always resolves to the same copying string ABI, so its generic \
+             placeholder has an element-class-independent fresh-owner answer"
+        );
     }
 
     /// `HashMap::get` is the degenerate quantification: lowering always emits the

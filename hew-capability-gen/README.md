@@ -10,7 +10,10 @@ backlog capability IDs, and curated playground WASI exclusions. The generator em
 - `hew-types/src/wasm_capabilities_generated.rs`, consumed by the checker,
   sandbox module gate, and codegen exclusion diagnostics;
 - `examples/playground/wasm-capabilities.json`, consumed by
-  `scripts/gen-playground-manifest.py`.
+  `scripts/gen-playground-manifest.py`;
+- the feature-policy and current WASI summary tables in
+  `docs/wasm-capability-matrix.md`. The latter combines typed unsupported rows
+  with runnable truth from `examples/playground/manifest.json`.
 
 Generate or verify the checked-in consumers with:
 

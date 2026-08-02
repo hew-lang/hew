@@ -2,7 +2,7 @@
 
 `wasm-capability-manifest.toml` is the **sole authority** for WASM feature
 identity and policy. This document is its human-readable projection: the
-feature table below is generated and checked byte-for-byte by
+feature-policy and current WASI summary tables below are generated and checked byte-for-byte by
 `hew-capability-gen`. The type checker consumes the generated carrier in
 `hew-types/src/wasm_capabilities_generated.rs`; runtime stubs and the language
 spec provide implementation context but do not independently own policy.
@@ -387,21 +387,61 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 
 ### Current WASI capability summary
 
+<!-- BEGIN GENERATED: playground-wasi-capability-summary -->
 | Example | `capabilities.wasi` | Reason |
 |---------|---------------------|--------|
-| `basics/*` (4 entries) | `runnable` | No WASM-limited features |
-| `concurrency/actor_pipeline` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
-| `concurrency/async_await` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
-| `concurrency/counter_actor` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
-| `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Reject disposition |
-| `types/collections`, `types/pattern_matching`, `types/structural_bounds` | `runnable` | No WASM-limited features |
-| `types/wire_types` | `unsupported` | Wire enum codec not yet lowered on WASI (#1822) |
+| `basics/hello_world` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/fibonacci` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/float_arithmetic` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/float_division` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/float_nonfinite_compare` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/higher_order_functions` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/if_let_value` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/mixed_numeric` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/stmt_control_flow` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/stmt_if` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/stmt_if_let` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/stmt_match` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/string_interpolation` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/clone_value` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `basics/display_scalars` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `concurrency/actor_pipeline` | `unsupported` | Actor/coroutine runtime ABI unavailable on the current WASI path (#1821) |
+| `concurrency/async_await` | `unsupported` | Actor/coroutine runtime ABI unavailable on the current WASI path (#1821) |
+| `concurrency/counter_actor` | `unsupported` | Actor/coroutine runtime ABI unavailable on the current WASI path (#1821) |
+| `concurrency/supervisor` | `unsupported` | Uses the manifest-owned supervision-trees reject capability |
+| `language/arithmetic_operators` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/array_indexing` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/string_slicing` | `unsupported` | hew_string_slice currently has a wasm32-wasi linker signature mismatch |
+| `language/while_loop` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/wildcard_match` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/match_guard` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/compound_assign` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/f64_nonfinite_render` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `language/f64_finite_render` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `machines/traffic_light` | `unsupported` | Machine runtime is not yet wired into the WASI/LLVM path |
+| `types/collections` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/pattern_matching` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/record_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/wire_types` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/structural_bounds` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/record_equality` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/tuple_values` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/generic_aggregate_eq` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/option_result_methods` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/vec_operations` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/vec_f64_nonfinite_contains` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/vec_inclusive_slice` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/record_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/fn_field_call` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
+| `types/method_clone` | `unsupported` | The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example |
+<!-- END GENERATED: playground-wasi-capability-summary -->
 
 The typed `[[playground_wasi]]` rows in `wasm-capability-manifest.toml` are the
 source of truth for non-runnable per-entry values. `hew-capability-gen` renders
 those rows into `examples/playground/wasm-capabilities.json`; the playground
 manifest generator consumes that checked output and owns no independent WASI
-capability table.
+capability table. The summary above combines those typed exclusions with the
+runnable values from the checked playground manifest and is generated in full.
 
 Entries absent from `[[playground_wasi]]` are candidates for `"runnable"`, not
 declarative pass claims. The WASI E2E test compiles and executes every such

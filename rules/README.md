@@ -54,9 +54,10 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 | `no-unimplemented-macro` | 0 | `unimplemented!()`. |
 | `expect-empty-message` | 0 | `.expect("")` with an empty/whitespace message. |
 
-### Rust — concurrency / drop (`info` / `hint`, advisory)
+### Rust — concurrency / drop
 | Rule | Hits | Catches |
 |------|------|---------|
+| `no-lifecycle-state-drop-suppression` (`error`) | 0 | Restart/lifecycle-specific actor-free helpers or state-drop suppression options that bypass explicit borrowed/consumed incarnation authority. |
 | `lock-unwrap` | 10 | `$M.lock().unwrap()/.expect()` — unwraps a poisoned lock (CLAUDE.md §9; prefer the poison-safe accessor). |
 | `explicit-leak-review` | 3 | `mem::forget` / `Box::leak` — RAII escapes to audit for drop-safety (CLAUDE.md §1). |
 

@@ -355,6 +355,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         spawn_serial: 1,
         sys_dispatch: None,
         state_drop_consumed: AtomicBool::new(false),
+        state_drop_borrowed: AtomicBool::new(false),
     })
 }
 

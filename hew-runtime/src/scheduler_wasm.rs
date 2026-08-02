@@ -151,6 +151,8 @@ pub struct HewActor {
     pub sys_dispatch: Option<crate::internal::types::HewSysDispatchFn>,
     // One-shot typed state-drop authority; see the canonical actor field.
     pub state_drop_consumed: AtomicBool,
+    // Supervisor shallow-template provenance; mirrors the canonical tail.
+    pub state_drop_borrowed: AtomicBool,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -230,6 +232,7 @@ const _: () = {
     assert!(offset_of!(W, spawn_serial) == offset_of!(N, spawn_serial));
     assert!(offset_of!(W, sys_dispatch) == offset_of!(N, sys_dispatch));
     assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
+    assert!(offset_of!(W, state_drop_borrowed) == offset_of!(N, state_drop_borrowed));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -1995,10 +1998,14 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // wasm park edge (commit 4) consumes a non-null handle.
                 // SAFETY: this cooperative activation exclusively owns the
                 // actor state until the matching finish/recovery call.
-                let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
-                    (Some(_), Some(drop)) => Some(drop),
-                    (None, None) => None,
-                    _ => panic!("actor state has half-registered clone/drop classifier proof"),
+                let crash_state_drop = if a.state_drop_borrowed.load(Ordering::Acquire) {
+                    None
+                } else {
+                    match (a.state_clone_fn, a.state_drop_fn) {
+                        (Some(_), Some(drop)) => Some(drop),
+                        (None, None) => None,
+                        _ => panic!("actor state has half-registered clone/drop classifier proof"),
+                    }
                 };
                 // SAFETY: this cooperative activation exclusively owns the
                 // actor state until the matching finish/recovery call.
@@ -2718,6 +2725,7 @@ mod tests {
             spawn_serial: 1,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 
@@ -4098,7 +4106,7 @@ mod tests {
     /// HARNESS LIMIT, stated rather than papered over: this drives
     /// `cancel_parked_activation_for_free_wasm`, the branch the fix adds, NOT
     /// the whole of `actor_free_wasm_impl`. That function's tail calls
-    /// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+    /// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources`
     /// resolves to the NATIVE body under `cfg(test)` and frees a wasm mailbox
     /// with the native destructor. End-to-end coverage of the wasm free needs a
     /// real wasm32 runner, not another native test.
@@ -4165,7 +4173,7 @@ mod tests {
             );
         }
 
-        // A second sweep — `free_actor_resources_wasm_with_options` runs one on
+        // A second sweep — `free_actor_resources_wasm` runs one on
         // every free route — must be a no-op, not a second release.
         crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
         // SAFETY: the test still holds its own reference to `ch`.
@@ -4727,8 +4735,8 @@ mod tests {
         // increment it.
         assert_eq!(unsafe { read_tasks_spawned() }, 0);
 
-        // Reclaim the caller-side authorities and the two scratch-frame boxes
-        // under the test's sole ownership.
+        // Reclaim the caller-side authorities and the two tracked scratch-frame
+        // allocations under the test's sole ownership.
         // SAFETY: every pointer remains live and exclusively test-owned.
         unsafe {
             crate::reply_channel_wasm::hew_reply_channel_free(reply);
@@ -7627,6 +7635,7 @@ mod tests {
             spawn_serial: 99,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

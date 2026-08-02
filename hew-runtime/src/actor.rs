@@ -1517,6 +1517,14 @@ pub struct HewActor {
     /// before dispatch opens an escrow or while idle. Only the recovery path
     /// that actually consumes a state snapshot sets this bit.
     pub state_drop_consumed: AtomicBool,
+
+    /// Provenance bit for a state wrapper whose owned fields are borrowed from
+    /// a persistent supervisor byte-copy template. Such an incarnation never
+    /// owns typed-drop authority; fresh init-thunk and state-clone incarnations
+    /// leave this false. Kept separate from `state_drop_consumed` so a later
+    /// successful clone registration can transfer a borrowed initial actor to
+    /// owned without resurrecting authority already consumed by crash escrow.
+    pub state_drop_borrowed: AtomicBool,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1548,6 +1556,42 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
         eprintln!("fatal: actor state-drop authority consumed by more than one crash escrow");
         std::process::abort();
     }
+}
+
+/// Mark a newly-created supervised incarnation as borrowing typed state from
+/// its persistent shallow-copy template.
+///
+/// # Safety
+///
+/// `actor` must be a live, newly spawned actor not yet visible to dispatch.
+pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording borrowed state provenance");
+        std::process::abort();
+    }
+    // SAFETY: caller owns the unpublished actor incarnation.
+    unsafe { &*actor }
+        .state_drop_borrowed
+        .store(true, Ordering::Release);
+}
+
+/// Transfer a shallow-template initial incarnation to independently-owned
+/// state after the supervisor successfully replaces its template with a deep
+/// clone. This changes provenance only; a concurrently consumed crash-escrow
+/// authority remains consumed in the separate atomic bit.
+///
+/// # Safety
+///
+/// `actor` must be the live child whose former template alias was just broken.
+pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording owned state provenance");
+        std::process::abort();
+    }
+    // SAFETY: caller guarantees the template no longer aliases actor state.
+    unsafe { &*actor }
+        .state_drop_borrowed
+        .store(false, Ordering::Release);
 }
 
 pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
@@ -1957,7 +2001,7 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 /// attempted concurrently. That leaves exactly one window during shutdown, and
 /// [`retire_parked_activations`] is called in it. The teardown routes that run
 /// OUTSIDE that window — `cleanup_all_actors` and
-/// `free_actor_resources_with_options`, both of which run after
+/// `free_actor_resources`, both of which run after
 /// `hew_periodic_shutdown` — must therefore never call this. They sweep the
 /// reply slot directly instead, which is a bare atomic swap and re-enters
 /// nothing.
@@ -1993,7 +2037,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // `hew_actor_free_inner`'s two-second quiescence wait — and makes it a
     // property of abandonment rather than something every route has to
     // remember. The swap inside `retire_suspended_reply_channel` keeps it
-    // exactly once even though `free_actor_resources_with_options` sweeps the
+    // exactly once even though `free_actor_resources` sweeps the
     // same slot on the way out.
     crate::scheduler::retire_suspended_reply_channel(a);
     // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
@@ -2010,7 +2054,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // whether or not this teardown won the destroy, so the routes that abandon a
     // producer publish it unconditionally themselves —
     // `hew_actor_free_inner` before this call, and
-    // `free_actor_resources_with_options` on the way out of every free,
+    // `free_actor_resources` on the way out of every free,
     // including the one `retire_parked_activations` hands to
     // `cleanup_all_actors`. The publish is a single atomic swap, so the
     // overlapping calls settle to exactly one release.
@@ -2140,33 +2184,13 @@ fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
 ///
 /// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
 unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
-    // SAFETY: caller guarantees `actor` is quiescent and not dispatching.
-    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, false) };
-}
-
-/// Same as [`finalize_quiescent_actor_cleanup`], but the caller may suppress
-/// the codegen-emitted `state_drop_fn` invocation.
-///
-/// `suppress_state_drop = true` is used by supervisor restart paths
-/// (`ONE_FOR_ALL` / `REST_FOR_ONE`) when freeing a non-crashed sibling whose
-/// state is about to be reused by the next spawn. See the rationale in
-/// [`free_actor_resources_with_options`].
-///
-/// # Safety
-///
-/// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
-unsafe fn finalize_quiescent_actor_cleanup_with_options(
-    actor: *mut HewActor,
-    state: i32,
-    suppress_state_drop: bool,
-) {
     if state != HewActorState::Crashed as i32 {
         // SAFETY: caller guarantees the actor is quiescent and not dispatching.
         unsafe { call_terminate_fn(actor) };
     }
 
     // SAFETY: caller guarantees the actor remains valid and is no longer dispatching.
-    unsafe { free_actor_resources_with_options(actor, suppress_state_drop) };
+    unsafe { free_actor_resources(actor) };
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown
@@ -2358,39 +2382,22 @@ pub(crate) unsafe fn cleanup_all_actors() {
     crate::lifetime::local_handles::finish_current_shutdown();
 }
 
-/// Free an actor's resources without untracking, optionally suppressing the
-/// codegen-emitted `state_drop_fn` invocation.
+/// Free an actor's resources without untracking.
 ///
-/// `suppress_state_drop = true` is the supervisor-restart path. The runtime
-/// byte-copies `spec.init_state` into every spawned actor's `state` /
-/// `init_state` slots, which means owned-field pointers (Vec.ptr, String.ptr,
-/// IO handles) are aliased between the supervisor's `spec.init_state` and
-/// every actor instance ever spawned from that spec. Running `state_drop_fn`
-/// on a non-crashed sibling that is about to be replaced via
-/// `restart_child_from_spec` would free those field pointers, leaving the
-/// supervisor's `spec.init_state` byte-aliasing dangling pointers. The next
-/// restart byte-copies that dangling spec into a fresh actor and dereferences
-/// it on the next teardown — a use-after-free.
-///
-/// State-drop must not regress the existing leak-not-UAF invariant: prior to
-/// the state-drop slot landing, non-crashed teardowns leaked the field
-/// allocations rather than freeing them, so the supervisor's spec aliases
-/// stayed valid (just leaked) until final teardown. The supervisor still
-/// frees `spec.init_state` exactly once during `hew_supervisor_stop`, where
-/// no further restart can observe the dangling bytes.
-///
-/// This narrows the regression window to non-crashed restarts. The deeper
-/// latent issue — user mutation `self.x = newHeap` already leaves a dangling
-/// pointer in `spec.init_state` via drop-on-assign — predates state-drop and
-/// requires a semantic clone of `init_state` to fix; that is out of scope
-/// here.
+/// Typed state teardown is decided only by the incarnation's explicit
+/// provenance and one-shot `state_drop_consumed` authority. Supervisor restart
+/// context is not evidence that state was consumed: init thunks and clone
+/// callbacks produce fresh independently-owned state, ordinary stops never open
+/// crash escrow, and a crash can occur before escrow takes ownership. Every
+/// free route therefore converges here and atomically consumes whichever owned
+/// authority remains; shallow-template borrowers never acquire one.
 ///
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
+unsafe fn free_actor_resources(actor: *mut HewActor) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
     unsafe {
@@ -2509,7 +2516,8 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
     //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
     //    the caller's spec bytes at registration time.
-    if !suppress_state_drop && !a.state_drop_consumed.swap(true, Ordering::AcqRel) {
+    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
+    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -2575,9 +2583,9 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(target_arch = "wasm32")]
-unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
+unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: target_arch = wasm32 shares the same invariants as the test helper.
-    unsafe { free_actor_resources_wasm_with_options(actor, suppress_state_drop) };
+    unsafe { free_actor_resources_wasm(actor) };
 }
 
 /// Free an actor's resources using the WASM cleanup path.  Always runs
@@ -2592,25 +2600,6 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 #[cfg_attr(not(test), allow(dead_code))]
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
-    // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { free_actor_resources_wasm_with_options(actor, false) };
-}
-
-/// Free an actor's resources using the WASM cleanup path, with the option to
-/// suppress `state_drop_fn` (supervisor-restart paths).  See
-/// [`free_actor_resources_with_options`] (native) for the alias-chain
-/// rationale; the WASM and native `HewActor` layouts are byte-identical
-/// (offset assertions in `scheduler_wasm.rs`).
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer to a live `HewActor` that is not
-/// currently being dispatched.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn free_actor_resources_wasm_with_options(
-    actor: *mut HewActor,
-    suppress_state_drop: bool,
-) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -2644,7 +2633,7 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // away. If it was parked mid-`ask`, its suspend edge moved the caller's
     // reply-sender reference into `suspended_reply_channel` and no resume will
     // ever consume it. Parity with the native
-    // `free_actor_resources_with_options`: discharge the debt at the single
+    // `free_actor_resources`: discharge the debt at the single
     // choke point every free route funnels through, so "the box is never freed
     // with a live reply slot" is a property of this function rather than
     // something each caller has to remember.
@@ -2663,13 +2652,12 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // `scheduler_wasm.rs`) and the same `a.init_state` aliasing as the
     // native path, so state-drop runs on `a.state` only — running it on
     // `a.init_state` would double-free every owned field. See the SAFETY
-    // block in the native `free_actor_resources_with_options` for the full
-    // rationale, including why `suppress_state_drop` is required on
-    // supervisor-restart paths.
+    // block in the native `free_actor_resources` for the full rationale.
     //
     // As on native, the explicit escrow-consumed bit—not lifecycle state—is
     // the typed teardown authority.
-    if !suppress_state_drop && !a.state_drop_consumed.swap(true, Ordering::AcqRel) {
+    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
+    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -2689,7 +2677,7 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     if !a.arena.is_null() {
         let arena_ptr = a.arena;
         // Null the slot BEFORE freeing — parity with the native
-        // `free_actor_resources_with_options` (`raii-native-wasm-parity`
+        // `free_actor_resources` (`raii-native-wasm-parity`
         // + `raii-null-after-move`).  WASM is single-threaded so the
         // arena UAF cannot fire here, but the source shape must mirror
         // native to keep both paths reviewable as one invariant.
@@ -3163,6 +3151,7 @@ fn build_spawned_actor(
         spawn_serial: identity.serial,
         sys_dispatch: config.sys_dispatch,
         state_drop_consumed: AtomicBool::new(false),
+        state_drop_borrowed: AtomicBool::new(false),
     })
 }
 
@@ -3335,7 +3324,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
-        unsafe { free_actor_resources_with_options(raw, false) };
+        unsafe { free_actor_resources(raw) };
         return ptr::null_mut();
     }
     raw
@@ -3404,7 +3393,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
-        unsafe { free_actor_resources_with_options(raw, false) };
+        unsafe { free_actor_resources(raw) };
         return ptr::null_mut();
     }
     raw
@@ -4416,31 +4405,11 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { hew_actor_free_inner(actor, false) }
-}
-
-/// Free an actor and all associated resources, suppressing the codegen-emitted
-/// `state_drop_fn` invocation on the live state.
-///
-/// Used by supervisor restart paths (`ONE_FOR_ALL` / `REST_FOR_ONE`) for
-/// non-crashed siblings whose state is about to be reused by the next spawn.
-/// See [`free_actor_resources_with_options`] for the alias-chain rationale.
-///
-/// # Safety
-///
-/// - `actor` must have been returned by a spawn function.
-/// - The actor must not be used after this call.
-/// - Caller (the supervisor) guarantees the actor's `state` field allocations
-///   are still owned by the supervisor's `spec.init_state` byte-aliasing and
-///   will be freed exactly once during `hew_supervisor_stop`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn hew_actor_free_for_restart(actor: *mut HewActor) -> c_int {
-    // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { hew_actor_free_inner(actor, true) }
+    unsafe { hew_actor_free_inner(actor) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) -> c_int {
+unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
         crate::set_last_error("hew_actor_free: null actor pointer");
         return -1;
@@ -4502,7 +4471,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     //      (fail-closed; the caller leaks rather than frees a queued actor).
     //
     // `state` carried out of the loop is the post-latch terminal state passed to
-    // `finalize_quiescent_actor_cleanup_with_options`, which runs the terminate
+    // `finalize_quiescent_actor_cleanup`, which runs the terminate
     // callback exactly once for `Stopped` (== the old `Idle` behaviour) and skips
     // it for `Crashed`.
     //
@@ -4705,7 +4674,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
 
     // SAFETY: actor is quiescent (re-verified after detach), no longer tracked,
     // all send pins drained, and not being dispatched.
-    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, suppress_state_drop) };
+    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     0
 }
 
@@ -6538,7 +6507,7 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 ///   graceful-stop terminals, including the one the out-of-band stop cancel of
 ///   a parked activation funnels into. This publishes at the instant the
 ///   producer stops, ahead of any free.
-/// - `hew_actor_free_inner` and `free_actor_resources_with_options` — the
+/// - `hew_actor_free_inner` and `free_actor_resources` — the
 ///   backstop for the abandonment routes that never settle an activation at all
 ///   (shutdown sweep, quiesced drain, supervisor child teardown, leak).
 ///
@@ -7770,7 +7739,7 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
 ///
 /// Split out of [`actor_free_wasm_impl`] so it is reachable from a native test
 /// build. The rest of that function is not: its tail goes through
-/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources`
 /// resolves to the NATIVE body under `cfg(test)` and would free a wasm mailbox
 /// with the native destructor. This branch is the part the wasm free path adds,
 /// and it is target-neutral.
@@ -8076,6 +8045,7 @@ pub mod composition_test_support {
             spawn_serial: u64::MAX - 2_848,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }))
     }
 
@@ -9671,6 +9641,7 @@ mod tests {
                 spawn_serial: id,
                 sys_dispatch: None,
                 state_drop_consumed: AtomicBool::new(false),
+                state_drop_borrowed: AtomicBool::new(false),
             }));
             (actor, mailbox)
         }
@@ -10768,6 +10739,7 @@ mod tests {
             spawn_serial,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -14746,11 +14718,11 @@ mod tests {
         }
     }
 
-    static CRASH_SKIP_STATE_DROP_COUNT: std::sync::atomic::AtomicUsize =
+    static STATE_DROP_AUTHORITY_COUNT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
-    unsafe extern "C" fn crash_skip_state_drop_callback(_state: *mut c_void) {
-        CRASH_SKIP_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    unsafe extern "C" fn authority_state_drop_callback(_state: *mut c_void) {
+        STATE_DROP_AUTHORITY_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     #[test]
@@ -14759,7 +14731,7 @@ mod tests {
         // or consumed any state escrow. Lifecycle state cannot suppress its
         // still-live typed owner.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // Spawn with a malloc'd source so the resulting actor has a
         // non-null `state` field (deep-copied). This ensures the
@@ -14775,7 +14747,7 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
             a.actor_state
@@ -14789,7 +14761,7 @@ mod tests {
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "an externally crashed actor retained final typed-drop authority"
         );
@@ -14798,7 +14770,7 @@ mod tests {
     #[test]
     fn crash_escrow_consumed_state_is_not_dropped_twice_at_free() {
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
@@ -14814,8 +14786,8 @@ mod tests {
         // SAFETY: the test exclusively owns the live actor and intentionally
         // models the scheduler's ordered drop-then-authority transfer.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
-            crash_skip_state_drop_callback((*actor).state);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
+            authority_state_drop_callback((*actor).state);
             record_dispatch_state_drop_consumed(actor);
             (*actor)
                 .actor_state
@@ -14823,7 +14795,7 @@ mod tests {
             assert_eq!(hew_actor_free(actor), 0);
         }
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "final free must not retry state already consumed by crash escrow"
         );
@@ -14832,7 +14804,7 @@ mod tests {
     #[test]
     fn caught_unwind_after_state_clear_transfers_final_drop_authority() {
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         let src = 41_u64;
         // SAFETY: spawn copies the initialized scalar bytes into actor state.
@@ -14852,11 +14824,11 @@ mod tests {
         // SAFETY: the test exclusively owns the actor and brackets one complete
         // dispatch escrow before terminal free.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             assert!(crate::cont::begin_dispatch_crash_cleanup(
                 (*actor).state,
                 (*actor).state_size,
-                Some(crash_skip_state_drop_callback),
+                Some(authority_state_drop_callback),
             ));
             assert!(crate::cont::hew_dispatch_state_cleanup_clear(
                 (*actor).state,
@@ -14868,7 +14840,7 @@ mod tests {
                 outcome.state_authority_consumed,
                 "a begun state mutation makes false-recovery one-way"
             );
-            assert_eq!(CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst), 1);
             record_dispatch_state_drop_consumed(actor);
             (*actor)
                 .actor_state
@@ -14876,7 +14848,7 @@ mod tests {
             assert_eq!(hew_actor_free(actor), 0);
         }
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "final free must not retry live bytes after a cleared escrow consumed state authority"
         );
@@ -14885,7 +14857,7 @@ mod tests {
     #[test]
     fn caught_unwind_before_state_mutation_preserves_final_drop_authority() {
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         let src = 42_u64;
         // SAFETY: spawn copies the initialized scalar bytes into actor state.
@@ -14903,23 +14875,23 @@ mod tests {
         // SAFETY: the test exclusively owns the actor and brackets one complete
         // dispatch escrow before terminal free.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             assert!(crate::cont::begin_dispatch_crash_cleanup(
                 (*actor).state,
                 (*actor).state_size,
-                Some(crash_skip_state_drop_callback),
+                Some(authority_state_drop_callback),
             ));
             let outcome = crate::cont::recover_dispatch_crash_cleanup_with_outcome(false);
             assert!(outcome.registry_found);
             assert!(!outcome.state_authority_consumed);
-            assert_eq!(CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst), 0);
+            assert_eq!(STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst), 0);
             (*actor)
                 .actor_state
                 .store(HewActorState::Crashed as i32, Ordering::Release);
             assert_eq!(hew_actor_free(actor), 0);
         }
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "untouched false-recovery must preserve final live-state drop authority"
         );
@@ -14932,7 +14904,7 @@ mod tests {
         // Pins the negative case so the crash-skip guard cannot regress to
         // an unconditional skip.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
@@ -14945,7 +14917,7 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
             a.actor_state
@@ -14956,7 +14928,7 @@ mod tests {
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "state-drop callback must fire exactly once on a Stopped actor"
         );
@@ -15027,27 +14999,13 @@ mod tests {
     }
 
     #[test]
-    fn hew_actor_free_for_restart_skips_state_drop_on_stopped_sibling() {
-        // Supervisor restart paths (ONE_FOR_ALL / REST_FOR_ONE) free
-        // non-crashed siblings before re-spawning them from
-        // `spec.init_state`. The runtime byte-copies `spec.init_state` into
-        // every actor's `state` and `init_state` slots, so the field
-        // pointers (Vec.ptr, String.ptr, IO handles) inside `spec.init_state`
-        // are byte-aliased by every spawned actor. Running `state_drop_fn`
-        // on a stopped sibling would free those field pointers, leaving
-        // `spec.init_state` byte-aliasing dangling pointers; the next
-        // restart byte-copies that dangling spec into the new actor and
-        // dereferences it on the next teardown — a use-after-free.
-        //
-        // This test pins the contract: `hew_actor_free_for_restart` MUST
-        // NOT invoke the codegen-emitted `state_drop_fn` on a non-crashed
-        // (Stopped/Idle) actor, even when that callback is registered.
-        //
-        // Companion to `free_actor_resources_runs_state_drop_on_stopped_actor`,
-        // which pins the inverse: the regular `hew_actor_free` entry point
-        // MUST run the callback on a Stopped actor.
+    fn borrowed_shallow_state_has_no_final_drop_authority() {
+        // A legacy supervisor byte-copy incarnation explicitly records that
+        // its embedded owners are borrowed from the persistent spec. The same
+        // common free entry point used by fresh actors must therefore skip its
+        // typed drop without relying on restart context or lifecycle state.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
@@ -15060,24 +15018,21 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
+            mark_state_drop_borrowed(actor);
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
 
-            // Drive the supervisor-restart-aware free path. Even though the
-            // actor is Stopped (not Crashed), the state-drop callback must
-            // be suppressed because the supervisor's `spec.init_state`
-            // still byte-aliases this actor's field pointers.
-            let rc = hew_actor_free_for_restart(actor);
+            let rc = hew_actor_free(actor);
             assert_eq!(rc, 0);
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             0,
-            "state-drop callback must NOT run on a Stopped sibling freed via the restart-aware path"
+            "borrowed shallow state must not claim typed-drop authority"
         );
     }
 
@@ -15121,7 +15076,7 @@ mod tests {
     #[test]
     fn terminate_fires_on_normal_stop_and_not_on_crash() {
         // LESSONS: cleanup-all-exits (P0) — on(stop) must run at normal actor
-        // teardown (finalize_quiescent_actor_cleanup_with_options) but must NOT
+        // teardown (finalize_quiescent_actor_cleanup) but must NOT
         // run when the actor is in the Crashed state (same path guards
         // state_drop_fn). Pins the crash-skip invariant and the normal-stop
         // fire invariant with a minimal in-process test.
@@ -15467,6 +15422,7 @@ mod tests {
             spawn_serial,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

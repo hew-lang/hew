@@ -798,6 +798,7 @@ mod tests {
             spawn_serial: 1,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         })
     }
 
@@ -1238,6 +1239,7 @@ mod forced_ordering_probe {
             spawn_serial: 1,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         })
     }
 

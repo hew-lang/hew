@@ -1000,7 +1000,7 @@ impl Ty {
     #[must_use]
     pub fn link_error() -> Ty {
         Ty::Named {
-            name: "std.link_monitor.LinkError".to_string(),
+            name: "std.builtins.LinkError".to_string(),
             args: vec![],
             builtin: None,
         }

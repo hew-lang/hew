@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use hew_parser::ast::Item;
 use hew_parser::module::ModuleId;
 
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
@@ -538,6 +539,37 @@ impl ModuleRegistry {
         .flatten()
     }
 
+    /// Project a legacy registry signature type into its exact source owner.
+    ///
+    /// Extracted ABI signatures historically use the loaded module's final
+    /// path segment (`regex.Pattern`). The projection is authorized only when
+    /// that same loaded source declares the requested type leaf. A foreign
+    /// `regex.Other` spelling therefore cannot acquire `std.text.regex` as an
+    /// owner merely because its prefix has the same text.
+    #[must_use]
+    pub fn canonical_registry_signature_type_identity(
+        &self,
+        name: &str,
+        canonical_owner: &str,
+    ) -> Option<String> {
+        let info = self
+            .modules
+            .get(&module_id_from_identity(canonical_owner))?;
+        let extracted_owner = canonical_owner
+            .rsplit_once('.')
+            .map_or(canonical_owner, |(_, leaf)| leaf);
+        let leaf = name.strip_prefix(&format!("{extracted_owner}."))?;
+        if leaf.contains('.')
+            || !info
+                .source_items
+                .iter()
+                .any(|(item, _)| matches!(item, Item::TypeDecl(decl) if decl.name == leaf))
+        {
+            return None;
+        }
+        Some(format!("{canonical_owner}.{leaf}"))
+    }
+
     /// Check if a fully-qualified name is a drop type across all loaded modules.
     #[must_use]
     pub fn is_drop_type(&self, name: &str) -> bool {
@@ -967,6 +999,28 @@ mod tests {
                 "missing direct disposer {expected:?}: {all:?}"
             );
         }
+    }
+
+    #[test]
+    fn registry_signature_owner_projection_requires_exact_source_declaration() {
+        let mut reg = registry();
+        reg.load("std::text::regex").unwrap();
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("regex.Pattern", "std.text.regex"),
+            Some("std.text.regex.Pattern".to_string()),
+            "the loaded Pattern declaration authorizes its legacy registry spelling"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("regex.Foreign", "std.text.regex"),
+            None,
+            "a foreign regex.X spelling must not inherit the loaded module owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("regex.Pattern", "vendor.regex"),
+            None,
+            "a declaration loaded for one exact owner cannot authorize another"
+        );
     }
 
     #[test]

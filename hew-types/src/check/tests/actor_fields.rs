@@ -1529,6 +1529,16 @@ mod reserved_names {
             "qualified LookupError::NotFound must still resolve; got errors: {:#?}",
             output.errors
         );
+        assert!(
+            output.type_defs.contains_key("std.builtins.LookupError"),
+            "LookupError must retain its std/builtins.hew declaration owner"
+        );
+        assert!(
+            !output
+                .type_defs
+                .contains_key("std.lookup_error.LookupError"),
+            "the bare prelude binding must not mint a synthetic LookupError owner"
+        );
     }
 
     /// Two user enums that both declare the same bare variant name: the TYPE

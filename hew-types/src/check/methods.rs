@@ -2326,7 +2326,7 @@ impl Checker {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
-        if name != "semaphore.Semaphore" || self.user_modules.contains("semaphore") {
+        if name != "std.semaphore.Semaphore" {
             return;
         }
         if matches!(method, "acquire" | "acquire_timeout") {
@@ -2854,8 +2854,7 @@ impl Checker {
                 trait_name,
                 assoc_name,
                 ..
-            } if matches!(trait_name.as_ref(), "Pid" | "std.builtins.Pid")
-                && assoc_name.as_ref() == "Msg"
+            } if trait_name.as_ref() == "std.builtins.Pid" && assoc_name.as_ref() == "Msg"
         )
     }
 
@@ -9484,9 +9483,7 @@ impl Checker {
                             },
                             true,
                         );
-                        if matches!(declaring_trait.as_str(), "Pid" | "std.builtins.Pid")
-                            && method == "send"
-                        {
+                        if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
                             // bound once the checker can express that shape on
@@ -9698,8 +9695,10 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
-                    let pid_send_dispatch = found_bound
-                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "send");
+                    let pid_send_dispatch = found_bound.as_ref().is_some_and(|bound| {
+                        self.trait_ref_lookup_key(&bound.trait_name) == "std.builtins.Pid"
+                            && method == "send"
+                    });
                     if let Some(bound) = found_bound {
                         self.record_method_call_receiver_kind(
                             span,

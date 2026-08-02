@@ -4072,6 +4072,17 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
+    // SAFETY: this wrapper has the same payload contract as the inner seam.
+    unsafe { actor_send_by_id_wasm_internal(actor_id, msg_type, data, size) }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+unsafe fn actor_send_by_id_wasm_internal(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
     live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox
         // valid; the caller supplies the readable payload range.
@@ -10761,6 +10772,70 @@ mod tests {
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
         actor
+    }
+
+    #[test]
+    fn wasm_send_by_id_live_actor_delivers_and_wakes() {
+        let _guard = crate::runtime_test_guard();
+        crate::scheduler_wasm::hew_sched_init();
+
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Idle);
+        // SAFETY: the test exclusively owns the actor and newly allocated
+        // cooperative mailbox until teardown below.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: actor remains uniquely owned by this test.
+        unsafe { (*actor).mailbox = mailbox.cast() };
+        // SAFETY: actor remains allocated and uniquely owned by this test.
+        let actor_id = unsafe { (*actor).id };
+        let mut payload = 42_i64;
+
+        // SAFETY: actor is tracked and the payload is live for the complete
+        // copying call.
+        let rc = unsafe {
+            actor_send_by_id_wasm_internal(actor_id, 7, (&raw mut payload).cast(), size_of::<i64>())
+        };
+        assert_eq!(rc, HewError::Ok as i32);
+        assert_eq!(
+            // SAFETY: mailbox remains live and exclusively owned here.
+            unsafe { crate::mailbox_wasm::hew_mailbox_len(mailbox) },
+            1,
+            "live by-ID delivery must copy exactly one message"
+        );
+        assert_eq!(
+            // SAFETY: actor remains live and exclusively owned here.
+            unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+            HewActorState::Runnable as i32,
+            "successful by-ID delivery must wake an idle cooperative actor"
+        );
+
+        // Shutdown drains the queued actor before its mailbox is reclaimed.
+        crate::scheduler_wasm::hew_sched_shutdown();
+        assert!(live_actors::untrack_actor(actor));
+        // SAFETY: the scheduler queue is empty and the test owns both objects.
+        unsafe {
+            (*actor).mailbox = ptr::null_mut();
+            crate::mailbox_wasm::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn wasm_send_by_id_missing_or_stopped_actor_returns_err_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
+        // SAFETY: actor remains allocated and exclusively owned after its live
+        // route is retired, modeling a stopped ID at the lookup boundary.
+        let actor_id = unsafe { (*actor).id };
+        assert!(live_actors::untrack_actor(actor));
+
+        // SAFETY: zero-size payload permits a null data pointer. The retired ID
+        // must be rejected before any actor or mailbox dereference.
+        let rc = unsafe { actor_send_by_id_wasm_internal(actor_id, 7, ptr::null_mut(), 0) };
+        assert_eq!(rc, HewError::ErrActorStopped as i32);
+
+        // SAFETY: no live registry entry or scheduler queue retains the box.
+        unsafe { drop(Box::from_raw(actor)) };
     }
 
     // --- null-guard regression tests ---

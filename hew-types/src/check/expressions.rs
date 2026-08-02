@@ -1266,6 +1266,9 @@ impl Checker {
                 .cloned()
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
+                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
+                    self.mark_module_owner_bindings_used(source_owner);
+                }
             }
             if let Some(caller) = &self.current_function {
                 self.call_graph

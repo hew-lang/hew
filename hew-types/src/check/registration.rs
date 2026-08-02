@@ -9252,7 +9252,13 @@ impl Checker {
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.fn_sigs.insert(wfn.name, sig);
+                        // Wrapper functions belong to the imported module;
+                        // publishing them under a bare leaf here would make
+                        // `import m::{ f as alias }` accidentally retain an
+                        // ambient `f` binding. Selected bare bindings are
+                        // published later from the resolved source surface.
+                        self.fn_sigs
+                            .insert(format!("{canonical_owner}.{}", wfn.name), sig);
                     }
 
                     // Register module and clean names
@@ -9274,7 +9280,7 @@ impl Checker {
                         // not 1 param (the extern `hew_log_set_level(level)` sig).
                         let key = format!("{canonical_owner}.{method}");
                         let source_sig_exists = self.fn_sigs.contains_key(&key);
-                        let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                        let wrapper_sig = self.fn_sigs.get(&key).cloned();
                         let sig = wrapper_sig
                             .clone()
                             .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
@@ -9315,17 +9321,15 @@ impl Checker {
                         self.registry.register_resource_type(resource.clone());
                     }
 
-                    // Process resolved Hew source items from stdlib modules that ship
-                    // alongside their C/Rust bindings so trait methods stay visible.
-                    // Registry loading normally retains only ABI summaries.
-                    // The intrinsic floor is the intentional exception: its
-                    // source declarations carry compiler metadata that the
-                    // summary cannot represent. Keep all other registry
-                    // modules on their established publication path.
+                    // A selected named/glob import needs the Hew declaration,
+                    // not just the registry ABI summary: it is the authority
+                    // for the bare binding's original source identity. Plain
+                    // module imports retain the established registry path so
+                    // their module-level capability classification cannot be
+                    // perturbed by unrelated internal source declarations.
                     let resolved_items = decl.resolved_items.as_ref().or_else(|| {
-                        (is_intrinsic_floor_module(Some(&canonical_owner))
-                            && self.canonical_std_module_sources.contains(&canonical_owner))
-                        .then_some(&registry_source_items)
+                        (decl.spec.is_some() && !registry_source_items.is_empty())
+                            .then_some(&registry_source_items)
                     });
                     if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
                         let module_full_path = canonical_owner.clone();
@@ -9485,7 +9489,18 @@ impl Checker {
                 // definition errors.  The `registered_stdlib_hew_sources` set tracks
                 // by canonical `module_path` so all `import std::fs` ImportDecls
                 // collapse to the same key.
-                if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                if self.stdlib_hew_source_already_registered(decl, &module_path) {
+                    // Global declaration registration is deliberately deduped,
+                    // but each importing scope still needs its own selected
+                    // bare bindings. This path is reached when a transitive
+                    // import registered the source before a root named import.
+                    self.publish_imported_hew_bindings(
+                        &short,
+                        &full_dot_path,
+                        resolved_items,
+                        StdlibBarePublication::Import(&decl.spec),
+                    );
+                } else {
                     // The full dot-path (e.g. "subpkg.helper") is the declaring-module
                     // identity used in access-check side tables.
                     self.register_user_module(&short, &full_dot_path, resolved_items, &decl.spec);
@@ -9537,12 +9552,7 @@ impl Checker {
         publication: StdlibBarePublication<'_>,
     ) {
         if self.stdlib_hew_source_already_registered(decl, module_path) {
-            self.publish_stdlib_hew_type_bindings(
-                module_short,
-                module_full_path,
-                items,
-                publication,
-            );
+            self.publish_imported_hew_bindings(module_short, module_full_path, items, publication);
         } else {
             self.register_stdlib_hew_items(module_short, module_full_path, items, publication);
         }
@@ -9885,6 +9895,19 @@ impl Checker {
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings);
                     self.fn_sigs.insert(qualified.clone(), sig);
+                    // Mirror user-module named/glob import publication. The
+                    // parser has already selected `fd.name`; an alias only
+                    // changes the importing binding, never the declaration
+                    // identity retained in `import_fn_name_aliases`.
+                    if fd.visibility.is_pub() {
+                        if let Some(binding) = import_spec.bare_binding(&fd.name) {
+                            self.publish_stdlib_hew_function_binding(
+                                binding,
+                                &format!("{module_full_path}.{}", fd.name),
+                                import_spec,
+                            );
+                        }
+                    }
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
@@ -10074,10 +10097,10 @@ impl Checker {
         self.registration_origin_module = saved_registration_origin;
     }
 
-    /// Republish the public type names from an already-registered stdlib Hew
-    /// source into the current importer's scope. This deliberately performs no
-    /// declaration registration and therefore cannot create duplicate defs.
-    fn publish_stdlib_hew_type_bindings(
+    /// Republish selected public names from an already-registered Hew source
+    /// into one importing scope. This deliberately performs no declaration
+    /// registration and therefore cannot create duplicate defs.
+    fn publish_imported_hew_bindings(
         &mut self,
         module_short: &str,
         module_full_path: &str,
@@ -10086,6 +10109,15 @@ impl Checker {
     ) {
         for (item, _) in items {
             match item {
+                Item::Function(fd) if fd.visibility.is_pub() => {
+                    if let Some(binding) = publication.bare_binding(&fd.name) {
+                        self.publish_stdlib_hew_function_binding(
+                            binding,
+                            &format!("{module_full_path}.{}", fd.name),
+                            publication,
+                        );
+                    }
+                }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     if let Some(binding) = publication.bare_binding(&td.name) {
                         self.publish_stdlib_hew_type_binding(
@@ -10112,6 +10144,47 @@ impl Checker {
                 _ => {}
             }
         }
+    }
+
+    /// Publish a selected stdlib free function into one importer's bare scope.
+    ///
+    /// Declarations remain globally registered under their canonical full
+    /// owner; this copies the already-resolved signature only into the opted-in
+    /// surface binding and preserves the declaration identity for HIR,
+    /// intrinsic, and target-policy consumers.
+    fn publish_stdlib_hew_function_binding(
+        &mut self,
+        binding: String,
+        source_identity: &str,
+        publication: StdlibBarePublication<'_>,
+    ) {
+        let Some(sig) = self.fn_sigs.get(source_identity).cloned() else {
+            // A declaration source that cannot supply its canonical signature
+            // must not manufacture an ambient bare function binding.
+            return;
+        };
+        if let Some(assoc_bindings) = self
+            .fn_type_param_assoc_bindings
+            .get(source_identity)
+            .cloned()
+        {
+            self.fn_type_param_assoc_bindings
+                .insert(binding.clone(), assoc_bindings);
+        }
+        self.fn_sigs.insert(binding.clone(), sig);
+        if publication.records_import_identity() {
+            self.import_fn_name_aliases.insert(
+                (self.current_module.clone(), binding.clone()),
+                source_identity.to_string(),
+            );
+        }
+        self.record_published_bare_function(&binding, source_identity);
+        let source_owner = source_identity
+            .rsplit_once('.')
+            .map(|(owner, _)| owner.to_string())
+            .expect("stdlib Hew function binding has an owner-qualified identity");
+        self.unqualified_to_module
+            .insert((self.current_module.clone(), binding), source_owner);
     }
 
     fn publish_stdlib_hew_type_binding(

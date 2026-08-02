@@ -22,6 +22,12 @@ use crate::CompileError;
 const SCHEMA_VERSION: &str = "hew.sandbox.bytecode.v0";
 const ROOT_SOURCE_ID: &str = "src:main";
 const ROOT_MODULE_ID: &str = "mod:main";
+/// Canonical owner-qualified identity of the sandbox regex handle.
+///
+/// The emitter synthesizes this type for regex literals and `regex.new`. It
+/// must not use the presentation-only leaf `Regex`: a user record with that
+/// name is an unrelated nominal and may coexist with the stdlib handle.
+const REGEX_HANDLE_TYPE: &str = "std.text.regex.Pattern";
 
 type MatchBlock = (usize, String);
 type MatchGuardBlock = Option<MatchBlock>;
@@ -842,7 +848,7 @@ impl<'a> PackageEmitter<'a> {
                 let named_id = self.type_id_for_named(name, args);
                 let kind = if name == "Vec" {
                     "vector"
-                } else if name == "Regex" {
+                } else if name == REGEX_HANDLE_TYPE {
                     "regex"
                 } else if self.enum_layouts.contains_key(&named_id) {
                     "enum"
@@ -1642,7 +1648,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 let regex_local = self.temp_local(
                     &Ty::Named {
-                        name: "Regex".to_string(),
+                        name: REGEX_HANDLE_TYPE.to_string(),
                         args: Vec::new(),
                         builtin: None,
                     },
@@ -2924,7 +2930,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         });
                         let dst = self.temp_local(
                             &Ty::Named {
-                                name: "Regex".to_string(),
+                                name: REGEX_HANDLE_TYPE.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -3210,7 +3216,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 });
             let dst = self.temp_local(
                 &Ty::Named {
-                    name: "Regex".to_string(),
+                    name: REGEX_HANDLE_TYPE.to_string(),
                     args: Vec::new(),
                     builtin: None,
                 },

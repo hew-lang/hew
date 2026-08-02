@@ -1976,7 +1976,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) && !interior_enum_candidate_locals.contains(&local) {
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) && !interior_enum_candidate_locals.contains(&local) {
             allowed.insert(binding);
         }
     }
@@ -2601,7 +2602,13 @@ pub(super) fn derive_owned_record_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) {
+        // Escape facts are keyed by the byte-alias group's canonical root.
+        // A named binding may itself be a later alias member (for example a
+        // branch-join result copied from a produced record), so testing its
+        // slot directly would re-admit stale cleanup authority after another
+        // member was handed to actor state, a return, or another owning sink.
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
             allowed.insert(binding);
         }
     }
@@ -5036,7 +5043,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) {
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
             allowed.insert(binding);
         }
     }
@@ -6984,6 +6992,48 @@ mod owned_record_drop_derivation {
         assert!(
             allowed.contains(&b),
             "an untouched owned record is its own sole owner and must be admitted"
+        );
+    }
+
+    /// Final admission must test the canonical byte-alias root, not the
+    /// candidate's immediate slot.  Branch joins commonly register both the
+    /// produced record and the named join result; after the latter escapes,
+    /// both slots describe the same transferred owner and neither may retain a
+    /// `RecordInPlace` cleanup.
+    #[test]
+    fn escaped_alias_member_excludes_every_candidate_in_its_group() {
+        let produced = BindingId(1);
+        let selected = BindingId(2);
+        let owned = vec![
+            (produced, "produced".to_string(), rec_ty()),
+            (selected, "selected".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(produced, Place::Local(0)), (selected, Place::Local(1))]
+                .into_iter()
+                .collect();
+        let local_tys = vec![rec_ty(), rec_ty()];
+        let instructions = vec![
+            Instr::Move {
+                dest: Place::Local(1),
+                src: Place::Local(0),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(1),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instructions, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&produced) && !allowed.contains(&selected),
+            "an escape through any whole-value alias transfers the group's one owner; \
+             no stale candidate may retain recursive cleanup authority; got {allowed:?}"
         );
     }
 

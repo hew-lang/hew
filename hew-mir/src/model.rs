@@ -6180,18 +6180,15 @@ pub enum MirCheck {
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
     /// S1 obligation-balance: a heap-owning owned local reaches a `Return`
-    /// exit with ZERO discharges on every modelling of that path — no terminal
-    /// drop in the exit's plan, no ownership transfer (move-out / neutralize /
-    /// send / consuming runtime call), no inline release. The mint's release
-    /// obligation is never met on this path: a leak. The discharge set is
-    /// re-derived independently from the primitive `Instr` stream + CFG
+    /// exit with fewer discharges than owner mints on every modelling of that
+    /// path. A mint's release obligation is never met: a leak. The discharge
+    /// set is re-derived independently from the primitive `Instr` stream + CFG
     /// reachability (never from the elaborator's `Disposition` ledger — the
-    /// ledger is the component under test). Under-release is ADVISORY: the
-    /// gate surfaces it as a compile-time warning that does not fail the build
-    /// (see [`MirDiagnosticKind::is_advisory`]). No allowlist suppresses it —
-    /// the lite MIR tier cannot soundly gate leaks without un-forgeable module
-    /// provenance, so it warns on every under-release (tracked stdlib holes
-    /// included) rather than hard-gate behind a forgeable per-function key.
+    /// ledger is the component under test). Legacy single-mint under-release
+    /// remains advisory because this lite tier cannot soundly distinguish
+    /// tracked stdlib holes without unforgeable module provenance. A missing
+    /// release for a MIR-explicit retain is blocking: the retain itself is a
+    /// direct, unforgeable proof that an additional owner was minted.
     ObligationUnderReleased {
         /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
@@ -6203,6 +6200,9 @@ pub enum MirCheck {
         /// the diagnostic. Empty when the type could not be recovered
         /// (hand-built test MIR).
         local_ty: String,
+        /// Explicit retain-backed owner leaks are compiler invariant failures
+        /// and therefore blocking; legacy unretained holes remain advisory.
+        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
@@ -7218,15 +7218,15 @@ pub enum MirDiagnosticKind {
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
     /// S1 obligation-balance under-release (leak): surfaced from
-    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
-    /// ZERO discharges on a CFG path to a `Return` exit. ADVISORY (see
-    /// [`MirDiagnosticKind::is_advisory`]): rendered as a compile-time warning
-    /// that does not fail the build, because the lite MIR tier cannot soundly
-    /// suppress a leak without un-forgeable module provenance (OWN-V1).
+    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has fewer
+    /// discharges than owner mints on a CFG path to a `Return` exit. Legacy
+    /// single-mint holes are advisory; missing releases for MIR-explicit
+    /// retains are blocking compiler-invariant failures.
     ObligationUnderReleased {
         function: String,
         block: u32,
         name: String,
+        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance over-release (double-free): surfaced from
@@ -7475,18 +7475,18 @@ impl MirDiagnosticKind {
     /// CLI consumer renders an advisory as a `warning` and never counts it
     /// toward build failure. All other diagnostics stay hard `E_MIR_*` errors.
     ///
-    /// Only [`MirDiagnosticKind::ObligationUnderReleased`] is advisory. An
-    /// under-release is a resource LEAK, not a memory-safety violation, and the
-    /// lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
+    /// Only a non-hard [`MirDiagnosticKind::ObligationUnderReleased`] is
+    /// advisory. A legacy under-release is a resource LEAK, not a memory-safety
+    /// violation, and the lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
     /// has no un-forgeable defining-module provenance signal, so a per-function
     /// allowlist keyed on the mangled symbol is forgeable (the compiler mangles
     /// a user module `base64`'s `decode` to the same `base64$decode` a stdlib
     /// entry used). Rather than hard-gate every leak behind a forgeable
     /// allowlist — silently swallowing a genuine user leak that collides with a
-    /// tracked stdlib triple — the gate WARNS on every under-release and leaves
-    /// the build green. The tracked stdlib holes (semver/base64/generic-Vec-iter)
-    /// warn honestly on their own builds. Promoting under-release back to a
-    /// sound hard gate is the OWN-V1 follow-up: it needs frontend module
+    /// tracked stdlib triple — the gate WARNS on legacy single-mint holes and
+    /// leaves the build green. Missing release for a MIR-explicit retain is an
+    /// unforgeable ownership-balance failure and remains hard. Promoting the
+    /// remaining under-release cases to a sound hard gate needs frontend module
     /// provenance threaded into this gate so a stdlib site is distinguishable
     /// from a same-named user site.
     ///
@@ -7496,7 +7496,10 @@ impl MirDiagnosticKind {
     /// advisory.
     #[must_use]
     pub fn is_advisory(&self) -> bool {
-        matches!(self, MirDiagnosticKind::ObligationUnderReleased { .. })
+        matches!(
+            self,
+            MirDiagnosticKind::ObligationUnderReleased { hard: false, .. }
+        )
     }
 }
 
@@ -8473,9 +8476,9 @@ mod diagnostic_severity_tests {
     //! Severity classification of MIR diagnostics
     //! ([`MirDiagnosticKind::is_advisory`]) — the single source of truth every
     //! CLI consumer keys off. Pins the S1 obligation-balance severity split:
-    //! under-release (leak) is advisory (compile-time warning, build stays
-    //! green); over-release (double-free) and the fail-closed undecidability
-    //! verdict are blocking hard errors with no advisory escape.
+    //! legacy single-mint under-release is advisory (compile-time warning,
+    //! build stays green); explicit-retain under-release, over-release
+    //! (double-free), and the fail-closed undecidability verdict are blocking.
 
     use super::*;
 
@@ -8488,12 +8491,28 @@ mod diagnostic_severity_tests {
             function: "base64$decode".to_string(),
             block: 20,
             name: "out".to_string(),
+            hard: false,
             reason: "mint without discharge = leak".to_string(),
         };
         assert!(
             leak.is_advisory(),
             "under-release (leak) must be advisory — a compile-time warning that \
              does not fail the build"
+        );
+    }
+
+    #[test]
+    fn explicit_retain_leak_is_blocking() {
+        let leak = MirDiagnosticKind::ObligationUnderReleased {
+            function: "f".to_string(),
+            block: 1,
+            name: "shared".to_string(),
+            hard: true,
+            reason: "retained owner has no release".to_string(),
+        };
+        assert!(
+            !leak.is_advisory(),
+            "a MIR-explicit retain is an unforgeable mint and its missing release must fail hard"
         );
     }
 

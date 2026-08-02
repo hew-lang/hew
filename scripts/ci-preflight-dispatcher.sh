@@ -850,6 +850,8 @@ case "$LANE" in
         add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"
         add_command "make test"
+        add_command "make test-compiler-pipeline"
+        add_command "make test-opaque-resource-lifecycle-matrix-external"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
         add_command "make fuzz-oracle"

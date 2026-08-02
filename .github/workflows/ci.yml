@@ -475,7 +475,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
       - name: Install MQTT E2E clients
         if: env.RUN_CODE_PATH == 'true'

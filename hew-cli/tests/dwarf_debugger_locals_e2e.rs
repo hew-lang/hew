@@ -65,7 +65,9 @@ fn workspace() -> tempfile::TempDir {
 /// both run a script non-interactively.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(target_os = "linux")]
+    let candidates = ["gdb"];
+    #[cfg(target_os = "freebsd")]
     let candidates = ["gdb", "lldb"];
     #[cfg(target_os = "macos")]
     let candidates = ["lldb", "gdb"];
@@ -142,11 +144,13 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
 fn debugger_reads_shadowed_local_by_innermost_binding() {
     require_codegen();
     let dbg = debugger().unwrap_or_else(|| {
+        #[cfg(target_os = "linux")]
+        panic!("no gdb found on Linux CI; install the gdb package");
         #[cfg(target_os = "freebsd")]
         panic!(
             "no gdb or lldb found on FreeBSD CI; install the gdb package or LLVM's lldb package"
         );
-        #[cfg(not(target_os = "freebsd"))]
+        #[cfg(target_os = "macos")]
         {
             eprintln!("skip: no lldb/gdb on host");
             ""

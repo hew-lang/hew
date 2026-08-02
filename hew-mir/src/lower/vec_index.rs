@@ -179,10 +179,10 @@ impl Builder {
             self.finish_current_block(Terminator::Call {
                 callee: get_symbol.to_string(),
                 // Clone-out remains a direct-call interceptor: codegen owns
-                // its element-layout-dependent output slot. The typed family
-                // above chooses the call; it is not an `Instr::CallRuntimeAbi`
-                // builtin carrier.
-                builtin: None,
+                // its element-layout-dependent output slot. Carry the same
+                // typed family that selected the call so MIR consumers never
+                // have to recover ownership semantics from the C spelling.
+                builtin: Some(get_family),
                 args: vec![vec_place, index_place],
                 dest: Some(result_place),
                 next,

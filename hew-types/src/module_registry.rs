@@ -314,19 +314,31 @@ impl ModuleRegistry {
             .any(|(item, _)| matches!(item, Item::TypeDecl(decl) if decl.name == leaf))
     }
 
-    /// Check an exact imported source without relying on dependency load
-    /// order. Signature normalization may run before the importer's own
-    /// dependencies have entered the module cache.
-    fn exact_module_source_declares_type(&self, owner: &str, leaf: &str) -> bool {
+    /// Resolve the canonical owner of a type declared by an exact imported
+    /// source without relying on dependency load order. Signature
+    /// normalization may run before the importer's own dependencies have
+    /// entered the module cache. Returning the owner (rather than a boolean)
+    /// is essential for physical-path aliases such as
+    /// `std.channel.channel`: declaration proof and the identity it publishes
+    /// must come from the same selected source.
+    fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         if let Some(info) = self.modules.get(&module_id_from_identity(owner)) {
-            return Self::module_info_declares_type(info, leaf);
+            if !Self::module_info_declares_type(info, leaf) {
+                return None;
+            }
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            return Some(canonical_source_module_identity(owner, &source_paths));
         }
         let loader_path = module_id_from_identity(owner).path.join("::");
-        self.search_paths.iter().any(|search_path| {
-            load_module_checked(&loader_path, search_path)
+        self.search_paths.iter().find_map(|search_path| {
+            let info = load_module_checked(&loader_path, search_path)
                 .ok()
-                .flatten()
-                .is_some_and(|info| Self::module_info_declares_type(&info, leaf))
+                .flatten()?;
+            if !Self::module_info_declares_type(&info, leaf) {
+                return None;
+            }
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            Some(canonical_source_module_identity(owner, &source_paths))
         })
     }
 
@@ -624,11 +636,8 @@ impl ModuleRegistry {
                 return None;
             }
             let imported_owner = import.path.join(".");
-            if self.exact_module_source_declares_type(&imported_owner, leaf) {
-                Some(format!("{imported_owner}.{leaf}"))
-            } else {
-                None
-            }
+            self.exact_module_source_type_owner(&imported_owner, leaf)
+                .map(|canonical_owner| format!("{canonical_owner}.{leaf}"))
         })
     }
 
@@ -1135,6 +1144,72 @@ mod tests {
             reg.canonical_registry_signature_type_identity("regex.Pattern", "vendor.regex"),
             None,
             "a declaration loaded for one exact owner cannot authorize another"
+        );
+    }
+
+    #[test]
+    fn imported_registry_signature_uses_source_resolved_physical_alias_owner() {
+        let fixture = TestDir::new("registry-signature-channel-physical-alias");
+        fs::write(
+            fixture.root.join("signature_importer.hew"),
+            "import std::channel::channel as ch;\n",
+        )
+        .expect("write signature importer");
+
+        let mut search_paths = vec![fixture.root.clone()];
+        search_paths.push(test_root());
+        let mut reg = ModuleRegistry::new(search_paths);
+        reg.load("signature_importer")
+            .expect("load physical-alias importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
+            Some("std.channel.Sender".to_string()),
+            "the selected shipped source collapses its repeated physical basename"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Foreign", "signature_importer",),
+            None,
+            "an imported qualifier cannot authorize a type absent from that exact source"
+        );
+    }
+
+    #[test]
+    fn imported_registry_signature_user_lookalike_is_order_independent() {
+        let mut reg = registry();
+        reg.load("std::channel")
+            .expect("prime canonical shipped channel cache");
+
+        let fixture = TestDir::new("registry-signature-channel-user-lookalike");
+        let channel_dir = fixture.root.join("std/channel");
+        fs::create_dir_all(&channel_dir).expect("create user channel path");
+        fs::write(
+            channel_dir.join("channel.hew"),
+            "pub type Sender { marker: i64; }\n",
+        )
+        .expect("write user channel lookalike");
+        fs::write(
+            fixture.root.join("signature_importer.hew"),
+            "import std::channel::channel as ch;\n",
+        )
+        .expect("write user signature importer");
+
+        // Model a later importer with a different exact resolution context.
+        // The already-cached shipped canonical owner must not grant authority
+        // to this same-spelled user source or rewrite it back to std.channel.
+        reg.search_paths = vec![fixture.root.clone()];
+        reg.load("signature_importer")
+            .expect("load user-lookalike importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
+            Some("std.channel.channel.Sender".to_string()),
+            "the user source retains its nested nominal owner despite shipped-cache order"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Receiver", "signature_importer",),
+            None,
+            "the shipped Receiver declaration must not leak through the canonical cache"
         );
     }
 

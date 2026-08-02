@@ -21280,7 +21280,15 @@ impl LowerCtx {
                 && self.root_opaque_type_short_names.contains(&name));
         if let Some(builtin) = builtin {
             if !name.contains('.') || self.qualified_source_builtin(&name) == Some(builtin) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                // Preserve the checker-authored presentation identity. Runtime
+                // classification is carried exclusively by `builtin`; a
+                // renamed builtin must remain renamed across this boundary.
+                return ResolvedTy::Named {
+                    name,
+                    args,
+                    builtin: Some(builtin),
+                    is_opaque: false,
+                };
             }
             return ResolvedTy::named_user(name, args);
         }
@@ -21293,15 +21301,21 @@ impl LowerCtx {
             };
         }
         let canonical = self.canonical_current_module_record_name(&name);
-        if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
-        } else if canonical == name {
+        if canonical == name {
+            // The checker-authored builtin discriminator is authoritative.
+            // An unchanged `builtin: None` identity must not be reclassified
+            // through the spelling catalog: a user `Vec<T>` is not the
+            // runtime vector merely because its leaf name collides. Exact
+            // declaration-driven owner qualification below may still recover
+            // a canonical source builtin when `canonical != name`.
             ResolvedTy::Named {
                 name,
                 args,
                 builtin,
                 is_opaque,
             }
+        } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
         } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
             ResolvedTy::named_opaque(canonical, args)
         } else {

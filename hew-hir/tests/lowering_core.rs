@@ -21,6 +21,8 @@ mod for_in_hash_projection_types;
 mod gen_block_lowering;
 #[path = "lowering_core/impl_block_lowering.rs"]
 mod impl_block_lowering;
+#[path = "lowering_core/imported_iter_adapter_dispatch.rs"]
+mod imported_iter_adapter_dispatch;
 #[path = "lowering_core/index_trait_lowering.rs"]
 mod index_trait_lowering;
 #[path = "lowering_core/invalid_constructor_diagnostics.rs"]

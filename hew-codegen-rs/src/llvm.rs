@@ -3196,6 +3196,30 @@ pub(crate) fn resolve_ty<'ctx>(
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
+    if matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Location | BuiltinType::RemotePid),
+            ..
+        }
+    ) {
+        // `Location` and its phantom-typed `RemotePid<T>` view share the
+        // runtime's stable 32-byte C layout: node id (two i64 limbs), slot,
+        // incarnation, and reserved.  The carrier bit is the authority here;
+        // a user `RemotePid` remains a D10 rejection below.
+        return Ok(ctx
+            .struct_type(
+                &[
+                    ctx.i64_type().into(),
+                    ctx.i64_type().into(),
+                    ctx.i64_type().into(),
+                    ctx.i32_type().into(),
+                    ctx.i32_type().into(),
+                ],
+                false,
+            )
+            .into());
+    }
     if let ResolvedTy::Named {
         name,
         args,

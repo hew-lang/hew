@@ -6355,9 +6355,36 @@ impl Builder {
                 .get(&(func.id, i))
                 .copied()
                 == Some(true);
-            let param_is_owned_carrier =
-                self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
             let owned_ty = self.subst_ty(&param.ty);
+            // A generic Iterator parameter can specialise to the compiler's
+            // first-class `VecIter<T>` cursor.  Its sole release authority is
+            // the guarded cursor-field protocol (`scope_vec_iter_bindings`),
+            // not the generic owned-carrier snapshot/drop path: treating the
+            // synthetic cursor as a user record would later request an invalid
+            // `RecordInPlace` drop.  It still crosses the call boundary by
+            // value; only the callee-side cleanup representation is special.
+            let param_is_vec_iter_cursor = self.vec_iter_cursor_release_symbol(&owned_ty).is_some();
+            let param_is_owned_carrier = if param_is_vec_iter_cursor {
+                false
+            } else {
+                self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed)
+            };
+            if param_is_vec_iter_cursor && !self.vec_iter_drop_flags.contains_key(&param.id) {
+                let flag = self.alloc_local(ResolvedTy::I64);
+                self.vec_iter_drop_flags.insert(param.id, flag);
+                self.vec_iter_scope_owner_ledger
+                    .push((param.id, owned_ty.clone()));
+                self.scope_vec_iter_bindings
+                    .push((func.body.scope, param.id, owned_ty.clone()));
+                // A by-value parameter is the callee's cursor snapshot from
+                // entry. The caller's transfer preparation has already made
+                // the source unavailable on its executed path; this flag is
+                // the callee-side authority for normal and abandoning exits.
+                self.push_instr(Instr::ConstI64 {
+                    dest: flag,
+                    value: 0,
+                });
+            }
             if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
                 // Every dyn value that crosses the function ABI owns persistent
                 // heap-box storage: coercions transfer into a dyn box, dyn

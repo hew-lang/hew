@@ -2123,6 +2123,61 @@ mod tests {
     }
 
     #[test]
+    fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            r#"
+            actor Echo { receive fn handle(request: i64) -> i64 { request } }
+            impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
+            actor Client {
+                receive fn go(unused: i64) {
+                    let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                    match found {
+                        Ok(peer) => { let reply = peer.ask(7, 1000); },
+                        Err(_) => {},
+                    }
+                }
+            }
+            "#,
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("lookup fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("successful fixture has type output");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let mut pipeline = hew_mir::lower_hir_module(&hir.module);
+        pipeline.attach_lowering_facts(tco);
+        assert!(
+            !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_mir::MirDiagnosticKind::UnknownType { ref name } if name == "RemotePid"
+            )),
+            "RemotePid must retain its builtin discriminator through MIR: {:#?}",
+            pipeline.diagnostics
+        );
+        let codegen = hew_codegen_rs::validate_codegen_front(&pipeline);
+        assert!(
+            codegen.is_ok(),
+            "the full compiler boundary must accept RemotePid lookup output: {codegen:?}"
+        );
+    }
+
+    #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "the generic direct-symbol regression covers every module origin in one identity matrix"

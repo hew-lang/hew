@@ -327,8 +327,16 @@ impl Checker {
                 {
                     return Some(qualified);
                 }
+                // Registration scopes can retain a bare source-name seed
+                // while finalising an expression authored in a sibling
+                // module.  It is not authority for `{current_module}.{name}`
+                // unless that exact declaration exists; continue to the
+                // proven import/unique-owner paths below (for example
+                // `NetError` in `std.net.tls` resolves through its `net`
+                // binding to `std.net.NetError`).
+            } else {
+                return None;
             }
-            return None;
         }
         // Root expressions may carry a compiler builtin through a bare
         // source-facing declaration name (notably `LocalPid`).  Its builtin
@@ -372,10 +380,23 @@ impl Checker {
             .collect();
         owners.sort_unstable();
         owners.dedup();
-        match owners.as_slice() {
-            [only] => self
-                .canonical_nominal_name(only)
-                .or_else(|| Some((*only).clone())),
+        // Compatibility and canonical registrations can name the same source
+        // declaration (for example `net.NetError` and `std.net.NetError`).
+        // Collapse them through their already-proven owner bindings before
+        // deciding whether the bare leaf is ambiguous; counting those two
+        // spellings separately left a branch constructor bare while its join
+        // carried the canonical result owner.
+        let mut canonical_owners: Vec<String> = owners
+            .into_iter()
+            .map(|owner| {
+                self.canonical_nominal_name(owner)
+                    .unwrap_or_else(|| owner.clone())
+            })
+            .collect();
+        canonical_owners.sort_unstable();
+        canonical_owners.dedup();
+        match canonical_owners.as_slice() {
+            [only] => Some(only.clone()),
             _ => None,
         }
     }

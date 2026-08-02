@@ -1245,7 +1245,7 @@ fn seed_missing_boundary_facts(raw: &mut RawMirFunction) {
 
 fn mark_param_place(
     place: Place,
-    param_count: usize,
+    param_tys: &[ResolvedTy],
     state: RepresentationEffectState,
     effects: &mut [RepresentationEffectState],
 ) {
@@ -1255,7 +1255,13 @@ fn mark_param_place(
     let Ok(param_index) = usize::try_from(local) else {
         return;
     };
-    if param_index < param_count {
+    // The representation-loan ABI exists solely for inline `bytes` triples.
+    // A record/adapter parameter is passed as the callee's value snapshot, so
+    // mutating one of its fields is ordinary local state evolution, not a
+    // write through caller-visible representation storage. Treating every
+    // aggregate field store as an ABI mutation rejects valid `var self`
+    // iterator adapters after monomorphisation.
+    if matches!(param_tys.get(param_index), Some(ResolvedTy::Bytes)) {
         effects[param_index] = effects[param_index].max(state);
     }
 }
@@ -1316,7 +1322,7 @@ fn scan_function_representation_effects(
             for place in crate::dataflow::instr_interior_write_places(instr) {
                 mark_param_place(
                     place,
-                    param_count,
+                    &raw.params,
                     RepresentationEffectState::MayReplace,
                     &mut effects[function],
                 );
@@ -1698,6 +1704,32 @@ mod param_boundary_effect_tests {
                 function.name
             );
         }
+    }
+
+    #[test]
+    fn adapter_state_field_store_is_not_a_bytes_representation_loan() {
+        // `var self` adapters (Map/Filter/Take/Skip) update fields in their
+        // callee-owned aggregate snapshot and return that state through the
+        // ordinary var-self carrier. This must not be misclassified as the
+        // special pointer-ABI mutation reserved for inline `bytes` values.
+        let cursor = ResolvedTy::named_user("Cursor", Vec::new());
+        let mut raw = vec![raw_function(
+            "adapter_next",
+            FunctionCallConv::Default,
+            vec![Instr::RecordFieldStore {
+                record: Place::Local(0),
+                field_offset: crate::model::FieldOffset(0),
+                src: Place::Local(1),
+            }],
+            Terminator::Return,
+        )];
+        raw[0].params = vec![cursor.clone()];
+        raw[0].locals = vec![cursor.clone(), ResolvedTy::I64];
+        raw[0].decisions[0].ty = cursor;
+
+        finalize(&mut raw);
+
+        assert_eq!(mode(&raw[0]), ParamBoundaryMode::BorrowReadOnly);
     }
 
     #[test]

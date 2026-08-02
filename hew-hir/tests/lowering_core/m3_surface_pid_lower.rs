@@ -258,3 +258,26 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         lower.module.enum_layouts
     );
 }
+
+#[test]
+fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
+    let source = r#"
+        actor Echo { receive fn handle(request: i64) -> i64 { request } }
+        impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
+        actor Client {
+            receive fn go(unused: i64) {
+                let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                match found {
+                    Ok(peer) => { let reply = peer.ask(7, 1000); },
+                    Err(_) => {},
+                }
+            }
+        }
+    "#;
+    let (_tc, lower) = lower_with_types(source);
+    assert!(
+        lower.diagnostics.is_empty(),
+        "RemotePid lookup annotation must lower cleanly: {:#?}",
+        lower.diagnostics
+    );
+}

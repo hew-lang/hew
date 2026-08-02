@@ -670,6 +670,14 @@ impl Builder {
         let ProducedValueOwnership::Owned { acquisition } = fact.ownership else {
             return;
         };
+        // Linear values are accounted for by the binding move checker, which
+        // carries the MustConsume obligation across consuming-method calls.
+        // A second synthetic scope owner has no corresponding consume edge and
+        // therefore turns a valid `let tx = Tx { .. }; tx.commit()` into an
+        // impossible extra obligation.
+        if ValueClass::of_ty(&expected_ty, &self.type_classes) == ValueClass::Linear {
+            return;
+        }
         // A move-out is not a newly produced allocation. Its source owner is
         // transferred by the projection/container lowering seam, which owns
         // the move-aware drop flags and aggregate-extraction proof. Minting a

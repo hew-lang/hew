@@ -10,6 +10,8 @@ use hew_types::{BuiltinType, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
         caller_visible_param_projections: std::collections::HashSet::new(),

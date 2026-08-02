@@ -4001,9 +4001,22 @@ impl Builder {
                 None
             };
 
-        // Lower the scrutinee in the entry block. A failure propagates
-        // via `?`; the half-built match leaves no dangling block.
-        let scrutinee_place = self.lower_value(scrutinee)?;
+        // Recv/generator/iterator-next matches have specialised per-arm
+        // release authority for the ephemeral result shell/payload. Do not
+        // also mint the generic typed-publication owner for that same
+        // generation while lowering the scrutinee.
+        let specialised_scrutinee_owner =
+            generator_next_scrutinee || recv_next_scrutinee || vec_iter_next_scrutinee;
+        if specialised_scrutinee_owner {
+            self.suppress_typed_produced_owner_sites
+                .insert(scrutinee.site);
+        }
+        // Lower the scrutinee in the entry block. A failure propagates via `?`;
+        // the half-built match leaves no dangling block.
+        let scrutinee_place = self.lower_value(scrutinee);
+        self.suppress_typed_produced_owner_sites
+            .remove(&scrutinee.site);
+        let scrutinee_place = scrutinee_place?;
         let scrutinee_local = match scrutinee_place {
             Place::Local(n) => n,
             other => {
@@ -4059,7 +4072,7 @@ impl Builder {
                         ty: owner.ty,
                         partial_projection: true,
                     });
-                    self.register_synthetic_owned_local(
+                    self.adopt_synthetic_owned_local(
                         SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
                         scrutinee.site,
                         scrutinee_local,
@@ -4595,7 +4608,7 @@ impl Builder {
                     let local = base_local(dest).expect(
                         "alloc_local must produce a Local place for active-variant payload ownership",
                     );
-                    let binding = self.register_synthetic_owned_local(
+                    let binding = self.adopt_synthetic_owned_local(
                         "__hew_active_variant_payload",
                         arm.body.site,
                         local,

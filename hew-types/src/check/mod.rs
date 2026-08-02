@@ -52,9 +52,8 @@ use self::types::{
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingDirectCallOwnership,
-    PendingLoweringFact, PendingMethodCallOwnership, ProducedValueDependency,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
-    WasmUnsupportedFeature,
+    PendingLoweringFact, PendingMethodCallOwnership, SourceExternDeclaration,
+    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope, WasmUnsupportedFeature,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -67,10 +66,10 @@ pub use self::types::{
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
-    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint,
+    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -116,11 +115,13 @@ fn resolve_produced_node(
         return ProducedValueFact::result(Ownership::Unknown);
     }
     let mut fact = match dependencies.get(key) {
-        None => leaves
+        None | Some(ProducedValueDependency::Leaf) => leaves
             .get(key)
             .cloned()
             .unwrap_or_else(|| ProducedValueFact::result(Ownership::Unknown)),
-        Some(ProducedValueDependency::Identity(child)) => {
+        Some(
+            ProducedValueDependency::Identity(child) | ProducedValueDependency::Subsumes(child),
+        ) => {
             let child = resolve_produced_node(
                 child,
                 dependencies,
@@ -979,10 +980,26 @@ impl Checker {
             finalized.insert(key.clone(), fact);
         }
         let produced_value_ownership = finalized;
+        // The carrier is deliberately total: downstream lowering must not
+        // interpret absence from a sparse implementation map as permission to
+        // invent provenance.  A checker-authored expression with no edge is a
+        // structural leaf, not an omitted fact.
+        let produced_value_dependencies = resolved_expr_types
+            .keys()
+            .cloned()
+            .map(|key| {
+                let dependency = self
+                    .produced_value_dependencies
+                    .remove(&key)
+                    .unwrap_or(ProducedValueDependency::Leaf);
+                (key, dependency)
+            })
+            .collect();
 
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             produced_value_ownership,
+            produced_value_dependencies,
             caller_visible_param_projections: std::mem::take(
                 &mut self.caller_visible_param_projections,
             ),
@@ -1117,7 +1134,9 @@ impl Checker {
 
         fn children(dependency: &ProducedValueDependency) -> &[SpanKey] {
             match dependency {
+                ProducedValueDependency::Leaf => &[],
                 ProducedValueDependency::Identity(child)
+                | ProducedValueDependency::Subsumes(child)
                 | ProducedValueDependency::MoveOut(child)
                 | ProducedValueDependency::Projection(child) => std::slice::from_ref(child),
                 ProducedValueDependency::Join(children) => children,
@@ -1200,6 +1219,42 @@ impl Checker {
                     findings.push((parent.clone(), detail));
                 }
             }
+            if let ProducedValueDependency::Identity(child) = dependency {
+                if let (Some(parent_ty), Some(child_ty)) =
+                    (expr_types.get(parent), expr_types.get(child))
+                {
+                    // Tail `Ok` coercion is a recorded materialization boundary: HIR
+                    // wraps this payload child before validating the identity edge.
+                    if parent_ty != child_ty && !self.tail_ok_coercions.contains(child) {
+                        invalid.insert(parent.clone());
+                        findings.push((
+                            parent.clone(),
+                            format!(
+                                "identity dependency changes type from {child_ty:?} to {parent_ty:?}"
+                            ),
+                        ));
+                    }
+                }
+            }
+            if let ProducedValueDependency::Join(children) = dependency {
+                if let Some(parent_ty) = expr_types.get(parent) {
+                    for child in children {
+                        if let Some(child_ty) = expr_types.get(child) {
+                            // As above, marked children acquire the parent `Result`
+                            // type when the HIR wrapper is materialized.
+                            if child_ty != parent_ty && !self.tail_ok_coercions.contains(child) {
+                                invalid.insert(parent.clone());
+                                findings.push((
+                                    parent.clone(),
+                                    format!(
+                                        "join dependency child {child:?} changes type from {child_ty:?} to {parent_ty:?}"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         let mut states = HashMap::new();
@@ -1232,6 +1287,7 @@ impl Checker {
                         receiver.module_idx == key.module_idx
                             && expr_types.contains_key(receiver)
                             && leaves.contains_key(receiver)
+                            && expr_types.get(receiver) == expr_types.get(key)
                     });
                 if !valid_anchor {
                     invalid.insert(key.clone());

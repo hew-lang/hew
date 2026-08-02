@@ -2973,7 +2973,10 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {

@@ -1526,10 +1526,19 @@ impl Builder {
                             .insert(value.site, (source, binding.id));
                     }
                 }
-                let diag_len_before_value = self.diagnostics.len();
-                let value_place = self.lower_let_value(binding.id, value);
                 let is_for_await_handle_cursor = ty_is_stream_handle(&binding_ty)
                     && binding.name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX);
+                if is_for_await_handle_cursor {
+                    // The desugared cursor's owner is bound below, after its
+                    // destination slot and lexical scope are known. Do not
+                    // also mint a provisional owner for the RHS transient:
+                    // that would turn the one move into two live Stream
+                    // owners and make aggregate extraction fail closed.
+                    self.suppress_typed_produced_owner_sites.insert(value.site);
+                }
+                let diag_len_before_value = self.diagnostics.len();
+                let value_place = self.lower_let_value(binding.id, value);
+                self.suppress_typed_produced_owner_sites.remove(&value.site);
                 // Record only the desugar's explicit consuming rebind. The
                 // later backend `Move` below verifies that this HIR source and
                 // the synthetic cursor really share the whole-value hand-off.
@@ -1895,6 +1904,7 @@ impl Builder {
                             );
                         }
                     }
+                    self.retire_provisional_owner_for_bound_value(binding.id, src);
                 }
                 // #1933 / #1941 — allocate the path-sensitive drop-flag for a
                 // non-idempotent user `#[resource]` binding now that its backend
@@ -1967,6 +1977,7 @@ impl Builder {
                 // protected by the per-entry escape scan — the ReturnSlot
                 // Move above marks the value caller-owned.
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                self.record_active_iteration_owner_drops_for_exit_edge(0);
                 self.emit_stream_drops_for_exit_edge(0);
                 // Release every `for x in …` snapshot cursor this return
                 // abandons (`emit_vec_iter_drops_for_exit_edge`); the lexical
@@ -1993,6 +2004,7 @@ impl Builder {
                 // Release the current iteration's yielded value(s) on this
                 // return edge — same discipline as Return(Some) above.
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                self.record_active_iteration_owner_drops_for_exit_edge(0);
                 self.emit_stream_drops_for_exit_edge(0);
                 // Same cursor exit-edge release as Return(Some) above.
                 self.emit_vec_iter_drops_for_exit_edge(0);
@@ -2472,6 +2484,14 @@ impl Builder {
                         target.site,
                         self.subst_ty(&target.ty),
                     );
+                    // Assignment moves the RHS generation into an already-owned
+                    // destination slot. If typed publication provisionally
+                    // adopted the RHS temp, retire that exact source-place owner
+                    // now; the destination binding remains the sole authority
+                    // whose drop plan fans out across exits.
+                    self.retire_provisional_owner_after_assignment_move(
+                        *binding, dest, &target.ty, src, &value.ty,
+                    );
                 } else if let Some(source) = self.capture_env_sources.get(binding).cloned() {
                     // #1′ BorrowMut write-back: the assignment target is a
                     // captured `var` reassigned inside the closure body
@@ -2701,7 +2721,110 @@ impl Builder {
         reason = "single large match on HirExprKind variants; each arm is a fail-closed \
                   boundary rule and splitting would obscure the exhaustiveness requirement"
     )]
+    /// The one publication boundary for expression results. Recursive lowering
+    /// returns here before a parent advances to its next argument or field.
     pub(crate) fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
+        let value = self.lower_value_inner(expr);
+        if let Some(place) = value {
+            // Specialised HIR rewrites retain consumed checker children as
+            // non-evaluated source anchors. Publish those source occurrences to
+            // the specialised operation's one result place before adopting the
+            // parent row, so relation/receiver edges can resolve without either
+            // a self-edge or duplicate evaluation.
+            match &expr.kind {
+                HirExprKind::ActorAsk {
+                    source_anchor: Some(anchor),
+                    ..
+                } => self.publish_produced_value_source_anchor(expr, anchor, place),
+                HirExprKind::ConnAwaitRead { source_anchor, .. }
+                | HirExprKind::ListenerAwaitAccept { source_anchor, .. } => {
+                    self.publish_produced_value_source_anchor(expr, source_anchor, place);
+                }
+                HirExprKind::MachineFieldAccess {
+                    source_anchor: Some(anchor),
+                    ..
+                } => {
+                    if let Some(binding) = self.current_machine_self_binding {
+                        if let Some(source_place) = self.binding_locals.get(&binding).copied() {
+                            self.published_value_places
+                                .insert(anchor.site, source_place);
+                        }
+                    }
+                }
+                HirExprKind::MachineEventFieldAccess {
+                    source_anchor: Some(anchor),
+                    ..
+                } => {
+                    if let Some(binding) = self.current_machine_event_binding {
+                        if let Some(source_place) = self.binding_locals.get(&binding).copied() {
+                            self.published_value_places
+                                .insert(anchor.site, source_place);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            self.published_value_places.insert(expr.site, place);
+            if !self
+                .suppress_typed_produced_owner_sites
+                .contains(&expr.site)
+            {
+                self.adopt_typed_produced_value_owner(expr, place);
+            }
+        }
+        value
+    }
+
+    fn publish_produced_value_source_anchor(
+        &mut self,
+        specialised: &HirExpr,
+        anchor: &hew_hir::HirProducedValueSourceAnchor,
+        place: Place,
+    ) {
+        if self
+            .param_ownership
+            .produced_value_facts
+            .get(&specialised.site)
+            .is_some_and(|fact| {
+                matches!(fact.relation, hew_hir::HirProducedValueRelation::Subsumes(source) if source == anchor.site)
+            })
+        {
+            // Subsumed anchors are provenance-only structural occurrences.
+            // Publishing them would fabricate an independently materialized
+            // child generation over the parent's storage.
+            return;
+        }
+        self.published_value_places.insert(anchor.site, place);
+        let anchor_ty = self.subst_ty(&anchor.ty);
+        let place_ty = match place {
+            Place::Local(local) => self.locals.get(local as usize),
+            _ => None,
+        };
+        // Source anchors preserve a consumed checker occurrence.  They are
+        // executable ownership publications only when the specialised result
+        // reuses type-congruent storage; a wrapper such as `R` ->
+        // `Result<R, AskError>` is owned solely by the outer specialised node.
+        if place_ty.is_some_and(|place_ty| place_ty != &anchor_ty) {
+            return;
+        }
+        let mut source = specialised.clone();
+        source.node = anchor.node;
+        source.site = anchor.site;
+        source.ty = anchor.ty.clone();
+        source.value_class = anchor.value_class;
+        source.intent = anchor.intent;
+        source.span = anchor.span.clone();
+        self.adopt_typed_produced_value_owner(&source, place);
+        if let Some(nested) = &anchor.source {
+            self.publish_produced_value_source_anchor(&source, nested, place);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive lowering dispatch keeps fail-closed HIR coverage visible"
+    )]
+    fn lower_value_inner(&mut self, expr: &HirExpr) -> Option<Place> {
         self.decide(expr);
         // Static-pool accessor intercept: `sup.pool[i]` / `.get(i)` / `.len()`.
         // The checker recorded the resolved accessor keyed by this expr's site;
@@ -4654,6 +4777,7 @@ impl Builder {
                 args,
                 task_ty,
                 bound,
+                source_anchor: _,
             } => self.lower_spawned_call_task(callee, args, task_ty, *bound, expr.site),
             HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
             HirExprKind::ScopeDeadline { duration, body } => {
@@ -4663,6 +4787,7 @@ impl Builder {
                 binding_name,
                 binding_id,
                 output_ty,
+                ..
             } => self.lower_await_task(binding_name, *binding_id, output_ty, expr.site),
             HirExprKind::AwaitRestart { child } => {
                 self.lower_await_restart(child, &expr.ty, expr.site)
@@ -4706,6 +4831,7 @@ impl Builder {
                 args,
                 reply_ty,
                 deadline_ns,
+                ..
             } => self.lower_actor_ask(receiver, method_id, args, reply_ty, *deadline_ns, expr),
             HirExprKind::ActorGenStream {
                 receiver,
@@ -4716,10 +4842,12 @@ impl Builder {
                 conn,
                 to_string,
                 deadline_ns,
+                ..
             } => self.lower_conn_await_read(conn, *to_string, *deadline_ns, expr),
             HirExprKind::ListenerAwaitAccept {
                 listener,
                 deadline_ns,
+                ..
             } => self.lower_listener_await_accept(listener, *deadline_ns, expr),
             HirExprKind::ChannelRecvAwait {
                 receiver,
@@ -5839,6 +5967,7 @@ impl Builder {
                 state_idx,
                 field_idx,
                 field_name,
+                ..
             } => {
                 // Load a payload field from the `self` machine binding
                 // dominated by the transition's source state. The HIR has
@@ -5912,6 +6041,7 @@ impl Builder {
                 event_idx,
                 field_idx,
                 field_name,
+                ..
             } => {
                 let Some(event_binding) = self.current_machine_event_binding else {
                     self.diagnostics.push(MirDiagnostic {
@@ -6269,6 +6399,11 @@ impl Builder {
                 // return (`cleanup-all-exits`; the per-entry escape scan
                 // keeps a `return v` caller-owned).
                 self.emit_generator_yield_value_drops_for_exit_edge(0);
+                // A while-let call scrutinee is an active, path-local
+                // generation.  Returning from the body bypasses its normal
+                // back-edge/false-edge release, so consume that exact owner on
+                // this exit edge before sealing the block.
+                self.record_active_iteration_owner_drops_for_exit_edge(0);
                 self.emit_stream_drops_for_exit_edge(0);
                 // Release every `for x in …` snapshot cursor this return
                 // abandons — same discipline as the statement-position return.
@@ -6427,6 +6562,7 @@ impl Builder {
             HirExprKind::Yield { value, yield_ty: _ } => {
                 self.lower_yield_expr(expr, value.as_deref())
             }
+            HirExprKind::SubsumedValue { source, .. } => self.lower_value_inner(source),
             // Deep-clone a user record via the synthesised thunk pair.
             // See `Instr::RecordCloneInplace` for the full protocol.
             HirExprKind::RecordCloneCall {
@@ -8560,7 +8696,7 @@ impl Builder {
             } else {
                 self.owner_warrant_for_admitted_temp(arg)
             };
-            let binding = self.register_synthetic_owned_local(
+            let binding = self.adopt_synthetic_owned_local(
                 SYNTHETIC_TEMP_ARG_NAME,
                 arg.site,
                 local,
@@ -8984,9 +9120,10 @@ impl Builder {
         self.lower_bytes_unit_result(context)
     }
 
-    /// Emit `hew_bytes_pop(&mut BytesTriple) -> i64` for `bytes.pop()`.
+    /// Emit `hew_bytes_pop(&mut BytesTriple) -> i64` for `bytes.pop()`, then
+    /// narrow the ABI result to Hew's checker-authored `u8` result type.
     ///
-    /// Returns the popped byte as an i64 dest when a value is needed; codegen
+    /// Returns the popped byte as a u8 dest when a value is needed; codegen
     /// passes the receiver alloca address so the runtime writes back the
     /// shrunken triple. An empty buffer fails closed in the runtime (the spec
     /// `pop` signature has no Option). The receiver is BORROWED — listed in
@@ -9011,10 +9148,20 @@ impl Builder {
             return None;
         }
         let buf = self.lower_value(&hir_args[0])?;
-        let dest =
-            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I64));
-        self.push_runtime_call("hew_bytes_pop", vec![buf], dest);
-        dest
+        if context != RuntimeCallContext::ValueNeeded {
+            self.push_runtime_call("hew_bytes_pop", vec![buf], None);
+            return None;
+        }
+        let abi_result = self.alloc_local(ResolvedTy::I64);
+        self.push_runtime_call("hew_bytes_pop", vec![buf], Some(abi_result));
+        let result = self.alloc_local(ResolvedTy::U8);
+        self.push_instr(Instr::NumericCast {
+            dest: result,
+            src: abi_result,
+            from_ty: ResolvedTy::I64,
+            to_ty: ResolvedTy::U8,
+        });
+        Some(result)
     }
 
     /// Emit `hew_bytes_set(&mut BytesTriple, index, byte)` for `bytes.set(i, b)`.

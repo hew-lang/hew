@@ -135,6 +135,8 @@ fn constructed_affine_collection_call(
             is_generator: false,
             intrinsic_id: None,
         })],
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::new(),
         diagnostic_source_modules: HashMap::new(),
         root_item_ids: std::collections::HashSet::new(),
         caller_visible_param_projections: std::collections::HashSet::new(),

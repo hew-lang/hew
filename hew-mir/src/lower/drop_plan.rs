@@ -1499,10 +1499,11 @@ pub(super) fn elaborate(
     );
 
     for (exit, plan) in &mut drop_plans {
-        let ExitPath::Goto { block, .. } = exit else {
-            continue;
+        let block = match exit {
+            ExitPath::Goto { block, .. } | ExitPath::Return { block } => *block,
+            _ => continue,
         };
-        let Some(bindings) = builder.iteration_owner_drop_blocks.get(block) else {
+        let Some(bindings) = builder.iteration_owner_drop_blocks.get(&block) else {
             continue;
         };
         for binding in bindings {
@@ -8477,6 +8478,22 @@ mod drop_admission_type_shape_pins {
              seed decisions route through `binding_seeds_drop_elaboration`, \
              never an inline class test — classify any change to this \
              population in the allowlist above deliberately"
+        );
+    }
+
+    #[test]
+    fn seed_fact_comparison_inventory_rejects_a_raw_counterfactual() {
+        let squeezed: String = production_source()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let baseline = squeezed.matches("!=ValueClass::BitCopy").count();
+        let counterfactual = format!("{squeezed}ifraw!=ValueClass::BitCopy{{}}");
+        assert_eq!(baseline, 3, "the production inventory changed unexpectedly");
+        assert_ne!(
+            counterfactual.matches("!=ValueClass::BitCopy").count(),
+            baseline,
+            "a newly introduced raw seed comparison must make the inventory red"
         );
     }
 }

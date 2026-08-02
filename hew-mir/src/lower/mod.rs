@@ -18,15 +18,16 @@ use hew_hir::stdlib_catalog;
 use hew_hir::{
     named_type_names, BindingId, HirActorDecl, HirBinding, HirBlock, HirConstValue, HirExpr,
     HirExprKind, HirFn, HirItem, HirJoin, HirLifecycleHookKind, HirLiteral, HirMachineDecl,
-    HirMachineTransition, HirModule, HirNodeId, HirSelect, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirVarSelfMethodTarget, IntentKind, ResolvedRef,
-    ResourceMarker, ScopeId, SiteId, ValueClass,
+    HirMachineTransition, HirModule, HirNodeId, HirProducedValueFact, HirProducedValueRelation,
+    HirSelect, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirVarSelfMethodTarget, IntentKind, ResolvedRef, ResourceMarker, ScopeId, SiteId, ValueClass,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
-    NumericMethodOp, NumericSignedness, ResolvedTy,
+    NumericMethodOp, NumericSignedness, ProducedValueAcquisition, ProducedValueOwnership,
+    ResolvedTy,
 };
 
 use crate::dataflow;
@@ -602,6 +603,27 @@ struct Builder {
     /// descending per-function range that stays clear of both the fixed
     /// `u32::MAX ..= u32::MAX - 4` sentinels and real HIR binding ids.
     pub(crate) synthetic_owned_temp_bindings: u32,
+    /// Producer `SiteId` attached to each synthetic owner generation. This is
+    /// identity metadata for the existing owner ledger—not a second cleanup
+    /// registry—and rejects a future rewrite of one local as a different
+    /// owned publication unless that rewrite has explicitly retired the old
+    /// generation first.
+    synthetic_owner_publication_sites: HashMap<BindingId, SiteId>,
+    /// Synthetic generations minted directly by the checker/HIR produced-value
+    /// carrier.  Post-CFG inline releases consume only this subset; legacy
+    /// sink owners keep their existing release protocol.
+    typed_produced_value_owner_bindings: HashSet<BindingId>,
+    /// Exact successful expression publication places, keyed by HIR `SiteId`.
+    /// This is identity-only metadata used for receiver-owner transfer; it
+    /// neither schedules nor owns cleanup.
+    published_value_places: HashMap<SiteId, Place>,
+    /// Narrow lowering context for the `for await` desugar's cursor
+    /// initializer. Its existing cursor owner is recorded after the `let`
+    /// bind, once the destination scope is known; publishing a second generic
+    /// owner for the transient source local would duplicate that authority.
+    /// This is not a cleanup registry: it contains only the currently-lowered
+    /// expression `SiteId` and is removed immediately after lowering.
+    suppress_typed_produced_owner_sites: HashSet<SiteId>,
     /// Fresh composite clone results emitted by `lower_vec_index`. A direct
     /// record projection consumes its matching local once and mints the owner.
     pub(crate) fresh_vec_get_clone_projection_bases: Vec<FreshVecGetCloneProjectionBase>,
@@ -3281,12 +3303,16 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // least-fixpoint, keyed by origin `ItemId` so monomorphisations share one
     // verdict) and threaded into every body-lowering builder. `Rc` so child
     // builders share it without re-cloning.
-    let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(compute_param_ownership(
+    let mut param_ownership = compute_param_ownership(
         &origin_fns,
         &module.items,
         &module.type_classes,
         &module.caller_visible_param_projections,
-    ));
+    );
+    param_ownership
+        .produced_value_facts
+        .clone_from(&module.produced_value_facts);
+    let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(param_ownership);
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
@@ -3858,6 +3884,10 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
 /// [`compute_param_ownership`].
 #[derive(Debug, Default)]
 pub(crate) struct ParamOwnershipFacts {
+    /// Typed ownership facts keyed by the stable HIR producer `SiteId`.  This
+    /// travels with the existing module-wide ownership authority so every MIR
+    /// Builder consults the checker carrier, never a target symbol spelling.
+    produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
     /// `(origin fn ItemId, param index) -> true` iff that affine `#[resource]`
     /// parameter is CONSUMED — callers move it in, the callee owns it and either
     /// drops it at scope exit or forwards it onward. `false` = BORROW — callers
@@ -5314,11 +5344,27 @@ pub(crate) fn lower_function(
     // observes each inline drop as a read of its temp and codegen emits the
     // release. Fail-closed: only provably fresh, borrow-only/discarded,
     // single-predecessor-dominated temps earn an inline `hew_string_drop`.
+    // Synthetic typed-publication bindings are candidates for this exact
+    // nested-temp last-use derivation, so omit them from the map of persistent
+    // binding locals. When it materialises an inline release,
+    // `consume_typed_publication_owners_at_inline_release` below retires that
+    // generation from scope-exit ownership. Named bindings remain in the map
+    // and can never be mistaken for anonymous expression temporaries.
+    let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
+        .binding_locals
+        .iter()
+        .filter(|(binding, _)| {
+            !builder
+                .synthetic_owner_publication_sites
+                .contains_key(binding)
+        })
+        .map(|(binding, place)| (*binding, *place))
+        .collect();
     apply_nested_fresh_string_temp_drops(
         &mut blocks,
         &mut builder.suspend_kinds,
         &builder.locals,
-        &builder.binding_locals,
+        &nested_temp_binding_locals,
         &builder
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
@@ -5333,9 +5379,14 @@ pub(crate) fn lower_function(
         &mut blocks,
         &builder.suspend_kinds,
         &builder.locals,
-        &builder.binding_locals,
+        &nested_temp_binding_locals,
         &mut builder.instr_spans,
     );
+    // Inline string/bytes releases consume the exact typed-publication
+    // generation for their local.  This keeps concat/f-string and bytes
+    // temporaries on the checker-owned carrier without a second scope-exit
+    // drop authority, while persistent publications remain ledger-owned.
+    builder.consume_typed_publication_owners_at_inline_release(&blocks);
     finalize_string_local_share_intents(&mut blocks, &mut builder);
     // The scope-exit-live owned-locals view, materialised once for the
     // escaped-sibling emitter and the double-free gate below — the same

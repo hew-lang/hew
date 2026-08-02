@@ -4,12 +4,13 @@ use super::{
     hir_expr_contains_synthetic_vec_get_clone, machine_layout_name_matches, mangle_layout_key,
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
-    vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
+    vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
     FieldOffset, FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place,
-    PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
+    HirExprKind, HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnerMintWarrant,
+    OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, ProducedValueAcquisition,
+    ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
     Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
     SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
@@ -405,12 +406,34 @@ impl Builder {
         if warrant.withholds_mint() {
             return;
         }
-        let place = self
-            .binding_locals
-            .get(&binding)
-            .copied()
-            .unwrap_or(Place::Local(0));
+        let bound_place = self.binding_locals.get(&binding).copied();
+        let place = bound_place.unwrap_or(Place::Local(0));
         let ownership = ValueOwnership::classify(&ty, place, &self.ownership_ctx());
+        if let Some(index) = bound_place.and_then(|bound_place| {
+            self.owned_locals.iter().position(|entry| {
+                entry.binding != binding
+                    && self.binding_locals.get(&entry.binding) == Some(&bound_place)
+                    && self
+                        .synthetic_owner_publication_sites
+                        .contains_key(&entry.binding)
+            })
+        }) {
+            // A named binding is adopting the provisional publication owner;
+            // replace the ledger identity in place so there is still exactly
+            // one cleanup authority for the local.
+            let prior = self.owned_locals[index].binding;
+            self.synthetic_owner_publication_sites.remove(&prior);
+            self.typed_produced_value_owner_bindings.remove(&prior);
+            self.owned_locals[index] = OwnedLocalEntry {
+                binding,
+                name,
+                ty,
+                ownership,
+                provenance: None,
+                disposition: Disposition::ScopeExit,
+            };
+            return;
+        }
         self.owned_locals.push(OwnedLocalEntry {
             binding,
             name,
@@ -420,7 +443,11 @@ impl Builder {
             disposition: Disposition::ScopeExit,
         });
     }
-    pub(crate) fn register_synthetic_owned_local(
+    /// Central generation-aware synthetic-owner adoption. A MIR local is never
+    /// allocated twice within one function; if an old sink reaches a result
+    /// already adopted at publication, it receives that same owner rather than
+    /// adding a second cleanup entry.
+    pub(crate) fn adopt_synthetic_owned_local(
         &mut self,
         name: &'static str,
         site: SiteId,
@@ -428,14 +455,368 @@ impl Builder {
         ty: ResolvedTy,
         warrant: OwnerMintWarrant,
     ) -> BindingId {
+        if let Some(existing) = self.owned_locals.iter().find_map(|entry| {
+            (self.binding_locals.get(&entry.binding) == Some(&Place::Local(local)))
+                .then_some(entry.binding)
+        }) {
+            if self.synthetic_owner_publication_sites.get(&existing) == Some(&site) {
+                // The typed publication got here first.  A specialised legacy
+                // sink is still the authority for its drop-plan shape, so keep
+                // its structural name while preserving the one owner entry.
+                if let Some(entry) = self
+                    .owned_locals
+                    .iter_mut()
+                    .find(|entry| entry.binding == existing)
+                {
+                    entry.name = name.to_string();
+                }
+                // The first adopter emitted the raw Bind statement.  A later
+                // specialised sink owns the drop-plan shape, so reflect that
+                // same generation's structural role in the checker stream as
+                // well—without adding a second binding or inferring a match
+                // from a SiteId coincidence.
+                for statement in &mut self.statements {
+                    if let MirStatement::Bind {
+                        binding,
+                        name: existing_name,
+                        ..
+                    } = statement
+                    {
+                        if *binding == existing {
+                            *existing_name = name.to_string();
+                        }
+                    }
+                }
+                return existing;
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "owned result rewrote a live provisional owner local".to_string(),
+                    site,
+                },
+                note: format!(
+                    "Local({local}) still belongs to synthetic owner {existing:?}; retire or \
+                     transfer that generation before publishing a new owned result"
+                ),
+            });
+            return existing;
+        }
         let binding =
             BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - self.synthetic_owned_temp_bindings);
         self.synthetic_owned_temp_bindings += 1;
         self.push_bind_statement(binding, name.to_string(), site, ty.clone());
         self.binding_locals.insert(binding, Place::Local(local));
+        self.synthetic_owner_publication_sites.insert(binding, site);
         self.record_binding_scope(binding);
         self.register_owned_local(binding, name.to_string(), ty, warrant);
         binding
+    }
+
+    /// A `let` binder is registered before its backend destination local is
+    /// wired.  If its initializer was already adopted at the typed publication
+    /// boundary, retire that provisional source owner once the ordinary binder
+    /// owner has its destination.  The binder's existing ledger entry remains
+    /// the sole `ElabDrop` authority; this only removes the moved-from temporary.
+    pub(crate) fn retire_provisional_owner_for_bound_value(
+        &mut self,
+        binding: BindingId,
+        source: Place,
+    ) {
+        if !self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding)
+        {
+            return;
+        }
+        let Some(index) = self.owned_locals.iter().position(|entry| {
+            entry.binding != binding
+                && self.binding_locals.get(&entry.binding) == Some(&source)
+                && self
+                    .synthetic_owner_publication_sites
+                    .contains_key(&entry.binding)
+        }) else {
+            return;
+        };
+        let provisional = self.owned_locals.remove(index).binding;
+        self.synthetic_owner_publication_sites.remove(&provisional);
+        self.typed_produced_value_owner_bindings
+            .remove(&provisional);
+    }
+
+    /// Retire a typed-publication temporary after an assignment has emitted an
+    /// exact whole-value `Move` into an existing binding slot.  Unlike the
+    /// `let` adoption seam above, assignment may run before projection/drop
+    /// derivation has admitted the destination binding to `owned_locals`; the
+    /// move itself is the transfer proof, so destination-ledger membership is
+    /// deliberately not a prerequisite.
+    pub(crate) fn retire_provisional_owner_after_assignment_move(
+        &mut self,
+        binding: BindingId,
+        dest: Place,
+        target_ty: &ResolvedTy,
+        source: Place,
+        source_ty: &ResolvedTy,
+    ) {
+        if self.binding_locals.get(&binding) != Some(&dest) {
+            return;
+        }
+        let target_ty = self.subst_ty(target_ty);
+        let source_ty = self.subst_ty(source_ty);
+        if target_ty != source_ty {
+            return;
+        }
+        let Some(index) = self.owned_locals.iter().position(|entry| {
+            entry.binding != binding
+                && entry.ty == source_ty
+                && self.binding_locals.get(&entry.binding) == Some(&source)
+                && self
+                    .synthetic_owner_publication_sites
+                    .contains_key(&entry.binding)
+        }) else {
+            return;
+        };
+        let provisional = self.owned_locals.remove(index).binding;
+        self.synthetic_owner_publication_sites.remove(&provisional);
+        self.typed_produced_value_owner_bindings
+            .remove(&provisional);
+    }
+
+    /// Adopt an owned result immediately after its successful local
+    /// publication. HIR's typed `SiteId` fact is the authority; borrowed and
+    /// unknown values intentionally remain ownerless here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one authority seam validates and adopts every produced-value relation"
+    )]
+    pub(crate) fn adopt_typed_produced_value_owner(&mut self, expr: &HirExpr, place: Place) {
+        let expected_ty = self.subst_ty(&expr.ty);
+        if matches!(
+            place,
+            Place::DuplexHandle(_)
+                | Place::SendHalf(_)
+                | Place::RecvHalf(_)
+                | Place::LambdaActorHandle(_)
+                | Place::ActorHandle(_)
+        ) {
+            // Handle-shaped Places are themselves the established ownership
+            // authority. Their binding/drop seams preserve the handle kind;
+            // a second generic Local-backed publication cannot exist.
+            return;
+        }
+        if matches!(place, Place::Local(local) if self.tuple_decomp.contains_key(&local)) {
+            // Multi-output runtime calls publish a bookkeeping proxy whose
+            // component Places are the real independently-owned values. The
+            // proxy has neither aggregate storage nor the aggregate's type;
+            // its component close authorities are the complete ownership row.
+            return;
+        }
+        let published_ty = match place {
+            Place::Local(local) => self.locals.get(local as usize),
+            _ => None,
+        };
+        if published_ty.is_some_and(|published_ty| published_ty != &expected_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "typed produced value published into non-congruent storage"
+                        .to_string(),
+                    site: expr.site,
+                },
+                note: format!(
+                    "site {} has type {expected_ty:?}, but {place:?} has type {published_ty:?}",
+                    expr.site
+                ),
+            });
+            return;
+        }
+        let Some(fact) = self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .cloned()
+        else {
+            return;
+        };
+        if matches!(fact.ownership, ProducedValueOwnership::ReceiverIdentity) {
+            self.transfer_identity_owner(expr.site, fact.receiver, place);
+            return;
+        }
+        match &fact.relation {
+            HirProducedValueRelation::Identity(source) => {
+                self.transfer_identity_owner(expr.site, Some(*source), place);
+                return;
+            }
+            HirProducedValueRelation::MoveOut(_) | HirProducedValueRelation::Join(_) => {
+                // Move-out ownership is transferred at the projection seam;
+                // join ownership is already published on mutually exclusive
+                // branch paths. Neither relation mints another result owner.
+                return;
+            }
+            HirProducedValueRelation::Leaf
+            | HirProducedValueRelation::Subsumes(_)
+            | HirProducedValueRelation::Projection(_) => {}
+        }
+        let ProducedValueOwnership::Owned { acquisition } = fact.ownership else {
+            return;
+        };
+        // A move-out is not a newly produced allocation. Its source owner is
+        // transferred by the projection/container lowering seam, which owns
+        // the move-aware drop flags and aggregate-extraction proof. Minting a
+        // provisional owner here would duplicate that ledger entry.
+        if matches!(acquisition, ProducedValueAcquisition::MoveOut) {
+            return;
+        }
+        let Place::Local(local) = place else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "typed owned producer without a local publication slot".to_string(),
+                    site: expr.site,
+                },
+                note: format!(
+                    "owned {:?} result was published at {place:?}",
+                    fact.producer
+                ),
+            });
+            return;
+        };
+        if self.parameter_locals.contains(&local) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "typed owned producer reused a parameter slot".to_string(),
+                    site: expr.site,
+                },
+                note: "a fresh owner must publish into a fresh MIR local".to_string(),
+            });
+            return;
+        }
+        let ty = expected_ty;
+        let warrant = self.owner_warrant_for_typed_produced_value(expr, fact.ownership);
+        // Do not reserve a synthetic binding when the typed publication cannot
+        // carry a caller owner. A later specialised sink may have a narrower,
+        // independently-proven admission path; an unminted placeholder here
+        // must not block that path's real owner.
+        if warrant.withholds_mint() {
+            return;
+        }
+        let binding = self.adopt_synthetic_owned_local(
+            "__hew_produced_value",
+            expr.site,
+            local,
+            ty.clone(),
+            warrant,
+        );
+        self.typed_produced_value_owner_bindings.insert(binding);
+        if matches!(ty, ResolvedTy::TraitObject { .. }) {
+            self.dyn_trait_storage
+                .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+        }
+    }
+
+    /// Consume typed-publication generations whose release was materialised
+    /// by the established inline string/bytes temporary spine.  The release
+    /// instruction and the synthetic binding name the same MIR local; this is
+    /// a generation hand-off, not a type/name heuristic.  Persistent results
+    /// receive no inline release and remain scope-exit owned.
+    pub(crate) fn consume_typed_publication_owners_at_inline_release(
+        &mut self,
+        blocks: &[BasicBlock],
+    ) {
+        let released: HashSet<u32> = blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                Instr::Drop {
+                    place: Place::Local(local),
+                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                    ..
+                } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop") => Some(*local),
+                _ => None,
+            })
+            .collect();
+        let consumed: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter_map(|entry| {
+                self.typed_produced_value_owner_bindings
+                    .contains(&entry.binding)
+                    .then(|| self.binding_locals.get(&entry.binding).copied())
+                    .flatten()
+                    .and_then(|place| match place {
+                        Place::Local(local) if released.contains(&local) => Some(entry.binding),
+                        _ => None,
+                    })
+            })
+            .collect();
+        for binding in consumed {
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+        }
+    }
+
+    /// Move (not clone) an existing receiver owner to a receiver-identity
+    /// result. Both ends are SiteId/Place identities; no method spelling or
+    /// display-name recovery participates in the transfer.
+    fn transfer_identity_owner(
+        &mut self,
+        result_site: SiteId,
+        receiver_site: Option<SiteId>,
+        result_place: Place,
+    ) {
+        let Some(receiver_site) = receiver_site else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "receiver-identity result without receiver SiteId".to_string(),
+                    site: result_site,
+                },
+                note: "the typed carrier must name the existing receiver owner".to_string(),
+            });
+            return;
+        };
+        let Some(receiver_place) = self.published_value_places.get(&receiver_site).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "receiver-identity receiver publication missing".to_string(),
+                    site: result_site,
+                },
+                note: format!("receiver SiteId {receiver_site:?} has no published MIR place"),
+            });
+            return;
+        };
+        let Some(owner) = self
+            .owned_locals
+            .iter()
+            .position(|entry| self.binding_locals.get(&entry.binding) == Some(&receiver_place))
+        else {
+            // Receiver identity is also used for by-value, non-owning
+            // carriers (notably machine values).  Absence of a ledger owner
+            // there is a structural no-op, not permission to mint one.
+            return;
+        };
+        let binding = self.owned_locals[owner].binding;
+        let owner_ty = &self.owned_locals[owner].ty;
+        let result_ty = match result_place {
+            Place::Local(local) => self.locals.get(local as usize),
+            _ => None,
+        };
+        if result_ty.is_some_and(|result_ty| result_ty != owner_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "identity owner transfer into non-congruent storage".to_string(),
+                    site: result_site,
+                },
+                note: format!(
+                    "source owner has type {owner_ty:?}, but {result_place:?} has type {result_ty:?}"
+                ),
+            });
+            return;
+        }
+        self.binding_locals.insert(binding, result_place);
+        if self
+            .synthetic_owner_publication_sites
+            .contains_key(&binding)
+        {
+            self.synthetic_owner_publication_sites
+                .insert(binding, result_site);
+        }
     }
 
     pub(crate) fn note_fresh_vec_clone_projection_base(
@@ -487,7 +868,7 @@ impl Builder {
         }
         let fact = self.fresh_vec_get_clone_projection_bases.remove(fact_index);
         let warrant = self.owner_warrant_for_admitted_temp(object);
-        self.register_synthetic_owned_local(
+        self.adopt_synthetic_owned_local(
             SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
             fact.site,
             fact.local,
@@ -809,7 +1190,7 @@ impl Builder {
             return;
         }
         let warrant = self.owner_warrant_for_admitted_temp(candidate_arg);
-        self.register_synthetic_owned_local(
+        self.adopt_synthetic_owned_local(
             SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
             site,
             local,
@@ -1274,11 +1655,16 @@ impl Builder {
         // back, or any value the ledger already refused an owner for, reaches
         // the temp. A withheld warrant means no owner at all, so the caller
         // must see `None` rather than a bindable-but-ownerless temp.
-        let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
+        // The admission gate established that this call result is a fresh
+        // caller-owned composite. Preserve that exact admission through the
+        // mint; the generic recursive temporary query is intentionally
+        // stricter for unmodelled calls and would otherwise erase the
+        // already-proven caller ownership.
+        let warrant = self.owner_warrant_for_admitted_call_scrutinee(scrutinee);
         if warrant.withholds_mint() {
             return None;
         }
-        let binding = self.register_synthetic_owned_local(
+        let binding = self.adopt_synthetic_owned_local(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
             scrutinee_local,
@@ -1294,7 +1680,7 @@ impl Builder {
         ty: ResolvedTy,
     ) -> BindingId {
         let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
-        let binding = self.register_synthetic_owned_local(
+        let binding = self.adopt_synthetic_owned_local(
             SYNTHETIC_WHILE_LET_ITERATION_NAME,
             scrutinee.site,
             snapshot_local,
@@ -1362,7 +1748,7 @@ impl Builder {
             return;
         };
         let warrant = self.owner_warrant_for_admitted_temp(expr);
-        self.register_synthetic_owned_local(
+        self.adopt_synthetic_owned_local(
             SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
             expr.site,
             local,
@@ -4031,7 +4417,7 @@ impl Builder {
     /// policy that carries only the ledger, so it visits exactly the value
     /// positions the authority does, and answering `true` only ever WITHHOLDS a
     /// mint.
-    fn expr_reads_a_proven_foreign_binding(&self, expr: &HirExpr) -> bool {
+    pub(crate) fn expr_reads_a_proven_foreign_binding(&self, expr: &HirExpr) -> bool {
         crate::return_provenance::value_reads_a_proven_foreign_binding(
             expr,
             &self.proven_foreign_bindings,
@@ -4338,5 +4724,156 @@ impl Builder {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod typed_produced_owner_tests {
+    use std::rc::Rc;
+
+    use super::{BindingId, Builder, Place, ResolvedTy, SiteId};
+    use crate::lower::ParamOwnershipFacts;
+    use hew_hir::{
+        HirExpr, HirExprKind, HirLiteral, HirNodeId, HirProducedValueFact,
+        HirProducedValueProducer, IntentKind, ValueClass,
+    };
+    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+
+    fn owned_resource(site: SiteId) -> HirExpr {
+        HirExpr {
+            node: HirNodeId(site.0),
+            site,
+            ty: ResolvedTy::Named {
+                name: "Token".to_string(),
+                args: Vec::new(),
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: ValueClass::Unknown,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: 0..0,
+        }
+    }
+
+    #[test]
+    fn typed_owned_publication_mints_once_and_rejects_a_new_generation_over_live_local() {
+        let site = SiteId(701);
+        let expr = owned_resource(site);
+        let mut builder = Builder::default();
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        builder.param_ownership = Rc::new(facts);
+
+        let place = Place::Local(9);
+        builder.adopt_typed_produced_value_owner(&expr, place);
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+        builder.adopt_typed_produced_value_owner(&expr, place);
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+
+        builder.adopt_synthetic_owned_local(
+            "__test_rewrite",
+            SiteId(702),
+            match place {
+                Place::Local(local) => local,
+                other => panic!("expected local publication, got {other:?}"),
+            },
+            expr.ty.clone(),
+            builder.owner_warrant_for_typed_produced_value(
+                &expr,
+                ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+            ),
+        );
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+        assert!(builder.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                super::MirDiagnosticKind::NotYetImplemented { ref construct, .. }
+                    if construct == "owned result rewrote a live provisional owner local"
+            )
+        }));
+    }
+
+    #[test]
+    fn assignment_move_retires_only_exact_type_congruent_synthetic_source() {
+        let site = SiteId(711);
+        let expr = owned_resource(site);
+        let mut builder = Builder::default();
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        builder.param_ownership = Rc::new(facts);
+        let source = Place::Local(9);
+        let dest = Place::Local(10);
+        let target = BindingId(88);
+        builder.adopt_typed_produced_value_owner(&expr, source);
+        let provisional = builder.owned_locals[0].binding;
+        let publication_site = builder.synthetic_owner_publication_sites[&provisional];
+        builder.binding_locals.insert(target, dest);
+
+        builder.retire_provisional_owner_after_assignment_move(
+            target,
+            Place::Local(11),
+            &expr.ty,
+            source,
+            &expr.ty,
+        );
+        assert_eq!(
+            builder.owned_locals.len(),
+            1,
+            "wrong destination is not a move proof"
+        );
+
+        builder.retire_provisional_owner_after_assignment_move(
+            target,
+            dest,
+            &expr.ty,
+            source,
+            &ResolvedTy::I64,
+        );
+        assert_eq!(
+            builder.owned_locals.len(),
+            1,
+            "mismatched source type is not transferable"
+        );
+
+        builder
+            .synthetic_owner_publication_sites
+            .remove(&provisional);
+        builder.retire_provisional_owner_after_assignment_move(
+            target, dest, &expr.ty, source, &expr.ty,
+        );
+        assert_eq!(
+            builder.owned_locals.len(),
+            1,
+            "non-synthetic owners are never retired here"
+        );
+        builder
+            .synthetic_owner_publication_sites
+            .insert(provisional, publication_site);
+
+        builder.retire_provisional_owner_after_assignment_move(
+            target, dest, &expr.ty, source, &expr.ty,
+        );
+        assert!(builder.owned_locals.is_empty());
     }
 }

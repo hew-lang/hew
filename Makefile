@@ -168,10 +168,12 @@ LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
 # Sources that feed the archive. The list is derived, never hand-listed:
 # hew-lib's non-dev path-dependency closure, its Rust sources and manifests,
 # the embedded assets its code names with include_str!/include_bytes!, and the
-# workspace manifest and lockfile — so the build graph and the mtime check
-# agree on what "stale" means. Deriving it is the point: a hand-written list is
-# how an input that changes the archive ends up not counting toward freshness.
+# workspace manifest and lockfile.  The build graph conservatively reruns
+# Cargo for any lockfile edit; the final content certificate narrows that to
+# Cargo's relevant lock closure.  Deriving it is the point: a hand-written list
+# is how an input that changes the archive ends up not counting toward freshness.
 LIBHEW_INPUTS_SCRIPT := scripts/libhew-inputs.py
+LIBHEW_FRESHNESS_SCRIPT := scripts/libhew-freshness.py
 LIBHEW_SRC_DIRS := $(shell $(LIBHEW_INPUTS_SCRIPT) crates)
 LIBHEW_SRCS := $(shell $(LIBHEW_INPUTS_SCRIPT) files)
 ifeq ($(strip $(LIBHEW_SRCS)),)
@@ -278,7 +280,7 @@ stdlib: libhew-debug
 # possibly space-bearing output path back into Make's target graph.
 .PHONY: libhew-debug
 libhew-debug: $(LIBHEW_SRCS)
-	cargo build -p hew-lib $(CARGO_TARGET_FLAG)
+	$(LIBHEW_FRESHNESS_SCRIPT) build --debug-dir "$(DEBUG_DIR)" -- cargo build -p hew-lib $(CARGO_TARGET_FLAG)
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
@@ -397,12 +399,12 @@ ci-preflight-smoke:
 	cargo nextest run --workspace --profile smoke
 	$(MAKE) hew-native
 
-# Assert that libhew.a is not stale relative to hew-lib, hew-runtime and
-# hew-std sources. Depends on the archive's file rule so the assertion runs
-# against an archive make has already brought up to date, and is wired as an
-# ORDER-ONLY prerequisite of every target that links a native Hew program (see
-# $(LIBHEW_READY)) so it fires at the point of use locally, not only in CI
-# after the damage is done.
+# Assert that libhew.a matches the content-addressed certificate written only
+# after Cargo successfully built (or fingerprint-verified) it.  The certificate
+# binds the archive bytes to hew-lib's semantic input closure, so lockfile mtime
+# noise cannot contradict Cargo while a real source or relevant lock change
+# remains fail-closed.  It is wired as an ORDER-ONLY prerequisite of every
+# target that links a native Hew program (see $(LIBHEW_READY)).
 check-libhew-fresh: libhew-debug
 	scripts/check-libhew-fresh.sh --debug-dir "$(DEBUG_DIR)"
 

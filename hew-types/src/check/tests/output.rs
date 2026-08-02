@@ -513,6 +513,31 @@ fn ownership_graph_rejects_cycle_and_cross_module_edge() {
 }
 
 #[test]
+fn ownership_graph_rejects_type_changing_identity() {
+    let parent = ownership_graph_key(31, 0);
+    let child = ownership_graph_key(32, 0);
+    let expr_types = HashMap::from([
+        (parent.clone(), Ty::result(Ty::String, Ty::String)),
+        (child.clone(), Ty::String),
+    ]);
+    let leaves = HashMap::from([
+        (parent.clone(), borrowed_fact()),
+        (child.clone(), borrowed_fact()),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .produced_value_dependencies
+        .insert(parent.clone(), ProducedValueDependency::Identity(child));
+
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&parent));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|error| error.message.contains("identity dependency changes type")));
+}
+
+#[test]
 fn empty_select_and_match_publish_no_empty_join_but_validator_rejects_one() {
     let recovery_sources = [
         ("fn main() { let _ = select {}; }", false),
@@ -579,7 +604,8 @@ fn ownership_graph_requires_exact_receiver_identity_and_call_shape() {
 
     let receiver = ownership_graph_key(40, 0);
     let call = ownership_graph_key(50, 0);
-    let expr_types = HashMap::from([(receiver.clone(), Ty::String), (call.clone(), Ty::String)]);
+    let mut expr_types =
+        HashMap::from([(receiver.clone(), Ty::String), (call.clone(), Ty::String)]);
     let mut leaves = HashMap::from([
         (receiver.clone(), borrowed_fact()),
         (
@@ -599,6 +625,14 @@ fn ownership_graph_requires_exact_receiver_identity_and_call_shape() {
     assert!(checker
         .validate_produced_value_graph(&expr_types, &leaves)
         .is_empty());
+
+    expr_types.insert(call.clone(), Ty::I64);
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(
+        invalid.contains(&call),
+        "receiver-identity transfer must reject type-changing storage"
+    );
+    expr_types.insert(call.clone(), Ty::String);
 
     let malformed = leaves.get_mut(&call).expect("call fact");
     malformed.receiver_span = None;

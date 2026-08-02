@@ -27,6 +27,82 @@ fn simple_function_lowers_with_stable_sites() {
 }
 
 #[test]
+fn timeout_await_operation_preserves_ordered_subsumption_spine() {
+    let output = lower(
+        r#"
+        actor Echo {
+            receive fn get() -> string { "pong" }
+        }
+        fn main() {
+            let echo = spawn Echo;
+            let _reply = await echo.get() | after 1ms;
+        }
+        "#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
+    let facts = &output.module.produced_value_facts;
+    let (&timeout_site, timeout_fact) = facts
+        .iter()
+        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
+        .expect("timeout boundary fact");
+    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
+        panic!("timeout must subsume its await occurrence: {timeout_fact:?}");
+    };
+    let await_fact = &facts[&await_site];
+    let hew_hir::HirProducedValueRelation::Subsumes(operation_site) = await_fact.relation else {
+        panic!("await must subsume its operation occurrence: {await_fact:?}");
+    };
+    let parents = hew_hir::verify::collect_site_parents(&output.module);
+    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
+    assert_eq!(parents.get(&operation_site), Some(&Some(await_site)));
+
+    let mut flattened = output.module.clone();
+    flattened
+        .produced_value_facts
+        .get_mut(&timeout_site)
+        .expect("timeout fact")
+        .relation = hew_hir::HirProducedValueRelation::Subsumes(operation_site);
+    assert!(verify_hir(&flattened).iter().any(|diagnostic| {
+        matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                if name == "produced value subsumption" && reason.contains("not a direct structural child")
+        )
+    }));
+
+    let mut wrong_identity = output.module.clone();
+    wrong_identity
+        .produced_value_facts
+        .get_mut(&timeout_site)
+        .expect("timeout fact")
+        .relation = hew_hir::HirProducedValueRelation::Identity(operation_site);
+    assert!(verify_hir(&wrong_identity).iter().any(|diagnostic| {
+        matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                if name == "produced value identity"
+        )
+    }));
+
+    let mut wrong_receiver = output.module.clone();
+    let fact = wrong_receiver
+        .produced_value_facts
+        .get_mut(&timeout_site)
+        .expect("timeout fact");
+    fact.ownership = hew_types::ProducedValueOwnership::ReceiverIdentity;
+    fact.receiver = Some(operation_site);
+    fact.receiver_boundary = Some(hew_types::ProducedArgumentBoundary::Transfer);
+    assert!(verify_hir(&wrong_receiver).iter().any(|diagnostic| {
+        matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                if name == "produced value receiver identity" && reason.contains("has type")
+        )
+    }));
+}
+
+#[test]
 fn unresolved_symbol_rejects_before_mir() {
     let output = lower("fn main() -> i32 { return missing; }");
     assert!(output

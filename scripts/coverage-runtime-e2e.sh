@@ -39,6 +39,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Exercise the program-invocation seam under the same shell running this
+# harness. In particular, supported macOS hosts use Bash 3.2 and must retain
+# both the zero-argument and deterministic command-argument paths.
+"${BASH}" scripts/tests/test_coverage_runtime_program.sh
+# shellcheck source=scripts/lib/coverage-runtime-program.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/coverage-runtime-program.sh"
+
 COV_DIR="${COV_DIR:-coverage-out}"
 RT_DIR="$COV_DIR/runtime-e2e"
 BIN_DIR="$RT_DIR/bins"
@@ -125,12 +133,14 @@ for f in "${PROGRAMS[@]}"; do
     continue
   fi
   # %m = binary signature (distinct per program), %p = pid → no collisions.
-  PROGRAM_ARGS=()
-  case "$stem" in
-    hew_grep) PROGRAM_ARGS=("needle" "$GREP_INPUT") ;;
-  esac
-  if LLVM_PROFILE_FILE="$PROFRAW_DIR/${stem}-%m-%p.profraw" \
-      timeout "$PER_PROG_TIMEOUT" "$bin" "${PROGRAM_ARGS[@]}" >/dev/null 2>&1; then
+  if coverage_runtime_run_program \
+      "$stem" \
+      "$PROFRAW_DIR/${stem}-%m-%p.profraw" \
+      "$(command -v timeout)" \
+      "$PER_PROG_TIMEOUT" \
+      "$bin" \
+      "$GREP_INPUT" \
+      >/dev/null 2>&1; then
     ran=$((ran + 1))
   else
     RUN_FAILURES+=("$f")

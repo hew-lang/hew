@@ -5606,6 +5606,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
             enum_layouts: self.enum_layouts,
             machine_layouts: self.machine_layouts,
             record_field_resolved_tys: self.record_field_resolved_tys,
+            lifecycle_registry: self.lifecycle_registry,
         }
     }
 

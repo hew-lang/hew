@@ -129,11 +129,11 @@ use self::drop_plan::{
     classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
     describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
     field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
-    note_payload_escape, render_owned_handle_ty, resource_drop_fn, resource_opaque_close_registry,
-    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
-    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    note_payload_escape, render_owned_handle_ty, resource_drop_fn, stream_handle_drop_descriptor,
+    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
+    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
+    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
+    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
     vec_iter_yield_abandonment_diagnostics,
@@ -1143,7 +1143,7 @@ struct Builder {
     /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
     /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
     /// rebuilds the identical registry for codegen so the two never drift.
-    pub(crate) resource_opaque_close: Vec<(String, String)>,
+    pub(crate) lifecycle_registry: hew_hir::LifecycleRegistry,
     pub(crate) current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -2233,7 +2233,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             _ => None,
         })
         .collect();
-    let resource_opaque_close = resource_opaque_close_registry(&module.type_classes);
+    let lifecycle_registry = module.type_classes.lifecycle_registry().clone();
 
     // Machines are enums at the value-classification layer.  Materialise one
     // layout for every HIR machine-mono entry, not one bare layout per source
@@ -2390,7 +2390,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             &record_layouts,
             &classification_enum_layouts,
             &opaque_handle_names,
-            &resource_opaque_close,
+            &lifecycle_registry,
         );
         let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
             let reason = format!(
@@ -2442,11 +2442,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     let mut found = false;
                     for (idx, field) in actor.state_fields.iter().enumerate() {
                         let mut v = std::collections::HashSet::new();
-                        if crate::state_clone::classify_state_field_full(
+                        if crate::state_clone::classify_state_field_with_resource_handles(
                             &field.ty,
                             &record_layouts,
                             &classification_enum_layouts,
                             &opaque_handle_names,
+                            &lifecycle_registry,
                             &mut v,
                         )
                         .is_err()
@@ -3841,7 +3842,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
         resource_record_close,
-        resource_opaque_close,
+        lifecycle_registry,
     }
 }
 
@@ -4209,7 +4210,7 @@ fn prepare_owned_call_carriers(
                 &record_layouts,
                 &builder.enum_layouts,
                 &builder.opaque_handle_names,
-                &builder.resource_opaque_close,
+                &builder.lifecycle_registry,
             ) {
                 Ok(plan) => plan,
                 Err(error) => {
@@ -4341,7 +4342,7 @@ fn prepare_owned_call_carriers(
                 &record_layouts,
                 &builder.enum_layouts,
                 &builder.opaque_handle_names,
-                &builder.resource_opaque_close,
+                &builder.lifecycle_registry,
             ) {
                 Ok(true) => {
                     let dest = builder.alloc_local(arg.ty.clone());
@@ -4603,7 +4604,7 @@ fn resolve_outbound_actor_modes(
                     &record_layouts,
                     &builder.enum_layouts,
                     &builder.opaque_handle_names,
-                    &builder.resource_opaque_close,
+                    &builder.lifecycle_registry,
                 ) {
                     Ok(plan) => match plan.root() {
                         SnapshotFieldKind::BitCopy { .. } => SendAliasMode::SnapshotBitCopy,
@@ -4899,7 +4900,7 @@ fn prepare_outbound_actor_payloads(
                                 &record_layouts,
                                 &builder.enum_layouts,
                                 &builder.opaque_handle_names,
-                                &builder.resource_opaque_close,
+                                &builder.lifecycle_registry,
                             )
                         {
                             if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
@@ -4921,7 +4922,7 @@ fn prepare_outbound_actor_payloads(
                                 &record_layouts,
                                 &builder.enum_layouts,
                                 &builder.opaque_handle_names,
-                                &builder.resource_opaque_close,
+                                &builder.lifecycle_registry,
                             )
                         else {
                             prepared.push(arg.source);
@@ -5012,7 +5013,7 @@ fn prepare_outbound_actor_payloads(
                         &record_layouts,
                         &builder.enum_layouts,
                         &builder.opaque_handle_names,
-                        &builder.resource_opaque_close,
+                        &builder.lifecycle_registry,
                     )
                     .ok()
                 })
@@ -5178,7 +5179,7 @@ pub(crate) fn lower_function(
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
         opaque_handle_names: opaque_handle_names.to_vec(),
-        resource_opaque_close: resource_opaque_close_registry(type_classes),
+        lifecycle_registry: type_classes.lifecycle_registry().clone(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -5808,9 +5809,9 @@ pub(crate) fn lower_function(
     // null-after-move land (RAII-2), the compiler refuses both rather than emit
     // the leak / double-free (LESSONS boundary-fail-closed, raii-null-after-move).
     let opaque_resource_names: HashSet<String> = builder
-        .resource_opaque_close
-        .iter()
-        .map(|(name, _)| name.clone())
+        .lifecycle_registry
+        .opaque_resources()
+        .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
         .collect();
     for check in detect_opaque_resource_field_misuse(
         &raw.blocks,

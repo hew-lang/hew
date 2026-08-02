@@ -111,7 +111,7 @@ fn pipeline_with_task_abi_call(
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -230,7 +230,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -340,7 +340,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -479,7 +479,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -692,7 +692,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
         resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

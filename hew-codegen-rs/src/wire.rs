@@ -359,6 +359,7 @@ fn emit_ser_value_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -545,6 +546,7 @@ fn emit_ser_value_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    lifecycle_registry,
                     target_data,
                 )
             }
@@ -562,6 +564,7 @@ fn emit_ser_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             ),
             _ => emit_ser_named_cbor(
@@ -578,6 +581,7 @@ fn emit_ser_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             ),
         },
@@ -606,6 +610,7 @@ fn emit_ser_named_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args);
@@ -629,6 +634,7 @@ fn emit_ser_named_cbor<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         );
     }
@@ -686,6 +692,7 @@ fn emit_ser_named_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
         }
@@ -724,6 +731,7 @@ fn emit_de_value_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -961,6 +969,7 @@ fn emit_de_value_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    lifecycle_registry,
                     target_data,
                 )
             }
@@ -978,6 +987,7 @@ fn emit_de_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             ),
             _ => emit_de_named_cbor(
@@ -994,6 +1004,7 @@ fn emit_de_value_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             ),
         },
@@ -1023,6 +1034,7 @@ fn emit_de_named_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args);
@@ -1046,6 +1058,7 @@ fn emit_de_named_cbor<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         );
     }
@@ -1098,6 +1111,7 @@ fn emit_de_named_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
         }
@@ -1556,6 +1570,7 @@ struct CborOwnedElemRegistries<'a, 'ctx> {
     record_field_resolved_tys: std::collections::HashMap<String, Vec<ResolvedTy>>,
     enum_layouts: &'a [EnumLayout],
     machine_layouts: &'a MachineLayoutMap<'ctx>,
+    lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
 impl<'ctx> CborOwnedElemRegistries<'_, 'ctx> {
@@ -1564,6 +1579,7 @@ impl<'ctx> CborOwnedElemRegistries<'_, 'ctx> {
             enum_layouts: self.enum_layouts,
             machine_layouts: self.machine_layouts,
             record_field_resolved_tys: &self.record_field_resolved_tys,
+            lifecycle_registry: self.lifecycle_registry,
         }
     }
 }
@@ -1572,6 +1588,7 @@ fn cbor_owned_elem_registries<'a, 'ctx>(
     pipeline_records: &[RecordLayout],
     enum_layouts: &'a [EnumLayout],
     machine_layouts: &'a MachineLayoutMap<'ctx>,
+    lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 ) -> CborOwnedElemRegistries<'a, 'ctx> {
     CborOwnedElemRegistries {
         record_field_resolved_tys: pipeline_records
@@ -1580,6 +1597,7 @@ fn cbor_owned_elem_registries<'a, 'ctx>(
             .collect(),
         enum_layouts,
         machine_layouts,
+        lifecycle_registry,
     }
 }
 
@@ -1593,10 +1611,16 @@ pub(crate) fn cbor_vec_elem_kind(
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     machine_layouts: &MachineLayoutMap<'_>,
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CborVecElemKind {
     // Reach the single owned-descriptor authority via the same registries
     // `Vec::new` uses (reconstructed from the threaded `pipeline_records`).
-    let owned_regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+    let owned_regs = cbor_owned_elem_registries(
+        pipeline_records,
+        enum_layouts,
+        machine_layouts,
+        lifecycle_registry,
+    );
     let regs = owned_regs.registries();
     match elem {
         ResolvedTy::Bool
@@ -1749,9 +1773,16 @@ fn emit_ser_vec_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts, machine_layouts);
+    let kind = cbor_vec_elem_kind(
+        elem_ty,
+        pipeline_records,
+        enum_layouts,
+        machine_layouts,
+        lifecycle_registry,
+    );
     if kind == CborVecElemKind::Defer {
         return Err(CodegenError::FailClosed(format!(
             "wire CBOR serialize: Vec<{elem_ty:?}> has an element outside the \
@@ -1792,7 +1823,12 @@ fn emit_ser_vec_cbor<'ctx>(
     // its borrowed slot exactly as the LayoutBitCopy arm does.
     if owned {
         let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
-        let regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+        let regs = cbor_owned_elem_registries(
+            pipeline_records,
+            enum_layouts,
+            machine_layouts,
+            lifecycle_registry,
+        );
         crate::layout::owned_elem_layout_descriptor_ptr(
             ctx,
             llvm_mod,
@@ -1926,6 +1962,7 @@ fn emit_ser_vec_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        lifecycle_registry,
         target_data,
     )?;
     let i_next = builder
@@ -1971,9 +2008,16 @@ fn emit_de_vec_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts, machine_layouts);
+    let kind = cbor_vec_elem_kind(
+        elem_ty,
+        pipeline_records,
+        enum_layouts,
+        machine_layouts,
+        lifecycle_registry,
+    );
     if kind == CborVecElemKind::Defer {
         return Err(CodegenError::FailClosed(format!(
             "wire CBOR deserialize: Vec<{elem_ty:?}> has an element outside the \
@@ -2014,7 +2058,12 @@ fn emit_de_vec_cbor<'ctx>(
     // global dedup-collapses onto the constructor's.
     let owned_layout_ptr = if owned {
         let elem_llvm = resolve_ty(ctx, target_data, elem_ty, record_layouts)?;
-        let regs = cbor_owned_elem_registries(pipeline_records, enum_layouts, machine_layouts);
+        let regs = cbor_owned_elem_registries(
+            pipeline_records,
+            enum_layouts,
+            machine_layouts,
+            lifecycle_registry,
+        );
         Some(crate::layout::owned_elem_layout_descriptor_ptr(
             ctx,
             llvm_mod,
@@ -2215,6 +2264,7 @@ fn emit_de_vec_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             let push_gen = declare_codec_prim(
@@ -2253,6 +2303,7 @@ fn emit_de_vec_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             let push_layout = declare_codec_prim(
@@ -2294,6 +2345,7 @@ fn emit_de_vec_cbor<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             // MOVE the decoded element into the vec UNCONDITIONALLY — including on
@@ -2356,6 +2408,7 @@ fn emit_ser_option_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -2443,6 +2496,7 @@ fn emit_ser_option_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        lifecycle_registry,
         target_data,
     )?;
     builder
@@ -2485,6 +2539,7 @@ fn emit_de_option_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -2643,6 +2698,7 @@ fn emit_de_option_cbor<'ctx>(
         machine_layouts,
         pipeline_records,
         enum_layouts,
+        lifecycle_registry,
         target_data,
     )?;
     builder
@@ -2674,6 +2730,7 @@ fn emit_ser_enum_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -2812,6 +2869,7 @@ fn emit_ser_enum_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    lifecycle_registry,
                     target_data,
                 )?;
             }
@@ -2852,6 +2910,7 @@ fn emit_de_enum_cbor<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -3033,6 +3092,7 @@ fn emit_de_enum_cbor<'ctx>(
                     machine_layouts,
                     pipeline_records,
                     enum_layouts,
+                    lifecycle_registry,
                     target_data,
                 )?;
             }
@@ -3069,6 +3129,7 @@ pub(crate) fn emit_cbor_codec_thunks<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<(String, String)> {
     let key = xnode_codec_key(ty);
@@ -3126,6 +3187,7 @@ pub(crate) fn emit_cbor_codec_thunks<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         )?;
         let finish = declare_codec_prim(
@@ -3283,6 +3345,7 @@ pub(crate) fn emit_cbor_codec_thunks<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         )?;
 

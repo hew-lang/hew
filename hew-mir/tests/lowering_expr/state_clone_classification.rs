@@ -19,11 +19,74 @@ use std::collections::HashSet;
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
-    classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
-    ty_contains_unclonable_opaque, ClassificationError, ResourceCloseAuthority,
+    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, ResourceCloseAuthority,
     StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+
+fn empty_lifecycles() -> &'static hew_hir::LifecycleRegistry {
+    static REGISTRY: std::sync::LazyLock<hew_hir::LifecycleRegistry> =
+        std::sync::LazyLock::new(hew_hir::LifecycleRegistry::default);
+    &REGISTRY
+}
+
+fn classify_for_test(
+    ty: &ResolvedTy,
+    records: &[RecordLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    hew_mir::classify_state_field_with_resource_handles(
+        ty,
+        records,
+        &[],
+        &[],
+        empty_lifecycles(),
+        visited,
+    )
+}
+
+fn classify_for_test_with_enums(
+    ty: &ResolvedTy,
+    records: &[RecordLayout],
+    enums: &[hew_mir::EnumLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    hew_mir::classify_state_field_with_resource_handles(
+        ty,
+        records,
+        enums,
+        &[],
+        empty_lifecycles(),
+        visited,
+    )
+}
+
+fn classify_actor_for_test(
+    tys: &[ResolvedTy],
+    records: &[RecordLayout],
+) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
+    hew_mir::classify_actor_state_fields_with_resource_handles(
+        tys,
+        records,
+        &[],
+        &[],
+        empty_lifecycles(),
+    )
+}
+
+fn user_close(name: &str, symbol: &str) -> ResourceCloseAuthority {
+    ResourceCloseAuthority::User(Box::new(hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new(name),
+        close_declaration: hew_types::DefId::new(symbol),
+        release_declaration: hew_types::DefId::new(symbol),
+        close_symbol: symbol.to_string(),
+        release_symbol: symbol.to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    }))
+}
 
 /// Pipe a `.hew` source through parser → checker → HIR → MIR, returning
 /// the produced `IrPipeline`. Asserts no parser or HIR diagnostics;
@@ -135,7 +198,7 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
 
     let resource_kind = StateFieldCloneKind::Resource {
         name: "Dq".to_string(),
-        close: ResourceCloseAuthority::User("Dq::close".to_string()),
+        close: user_close("Dq", "Dq::close"),
     };
     let direct = find_actor(&pipeline, "Direct");
     assert_eq!(
@@ -155,8 +218,11 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
         "the already-supported record-wrapped resource path must remain unchanged",
     );
     assert_eq!(
-        pipeline.resource_opaque_close,
-        vec![("Dq".to_string(), "Dq::close".to_string())],
+        pipeline
+            .lifecycle_registry
+            .opaque_resource(&hew_types::DefId::new("Dq"))
+            .map(|lifecycle| lifecycle.close_symbol.as_str()),
+        Some("Dq::close"),
         "the shared resource registry must remain available to nested-record codegen",
     );
 }
@@ -216,15 +282,16 @@ fn main() {{}}
             Some(
                 &[StateFieldCloneKind::Resource {
                     name: name.to_string(),
-                    close: ResourceCloseAuthority::User(format!("{name}::{method}")),
+                    close: user_close(name, &format!("{name}::{method}")),
                 }][..]
             ),
             "root opaque user `{name}` must retain user-close authority"
         );
         assert!(
             pipeline
-                .resource_opaque_close
-                .contains(&(name.to_string(), format!("{name}::{method}"))),
+                .lifecycle_registry
+                .opaque_resource(&hew_types::DefId::new(name))
+                .is_some_and(|lifecycle| lifecycle.close_symbol == format!("{name}::{method}")),
             "root opaque user `{name}` must be present in the resource registry"
         );
     }
@@ -398,7 +465,7 @@ fn qualified_net_connection_without_lifecycle_registry_fails_closed_as_opaque() 
     // close/clone semantics merely because it has no record layout in this
     // synthetic classifier call.
     let mut visited = HashSet::new();
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
             args: vec![],
@@ -418,7 +485,7 @@ fn qualified_net_connection_without_lifecycle_registry_fails_closed_as_opaque() 
 
     let mut visited = HashSet::new();
     assert_eq!(
-        hew_mir::classify_state_field(
+        classify_for_test(
             &ResolvedTy::Named {
                 name: "foo.Connection".to_string(),
                 args: vec![],
@@ -448,7 +515,7 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
         field_tys: vec![ResolvedTy::I64],
         field_names: vec![],
     }];
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![], // no args — a user record-named "Vec"
@@ -481,7 +548,7 @@ fn user_type_named_local_pid_does_not_route_to_bitcopy_arm() {
         field_tys: vec![ResolvedTy::String],
         field_names: vec![],
     }];
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "LocalPid".to_string(),
             args: vec![],
@@ -619,7 +686,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
         ],
         field_names: vec![],
     }];
-    let result = classify_actor_state_fields(
+    let result = classify_actor_for_test(
         &[ResolvedTy::Named {
             name: "Cyclic".to_string(),
             args: vec![],
@@ -645,7 +712,7 @@ fn missing_record_layout_surfaces_diagnostic_not_silent_none() {
     // types upstream), so we drive the classifier directly to pin the
     // surface contract.
     let mut visited = HashSet::new();
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "DoesNotExist".to_string(),
             args: vec![],
@@ -1194,7 +1261,7 @@ fn user_generic_shadowing_handle_name_with_opaque_arg_fails_closed() {
         field_tys: vec![socket_ty.clone()],
         field_names: vec!["held".to_string()],
     }];
-    let result = classify_state_field_with_enum_layouts(
+    let result = classify_for_test_with_enums(
         &ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![user_localpid_socket],

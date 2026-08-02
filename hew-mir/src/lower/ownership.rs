@@ -2121,9 +2121,14 @@ impl Builder {
         let fields = self.lookup_record_field_order(key)?;
         let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::classify_owned_string_record_fields(&field_tys, &record_layouts, &[])
-            .ok()
-            .flatten()
+        crate::state_clone::classify_owned_string_record_fields(
+            &field_tys,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.lifecycle_registry,
+        )
+        .ok()
+        .flatten()
     }
     /// Unified owned-aggregate-record value-class authority (RC-4 / RC-6 / G12).
     ///
@@ -2195,7 +2200,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )?;
         // Fail closed at the value-class gate, not late at codegen. An admitted
         // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
@@ -2255,7 +2260,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
             &self.resource_record_names_for_drop_readiness(),
         )
         .unwrap_or(false)
@@ -2281,7 +2286,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
             &resource_record_names,
         )
         .unwrap_or(false)
@@ -2295,7 +2300,7 @@ impl Builder {
                 &record_layouts,
                 &self.enum_layouts,
                 &self.opaque_handle_names,
-                &self.resource_opaque_close,
+                &self.lifecycle_registry,
                 &resource_record_names,
             )
             .unwrap_or(false)

@@ -26,7 +26,7 @@ pub enum ExternResultOwnership {
 }
 
 /// Recursive depth of a result's balancing release.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub enum ReleaseDischargeDepth {
     Shallow,
     Deep,

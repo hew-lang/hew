@@ -44,7 +44,7 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
 /// admitted and pins its sole automatic close to the exact producer/release
 /// contract the checker validated.  Downstream stages consume this fact and
 /// never reconstruct it from a short type name or a method spelling.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OpaqueResourceLifecycle {
     pub resource_declaration: hew_types::DefId,
     pub close_declaration: hew_types::DefId,
@@ -58,6 +58,64 @@ pub struct OpaqueResourceLifecycle {
     pub producer_modules: std::collections::BTreeSet<String>,
 }
 
+/// Canonical declaration-identity registry for opaque resource lifecycles.
+///
+/// This is the only carrier permitted beyond HIR lowering.  It intentionally
+/// exposes exact [`hew_types::DefId`] lookup only: callers may not retry a
+/// qualified miss with a short, suffix, or leaf name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LifecycleRegistry {
+    opaque_resources: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+}
+
+impl LifecycleRegistry {
+    /// Admit one exact opaque-resource lifecycle into a standalone registry.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    pub fn admit_opaque_resource(
+        &mut self,
+        lifecycle: OpaqueResourceLifecycle,
+    ) -> Result<(), Box<OpaqueResourceLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .opaque_resources
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+    #[must_use]
+    pub fn opaque_resource(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.opaque_resources.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_for_ty(&self, ty: &ResolvedTy) -> Option<&OpaqueResourceLifecycle> {
+        let ResolvedTy::Named {
+            name,
+            builtin: None,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        self.opaque_resource(&hew_types::DefId::new(name))
+    }
+
+    #[must_use]
+    pub fn opaque_resources(&self) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
+        self.opaque_resources.values()
+    }
+}
+
 /// Per-named-type classification plus exact closeable-opaque lifecycles.
 ///
 /// `Deref` preserves the long-established map API for ordinary class reads;
@@ -66,7 +124,7 @@ pub struct OpaqueResourceLifecycle {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TypeClassTable {
     classes: HashMap<String, (ResourceMarker, Option<String>)>,
-    opaque_resource_lifecycles: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+    lifecycle_registry: LifecycleRegistry,
 }
 
 impl Deref for TypeClassTable {
@@ -100,18 +158,7 @@ impl TypeClassTable {
         &mut self,
         lifecycle: OpaqueResourceLifecycle,
     ) -> Result<(), Box<OpaqueResourceLifecycle>> {
-        use std::collections::btree_map::Entry;
-
-        match self
-            .opaque_resource_lifecycles
-            .entry(lifecycle.resource_declaration.clone())
-        {
-            Entry::Vacant(entry) => {
-                entry.insert(lifecycle);
-                Ok(())
-            }
-            Entry::Occupied(_) => Err(Box::new(lifecycle)),
-        }
+        self.lifecycle_registry.admit_opaque_resource(lifecycle)
     }
 
     #[must_use]
@@ -119,7 +166,8 @@ impl TypeClassTable {
         &self,
         resource_declaration: &hew_types::DefId,
     ) -> Option<&OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycles.get(resource_declaration)
+        self.lifecycle_registry
+            .opaque_resource(resource_declaration)
     }
 
     #[must_use]
@@ -134,7 +182,13 @@ impl TypeClassTable {
     pub fn opaque_resource_lifecycles(
         &self,
     ) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycles.values()
+        self.lifecycle_registry.opaque_resources()
+    }
+
+    /// Return the structured lifecycle authority carried into MIR/codegen.
+    #[must_use]
+    pub const fn lifecycle_registry(&self) -> &LifecycleRegistry {
+        &self.lifecycle_registry
     }
 }
 

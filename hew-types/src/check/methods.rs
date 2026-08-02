@@ -1557,6 +1557,31 @@ impl Checker {
     fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
         let c_symbol = c_symbol.into();
         let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol) else {
+            // Some compiler-synthetic identity accessors are closed catalog
+            // endpoints but do not need a `RuntimeCallFamily`: their lowering
+            // is owned by the identity producer in MIR/codegen.  Preserve the
+            // checker-selected catalog endpoint instead of degrading a valid
+            // source method to an unsupported call just because that producer
+            // is not represented in the runtime-family enum.
+            if crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(&c_symbol)
+                .is_some()
+            {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteToFunction {
+                        target: CallTarget::Builtin {
+                            endpoint: c_symbol.clone(),
+                        },
+                        c_symbol,
+                        descriptor: None,
+                        extern_identity: None,
+                        elem_ty: None,
+                        consumes_receiver: false,
+                        returns_receiver_identity: false,
+                    },
+                );
+                return;
+            }
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
@@ -1674,23 +1699,32 @@ impl Checker {
         // the call site, while the source impl was registered under its full
         // owner path.  Carry the ID allocated at that registration boundary;
         // do not manufacture one from the call-site signature key.
-        let target = self
-            .impl_method_declaration_ids
-            .get(&extern_identity.signature_key)
-            .cloned()
-            .map_or_else(
-                || CallTarget::Unsupported {
-                    reason: format!(
-                        "extern-symbol method `{}` has no registered declaration identity",
-                        extern_identity.signature_key
-                    ),
-                },
-                |declaration| CallTarget::Extern {
-                    declaration,
-                    endpoint: extern_identity.endpoint.clone(),
-                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
-                },
-            );
+        let target = crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(
+            &extern_identity.endpoint,
+        )
+        .map_or_else(
+            || {
+                self.impl_method_declaration_ids
+                    .get(&extern_identity.signature_key)
+                    .cloned()
+                    .map_or_else(
+                        || CallTarget::Unsupported {
+                            reason: format!(
+                                "extern-symbol method `{}` has no registered declaration identity",
+                                extern_identity.signature_key
+                            ),
+                        },
+                        |declaration| CallTarget::Extern {
+                            declaration,
+                            endpoint: extern_identity.endpoint.clone(),
+                            trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                        },
+                    )
+            },
+            |endpoint| CallTarget::Builtin {
+                endpoint: endpoint.to_string(),
+            },
+        );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
@@ -9315,7 +9349,11 @@ impl Checker {
                         );
                     }
                     self.record_named_extern_symbol_rewrite_if_any(
-                        name, type_args, method, &sig, span,
+                        &canonical_receiver_name,
+                        type_args,
+                        method,
+                        &sig,
+                        span,
                     );
                     // W3.042 S2-S2: user-defined methods on named types (both
                     // inherent `impl Type { fn m(...) }` and trait `impl T for

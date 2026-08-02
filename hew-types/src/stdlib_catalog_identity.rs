@@ -57,6 +57,31 @@ pub fn monomorphic_callable_identity(name: &str) -> Option<&'static str> {
         .find(|identity| *identity == name)
 }
 
+/// Return a compiler-synthetic catalog endpoint whose source surface is an
+/// inherent method on an identity carrier rather than an ordinary free
+/// function.  These calls deliberately do not appear in
+/// [`MONOMORPHIC_CALLABLE_IDENTITIES`]: that projection is checked against
+/// `fn_sigs`, while these endpoints are admitted through checker-published
+/// method declarations.  Keeping the closed list here lets the checker pass
+/// the catalog identity forward without inventing a runtime family or relying
+/// on a method body's registration.
+#[must_use]
+pub fn compiler_synthetic_identity_endpoint(name: &str) -> Option<&str> {
+    match name {
+        "hew_node_id_display"
+        | "hew_location_node_id"
+        | "hew_location_slot"
+        | "hew_location_incarnation"
+        | "hew_location_display"
+        | "hew_remote_pid_location"
+        | "hew_remote_pid_node_id"
+        | "hew_remote_pid_slot"
+        | "hew_remote_pid_incarnation"
+        | "hew_remote_pid_display" => Some(name),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +95,14 @@ mod tests {
     fn user_and_generic_surface_spellings_are_not_catalog_endpoints() {
         assert_eq!(monomorphic_callable_identity("user_assert"), None);
         assert_eq!(monomorphic_callable_identity("Vec::new"), None);
+    }
+
+    #[test]
+    fn identity_carrier_synthetics_are_explicit_catalog_endpoints() {
+        assert_eq!(
+            compiler_synthetic_identity_endpoint("hew_remote_pid_node_id"),
+            Some("hew_remote_pid_node_id")
+        );
+        assert_eq!(compiler_synthetic_identity_endpoint("user_symbol"), None);
     }
 }

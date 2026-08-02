@@ -1133,6 +1133,9 @@ impl Checker {
             "link" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorLink);
             }
+            "link_remote" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::LinkRemote);
+            }
             "monitor" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor);
             }
@@ -1687,6 +1690,10 @@ impl Checker {
                 if resolved.as_remote_pid().is_some() {
                     let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
                     self.record_type(span, &result_ty);
+                    self.record_direct_call_target(
+                        span,
+                        CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor),
+                    );
                     return result_ty;
                 }
                 // Not a RemotePid — fall through to the generic `fn_sigs` path,

@@ -195,10 +195,10 @@ unsafe extern "C" fn wasm_periodic_cb(data: *mut c_void) {
         return;
     }
 
-    // Fire one message. (Catch-up delivery of multiple missed intervals
-    // is intentionally omitted: the wheel fires once per deadline, and
-    // the host is responsible for calling hew_wasm_timer_tick frequently
-    // enough.  This matches native timer_periodic.rs semantics.)
+    // Fire one message per wheel tick. Re-arming preserves the absolute
+    // cadence; if the next deadline is still past due, later wheel ticks each
+    // deliver one catch-up message until the cadence catches up. This bounds
+    // catch-up work performed by any single tick and matches the native path.
     // SAFETY: actor_has_live_mailbox verified the actor and mailbox are valid.
     unsafe { send_periodic_message(ctx.actor, ctx.msg_type) };
 
@@ -259,6 +259,9 @@ pub(crate) fn periodic_registry_is_none() -> bool {
 }
 
 /// Schedule a periodic self-send on the shared WASM timer wheel.
+///
+/// The timer stays on an absolute cadence. A late timer catches up at most
+/// once per wheel tick until it reaches that cadence, matching the native API.
 ///
 /// Returns a `*mut c_void` that is actually a `*mut WasmPeriodicCtx`; the
 /// caller stores it and passes it to [`hew_actor_cancel_periodic`].
@@ -631,6 +634,40 @@ mod tests {
         assert_eq!(actor.count(), 1);
 
         // SAFETY: the handle is still pending and uniquely owned here.
+        unsafe { hew_actor_cancel_periodic(handle) };
+        crate::scheduler_wasm::hew_sched_shutdown();
+    }
+
+    #[test]
+    fn late_fire_catches_up_one_tick_at_anchored_cadence() {
+        let _guard = crate::runtime_test_guard();
+        reset_runtime();
+        let actor = TestActor::new();
+        // SAFETY: actor is live for the test duration.
+        let handle = unsafe { hew_actor_schedule_periodic(actor.actor, 7, 10) };
+        assert!(!handle.is_null());
+        // SAFETY: handle owns one live periodic context.
+        let first_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        let late_tick = first_fire.saturating_add(25);
+
+        // A late tick fires once, then each tick at the same cursor catches up
+        // one anchored cadence slot. It must not burst within one tick or
+        // drift to `late_tick + interval`.
+        for expected_deadline in [first_fire + 10, first_fire + 20, first_fire + 30] {
+            // SAFETY: the cooperative timer wheel is serialized by the guard.
+            let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(late_tick) };
+            assert_eq!(fired, 1);
+            // SAFETY: the periodic context stays live while it is re-armed.
+            let next_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+            assert_eq!(next_fire, expected_deadline);
+        }
+        // SAFETY: the next anchored deadline is now ahead of the cursor.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(late_tick) };
+        assert_eq!(fired, 0);
+        drive_scheduler();
+        assert_eq!(actor.count(), 3);
+
+        // SAFETY: handle is still pending and uniquely owned here.
         unsafe { hew_actor_cancel_periodic(handle) };
         crate::scheduler_wasm::hew_sched_shutdown();
     }

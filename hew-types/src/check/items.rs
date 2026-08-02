@@ -1648,11 +1648,8 @@ impl Checker {
                     hook.name
                 ),
             ));
-            Ty::Named {
-                builtin: None,
-                name: "CrashAction".to_string(),
-                args: vec![],
-            }
+            crate::builtin_enums::monomorphic_builtin_enum_ty("CrashAction")
+                .expect("generated builtin enum catalog must contain CrashAction")
         }
     }
 

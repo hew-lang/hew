@@ -66,6 +66,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
+            | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
@@ -966,24 +967,39 @@ impl Ty {
     }
 
     /// Construct `SendError` — error type for tell-shaped lambda-actor calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn send_error() -> Ty {
-        Self::builtin_named(BuiltinType::SendError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("SendError")
+            .expect("generated builtin enum catalog must contain SendError")
     }
 
     /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn ask_error() -> Ty {
-        Self::builtin_named(BuiltinType::AskError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("AskError")
+            .expect("generated builtin enum catalog must contain AskError")
     }
 
     /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
     /// and `await stream.recv() | after d`.  A unit enum with one variant
     /// (`Timeout`) distinguishing deadline expiry from a closed channel
     /// (`Ok(None)`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn timeout_error() -> Ty {
-        Self::builtin_named(BuiltinType::TimeoutError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("TimeoutError")
+            .expect("generated builtin enum catalog must contain TimeoutError")
     }
 
     /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
@@ -995,21 +1011,27 @@ impl Ty {
     /// Construct `LinkError` — error type for `link(handle)` calls.
     ///
     /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
-    /// `std/link_monitor.hew` and wired in codegen slice B3. At the checker
+    /// `std/builtins.hew` and wired in codegen slice B3. At the checker
     /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn link_error() -> Ty {
-        Ty::Named {
-            name: "std.builtins.LinkError".to_string(),
-            args: vec![],
-            builtin: None,
-        }
+        crate::builtin_enums::monomorphic_builtin_enum_ty("LinkError")
+            .expect("generated builtin enum catalog must contain LinkError")
     }
 
     /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn monitor_error() -> Ty {
-        Self::builtin_named(BuiltinType::MonitorError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("MonitorError")
+            .expect("generated builtin enum catalog must contain MonitorError")
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

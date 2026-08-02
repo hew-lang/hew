@@ -1216,15 +1216,29 @@ pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDia
 /// merely *looks* like `Result<(), SendError>` by name still has to carry the
 /// real `SendError` payload variant.
 pub(super) fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return false;
     };
-    if name != "Result" {
+    let Some(send_error_name) = hew_types::builtin_enums::monomorphic_builtin_enum("SendError")
+        .map(|fact| fact.canonical_name)
+    else {
         return false;
-    }
+    };
     matches!(
         args.as_slice(),
-        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "SendError"
+        [
+            ResolvedTy::Unit,
+            ResolvedTy::Named {
+                name,
+                builtin: Some(hew_types::BuiltinType::SendError),
+                ..
+            }
+        ] if name == send_error_name
     )
 }
 /// Recognise the checker-recorded `Result<(), CloseError>` shape that
@@ -1232,15 +1246,23 @@ pub(super) fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
 /// materialises this from the runtime's i32 status, so the MIR producer
 /// must consume the recorded type (`checker-authority`) rather than infer it.
 pub(super) fn is_unit_close_error_result(ty: &ResolvedTy) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return false;
     };
-    if name != "Result" {
-        return false;
-    }
     matches!(
         args.as_slice(),
-        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "CloseError"
+        [
+            ResolvedTy::Unit,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::CloseError),
+                ..
+            }
+        ]
     )
 }
 /// Extract the `Result<R, RecvError>` payload type the recv producers
@@ -1248,14 +1270,19 @@ pub(super) fn is_unit_close_error_result(ty: &ResolvedTy) -> bool {
 /// closed on a checker contract drift rather than mis-sizing the payload
 /// slot (`checker-authority`, `boundary-fail-closed`).
 pub(super) fn recv_result_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return None;
     };
-    if name != "Result" {
-        return None;
-    }
     match args.as_slice() {
-        [payload, ResolvedTy::Named { name: err, .. }] if err == "RecvError" => Some(payload),
+        [payload, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::RecvError),
+            ..
+        }] => Some(payload),
         _ => None,
     }
 }
@@ -1368,5 +1395,42 @@ mod builtin_carrier_tests {
             .find(|layout| layout.name == "std.builtins.LinkError")
             .expect("canonical builtin layout must coexist");
         assert_ne!(builtin.variants.len(), user.variants.len());
+    }
+
+    #[test]
+    fn result_error_shape_gates_reject_same_leaf_user_types() {
+        let result = |error| {
+            ResolvedTy::named_builtin(
+                "RenamedResult",
+                BuiltinType::Result,
+                vec![ResolvedTy::Unit, error],
+            )
+        };
+
+        let send = hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("SendError")
+            .expect("generated SendError");
+        assert!(is_unit_send_error_result(&result(send)));
+        assert!(!is_unit_send_error_result(&result(ResolvedTy::named_user(
+            "SendError",
+            Vec::new(),
+        ))));
+
+        let close =
+            ResolvedTy::named_builtin("CompilerCloseError", BuiltinType::CloseError, Vec::new());
+        assert!(is_unit_close_error_result(&result(close)));
+        assert!(!is_unit_close_error_result(&result(
+            ResolvedTy::named_user("CloseError", Vec::new(),)
+        )));
+
+        let recv =
+            ResolvedTy::named_builtin("CompilerRecvError", BuiltinType::RecvError, Vec::new());
+        assert_eq!(
+            recv_result_payload_ty(&result(recv)),
+            Some(&ResolvedTy::Unit)
+        );
+        assert!(
+            recv_result_payload_ty(&result(ResolvedTy::named_user("RecvError", Vec::new())))
+                .is_none()
+        );
     }
 }

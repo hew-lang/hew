@@ -44,6 +44,7 @@ ALL_GROUPS = {
     "lifecycle-identity-authority",
     "suspend-authority",
     "owner-retirement-path",
+    "monomorphic-enum-leaf-synthesis",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1049,6 +1050,32 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("checker-hir-publication", "checker-insert-call", match)
             )
 
+    generated_enum_leaves = {
+        "LookupError",
+        "SendError",
+        "AskError",
+        "TimeoutError",
+        "LinkError",
+        "MonitorError",
+        "CrashAction",
+        "CrashKind",
+    }
+    for pattern in (
+        "Ty::Named { name: $NAME, $$$FIELDS }",
+        "ResolvedTy::Named { name: $NAME, $$$FIELDS }",
+        "hew_types::ResolvedTy::Named { name: $NAME, $$$FIELDS }",
+    ):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            literal = re.search(r'"([^"\\]+)"', single_meta(match, "NAME"))
+            if literal is not None and literal.group(1) in generated_enum_leaves:
+                findings.add(
+                    finding(
+                        "monomorphic-enum-leaf-synthesis",
+                        "leaf-named-semantic-struct-literal",
+                        match,
+                    )
+                )
+
     literals_by_path: defaultdict[str, list[tuple[int, int, str]]] = defaultdict(list)
     for kind in ("string_literal", "raw_string_literal"):
         for literal in run_query(ast_grep, root, kind=kind):
@@ -1245,6 +1272,8 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-2"
     if group in {"suspend-authority", "owner-retirement-path"}:
         return "stage-3"
+    if group == "monomorphic-enum-leaf-synthesis":
+        return "stage-3" if path.startswith("hew-mir/") else "stage-2"
     if group == "mir-ownership-sink":
         return "stage-4"
     if group == "legacy-heap-reader":

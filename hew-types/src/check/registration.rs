@@ -1259,11 +1259,8 @@ impl Checker {
                     name: "T".to_string(),
                     args: vec![],
                 }),
-                Ty::Named {
-                    builtin: None,
-                    name: "LookupError".to_string(),
-                    args: vec![],
-                },
+                crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
+                    .expect("generated builtin enum catalog must contain LookupError"),
             ),
         );
 
@@ -6791,6 +6788,29 @@ impl Checker {
         // declaration must not become a live intrinsic dispatch target.
     }
 
+    fn register_registry_source_intrinsic_declarations(
+        &mut self,
+        module_owner: &str,
+        items: &[Spanned<Item>],
+    ) {
+        for (item, _) in items {
+            let Item::Function(function) = item else {
+                continue;
+            };
+            let Some(intrinsic_key) = &function.intrinsic else {
+                continue;
+            };
+            let saved_importer_module = self.current_module.replace(module_owner.to_string());
+            self.register_intrinsic_declaration(
+                format!("{module_owner}.{}", function.name),
+                intrinsic_key,
+                &function.name,
+                function,
+            );
+            self.current_module = saved_importer_module;
+        }
+    }
+
     fn validate_receiver_identity_method(
         &mut self,
         type_name: &str,
@@ -9352,6 +9372,19 @@ impl Checker {
                             &module_full_path,
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),
+                        );
+                    } else if decl.spec.is_none() && !registry_source_items.is_empty() {
+                        // A plain module import intentionally does not publish
+                        // the module's full source declaration surface, but
+                        // compiler intrinsic metadata is attached to those
+                        // exact parsed declarations and cannot be reconstructed
+                        // from the ABI wrapper summary. Publish only that
+                        // metadata under the already-proven canonical source
+                        // owner; ordinary functions/types remain on the
+                        // established registry path.
+                        self.register_registry_source_intrinsic_declarations(
+                            &canonical_owner,
+                            &registry_source_items,
                         );
                     }
 

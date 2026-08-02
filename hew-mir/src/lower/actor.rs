@@ -2,8 +2,8 @@ use super::{
     actor_name_from_handle_ty, actor_name_from_remote_pid_ty, is_self_expr,
     is_unit_close_error_result, is_unit_send_error_result, method_name_from_id,
     recv_result_payload_ty, ty_contains_channel_handle, ActorLayout, ActorMethodInfo, Builder,
-    BuiltinType, CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind,
-    Instr, MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
+    CmpPred, FieldOffset, FloatWidth, FungibleChildRef, HashMap, HirExpr, HirExprKind, Instr,
+    MirDiagnostic, MirDiagnosticKind, PendingOutboundArg, PendingOutboundSite, Place,
     ReleaseSymbolVerdict, ResolvedTy, RuntimeCallContext, StableActorRole, SuspendKind, Terminator,
     CHILD_LOOKUP_RESULT_TY_NAME, RECEIVE_GEN_STREAM_CAPACITY,
 };
@@ -2546,12 +2546,10 @@ impl Builder {
         // `Result<reply_ty, AskError>` after the unification fix in the type checker.
         let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
         let reply_dest = self.alloc_local(reply_ty.clone());
-        let error_dest = self.alloc_local(ResolvedTy::Named {
-            name: "AskError".to_string(),
-            args: Vec::new(),
-            builtin: Some(BuiltinType::AskError),
-            is_opaque: false,
-        });
+        let error_dest = self.alloc_local(
+            hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                .expect("generated builtin enum catalog must contain AskError"),
+        );
         let next = self.alloc_block();
         self.record_pending_outbound_args(
             self.current_block_id,
@@ -2733,12 +2731,10 @@ impl Builder {
         let timeout_ms = self.lower_value(timeout_ms)?;
         let result_dest = self.alloc_local(self.subst_ty(&expr.ty));
         let reply_dest = self.alloc_local(reply_ty.clone());
-        let error_dest = self.alloc_local(ResolvedTy::Named {
-            name: "AskError".to_string(),
-            args: Vec::new(),
-            builtin: Some(BuiltinType::AskError),
-            is_opaque: false,
-        });
+        let error_dest = self.alloc_local(
+            hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                .expect("generated builtin enum catalog must contain AskError"),
+        );
         let next = self.alloc_block();
         // Suspendable-caller flip (NEW-5). A caller that carries the execution
         // context (an actor handler / closure / task entry) runs on the

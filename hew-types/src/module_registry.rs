@@ -308,10 +308,12 @@ impl std::fmt::Display for ModuleError {
 }
 
 impl ModuleRegistry {
-    fn module_info_declares_type(info: &ModuleInfo, leaf: &str) -> bool {
-        info.source_items
-            .iter()
-            .any(|(item, _)| matches!(item, Item::TypeDecl(decl) if decl.name == leaf))
+    fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
+        info.source_items.iter().any(|(item, _)| match item {
+            Item::TypeDecl(decl) => decl.name == leaf,
+            Item::Record(decl) => decl.name == leaf,
+            _ => false,
+        })
     }
 
     /// Resolve the canonical owner of a type declared by an exact imported
@@ -323,7 +325,7 @@ impl ModuleRegistry {
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         if let Some(info) = self.modules.get(&module_id_from_identity(owner)) {
-            if !Self::module_info_declares_type(info, leaf) {
+            if !Self::module_info_declares_nominal(info, leaf) {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
@@ -334,7 +336,7 @@ impl ModuleRegistry {
             let info = load_module_checked(&loader_path, search_path)
                 .ok()
                 .flatten()?;
-            if !Self::module_info_declares_type(&info, leaf) {
+            if !Self::module_info_declares_nominal(&info, leaf) {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
@@ -615,7 +617,7 @@ impl ModuleRegistry {
             .rsplit_once('.')
             .map_or(canonical_owner, |(_, leaf)| leaf);
         if let Some(leaf) = name.strip_prefix(&format!("{extracted_owner}.")) {
-            if !leaf.contains('.') && Self::module_info_declares_type(info, leaf) {
+            if !leaf.contains('.') && Self::module_info_declares_nominal(info, leaf) {
                 return Some(format!("{canonical_owner}.{leaf}"));
             }
         }
@@ -1210,6 +1212,52 @@ mod tests {
             reg.canonical_registry_signature_type_identity("ch.Receiver", "signature_importer",),
             None,
             "the shipped Receiver declaration must not leak through the canonical cache"
+        );
+    }
+
+    #[test]
+    fn registry_signature_owner_projection_accepts_exact_record_declarations_only() {
+        let fixture = TestDir::new("registry-signature-record-owner");
+        fs::write(
+            fixture.root.join("record_owner.hew"),
+            "pub record Packet { value: i64 }\n",
+        )
+        .expect("write record owner");
+        fs::write(
+            fixture.root.join("record_importer.hew"),
+            "import record_owner as packets;\n",
+        )
+        .expect("write record importer");
+        fs::write(
+            fixture.root.join("lookalike.hew"),
+            "pub record Packet { other: string }\n",
+        )
+        .expect("write record lookalike");
+
+        let mut reg = ModuleRegistry::new(vec![fixture.root.clone()]);
+        reg.load("record_owner").expect("load record owner");
+        reg.load("lookalike").expect("load record lookalike");
+        reg.load("record_importer").expect("load record importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("record_owner.Packet", "record_owner"),
+            Some("record_owner.Packet".to_string()),
+            "an exact same-module record declaration authorizes its owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("packets.Packet", "record_importer"),
+            Some("record_owner.Packet".to_string()),
+            "an imported record signature uses the exact resolved declaration owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("packets.Missing", "record_importer"),
+            None,
+            "an absent nominal cannot borrow the imported record owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("lookalike.Packet", "record_importer"),
+            None,
+            "a loaded same-leaf lookalike has no authority without an exact import binding"
         );
     }
 

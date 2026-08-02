@@ -16746,12 +16746,9 @@ impl LowerCtx {
                     // that downstream HIR consumers (PostfixTry, MIR lowering)
                     // see the unified result type.  The MIR `lower_actor_ask`
                     // reads `expr.ty` to allocate the `result_dest` slot.
-                    let ask_error_ty = ResolvedTy::Named {
-                        name: "AskError".to_string(),
-                        args: Vec::new(),
-                        builtin: Some(BuiltinType::AskError),
-                        is_opaque: false,
-                    };
+                    let ask_error_ty =
+                        hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                            .expect("generated builtin enum catalog must contain AskError");
                     let result_ty = match ResolvedTy::from_ty(&reply_ty) {
                         Ok(r) => ResolvedTy::Named {
                             name: "Result".to_string(),
@@ -21045,6 +21042,26 @@ impl LowerCtx {
             return ResolvedTy::named_user(name.to_string(), args);
         }
 
+        // Generated monomorphic enum annotations use the same exact source
+        // identity as checker-authored expression facts and synthetic HIR
+        // layouts. This runs only after local declarations and import bindings
+        // have had their chance to win, so a user same-leaf enum remains user
+        // owned and an unrelated qualified owner is never retried by leaf.
+        let builtin_hint = crate::builtin_type_classes::builtin_type_registration(name)
+            .map(|registration| registration.builtin)
+            .or_else(|| hew_types::lookup_builtin_type(type_name));
+        if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
+            name,
+            builtin_hint,
+            current_module_is_file_import,
+        ) {
+            return if let Some(builtin) = builtin_hint {
+                ResolvedTy::named_builtin(canonical, builtin, args)
+            } else {
+                ResolvedTy::named_user(canonical, args)
+            };
+        }
+
         // Qualified inputs are resolved by exact identity only. The known std
         // spellings live in `lookup_builtin_type`; an arbitrary
         // `foo.Receiver` must never inherit the bare `Receiver` registration.
@@ -21318,7 +21335,7 @@ impl LowerCtx {
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
         if let Some(builtin) = builtin {
-            if !name.contains('.') || self.qualified_source_builtin(&name) == Some(builtin) {
+            if !name.contains('.') {
                 // Preserve the checker-authored presentation identity. Runtime
                 // classification is carried exclusively by `builtin`; a
                 // renamed builtin must remain renamed across this boundary.
@@ -21328,6 +21345,9 @@ impl LowerCtx {
                     builtin: Some(builtin),
                     is_opaque: false,
                 };
+            }
+            if self.qualified_source_builtin(&name) == Some(builtin) {
+                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
             }
             return ResolvedTy::named_user(name, args);
         }
@@ -21341,12 +21361,18 @@ impl LowerCtx {
         }
         let canonical = self.canonical_current_module_record_name(&name);
         if canonical == name {
+            if name.contains('.') {
+                if let Some(builtin) = self.qualified_source_builtin(&name) {
+                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                }
+            }
             // The checker-authored builtin discriminator is authoritative.
             // An unchanged `builtin: None` identity must not be reclassified
-            // through the spelling catalog: a user `Vec<T>` is not the
-            // runtime vector merely because its leaf name collides. Exact
-            // declaration-driven owner qualification below may still recover
-            // a canonical source builtin when `canonical != name`.
+            // through the bare spelling catalog: a user `Vec<T>` is not the
+            // runtime vector merely because its leaf name collides. The
+            // qualified branch above is narrower: it requires exact canonical
+            // stdlib source provenance before recovering a compatibility
+            // spelling such as `stream.Sink`.
             ResolvedTy::Named {
                 name,
                 args,
@@ -26967,12 +26993,9 @@ impl LowerCtx {
                     .get(&inner_key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty = ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: vec![],
-                    builtin: Some(BuiltinType::TimeoutError),
-                    is_opaque: false,
-                };
+                let timeout_error_ty =
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError");
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
                     args: vec![option_ty.clone(), timeout_error_ty],
@@ -27027,12 +27050,9 @@ impl LowerCtx {
                     .get(&inner_key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty = ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: vec![],
-                    builtin: Some(BuiltinType::TimeoutError),
-                    is_opaque: false,
-                };
+                let timeout_error_ty =
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError");
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
                     args: vec![option_ty.clone(), timeout_error_ty],

@@ -33,7 +33,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::mailbox_header::{HewSysMsg, Origin};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_remove,
-    hew_timer_wheel_schedule_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
+    timer_wheel_schedule_at_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
 };
 
 static WASM_CLEANUP_RAN: AtomicBool = AtomicBool::new(false);
@@ -652,15 +652,12 @@ unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
     // Allocate the callback context (Box-owned; freed by callback or cancel).
     let ctx = Box::into_raw(Box::new(WasmSleepCtx { actor }));
 
-    // Compute delay: deadline_ms is absolute; the wheel takes a relative delay.
-    // SAFETY: hew_now_ms has no preconditions.
-    let now = unsafe { hew_now_ms() };
-    let delay_ms = deadline_ms.saturating_sub(now);
-
-    // Schedule on the wheel and register the handle for O(1) cancel.
+    // Schedule the absolute request directly. The cooperative host may leave
+    // the wheel cursor stale between ticks, so translating through a separately
+    // sampled relative delay can shift the effective deadline under load.
     // SAFETY: wheel is valid; ctx and actor are live.
     let handle =
-        unsafe { hew_timer_wheel_schedule_handle(wheel, delay_ms, wasm_sleep_cb, ctx.cast()) };
+        unsafe { timer_wheel_schedule_at_handle(wheel, deadline_ms, wasm_sleep_cb, ctx.cast()) };
 
     if handle.entry.is_null() {
         // Wheel rejected the schedule (e.g. entry allocation failure) — fail
@@ -2904,22 +2901,17 @@ mod tests {
     /// on drop.
     ///
     /// WHY: the wasm timer tests drive `hew_wasm_timer_tick` / `drain_timed_work`
-    /// with explicit deadlines derived from `hew_now_ms()`. On the real clock
-    /// the test's anchor `now`, the wheel's `current_ms` captured at lazy
-    /// creation, and `park_actor_sleep`'s `deadline - now` delay are three
-    /// independent monotonic reads that drift apart under CPU load — flipping
-    /// the exact-deadline assertions (the `timer_tick_wakes_at_exact_deadline`
-    /// abort under wasmtime). Pinning a fixed virtual `now` collapses all three
-    /// to one value, making the wake boundary exact without weakening any
-    /// assertion (no tolerance, no sleeps).
+    /// with explicit deadlines derived from `hew_now_ms()`. Pinning a fixed
+    /// virtual `now` makes their exact-boundary assertions independent of host
+    /// execution time without weakening them with tolerances or sleeps.
     ///
     /// WHY wasm32-only: the virtual-clock seam lives in `wasm_stubs` (a
     /// wasm32-only module) and only the wasm `hew_now_ms` consults it. The wasm
     /// cooperative harness is single-threaded, so the seam needs no locking.
     /// Native runs these tests multi-threaded (num-cpus) but reads a different
-    /// clock (`io_time::hew_now_ms`), and the fast native clock already makes
-    /// the boundary reliable — so on native the guard is inert and the real
-    /// clock is left untouched.
+    /// clock (`io_time::hew_now_ms`). Absolute timer scheduling preserves the
+    /// requested boundary there, so the guard is inert and the real clock is
+    /// left untouched.
     struct VirtualClock;
 
     impl VirtualClock {
@@ -8337,6 +8329,36 @@ mod tests {
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
 
+    #[test]
+    fn sleep_deadline_ignores_a_stale_wheel_cursor() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        // SAFETY: the runtime owns one live wheel and this test serializes access.
+        let wheel = unsafe { wasm_timer_wheel() };
+        // Model a cursor that differs from the clock sampled by the sleep request.
+        // SAFETY: wheel is live and exclusively accessed by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 100) };
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor);
+        // SAFETY: hew_now_ms has no preconditions and actor is live.
+        let deadline = unsafe { hew_now_ms() }.saturating_add(500);
+        // SAFETY: actor remains live until the scheduler is shut down below.
+        unsafe { park_actor_sleep(actor_ptr, deadline) };
+
+        // SAFETY: timer access is serialized by the test guard.
+        let woken = unsafe { hew_wasm_timer_tick(deadline) };
+        assert_eq!(woken, 1, "a sleeping actor must wake at its deadline");
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32
+        );
+
+        hew_sched_shutdown();
+    }
+
     /// [`hew_wasm_sleeping_count`] returns 0 when no actors are sleeping.
     #[test]
     fn sleeping_count_zero_when_empty() {
@@ -8355,11 +8377,9 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
-        // Pin the virtual clock (wasm32; see VirtualClock) so the wheel's
-        // `current_ms` at creation and the `park_actor_sleep` delay computation
-        // share one deterministic `now`. Inert on native (the seam is
-        // wasm32-only), where the exact-deadline boundary is instead recovered
-        // from the wheel's own scheduled deadline below.
+        // Pin the virtual clock (wasm32; see VirtualClock) so the requested
+        // boundary is deterministic. The seam is inert on native, where
+        // absolute scheduling preserves the requested boundary directly.
         let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
@@ -8373,27 +8393,9 @@ mod tests {
         // SAFETY: actor valid for duration of test.
         unsafe { park_actor_sleep(a_ptr, now + 1000) };
 
-        // Recover the actual absolute deadline the wheel scheduled, rather than
-        // re-deriving it from a fresh `hew_now_ms()` read. On native (where the
-        // VirtualClock seam is inert) the wheel's `current_ms` at creation and
-        // `park_actor_sleep`'s delay `now` are two independent monotonic reads,
-        // so the wheel fires the entry at its absolute `deadline_ms`
-        // (`wheel_current_ms + (deadline - park_now)`), which drifts from
-        // `now + 1000` under CPU load and intermittently aborted the
-        // exact-deadline assertion. Ticking to the wheel's own absolute
-        // scheduled deadline makes the wake boundary exact on every platform
-        // with no tolerance and no weakened assertion.
-        // SAFETY: wheel was created by park_actor_sleep and is non-null here.
-        let wheel = unsafe { wasm_timer_wheel_raw() };
-        assert!(
-            !wheel.is_null(),
-            "park_actor_sleep must have created the wheel"
-        );
-        // SAFETY: wheel is a valid, live HewTimerWheel pointer.
-        let deadline = unsafe { crate::timer_wheel::timer_wheel_earliest_abs_deadline_ms(wheel) }
-            .expect("a live sleep entry must have an absolute deadline");
+        let deadline = now + 1000;
 
-        // One ms before the wheel's scheduled deadline: nothing wakes.
+        // One ms before the requested deadline: nothing wakes.
         // SAFETY: Single-threaded test.
         let woken = unsafe { hew_wasm_timer_tick(deadline - 1) };
         assert_eq!(woken, 0);

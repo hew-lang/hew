@@ -697,6 +697,76 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_named_std_function_imports_preserve_exact_owner_for_calls_and_values() {
+        for (binding, import) in [
+            ("try_read", "import std::fs::{ try_read };"),
+            (
+                "read_handle",
+                "import std::fs::{ try_read as read_handle };",
+            ),
+        ] {
+            let source = format!(
+                "{import}\nfn main() {{ let _result = {binding}(\"/dev/null\"); let _producer = {binding}; }}\n"
+            );
+            let parsed = hew_parser::parse(&source);
+            assert!(
+                parsed.errors.is_empty(),
+                "parse errors: {:?}",
+                parsed.errors
+            );
+            let mut checker = Checker::new(test_registry());
+            checker.enable_wasm_target();
+            let output = checker.check_program(&parsed.program);
+            assert_eq!(
+                checker
+                    .import_fn_name_aliases
+                    .get(&(None, binding.to_string())),
+                Some(&"std.fs.try_read".to_string()),
+                "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
+                checker.import_fn_name_aliases,
+            );
+            let rejections = output
+                .errors
+                .iter()
+                .filter(|error| {
+                    error.kind == TypeErrorKind::PlatformLimitation
+                        && error.message.contains("File-backed stream operations")
+                })
+                .count();
+            assert_eq!(
+                rejections, 2,
+                "named binding `{binding}` must preserve the std.fs.try_read policy for call and value positions: {:#?}",
+                output.errors
+            );
+            assert!(
+                !output.errors.iter().any(|error| {
+                    matches!(
+                        error.kind,
+                        TypeErrorKind::UndefinedFunction | TypeErrorKind::UndefinedVariable
+                    )
+                }),
+                "named binding `{binding}` must resolve as an actual function import: {:#?}",
+                output.errors
+            );
+            assert!(output.fn_sigs.contains_key(binding));
+            assert!(
+                !output
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+                "using named binding `{binding}` must credit its import: {:#?}",
+                output.warnings
+            );
+            if binding == "read_handle" {
+                assert!(
+                    !output.fn_sigs.contains_key("try_read"),
+                    "a renamed import must not publish the original bare name"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std::net::tls;\n",

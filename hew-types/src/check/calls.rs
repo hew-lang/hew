@@ -1804,9 +1804,7 @@ impl Checker {
                 .get(&(self.current_module.clone(), func_name.clone()))
                 .cloned()
             {
-                self.used_modules
-                    .borrow_mut()
-                    .insert(ImportKey::new(self.current_module.clone(), module));
+                self.mark_module_owner_bindings_used(&module);
             }
             let assoc_bindings = self
                 .fn_type_param_assoc_bindings

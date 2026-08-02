@@ -4889,6 +4889,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_channel_sender_close" | "hew_channel_receiver_close" => {
             ctx.void_type().fn_type(&[ptr_ty.into()], false)
         }
+        // hew_lambda_actor_clone(actor: *mut HewLambdaActorHandle)
+        //     -> *mut HewLambdaActorHandle
+        // Used when a nested lambda actor takes an independent strong capture.
+        "hew_lambda_actor_clone" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.

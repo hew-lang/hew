@@ -30244,6 +30244,35 @@ fn lower_terminator<'ctx>(
                                     .build_store(field_ptr, owned)
                                     .llvm_ctx("lambda env string clone store")?;
                             }
+                            LambdaEnvFieldDrop::StrongLambdaActorHandle => {
+                                let field_ptr = fn_ctx
+                                    .builder
+                                    .build_struct_gep(
+                                        env_struct,
+                                        heap_env,
+                                        field_idx,
+                                        &format!("lambda_env_actor_{idx}_ptr"),
+                                    )
+                                    .llvm_ctx("lambda env actor field gep")?;
+                                let alias = fn_ctx
+                                    .builder
+                                    .build_load(
+                                        ptr_ty,
+                                        field_ptr,
+                                        &format!("lambda_env_actor_{idx}_alias"),
+                                    )
+                                    .llvm_ctx("lambda env actor alias load")?;
+                                let owned = fn_ctx.call_runtime_basic(
+                                    "hew_lambda_actor_clone",
+                                    &[alias.into()],
+                                    &format!("lambda_env_actor_{idx}_clone"),
+                                    "hew_lambda_actor_clone call",
+                                )?;
+                                fn_ctx
+                                    .builder
+                                    .build_store(field_ptr, owned)
+                                    .llvm_ctx("lambda env actor clone store")?;
+                            }
                             LambdaEnvFieldDrop::WeakSelfHandle => {
                                 let field_ptr = fn_ctx
                                     .builder

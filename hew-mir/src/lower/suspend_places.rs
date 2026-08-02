@@ -1025,11 +1025,15 @@ pub(super) fn terminator_escape_places(
         // No caller binding escapes: construction clones from the synthetic
         // shell. The shell itself is projection-tainted to suppress its drop.
         Terminator::MakeGenerator { .. } => Vec::new(),
-        // Lambda-actor construction: body_fn and state_drop_fn are static
-        // symbols and the `dest` handle slot is the WRITE — but the capture
-        // env (when present) transfers into the actor's heap-boxed state,
-        // so it is poisoned like any other moved-into-sink payload.
-        Terminator::MakeLambdaActor { env, .. } => env.iter().copied().collect(),
+        // Lambda-actor construction does not transfer a caller binding. The
+        // synthetic stack env is an alias shell only: every admitted owned
+        // field has an explicit clone-at-boxing protocol (`string` and strong
+        // `LambdaPid`), weak self is back-filled after construction, and
+        // BitCopy fields own nothing. Unsupported owned fields fail closed in
+        // `lower_spawn_lambda_actor` before this terminator exists. Poisoning
+        // the shell would therefore misclassify the caller's still-valid,
+        // independently dropped source handle as an aggregate move.
+        Terminator::MakeLambdaActor { .. } => Vec::new(),
     }
 }
 #[cfg(test)]

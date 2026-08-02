@@ -2126,6 +2126,7 @@ fn render_lambda_env_field_drop(drop: LambdaEnvFieldDrop) -> &'static str {
     match drop {
         LambdaEnvFieldDrop::None => "none",
         LambdaEnvFieldDrop::String => "string",
+        LambdaEnvFieldDrop::StrongLambdaActorHandle => "strong_lambda_actor",
         LambdaEnvFieldDrop::WeakSelfHandle => "weak_self",
     }
 }

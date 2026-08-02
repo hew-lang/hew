@@ -187,6 +187,48 @@ fn lambda_pid_capture_env_drop_frees_bytes_only() {
     );
 }
 
+/// A nested lambda actor keeps captured lambda-actor handles alive through an
+/// independent strong wrapper in its boxed environment. The producer-side
+/// alias must be cloned after the env memcpy, and the synthesized env dropper
+/// must release that clone before freeing the env bytes.
+#[test]
+fn nested_lambda_pid_capture_clones_and_releases_the_env_owner() {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+
+    let emit_dir = tempfile::Builder::new()
+        .prefix("hew-nested-lambda-pid-env-")
+        .tempdir()
+        .expect("create emit dir");
+    let compile = Command::new(hew_bin(&repo))
+        .current_dir(&repo)
+        .args([
+            "compile",
+            "--emit-dir",
+            emit_dir.path().to_str().expect("emit dir UTF-8"),
+            "examples/lambda_actor_pipeline.hew",
+        ])
+        .output()
+        .expect("run built hew compile");
+    assert!(
+        compile.status.success(),
+        "hew compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let ll = std::fs::read_to_string(emit_dir.path().join("lambda_actor_pipeline.ll"))
+        .expect("read emitted LLVM IR");
+    assert!(
+        ll.contains("call ptr @hew_lambda_actor_clone("),
+        "nested LambdaPid env capture must clone its strong wrapper"
+    );
+    assert!(
+        ll.contains("call i32 @hew_lambda_actor_release("),
+        "nested LambdaPid env dropper must release its owned wrapper"
+    );
+}
+
 /// Run `hew compile --dump-mir elab` on a repo-relative source and return
 /// the dump text.
 fn dump_elab_mir(repo: &Path, rel_source: &str) -> String {

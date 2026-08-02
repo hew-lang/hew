@@ -6381,6 +6381,11 @@ pub enum LambdaEnvFieldDrop {
     /// Owned `string` field cloned into the env at spawn; dropped via
     /// `hew_string_drop`.
     String,
+    /// Owned strong `LambdaPid<Msg, Reply>` capture. Codegen replaces the
+    /// frame alias with an independent `hew_lambda_actor_clone` in the boxed
+    /// environment; teardown releases that clone with
+    /// `hew_lambda_actor_release`.
+    StrongLambdaActorHandle,
     /// Weak self-handle (`CaptureKind::Weak`): nulled at box time,
     /// back-filled with `hew_lambda_actor_downgrade(handle)` after
     /// construction, dropped via `hew_lambda_actor_weak_drop`.

@@ -1555,13 +1555,15 @@ def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
         "compiler_e2e_cases": [
             {
                 "carrier_key": fact.carrier_key,
+                "release_symbol": fact.release_symbol,
+                "close_symbol": f"{fact.carrier_key}::close",
                 "scope_exit_source": (
-                    f"import {fact.module.replace('.', '::')};\n"
-                    f"fn scope_exit_case(value: {fact.resource}) {{ }}\n"
+                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"fn scope_exit_case(consume value: {fact.resource}) {{ }}\n"
                 ),
                 "explicit_close_source": (
-                    f"import {fact.module.replace('.', '::')};\n"
-                    f"fn explicit_close_case(value: {fact.resource}) {{ value.close(); }}\n"
+                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"fn explicit_close_case(consume value: {fact.resource}) {{ value.close(); }}\n"
                 ),
             }
             for fact in facts
@@ -1581,6 +1583,11 @@ def main() -> int:
         "--opaque-resource-facts",
         type=Path,
         help="write AST-derived shipped opaque resource facts (use - for stdout)",
+    )
+    parser.add_argument(
+        "--opaque-resource-facts-only",
+        action="store_true",
+        help="stop after the AST-derived lifecycle artifact is written",
     )
     args = parser.parse_args()
     root = args.root.resolve()
@@ -1602,6 +1609,8 @@ def main() -> int:
                 print(rendered, end="")
             else:
                 args.opaque_resource_facts.write_text(rendered)
+        if args.opaque_resource_facts_only:
+            return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
     presentation_path = (

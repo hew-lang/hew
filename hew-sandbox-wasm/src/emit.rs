@@ -842,7 +842,7 @@ impl<'a> PackageEmitter<'a> {
                 let named_id = self.type_id_for_named(name, args);
                 let kind = if name == "Vec" {
                     "vector"
-                } else if name.eq_ignore_ascii_case("Regex") || name.ends_with(".Regex") {
+                } else if name == "Regex" {
                     "regex"
                 } else if self.enum_layouts.contains_key(&named_id) {
                     "enum"

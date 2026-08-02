@@ -968,6 +968,42 @@ fn main() {
     }
 
     #[test]
+    fn user_regex_name_remains_a_record_layout() {
+        set_test_hewpath();
+        let source = r"
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    println(value.value);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let layout = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex type layout");
+        assert_eq!(
+            layout.kind, "record",
+            "a user type whose presentation name resembles the internal regex shim must not mint regex layout authority"
+        );
+    }
+
+    #[test]
     fn panic_fixture_emits_panic_opcode() {
         let output =
             compile_to_sandbox_bytecode(&fixture("11-runtime-panic"), Some("sandbox-vm-export"))

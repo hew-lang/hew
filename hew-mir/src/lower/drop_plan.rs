@@ -1187,7 +1187,7 @@ pub(super) fn elaborate(
     // OR consume-retracted owners) so BOTH shapes are covered; this locates where
     // each candidate enters the return flow so the elaborator can restore its
     // scope-exit drop on exactly the `Return` exits that transfer cannot reach.
-    let returned_member_candidates = builder.owned_locals_returned_candidates();
+    let returned_member_candidates = builder.owned_locals_exit_candidates();
     let returned_member_transfer_blocks = derive_returned_member_transfer_blocks(
         &checked.blocks,
         &returned_member_candidates,
@@ -1314,8 +1314,14 @@ pub(super) fn elaborate(
                     == Some(*local)
             })
     });
+    // A `ConsumedAt` disposition proves the value is absent only AFTER its
+    // consuming instruction.  It can still be live at an earlier Return or a
+    // coroutine-abandon edge, so the LIFO template must retain it and let the
+    // CFG state filter select the exact owning exits.  `BodyEndReleased`,
+    // `ScopeReleased`, and interior aliases stay excluded by this view.
+    let owned_locals_exit_candidates = builder.owned_locals_exit_candidates();
     let lifo_drops = build_lifo_drops(
-        &owned_locals_snapshot,
+        &owned_locals_exit_candidates,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
@@ -2837,6 +2843,20 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 if let Some(root) = cx.tracked_root(*arg) {
                     obligation_entry(state, root).ambiguous_discharge();
                 }
+            }
+        }
+        Instr::RcIntrinsic {
+            op: hew_types::RcIntrinsicOp::New | hew_types::RcIntrinsicOp::Set,
+            value: Some(value),
+            ..
+        } => {
+            // `Rc::new(value)` and `Rc::set(value)` take the payload by
+            // ownership.  The resulting/newly-installed Rc payload is the
+            // sole successor authority, so the source mint is discharged
+            // exactly here rather than left as an anonymous producer at the
+            // function exit.
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).definite_discharge();
             }
         }
         Instr::CallRuntimeAbi(call) => {
@@ -9584,6 +9604,34 @@ mod obligation_balance_validator {
         assert!(
             findings.is_empty(),
             "aggregation is not a definite leak: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn rc_new_consumes_its_payload_owner() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::RcIntrinsic {
+                    dest: Place::Local(2),
+                    op: hew_types::RcIntrinsicOp::New,
+                    payload_ty: ResolvedTy::Unit,
+                    receiver: None,
+                    value: Some(Place::Local(1)),
+                    result_ty: ResolvedTy::Unit,
+                },
+            ],
+            Terminator::Return,
+        )];
+        let findings = run(
+            blocks,
+            vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
+            &[(1, "rc payload")],
+        );
+        assert!(
+            findings.is_empty(),
+            "Rc::new must take ownership of its payload: {findings:?}"
         );
     }
 

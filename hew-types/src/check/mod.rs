@@ -314,7 +314,17 @@ impl Checker {
         // stdlib search-path resolver may receive Sender/Receiver runtime
         // identity.
         self.canonical_std_module_sources.clear();
+        self.canonical_std_root_sources.clear();
         if let Some(module_graph) = &program.module_graph {
+            // `hew check std/foo.hew` rewrites the graph root to a synthetic,
+            // source-less floor module and promotes the shipped file to its
+            // canonical `std.foo` identity. In a normal user program the root
+            // always owns source paths, so this distinguishes direct shipped
+            // compilation from merely importing a stdlib module.
+            let directly_checked_stdlib = module_graph
+                .modules
+                .get(&module_graph.root)
+                .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
                 let module_full_path = module_id.path.join(".");
                 if module.source_paths.iter().any(|source| {
@@ -325,9 +335,36 @@ impl Checker {
                 }) {
                     self.canonical_std_module_sources.insert(module_full_path);
                 }
+                // A shipped stdlib file can be checked directly as the graph
+                // root (`hew check std/string.hew`). Its root module has no
+                // dotted identity, so recover only the closed set of
+                // compiler-lowered stdlib extern owners from the canonical
+                // source path. A user root cannot obtain this authority.
+                if directly_checked_stdlib {
+                    for declaration in crate::runtime_call::canonical_std_io_extern_signatures() {
+                        if module.source_paths.iter().any(|source| {
+                            crate::module_registry::is_canonical_stdlib_module_source(
+                                source,
+                                declaration.module,
+                            )
+                        }) {
+                            self.canonical_std_module_sources
+                                .insert(declaration.module.to_string());
+                            self.canonical_std_root_sources
+                                .insert(declaration.module.to_string());
+                        }
+                    }
+                }
             }
         }
         self.register_builtins();
+        // `register_builtins` parses the compiler-embedded `std/builtins.hew`
+        // source outside the module graph.  Record that exact producer so
+        // later trait/source identity normalization can relate prelude traits
+        // (notably `Iterator`) to their canonical owner without treating a
+        // user module named `builtins` as authoritative.
+        self.canonical_std_module_sources
+            .insert("std.builtins".to_string());
         // Compute the precise cross-module record-name collision set before any
         // registration runs, so the imported-actor registration can owner-qualify
         // a colliding receive-fn return record to its declaring module (#2208).
@@ -534,7 +571,7 @@ impl Checker {
         let mut expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
             .iter()
-            .map(|(k, v)| (k.clone(), self.subst.resolve(v)))
+            .map(|(k, v)| (k.clone(), self.normalize_for_use(v)))
             .collect();
 
         // Emit unused import warnings. A REPL fragment imports modules it will
@@ -585,8 +622,8 @@ impl Checker {
             std::mem::take(&mut self.builtin_result_output_type_args)
                 .into_iter()
                 .filter_map(|(k, (ok_ty, err_ty))| {
-                    let ok_ty = self.subst.resolve(&ok_ty).materialize_literal_defaults();
-                    let err_ty = self.subst.resolve(&err_ty).materialize_literal_defaults();
+                    let ok_ty = self.finalize_type_for_handoff(&ok_ty);
+                    let err_ty = self.finalize_type_for_handoff(&err_ty);
                     resolve_builtin_result_output_type_args(ok_ty, err_ty).map(|args| (k, args))
                 })
                 .collect();
@@ -599,7 +636,7 @@ impl Checker {
                 .map(|(k, args)| {
                     let resolved: Vec<Ty> = args
                         .iter()
-                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .map(|a| self.finalize_type_for_handoff(a))
                         .collect();
                     (k, resolved)
                 })
@@ -614,7 +651,7 @@ impl Checker {
                 .map(|(k, args)| {
                     let resolved: Vec<Ty> = args
                         .iter()
-                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .map(|a| self.finalize_type_for_handoff(a))
                         .collect();
                     (k, resolved)
                 })
@@ -625,7 +662,7 @@ impl Checker {
                 let resolved = facts
                     .into_iter()
                     .map(|mut fact| {
-                        fact.ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
+                        fact.ty = self.finalize_type_for_handoff(&fact.ty);
                         fact
                     })
                     .collect();
@@ -637,14 +674,13 @@ impl Checker {
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
                     ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
-                    ActorMethodKind::Ask(method_id, reply_ty) => ActorMethodKind::Ask(
-                        method_id,
-                        self.subst.resolve(&reply_ty).materialize_literal_defaults(),
-                    ),
+                    ActorMethodKind::Ask(method_id, reply_ty) => {
+                        ActorMethodKind::Ask(method_id, self.finalize_type_for_handoff(&reply_ty))
+                    }
                     ActorMethodKind::StreamProducer(method_id, elem_ty) => {
                         ActorMethodKind::StreamProducer(
                             method_id,
-                            self.subst.resolve(&elem_ty).materialize_literal_defaults(),
+                            self.finalize_type_for_handoff(&elem_ty),
                         )
                     }
                 };
@@ -660,7 +696,7 @@ impl Checker {
         let mut resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
             .into_iter()
             .map(|(k, v)| {
-                let mut resolved = self.subst.resolve(&v).materialize_literal_defaults();
+                let mut resolved = self.finalize_type_for_handoff(&v);
                 if let Some((ok_ty, err_ty)) = resolved_builtin_result_output_type_args.get(&k) {
                     resolved = patch_builtin_result_output_type(resolved, ok_ty, err_ty);
                 }
@@ -691,6 +727,25 @@ impl Checker {
             &mut resolved_call_type_args,
             &mut resolved_record_init_type_args,
         );
+        // The output-contract validator may rebuild a surviving expression
+        // type while pruning invalid siblings.  Re-run the same finalizer at
+        // that mutation boundary so produced-value joins, layout facts, and
+        // the published expression table observe one nominal identity.  In
+        // particular, a source module's `CryptoError` match arms must not keep
+        // their provisional bare spelling after the enclosing match has its
+        // exact declaration owner.
+        let saved_output_module = self.current_module.clone();
+        for (key, ty) in &mut resolved_expr_types {
+            self.current_module = self.expr_type_source_modules.get(key).cloned().flatten();
+            *ty = self.finalize_type_for_handoff(ty);
+        }
+        self.current_module = saved_output_module;
+        for sig in resolved_fn_sigs.values_mut() {
+            *sig = self.resolve_fn_sig(sig);
+        }
+        for type_def in resolved_type_defs.values_mut() {
+            *type_def = self.resolve_type_def(type_def);
+        }
         let opaque_resource_candidates =
             self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
         for cycle in crate::cycle::detect_recursive_value_type_cycles(&resolved_type_defs) {
@@ -1091,7 +1146,7 @@ impl Checker {
                 .map(|(k, mut arm)| {
                     // Resolve inference variables in every payload binding type.
                     for pb in &mut arm.payload_bindings {
-                        pb.ty = self.subst.resolve(&pb.ty).materialize_literal_defaults();
+                        pb.ty = self.finalize_type_for_handoff(&pb.ty);
                     }
                     (k, arm)
                 })
@@ -1100,7 +1155,7 @@ impl Checker {
                 .into_iter()
                 .map(|(key, mut plan)| {
                     for field in &mut plan.fields {
-                        field.ty = self.subst.resolve(&field.ty).materialize_literal_defaults();
+                        field.ty = self.finalize_type_for_handoff(&field.ty);
                     }
                     (key, plan)
                 })
@@ -1116,7 +1171,7 @@ impl Checker {
                     .map(|(k, (name, args))| {
                         let resolved_args = args
                             .into_iter()
-                            .map(|ty| self.subst.resolve(&ty).materialize_literal_defaults())
+                            .map(|ty| self.finalize_type_for_handoff(&ty))
                             .collect();
                         (k, (name, resolved_args))
                     })

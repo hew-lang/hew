@@ -33,7 +33,7 @@ fn pipeline_adopt_extern(malloc_string_return: bool) -> IrPipeline {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args: vec![],
                 dest: Some(Place::Local(0)), // tracked string dest — adoption edge
                 next: 1,

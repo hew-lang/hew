@@ -1041,7 +1041,9 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: "hew_supervisor_pool_get_option".to_string(),
-                    builtin: None,
+                    authority: crate::CallAuthority::Compiler(
+                        crate::CompilerCallKind::SupervisorPoolGetOption,
+                    ),
                     args: vec![lookup],
                     dest: Some(result),
                     next,
@@ -1377,11 +1379,14 @@ impl Builder {
     /// Lower an explicit `.close()` call rewritten to `hew_duplex_close`.
     ///
     /// The checker records `"hew_duplex_close"` for every `.close()` call on a
-    /// `Duplex<S,R>`-typed receiver, including `LambdaPid<M,R>` handles (which
-    /// surface as `Duplex<M,R>`).  The `Place` variant on the receiver is the
-    /// authority for which runtime symbol to invoke:
+    /// `Duplex<S,R>`-typed receiver.  `LambdaPid<M,R>` is a separate ownership
+    /// type; its canonical builtin carrier, rather than a Duplex-equivalence
+    /// shortcut, selects the lambda release ABI.  A lambda captured in a
+    /// closure uses `Place::LambdaActorHandle`, while a lambda returned from a
+    /// function is an ordinary local carrying that same typed identity.
     ///
-    ///   - `Place::LambdaActorHandle(N)` → `hew_lambda_actor_release`.
+    ///   - `LambdaPid` receiver / `Place::LambdaActorHandle(N)` →
+    ///     `hew_lambda_actor_release`.
     ///     The release ABI takes only the handle pointer; codegen rejects
     ///     `dest: Some(...)` for this symbol, so the call is always `dest: None`.
     ///     The checker records `Unit` as the return type (the release never
@@ -1412,7 +1417,11 @@ impl Builder {
         };
         let recv_place = self.lower_value(receiver_expr)?;
 
-        if let Place::LambdaActorHandle(_) = recv_place {
+        if receiver_expr
+            .ty
+            .is_builtin(hew_types::BuiltinType::LambdaPid)
+            || matches!(recv_place, Place::LambdaActorHandle(_))
+        {
             // Explicit LambdaPid::close() → hew_lambda_actor_release.
             //
             // The release ABI is: hew_lambda_actor_release(handle: *mut HewLambdaActorHandle)
@@ -2420,7 +2429,7 @@ impl Builder {
         let after_channel = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_channel".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![capacity],
             dest: Some(pair),
             next: after_channel,
@@ -2431,7 +2440,7 @@ impl Builder {
         let after_sink = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_sink".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: Some(sink),
             next: after_sink,
@@ -2442,7 +2451,7 @@ impl Builder {
         let after_stream = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_stream".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: Some(stream),
             next: after_stream,
@@ -2454,7 +2463,7 @@ impl Builder {
         let after_free = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_stream_pair_free".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![pair],
             dest: None,
             next: after_free,

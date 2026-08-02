@@ -962,7 +962,7 @@ pub(super) fn terminator_escape_places(
     match term {
         Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             ..
         } => {
@@ -977,7 +977,7 @@ pub(super) fn terminator_escape_places(
                                 .get(local as usize)
                                 .is_some_and(ty_is_owned_handle_leaf)
                         });
-                    !(borrowed_handle || arg_is_borrowed(*builtin, place))
+                    !(borrowed_handle || arg_is_borrowed(authority.runtime_family(), place))
                 })
                 .collect()
         }
@@ -1315,7 +1315,9 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Call {
                 callee: "hew_hashmap_len_layout".to_string(),
-                builtin: Some(hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout),
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout,
+                ),
                 args: vec![Place::Local(2)],
                 dest: Some(Place::Local(3)),
                 next: 1,

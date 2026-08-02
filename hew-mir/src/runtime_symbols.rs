@@ -165,6 +165,9 @@ pub enum ResultOwnership {
     FreshOwnedString,
     /// Fresh bytes allocation; caller owes the matching bytes release.
     FreshOwnedBytes,
+    /// Fresh vector allocation; the typed destination owns its normal Vec
+    /// release obligation.
+    FreshOwnedVec,
     /// Result is borrowed and carries no caller-owned drop obligation.
     Borrowed,
     /// Result borrows storage owned by arg[0].
@@ -306,6 +309,7 @@ impl CalleeOwnershipContract {
         match self.result {
             ResultOwnership::FreshOwnedString
             | ResultOwnership::FreshOwnedBytes
+            | ResultOwnership::FreshOwnedVec
             | ResultOwnership::IndependentValue => true,
             ResultOwnership::Borrowed
             | ResultOwnership::InteriorAliasOfReceiver
@@ -405,7 +409,7 @@ fn compiler_synthetic_ownership_contract(runtime_symbol: &str) -> CalleeOwnershi
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{FreshOwnedBytes, FreshOwnedString, Untracked};
+    use ResultOwnership::{FreshOwnedBytes, FreshOwnedString, FreshOwnedVec, Untracked};
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
 
     if let Some(runtime_symbol) =
@@ -418,6 +422,31 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         RuntimeCallFamily::from_c_symbol(callee).and_then(vec_getter_ownership_contract)
     {
         return contract;
+    }
+
+    // These result facts are selected from the closed runtime family, never
+    // from a spelling branch: both calls otherwise use the ordinary generic
+    // Vec function path, but each mints a fresh owner at its result boundary.
+    match RuntimeCallFamily::from_c_symbol(callee) {
+        Some(RuntimeCallFamily::VecClone) => {
+            return CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                Escaping,
+                FreshOwnedVec,
+            );
+        }
+        Some(RuntimeCallFamily::VecJoinStr) => {
+            return CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                BorrowingUse,
+                FreshOwnedString,
+            );
+        }
+        _ => {}
     }
 
     match callee {
@@ -1022,6 +1051,17 @@ mod tests {
             callee_ownership_contract("hew_nope"),
             CalleeOwnershipContract::FAIL_CLOSED
         );
+    }
+
+    #[test]
+    fn plain_vec_fresh_results_are_derived_from_runtime_families() {
+        let clone = callee_ownership_contract("hew_vec_clone");
+        assert_eq!(clone.result, ResultOwnership::FreshOwnedVec);
+        assert!(clone.yields_independent_owner());
+
+        let join = callee_ownership_contract("hew_vec_join_str");
+        assert_eq!(join.result, ResultOwnership::FreshOwnedString);
+        assert!(join.yields_independent_owner());
     }
 
     #[test]

@@ -6836,7 +6836,7 @@ pub(super) fn detect_actor_state_handle_consume(
     let mut seen: HashSet<u32> = HashSet::new();
     for block in blocks {
         let Terminator::Call {
-            builtin: Some(family),
+            authority: crate::CallAuthority::Runtime(family),
             args,
             ..
         } = &block.terminator
@@ -7026,7 +7026,7 @@ mod owned_record_drop_derivation {
             vec![],
             Terminator::Call {
                 callee: "foo".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![Place::Local(0)],
                 dest: None,
                 next: 1,
@@ -7104,7 +7104,7 @@ mod owned_record_drop_derivation {
             vec![],
             Terminator::Call {
                 callee: "foo".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![Place::Local(0), Place::Local(1)],
                 dest: None,
                 next: 1,
@@ -7343,7 +7343,9 @@ mod owned_record_drop_derivation {
             }],
             Terminator::Call {
                 callee: callee.to_string(),
-                builtin: call_builtin,
+                authority: (call_builtin)
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                 args: vec![Place::Local(2), Place::Local(1)],
                 dest: None,
                 next: 1,
@@ -7374,7 +7376,9 @@ mod owned_record_drop_derivation {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: callee.to_string(),
-                builtin: call_builtin,
+                authority: (call_builtin)
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                 args: vec![Place::Local(2), Place::Local(1)],
                 dest: None,
                 next: 1,
@@ -9142,7 +9146,9 @@ mod w3053_aggregate_handle_double_free_gate {
                 // Mirror the producer lift: hand-built escape-gate MIR
                 // carries the typed family exactly as the real lowering
                 // does, so family-keyed borrow classification is exercised.
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee))
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                 args,
                 dest: None,
                 next: 0,
@@ -9454,7 +9460,11 @@ mod plain_vec_drop_interior_alias_and_escape {
     fn push_str(receiver: u32, value: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: "hew_vec_push_str".to_string(),
-            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("hew_vec_push_str"),
+            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_push_str",
+            ))
+            .map(crate::CallAuthority::Runtime)
+            .unwrap_or_default(),
             args: vec![Place::Local(receiver), Place::Local(value)],
             dest: None,
             next,
@@ -9662,9 +9672,11 @@ mod plain_vec_drop_interior_alias_and_escape {
                 }],
                 terminator: Terminator::Call {
                     callee: "hew_vec_get_ptr".to_string(),
-                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                         "hew_vec_get_ptr",
-                    ),
+                    ))
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                     args: vec![Place::Local(11), Place::Local(1)],
                     dest: Some(Place::Local(12)),
                     next: 1,
@@ -9680,9 +9692,11 @@ mod plain_vec_drop_interior_alias_and_escape {
                 }],
                 terminator: Terminator::Call {
                     callee: "hew_vec_len".to_string(),
-                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                         "hew_vec_len",
-                    ),
+                    ))
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                     args: vec![Place::Local(13)],
                     dest: Some(Place::Local(18)),
                     next: 2,
@@ -9780,9 +9794,11 @@ mod plain_vec_drop_interior_alias_and_escape {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: "hew_vec_len".to_string(),
-                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                         "hew_vec_len",
-                    ),
+                    ))
+                    .map(crate::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                     args: vec![Place::Local(1)],
                     dest: Some(Place::Local(2)),
                     next: 2,

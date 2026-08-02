@@ -55,7 +55,12 @@ pub(super) fn crash_action_return_ty() -> ResolvedTy {
 pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
     let span = note_param.span.clone();
     let crash_notification_ty = note_param.ty.clone();
-    let crash_kind_ty = ResolvedTy::named_user("std.failure.CrashKind", Vec::new());
+    // Synthetic lifecycle payloads must carry the same canonical builtin
+    // discriminator as checker-authored source values.  A source spelling is
+    // presentation only here; using a user nominal would cross D10 and erase
+    // the crash-hook value-class authority.
+    let crash_kind_ty =
+        ResolvedTy::named_builtin("CrashKind", hew_types::BuiltinType::CrashKind, Vec::new());
 
     let actor_id_ref = || HirExpr {
         node: SENTINEL_CRASH_CODE_NODE,
@@ -194,12 +199,24 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
 )]
 pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
     let span = note_param.span.clone();
-    let monitor_id_ty =
-        ResolvedTy::named_builtin("MonitorId", hew_types::BuiltinType::MonitorId, Vec::new());
-    let down_target_ty =
-        ResolvedTy::named_builtin("DownTarget", hew_types::BuiltinType::DownTarget, Vec::new());
-    let down_reason_ty =
-        ResolvedTy::named_builtin("DownReason", hew_types::BuiltinType::DownReason, Vec::new());
+    // These are source-owned lifecycle declarations.  The mailbox ABI gives
+    // us their values, but not permission to collapse them to leaf names:
+    // HIR/MIR layout registries are keyed by the declaration owner.
+    let monitor_id_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.MonitorId",
+        hew_types::BuiltinType::MonitorId,
+        Vec::new(),
+    );
+    let down_target_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.DownTarget",
+        hew_types::BuiltinType::DownTarget,
+        Vec::new(),
+    );
+    let down_reason_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.DownReason",
+        hew_types::BuiltinType::DownReason,
+        Vec::new(),
+    );
     let crash_kind_ty = ResolvedTy::named_builtin(
         "std.failure.CrashKind",
         hew_types::BuiltinType::CrashKind,
@@ -256,7 +273,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Unknown,
         kind: HirExprKind::StructInit {
-            name: "MonitorId".to_string(),
+            name: "std.link_monitor.MonitorId".to_string(),
             type_args: Vec::new(),
             fields: vec![(
                 "value".to_string(),
@@ -293,7 +310,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownTarget".to_string(),
+                            machine_name: "std.link_monitor.DownTarget".to_string(),
                             state_idx: 0,
                             payload: Some(vec![(
                                 "0".to_string(),
@@ -316,7 +333,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownTarget".to_string(),
+                            machine_name: "std.link_monitor.DownTarget".to_string(),
                             state_idx: 1,
                             payload: Some(vec![(
                                 "0".to_string(),
@@ -379,7 +396,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
             arms: vec![
                 match_arm(
                     Some(0),
-                    unit_variant("DownReason", 0, down_reason_ty.clone()),
+                    unit_variant("std.link_monitor.DownReason", 0, down_reason_ty.clone()),
                 ),
                 match_arm(
                     Some(1),
@@ -390,7 +407,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownReason".to_string(),
+                            machine_name: "std.link_monitor.DownReason".to_string(),
                             state_idx: 1,
                             payload: Some(vec![("0".to_string(), crash_kind)]),
                         },
@@ -399,9 +416,12 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 ),
                 match_arm(
                     Some(2),
-                    unit_variant("DownReason", 2, down_reason_ty.clone()),
+                    unit_variant("std.link_monitor.DownReason", 2, down_reason_ty.clone()),
                 ),
-                match_arm(None, unit_variant("DownReason", 3, down_reason_ty.clone())),
+                match_arm(
+                    None,
+                    unit_variant("std.link_monitor.DownReason", 3, down_reason_ty.clone()),
+                ),
             ],
         },
         span: span.clone(),
@@ -414,7 +434,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Unknown,
         kind: HirExprKind::StructInit {
-            name: "DownNotification".to_string(),
+            name: "std.link_monitor.DownNotification".to_string(),
             type_args: Vec::new(),
             fields: vec![
                 ("monitor".to_string(), monitor),
@@ -758,6 +778,143 @@ pub(super) fn register_builtin_record_layouts(
             field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
         record_field_orders.insert(registration.name.to_string(), fields);
+    }
+}
+
+/// Register the source-owned shapes that synthetic lifecycle hooks reconstruct
+/// from the fixed mailbox ABI.  These declarations normally arrive through an
+/// imported `std.link_monitor` HIR item; direct compilation of that stdlib
+/// source has no importing program item, yet can still exercise the same
+/// synthetic hook path.  Publish both the direct-source spelling and the
+/// exact source identity so neither route falls back to a leaf-name guess.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the source-owned lifecycle layout catalog is one atomic mailbox ABI boundary"
+)]
+pub(super) fn register_lifecycle_hook_layouts(
+    record_layouts: &mut Vec<crate::model::RecordLayout>,
+    record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &mut Vec<crate::model::EnumLayout>,
+) {
+    let lifecycle_ty = |name: &str, builtin| ResolvedTy::named_builtin(name, builtin, Vec::new());
+    let register_records =
+        |prefix: &str,
+         record_layouts: &mut Vec<crate::model::RecordLayout>,
+         record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>| {
+            let named = |leaf: &str| {
+                if prefix.is_empty() {
+                    leaf.to_string()
+                } else {
+                    format!("{prefix}.{leaf}")
+                }
+            };
+            for (name, fields) in [
+                (
+                    named("MonitorId"),
+                    vec![("value".to_string(), ResolvedTy::U64)],
+                ),
+                (
+                    named("DownNotification"),
+                    vec![
+                        (
+                            "monitor".to_string(),
+                            lifecycle_ty(&named("MonitorId"), hew_types::BuiltinType::MonitorId),
+                        ),
+                        (
+                            "target".to_string(),
+                            lifecycle_ty(&named("DownTarget"), hew_types::BuiltinType::DownTarget),
+                        ),
+                        (
+                            "reason".to_string(),
+                            lifecycle_ty(&named("DownReason"), hew_types::BuiltinType::DownReason),
+                        ),
+                    ],
+                ),
+            ] {
+                if record_field_orders.contains_key(&name) {
+                    continue;
+                }
+                record_layouts.push(crate::model::RecordLayout {
+                    name: name.clone(),
+                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
+                });
+                record_field_orders.insert(name, fields);
+            }
+        };
+    let register_enums = |prefix: &str, enum_layouts: &mut Vec<crate::model::EnumLayout>| {
+        let named = |leaf: &str| {
+            if prefix.is_empty() {
+                leaf.to_string()
+            } else {
+                format!("{prefix}.{leaf}")
+            }
+        };
+        for (name, variants) in [
+            (
+                named("DownTarget"),
+                vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Local".to_string(),
+                        field_tys: vec![ResolvedTy::U64],
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Remote".to_string(),
+                        field_tys: vec![ResolvedTy::named_builtin(
+                            "Location",
+                            hew_types::BuiltinType::Location,
+                            Vec::new(),
+                        )],
+                        field_names: Vec::new(),
+                    },
+                ],
+            ),
+            (
+                named("DownReason"),
+                vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Exited".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Crashed".to_string(),
+                        field_tys: vec![ResolvedTy::named_builtin(
+                            "std.failure.CrashKind",
+                            hew_types::BuiltinType::CrashKind,
+                            Vec::new(),
+                        )],
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "MonitorLost".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "LocalShutdown".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                ],
+            ),
+        ] {
+            if enum_layouts.iter().any(|layout| layout.name == name) {
+                continue;
+            }
+            let tag_width = u32::max(1, variants.len().next_power_of_two().trailing_zeros());
+            enum_layouts.push(crate::model::EnumLayout {
+                name,
+                tag_width,
+                variants,
+                is_indirect: false,
+            });
+        }
+    };
+    for prefix in ["", "std.link_monitor"] {
+        register_records(prefix, record_layouts, record_field_orders);
+        register_enums(prefix, enum_layouts);
     }
 }
 /// Register `EnumLayout` entries for monomorphic builtin enums declared

@@ -118,8 +118,8 @@ use self::consts::{
     is_unit_close_error_result, is_unit_send_error_result, literal_match_scrutinee_ty,
     method_name_from_id, named_type_marker, numeric_method_op, numeric_method_signedness,
     recv_result_payload_ty, register_builtin_monomorphic_enum_layouts,
-    register_builtin_record_layouts, runtime_symbol_for_call_expr, signed_min_value,
-    unary_op_label, unresolved_fn_sig_reason,
+    register_builtin_record_layouts, register_lifecycle_hook_layouts, runtime_symbol_for_call_expr,
+    signed_min_value, unary_op_label, unresolved_fn_sig_reason,
 };
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
@@ -2219,6 +2219,11 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // module-graph-loaded stdlib TypeDecl is present; this fills only missing
     // substrate records needed by synthetic MIR construction.
     register_builtin_record_layouts(&mut record_layouts, &mut record_field_orders);
+    register_lifecycle_hook_layouts(
+        &mut record_layouts,
+        &mut record_field_orders,
+        &mut enum_layouts,
+    );
 
     // Pre-compute the opaque handle names and resource-close registry before the
     // state-field classification pass so the classifier can distinguish plain

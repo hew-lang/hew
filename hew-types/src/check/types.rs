@@ -2445,6 +2445,10 @@ pub struct Checker {
     /// stdlib search-path authority for this check. A `std.*` spelling alone
     /// is not trusted: user packages may use the same path.
     pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Canonical stdlib owners compiled as the root source unit itself. This
+    /// is narrower than `canonical_std_module_sources`, which also contains
+    /// imported stdlib modules in an ordinary user program.
+    pub(super) canonical_std_root_sources: HashSet<String>,
     /// Whether the module currently undergoing signature registration came
     /// from a file-path import. Those items are flattened into the root program
     /// before HIR lowering, so their declaration IDs are root-owned even though
@@ -3392,6 +3396,7 @@ impl Checker {
             extern_method_origins: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
+            canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),

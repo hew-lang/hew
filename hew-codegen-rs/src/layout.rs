@@ -1010,6 +1010,10 @@ pub(crate) fn collection_layout_witness(
     })
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -1717,6 +1721,10 @@ pub(crate) fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'sta
 // Byte-identical IR before and after.
 
 /// True for the W5.016 owned-element Vec runtime symbols.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2533,7 +2541,7 @@ fn finalize_layout_facts_against_pipeline(
     for mir_fn in &pipeline.raw_mir {
         for block in &mir_fn.blocks {
             let Terminator::Call {
-                builtin: Some(family),
+                authority: hew_mir::CallAuthority::Runtime(family),
                 args,
                 dest,
                 ..
@@ -2781,6 +2789,10 @@ pub(crate) fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) ->
 /// Recognise the two C-3a synthesis probe callees.  Distinct from the
 /// runtime-symbol predicates because they are a descriptor-synthesis seam, not
 /// a runtime ABI call.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
@@ -2799,6 +2811,10 @@ pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
 /// (`hew_hashmap_get_layout` — slice-iii), or the free helpers
 /// (`*_free_layout` — actor-state drop-plan reroute handled in
 /// `drop_helper_for_kind`, slice-ii).
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2806,6 +2822,10 @@ pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
         .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashCollectionLayoutOp)
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_get_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 

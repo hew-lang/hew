@@ -341,11 +341,11 @@ impl ModuleCapabilities {
                     }
                 }
                 if let Terminator::Call {
-                    callee, builtin, ..
+                    callee, authority, ..
                 } = &block.terminator
                 {
-                    if let Some(family) = builtin {
-                        capabilities.insert_family(*family);
+                    if let Some(family) = authority.runtime_family() {
+                        capabilities.insert_family(family);
                     }
                     if extern_decls.iter().any(|decl| {
                         decl.name == *callee
@@ -1506,18 +1506,9 @@ fn record_lookup_keys(
     args: &[ResolvedTy],
     builtin: Option<BuiltinType>,
 ) -> Vec<String> {
-    if args.is_empty() {
-        vec![name.to_string()]
-    } else if matches!(
-        builtin,
-        Some(BuiltinType::VecIter | BuiltinType::HashMapIter)
-    ) {
-        hew_hir::synthetic_cursor_layout_key(builtin.expect("matched synthetic cursor"), args)
-            .into_iter()
-            .collect()
-    } else {
-        vec![hew_hir::mangle_layout_key(name, args)]
-    }
+    hew_hir::layout_key_for_named(name, args, builtin)
+        .into_iter()
+        .collect()
 }
 
 /// Mangle-aware record layout lookup. Synthetic compiler cursors use their
@@ -3464,6 +3455,147 @@ pub enum GeneratorEnvFieldPlan {
     OwnedMove(crate::state_clone::ValueSnapshotPlan),
 }
 
+/// The closed semantic authority that permits a direct-call terminator to use
+/// one of codegen's non-generic lowering paths.
+///
+/// `callee` remains the linker-facing spelling only.  Codegen must select an
+/// ABI shape from this carrier and then verify that the spelling agrees with
+/// the selected authority; it must never grant a special ABI merely because a
+/// user extern happens to reuse a familiar symbol name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CallAuthority {
+    /// An ordinary function or extern call.  This is deliberately the default
+    /// so hand-authored MIR test fixtures and new producers fail closed into
+    /// the generic linkage path until they explicitly carry an authority.
+    #[default]
+    Direct,
+    /// A catalogued runtime ABI call selected by the checker/HIR.
+    Runtime(hew_types::runtime_call::RuntimeCallFamily),
+    /// A compiler-owned structural operation with no public runtime catalog
+    /// entry.  These are closed so a user extern cannot acquire one by name.
+    Compiler(CompilerCallKind),
+}
+
+impl CallAuthority {
+    /// Return the runtime family when this authority uses a catalogued C ABI.
+    #[must_use]
+    pub const fn runtime_family(self) -> Option<hew_types::runtime_call::RuntimeCallFamily> {
+        match self {
+            Self::Runtime(family) => Some(family),
+            Self::Direct | Self::Compiler(_) => None,
+        }
+    }
+}
+
+/// Compiler structural call shapes that intentionally do not have a public
+/// runtime-call catalog entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompilerCallKind {
+    HashMapGetCloneLayoutOption,
+    HashMapGetCloneLayoutIndex,
+    HashMapRemoveTakeLayout,
+    SupervisorPoolGetOption,
+    LayoutProbe(CollectionLayoutProbeKind),
+    IdentityAggregate(IdentityAggregateKind),
+    ClosurePairVec(ClosurePairVecKind),
+}
+
+impl CompilerCallKind {
+    /// The unique linker spelling owned by this structural lowering.
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::HashMapGetCloneLayoutOption | Self::HashMapGetCloneLayoutIndex => {
+                "hew_hashmap_get_clone_layout"
+            }
+            Self::HashMapRemoveTakeLayout => "hew_hashmap_remove_take_layout",
+            Self::SupervisorPoolGetOption => "hew_supervisor_pool_get_option",
+            Self::LayoutProbe(kind) => kind.expected_callee(),
+            Self::IdentityAggregate(kind) => kind.expected_callee(),
+            Self::ClosurePairVec(kind) => kind.expected_callee(),
+        }
+    }
+}
+
+/// Exact compiler-generated layout-probe identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectionLayoutProbeKind {
+    HashMap,
+    HashSet,
+    Vec,
+}
+
+impl CollectionLayoutProbeKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::HashMap => "__hew_codegen_emit_hashmap_layout_probe",
+            Self::HashSet => "__hew_codegen_emit_hashset_layout_probe",
+            Self::Vec => "__hew_codegen_emit_vec_layout_probe",
+        }
+    }
+}
+
+/// Exact aggregate-identity helper identities.  These helpers materialise
+/// language values in codegen and are therefore compiler-owned despite their
+/// public-looking linker spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdentityAggregateKind {
+    NodeId,
+    NodeIdDisplay,
+    LocationNodeId,
+    LocationSlot,
+    LocationIncarnation,
+    LocationDisplay,
+    RemotePidLocation,
+    RemotePidNodeId,
+    RemotePidSlot,
+    RemotePidIncarnation,
+    RemotePidDisplay,
+}
+
+/// Exact closure-pair Vec marshalling operations.  These are compiler-owned:
+/// their ABI boxes/unboxes a two-pointer closure pair, unlike an ordinary
+/// pointer-element Vec call with the same runtime spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosurePairVecKind {
+    Push,
+    Set,
+    Get,
+    Pop,
+}
+
+impl ClosurePairVecKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::Push => "hew_vec_push_ptr",
+            Self::Set => "hew_vec_set_ptr",
+            Self::Get => "hew_vec_get_ptr",
+            Self::Pop => "hew_vec_pop_ptr",
+        }
+    }
+}
+
+impl IdentityAggregateKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::NodeId => "Node::id",
+            Self::NodeIdDisplay => "hew_node_id_display",
+            Self::LocationNodeId => "hew_location_node_id",
+            Self::LocationSlot => "hew_location_slot",
+            Self::LocationIncarnation => "hew_location_incarnation",
+            Self::LocationDisplay => "hew_location_display",
+            Self::RemotePidLocation => "hew_remote_pid_location",
+            Self::RemotePidNodeId => "hew_remote_pid_node_id",
+            Self::RemotePidSlot => "hew_remote_pid_slot",
+            Self::RemotePidIncarnation => "hew_remote_pid_incarnation",
+            Self::RemotePidDisplay => "hew_remote_pid_display",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Return whatever has been written into `Place::ReturnSlot`. The
@@ -3480,7 +3612,7 @@ pub enum Terminator {
     /// Call into a sibling function by name, optionally store its return value,
     /// then branch to `next`.
     ///
-    /// `builtin` carries the checker/HIR-resolved [`RuntimeCallFamily`]
+    /// `authority` carries the checker/HIR-resolved closed call class.
     /// when the callee is a compiler-known runtime builtin that rides the
     /// `Terminator::Call` route (codegen callee intercepts, the
     /// layout-fact walker, and the double-free escape gate all dispatch
@@ -3495,7 +3627,8 @@ pub enum Terminator {
     /// family.
     Call {
         callee: String,
-        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+        /// The semantic permission for a specialised ABI lowering.
+        authority: CallAuthority,
         args: Vec<Place>,
         dest: Option<Place>,
         next: u32,
@@ -4171,9 +4304,29 @@ impl RuntimeCall {
             return Err(UnknownRuntimeSymbol(symbol));
         }
         match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol) {
-            Some(family) => Ok(RuntimeCall { family, args, dest }),
+            Some(family) => Self::from_family(family, args, dest),
             None => Err(UnknownRuntimeSymbol(symbol)),
         }
+    }
+
+    /// Construct a validated runtime-ABI call from an already checker-carried
+    /// runtime family. The C symbol is derived solely for the allowlist gate;
+    /// it never becomes the cross-layer identity again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRuntimeSymbol`] when the family maps to a symbol not
+    /// admitted by the runtime allowlist.
+    pub fn from_family(
+        family: hew_types::runtime_call::RuntimeCallFamily,
+        args: Vec<Place>,
+        dest: Option<Place>,
+    ) -> Result<Self, UnknownRuntimeSymbol> {
+        let symbol = family.c_symbol();
+        if !crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+            return Err(UnknownRuntimeSymbol(symbol.to_string()));
+        }
+        Ok(RuntimeCall { family, args, dest })
     }
 
     /// The validated C-ABI symbol name, derived from the typed family at

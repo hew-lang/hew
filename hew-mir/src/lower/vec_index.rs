@@ -182,7 +182,7 @@ impl Builder {
                 // its element-layout-dependent output slot. Carry the same
                 // typed family that selected the call so MIR consumers never
                 // have to recover ownership semantics from the C spelling.
-                builtin: Some(get_family),
+                authority: crate::CallAuthority::Runtime(get_family),
                 args: vec![vec_place, index_place],
                 dest: Some(result_place),
                 next,

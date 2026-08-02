@@ -1409,7 +1409,9 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
         return AliasBits::EMPTY;
     }
     match callee_ownership_contract(emitted_symbol).result {
-        ResultOwnership::FreshOwnedString | ResultOwnership::FreshOwnedBytes => AliasBits::EMPTY,
+        ResultOwnership::FreshOwnedString
+        | ResultOwnership::FreshOwnedBytes
+        | ResultOwnership::FreshOwnedVec => AliasBits::EMPTY,
         // `IndependentValue` stays OPAQUE here. It answers the OWNERSHIP
         // question (the caller may keep this value after the receiver dies),
         // which is weaker than the ALIAS question this function asks; the

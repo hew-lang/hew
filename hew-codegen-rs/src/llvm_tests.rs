@@ -1114,7 +1114,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
             // Probe callee: codegen-internal synthetic, no catalog family.
-            builtin: None,
+            authority: Default::default(),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -1253,7 +1253,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
-            builtin: None,
+            authority: Default::default(),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -9791,22 +9791,25 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
     let module = ctx.create_module("crash_cleanup_terminator_admission");
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let real_value = module.add_function("real_owner", ptr_ty.fn_type(&[], false), None);
-    let symbols = HashMap::from([(
-        "real_owner".to_string(),
-        FnSymbol::Real {
-            value: real_value,
-            return_ty: ptr_ty.into(),
-            returns_unit: false,
-            extern_record_ret: None,
-            extern_malloc_string_ret: false,
-        },
-    )]);
+    let real_symbol = FnSymbol::Real {
+        value: real_value,
+        return_ty: ptr_ty.into(),
+        returns_unit: false,
+        extern_record_ret: None,
+        extern_malloc_string_ret: false,
+    };
+    let symbols = HashMap::from([
+        ("real_owner".to_string(), real_symbol),
+        // A direct extern may legitimately choose a spelling that an internal
+        // runtime operation also uses.  It must stay on the generic Real tail.
+        ("hew_bytes_get".to_string(), real_symbol),
+    ]);
     let cases = [
         (
             "generic real-call common tail",
             Terminator::Call {
                 callee: "real_owner".to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args: vec![],
                 dest: Some(Place::Local(0)),
                 next: 1,
@@ -9818,7 +9821,11 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             "Vec clone initialized tail",
             Terminator::Call {
                 callee: "hew_vec_get_clone".to_string(),
-                builtin: None,
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                        hew_types::runtime_call::VecGetElem::Clone,
+                    ),
+                ),
                 args: vec![Place::Local(1), Place::Local(2)],
                 dest: Some(Place::Local(0)),
                 next: 1,
@@ -9866,10 +9873,24 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             true,
         ),
         (
-            "specialized call without a post-write hook",
+            "direct extern collision uses the generic tail",
             Terminator::Call {
                 callee: "hew_bytes_get".to_string(),
-                builtin: None,
+                authority: Default::default(),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "typed runtime BytesGet needs a post-write hook",
+            Terminator::Call {
+                callee: "hew_bytes_get".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::BytesGet,
+                ),
                 args: vec![Place::Local(1), Place::Local(2)],
                 dest: Some(Place::Local(0)),
                 next: 1,

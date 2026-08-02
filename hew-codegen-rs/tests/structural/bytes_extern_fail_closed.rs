@@ -64,7 +64,7 @@ fn pipeline_with_extern(
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args,
                 dest,
                 next: 1,

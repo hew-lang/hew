@@ -471,7 +471,7 @@ fn bytes_payload_handoff_proof_rejects_reuse_gap_cycle_and_wrong_type() {
                     vec![bytes_payload_load(), bytes_payload_handoff()],
                     Terminator::Call {
                         callee: "produce".to_string(),
-                        builtin: None,
+                        authority: crate::model::CallAuthority::default(),
                         args: vec![],
                         dest: Some(Place::Local(2)),
                         next: 1,
@@ -608,7 +608,7 @@ fn corroborated_bytes_retain_rejects_terminator_overwrite_and_wrong_type() {
             ],
             Terminator::Call {
                 callee: "produce".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![],
                 dest: Some(Place::Local(2)),
                 next: 1,

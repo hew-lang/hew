@@ -387,21 +387,22 @@ fn render_terminator(term: &Terminator) -> String {
         ),
         Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             dest,
             next,
+            ..
         } => {
             let arg_str = args.iter().map(render_place).collect::<Vec<_>>().join(", ");
             let dest_str = dest
                 .as_ref()
                 .map(|p| format!("{} = ", render_place(p)))
                 .unwrap_or_default();
-            let builtin_tag = builtin
-                .as_ref()
-                .map(|b| format!(" [builtin={b:?}]"))
-                .unwrap_or_default();
-            format!("{dest_str}call {callee}({arg_str}){builtin_tag} -> bb{next}")
+            let authority_tag = match authority {
+                crate::CallAuthority::Direct => String::new(),
+                other => format!(" [authority={other:?}]"),
+            };
+            format!("{dest_str}call {callee}({arg_str}){authority_tag} -> bb{next}")
         }
         Terminator::Trap { kind } => format!("trap({})", render_trap_kind(*kind)),
         Terminator::Yield { value, next } => {

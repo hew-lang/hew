@@ -5312,7 +5312,13 @@ impl Checker {
             // The trait component of the binding key is declaration-owned. An
             // alias or prelude spelling is only a lookup surface; projection
             // carriers and consumers use this same canonical key end-to-end.
-            let tb_key = self.trait_defs_key_for_bound(&tb.name);
+            // Associated-type bindings are consumed through
+            // `trait_ref_lookup_key` in projection.  Register with that same
+            // source-owned identity; `trait_defs_key_for_bound` is a
+            // declaration-table compatibility key and may retain a bare
+            // presentation spelling while the consumer has already resolved
+            // the trait through its canonical module owner.
+            let tb_key = self.trait_ref_lookup_key(&tb.name);
             let assoc_names: Vec<String> = self
                 .trait_defs
                 .get(&tb_key)
@@ -7541,6 +7547,8 @@ impl Checker {
             .filter(|module| {
                 !module.is_empty()
                     && (self.modules.contains(*module)
+                        || self.canonical_std_module_sources.contains(*module)
+                        || self.canonical_std_root_sources.contains(*module)
                         || self
                             .current_module
                             .as_deref()
@@ -8451,7 +8459,7 @@ impl Checker {
             // importer's local type names do not change what the trait requires.
             let canon_expected_params: Vec<Ty> = expected_params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx, false))
+                .map(|t| canonicalize_type_identity(&self.normalize_for_use(t), &ctx, false))
                 .collect();
             // ACTUAL is the impl's written signature: a bare name that shadows a
             // local type keeps its local identity (`preserve_local_shadow =
@@ -8460,10 +8468,15 @@ impl Checker {
             let canon_actual_params: Vec<Ty> = impl_sig
                 .params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx, true))
+                .map(|t| canonicalize_type_identity(&self.normalize_for_use(t), &ctx, true))
                 .collect();
-            let canon_expected_return = canonicalize_type_identity(&expected_return, &ctx, false);
-            let canon_actual_return = canonicalize_type_identity(&impl_sig.return_type, &ctx, true);
+            let canon_expected_return =
+                canonicalize_type_identity(&self.normalize_for_use(&expected_return), &ctx, false);
+            let canon_actual_return = canonicalize_type_identity(
+                &self.normalize_for_use(&impl_sig.return_type),
+                &ctx,
+                true,
+            );
             (
                 canon_expected_params,
                 canon_actual_params,

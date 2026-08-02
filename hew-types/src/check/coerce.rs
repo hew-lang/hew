@@ -373,20 +373,20 @@ impl Checker {
     /// suffix unification has no lexical/import context and cannot distinguish
     /// a legal alias from a same-leaf foreign owner.
     pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
-        let expected_resolved = self.subst.resolve(expected);
-        let actual_resolved = self.subst.resolve(actual);
+        let expected_resolved = self.normalize_for_use(expected);
+        let actual_resolved = self.normalize_for_use(actual);
         if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
-        unify(&mut self.subst, expected, actual).is_ok()
+        unify(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract
         // bases pass through unchanged and may collapse on a later call.
-        let expected_projected = self.project_assoc_types(expected);
-        let actual_projected = self.project_assoc_types(actual);
+        let expected_projected = self.normalize_for_use(expected);
+        let actual_projected = self.normalize_for_use(actual);
         let expected = &expected_projected;
         let actual = &actual_projected;
         // Reject the issue #2651 nominal collision at the type boundary before

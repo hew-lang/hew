@@ -578,32 +578,14 @@ unsafe fn take_frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRe
     registry
 }
 
-/// Run one arbitrary crash-cleanup callback without allowing its unwind or
-/// panic payload to escape the runtime's recovery boundary.
-///
-/// Dropping a caught payload is normally required to release the allocation
-/// owned by `catch_unwind`. That drop is arbitrary Rust code too: a custom
-/// payload may panic from `Drop`. Catch that secondary unwind and dispose its
-/// replacement payload as well. A recursively hostile payload chain cannot be
-/// recovered safely; abort after the secondary disposal attempt rather than
-/// leaking a payload or unwinding through an FFI caller.
+/// Run one arbitrary crash-cleanup callback without allowing its unwind to
+/// escape the runtime's recovery boundary.
 fn run_quarantined_crash_cleanup(callback: impl FnOnce()) -> bool {
-    let Err(mut payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) else {
+    let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) else {
         return false;
     };
-
-    // The first attempt releases an ordinary payload. The second releases the
-    // replacement payload produced if the original payload's destructor
-    // panics. Box drop glue still deallocates the original box while unwinding.
-    for _ in 0..2 {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload))) {
-            Ok(()) => return true,
-            Err(next_payload) => payload = next_payload,
-        }
-    }
-
-    eprintln!("fatal: recursively panicking crash-cleanup payload destructor");
-    std::process::abort();
+    crate::util::quarantine_panic_payload(payload);
+    true
 }
 
 unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) -> bool {

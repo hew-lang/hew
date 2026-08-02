@@ -2114,7 +2114,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 }
 
                 #[cfg(not(target_arch = "wasm32"))]
-                if dispatch_result.is_err() {
+                if let Err(panic_payload) = dispatch_result {
                     crate::set_last_error("actor dispatch panicked");
                     // Tagged-crash surfacing: if the dispatch (or anything
                     // it called, e.g. `hew_arena_malloc` on cap exhaustion)
@@ -2143,6 +2143,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
+                    crate::util::quarantine_panic_payload(panic_payload);
                 // SAFETY: normal dispatch return matches the scope opened
                 // immediately before handler entry.
                 } else if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {

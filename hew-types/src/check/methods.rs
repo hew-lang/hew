@@ -9112,6 +9112,11 @@ impl Checker {
                         // The resolved receiver owner is executable dispatch
                         // authority. Registration publishes this exact key;
                         // never retry through the receiver's final segment.
+                        // The receiver's resolved nominal owner is executable
+                        // dispatch authority. The declaration map is keyed by
+                        // that exact source identity even when compatibility
+                        // `fn_sigs` aliases retain a shorter presentation.
+                        // Never retry through either the type or method leaf.
                         let method_owner = name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
@@ -9170,6 +9175,7 @@ impl Checker {
                                 }
                             }
                         } else if self.fn_sigs.contains_key(&method_key)
+                            || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
                                 // type_args may resolve to a mangled key even

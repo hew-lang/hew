@@ -2380,7 +2380,12 @@ impl Checker {
                                 s.name.clone()
                             })
                             .collect();
-                        self.trait_super.insert(td.name.clone(), super_names);
+                        self.trait_super
+                            .insert(td.name.clone(), super_names.clone());
+                        if let Some(module) = self.current_module.as_deref() {
+                            self.trait_super
+                                .insert(format!("{module}.{}", td.name), super_names);
+                        }
                     }
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
@@ -7645,12 +7650,23 @@ impl Checker {
             return;
         };
         for super_name in supers.clone() {
-            if let Some(super_info) = self.trait_defs.get(&super_name) {
+            let resolved_super = if self.trait_defs.contains_key(&super_name) {
+                super_name
+            } else if let Some((declaring_module, _)) = trait_key.rsplit_once('.') {
+                // Early module registration can retain a super edge's source
+                // spelling before the import binding is published. Resolve it
+                // in the declaring trait's exact module now; never consult the
+                // final importer's bare namespace or a suffix/leaf retry.
+                self.resolve_super_trait_edge(declaring_module, &super_name)
+            } else {
+                super_name
+            };
+            if let Some(super_info) = self.trait_defs.get(&resolved_super) {
                 for m in &super_info.methods {
                     known.insert(m.name.clone());
                 }
             }
-            self.collect_super_trait_method_names(&super_name, known, visited);
+            self.collect_super_trait_method_names(&resolved_super, known, visited);
         }
     }
 
@@ -7780,7 +7796,27 @@ impl Checker {
             return;
         };
 
-        let provided: HashSet<&str> = impl_methods.iter().map(|m| m.name.as_str()).collect();
+        let type_identity = self
+            .canonical_primitive_or_builtin_key_for_impl_name(type_name)
+            .unwrap_or_else(|| {
+                self.current_module
+                    .as_ref()
+                    .filter(|_| !type_name.contains('.'))
+                    .map_or_else(
+                        || type_name.to_string(),
+                        |module| format!("{module}.{type_name}"),
+                    )
+            });
+        let mut provided: HashSet<String> = impl_methods.iter().map(|m| m.name.clone()).collect();
+        // Split trait surfaces are cumulative on one exact nominal identity.
+        // This is how a subtrait that redeclares inherited methods is satisfied
+        // by the already-registered supertrait impl for the same type. Never
+        // aggregate by the type leaf: sibling modules may both define `Value`.
+        for ((implemented_type, _), methods) in &self.trait_impl_method_names {
+            if implemented_type == &type_identity {
+                provided.extend(methods.iter().cloned());
+            }
+        }
 
         // INHERITED method names: every method declared by a (transitively
         // reachable) SUPERTRAIT of this trait. A sub-trait may REDECLARE its
@@ -7804,7 +7840,7 @@ impl Checker {
         // block carries that obligation).
         let mut missing: Vec<String> = required
             .iter()
-            .filter(|name| !provided.contains(name.as_str()))
+            .filter(|name| !provided.contains(*name))
             .filter(|name| !inherited.contains(name.as_str()))
             .cloned()
             .collect();
@@ -8115,16 +8151,28 @@ impl Checker {
         };
 
         // The trait's defining module anchors how a bare type name written in
-        // the trait declaration is canonicalized. A local/root trait has no
-        // owner module (`None`), so its bare sibling-type names stay bare. For an
+        // the trait declaration is canonicalized. Imported traits carry that
+        // owner explicitly. A trait local to a non-root module deliberately
+        // resolves as `is_local`, but its sibling type names still belong to
+        // the exact current module; only a root-local trait has no owner. For an
         // inline supermethod this is the SUPERTRAIT's owner (its declaration's
         // bare sibling types belong to its module), not the sub-trait's.
-        let trait_owner_module = identity.owner.as_ref().map(|owner| {
-            self.module_import_bindings
-                .get(&(self.current_module.clone(), owner.clone()))
-                .cloned()
-                .unwrap_or_else(|| owner.clone())
-        });
+        let trait_owner_module = identity.owner.as_ref().map_or_else(
+            || {
+                identity
+                    .is_local
+                    .then(|| self.current_module.clone())
+                    .flatten()
+            },
+            |owner| {
+                Some(
+                    self.module_import_bindings
+                        .get(&(self.current_module.clone(), owner.clone()))
+                        .cloned()
+                        .unwrap_or_else(|| owner.clone()),
+                )
+            },
+        );
 
         // The DECLARING trait's canonical key drives `Self::Assoc` projection
         // and associated-type-binding lookup. For an inline supermethod this is
@@ -9042,13 +9090,17 @@ impl Checker {
         // when the module graph proved this exact owner came from the shipped
         // stdlib source. The body annotations then share the same nominal
         // identity as these synthetic signatures.
-        let canonical_channel_source = self.current_module.as_deref()
-            == Some("std.channel.channel")
-            && self
-                .canonical_std_module_sources
-                .contains("std.channel.channel");
+        let canonical_channel_source = self.current_module.as_deref().is_some_and(|module| {
+            matches!(module, "std.channel" | "std.channel.channel")
+                && (self.canonical_std_module_sources.contains(module)
+                    || self.canonical_std_module_sources.contains("std.channel"))
+        });
         let receiver_ty = if canonical_channel_source {
-            Ty::builtin_named(BuiltinType::Receiver, Vec::new())
+            Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                name: "std.channel.Receiver".to_string(),
+                args: Vec::new(),
+            }
         } else {
             Ty::Named {
                 builtin: None,
@@ -9057,7 +9109,11 @@ impl Checker {
             }
         };
         let sender_ty = if canonical_channel_source {
-            Ty::builtin_named(BuiltinType::Sender, Vec::new())
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                name: "std.channel.Sender".to_string(),
+                args: Vec::new(),
+            }
         } else {
             Ty::Named {
                 builtin: None,

@@ -1666,6 +1666,10 @@ mod platform {
 // ── WASM stubs ──────────────────────────────────────────────────────────
 
 #[cfg(not(any(unix, windows)))]
+#[allow(
+    dead_code,
+    reason = "WASI compiles the target-neutral subset; the remaining stubs preserve the platform ABI."
+)]
 mod platform {
     use std::ffi::c_void;
 
@@ -1743,15 +1747,20 @@ mod platform {
     pub(crate) unsafe fn try_direct_longjmp_with_code(_code: i32) {}
 }
 
-// Re-export platform-specific implementations.
+// Re-export platform-specific implementations. WASI needs only the
+// continuation-finalizer phase; keeping that narrow avoids presenting
+// native-only recovery verbs on the cooperative runtime.
 #[cfg(test)]
 pub(crate) use platform::state_field_finalizer_depth;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use platform::{
     clear_dispatch_recovery, enter_state_field_finalizer, handle_crash_recovery, ignore_sigpipe,
     init_crash_handling, init_worker_recovery, leave_state_field_finalizer, mark_recovery_active,
     prepare_dispatch_recovery, set_crash_cleanup_drain_active, sigsetjmp, try_direct_longjmp,
     try_direct_longjmp_with_code,
 };
+#[cfg(target_arch = "wasm32")]
+pub(crate) use platform::{enter_state_field_finalizer, leave_state_field_finalizer};
 
 // ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────
 

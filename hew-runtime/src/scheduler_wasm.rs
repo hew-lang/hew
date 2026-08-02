@@ -6856,7 +6856,6 @@ mod tests {
         // SAFETY: actor remains tracked and parked.
         let handle = unsafe { (*actor).suspended_cont.load(Ordering::Acquire) };
         assert!(!handle.is_null());
-        let frame = handle.cast::<crate::coro_exec::test_support::ScratchFrame>();
         assert_eq!(
             unsafe { (*actor).actor_state.load(Ordering::Acquire) },
             HewActorState::Suspended as i32
@@ -6878,8 +6877,6 @@ mod tests {
                 (*actor).cont_tag.load(Ordering::Acquire),
                 crate::internal::types::ContTag::Parked as i32
             );
-            assert_eq!((*frame).destroyed.load(Ordering::Acquire), 0);
-            assert!(!(*frame).heap_guard.load(Ordering::Acquire).is_null());
         }
 
         hew_runtime_cleanup();
@@ -6890,13 +6887,15 @@ mod tests {
         );
 
         // Repair the intentionally refused test state after observing the
-        // leak, then reclaim both allocations under sole test ownership.
-        // SAFETY: cleanup drained tracking without freeing actor or frame.
+        // leak, then let the executor destroy its frame and reclaim the actor.
+        // The dispatch created an executor-owned scratch frame: its destroy
+        // outline frees the outer tracked allocation, so this test must not
+        // reconstruct a `ScratchFrameOwner` after cancellation.
+        // SAFETY: cleanup drained tracking without freeing the actor.
         unsafe {
             crate::actor::cancel_parked_activation_for_free_wasm(&*actor);
-            assert_eq!((*frame).destroyed.load(Ordering::Acquire), 1);
+            assert!((*actor).suspended_cont.load(Ordering::Acquire).is_null());
             crate::actor::free_actor_resources_wasm(actor);
-            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle));
         }
         assert_eq!(
             crate::actor_balance::actor_box_counts(),

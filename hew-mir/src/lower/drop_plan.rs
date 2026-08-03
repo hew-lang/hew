@@ -8,11 +8,11 @@ use super::{
     derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
     derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
     derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    instr_source_places, place_is_interior_projection, place_refs_local,
-    propagate_whole_value_alias_roots, retained_string_terminator_drop_safe, short_name,
-    string_call_borrows, terminator_source_places, user_record_layout_key,
+    derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
+    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
+    derive_tuple_composite_drop_allowed, instr_source_places, place_is_interior_projection,
+    place_refs_local, propagate_whole_value_alias_roots, retained_string_terminator_drop_safe,
+    short_name, string_call_borrows, terminator_source_places, user_record_layout_key,
     vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
     BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
     DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
@@ -827,12 +827,21 @@ pub(super) fn elaborate(
                     == Some(*local)
             })
     });
-    let borrowed_builtin_handle_projection_aliases =
+    let mut borrowed_builtin_handle_projection_aliases =
         derive_borrowed_builtin_handle_projection_alias_bindings(
             &builder.binding_locals,
             &builder.locals,
             &projection_alias_tainted,
         );
+    let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
+        &checked.blocks,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &tuple_composite_drop_allowed,
+    );
+    borrowed_builtin_handle_projection_aliases
+        .retain(|binding| !owned_tuple_handle_projections.contains(binding));
     // A `ConsumedAt` disposition proves the value is absent only AFTER its
     // consuming instruction.  It can still be live at an earlier Return or a
     // coroutine-abandon edge, so the LIFO template must retain it and let the
@@ -3386,18 +3395,29 @@ fn validate_discharge_authority_corroboration_over(
     function: &str,
     blocks: &[BasicBlock],
 ) -> Vec<MirCheck> {
-    // Carrier 2 (independent): every local the primitive stream writes as a
-    // Move/WitnessMove destination — a real ownership-receiving slot. Derived
-    // WITHOUT reading any NeutralizePayloadSlot authority.
+    // Carrier 2 (independent): every local the primitive stream writes through
+    // Move/WitnessMove, plus each exact source/destination pair written by a
+    // tuple or record constructor. Derived WITHOUT reading any
+    // NeutralizePayloadSlot authority.
     let mut move_destinations: HashSet<u32> = HashSet::new();
+    let mut aggregate_member_destinations: HashSet<(Place, Place)> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
-            let dest = match instr {
-                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => *dest,
-                _ => continue,
-            };
-            if let Some(local) = whole_owner_local(dest) {
-                move_destinations.insert(local);
+            match instr {
+                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => {
+                    if let Some(local) = whole_owner_local(*dest) {
+                        move_destinations.insert(local);
+                    }
+                }
+                Instr::TupleConstruct { elements, dest } => {
+                    aggregate_member_destinations
+                        .extend(elements.iter().map(|source| (*source, *dest)));
+                }
+                Instr::RecordInit { fields, dest, .. } => {
+                    aggregate_member_destinations
+                        .extend(fields.iter().map(|(_offset, source)| (*source, *dest)));
+                }
+                _ => {}
             }
         }
     }
@@ -3406,9 +3426,9 @@ fn validate_discharge_authority_corroboration_over(
         for instr in &block.instructions {
             // Carrier 1: the carried transferee fact.
             let Instr::NeutralizePayloadSlot {
+                place,
                 transferee: Some(transferee),
                 authority,
-                ..
             } = instr
             else {
                 continue;
@@ -3416,15 +3436,36 @@ fn validate_discharge_authority_corroboration_over(
             let Some(dest_local) = whole_owner_local(*transferee) else {
                 continue;
             };
-            if !move_destinations.contains(&dest_local) {
+            let corroborated = if matches!(
+                authority,
+                crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+            ) {
+                aggregate_member_destinations.contains(&(*place, *transferee))
+            } else {
+                move_destinations.contains(&dest_local)
+            };
+            if !corroborated {
+                let primitive = if matches!(
+                    authority,
+                    crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                ) {
+                    format!(
+                        "the primitive instruction stream never constructs {transferee:?} from \
+                         source {place:?}"
+                    )
+                } else {
+                    format!(
+                        "the primitive instruction stream never moves any value into \
+                         local_{dest_local}"
+                    )
+                };
                 findings.push(MirCheck::DischargeAuthorityDrift {
                     function: function.to_string(),
                     block: block.id,
                     name: format!("local_{dest_local}"),
                     reason: format!(
                         "NeutralizePayloadSlot ({authority:?}) names transferee local_{dest_local} \
-                         as the new owner of the neutralized slot, but the primitive instruction \
-                         stream never moves any value into local_{dest_local}: the carried \
+                         as the new owner of the neutralized slot, but {primitive}: the carried \
                          transfer fact and the actual routing disagree (dual-carrier drift)"
                     ),
                 });
@@ -8963,6 +9004,29 @@ mod obligation_balance_validator {
         assert!(
             validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
             "a transferee the stream actually writes must corroborate clean"
+        );
+    }
+
+    #[test]
+    fn discharge_authority_corroborates_returned_aggregate_member() {
+        let blocks = vec![block(
+            0,
+            vec![
+                Instr::TupleConstruct {
+                    elements: vec![Place::Local(1)],
+                    dest: Place::Local(9),
+                },
+                Instr::NeutralizePayloadSlot {
+                    place: Place::Local(1),
+                    transferee: Some(Place::Local(9)),
+                    authority: NeutralizeAuthority::ReturnedAggregateMemberConsume,
+                },
+            ],
+            Terminator::Return,
+        )];
+        assert!(
+            validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
+            "an exact aggregate member constructor must corroborate its carried transfer"
         );
     }
 

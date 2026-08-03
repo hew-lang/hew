@@ -14,7 +14,7 @@
 // Router state uses only clonable types (strings, i32, LocalPid handles) so the
 // actor is supervisor-restartable. Each live Connection stays inside its one
 // per-connection actor.
-import std::net::{Connection};
+import std::net::{AttachError, Connection};
 
 import std::os;
 
@@ -204,7 +204,16 @@ actor ClientHandler {
     var registered: bool;
     receive fn start() {
         registered = true;
-        conn.attach(this);
+        match conn.attach(this) {
+            Ok(()) => {},
+            Err(AttachError::Refused) => {
+                registered = false;
+                println("[mqtt] active-mode attach refused");
+                unsafe {
+                    hew_actor_self_stop()
+                };
+            },
+        }
     }
     receive fn reject_registration() {
         conn.close();

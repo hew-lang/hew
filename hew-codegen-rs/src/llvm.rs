@@ -26635,11 +26635,10 @@ fn emit_remote_pid_send_call<'ctx>(
 ///     the same IDs the dispatch trampoline switches on.
 ///   * Load the opaque transport handle and `LocalPid<A>` actor pointer, then
 ///     call the transport's real four-argument runtime ABI.
-///   * `attach` returns Unit on the Hew surface; the runtime rc is discarded
-///     (the runtime records the failure in last_error and the fail-closed
-///     mailbox guard already rejected leak-prone mailboxes at type-check via
-///     the runtime). Dispatch is by callee name (no new FnSymbol variant),
-///     matching the `hew_remote_pid_send` precedent.
+///   * Return the runtime status to the caller. TCP uses it to construct its
+///     public `Result<(), AttachError>`; TLS and WebSocket currently discard it
+///     for their Unit-returning borrowing surfaces. Dispatch is by callee name
+///     (no new FnSymbol variant), matching the `hew_remote_pid_send` precedent.
 fn emit_transport_attach_local_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     args: &[Place],
@@ -26648,7 +26647,7 @@ fn emit_transport_attach_local_call<'ctx>(
     data_handler_name: &str,
     close_handler_name: &str,
     ids_are_i64: bool,
-) -> CodegenResult<()> {
+) -> CodegenResult<IntValue<'ctx>> {
     let [conn_arg, handler_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
             "{pseudo_callee} expects exactly 2 arguments (transport, handler), got {}",
@@ -26748,9 +26747,10 @@ fn emit_transport_attach_local_call<'ctx>(
         .build_load(handler_slot_ty, handler_ptr, "attach_actor_ptr")
         .llvm_ctx("load attach handler LocalPid ptr")?;
 
-    // Call the real four-argument runtime ABI. Its status is intentionally
-    // discarded, matching the established TCP `attach` Unit surface.
-    fn_ctx.call_runtime_void(
+    // Call the real four-argument runtime ABI and retain its status. The caller
+    // decides whether this transport exposes the status or deliberately
+    // discards it for an existing Unit-returning surface.
+    fn_ctx.call_runtime_int(
         runtime_callee,
         &[
             metadata_value_from_basic(conn_val),
@@ -26760,7 +26760,82 @@ fn emit_transport_attach_local_call<'ctx>(
         ],
         "attach_rc",
         "transport attach runtime call",
+    )
+}
+
+/// Materialise TCP active-mode attach's `Result<(), AttachError>` from the
+/// runtime status. `AttachError` has one payload-less variant (`Refused`), so a
+/// zeroed error value is its complete representation.
+fn emit_tcp_attach_result<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_tcp_attach_local must carry a Terminator::Call dest \
+             (Result<(), AttachError> return value)"
+                .into(),
+        )
+    })?;
+    let dest_local = match dest_place {
+        Place::Local(id) => *id,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_tcp_attach_local dest must be Place::Local(_), got {other:?}"
+            )));
+        }
+    };
+    let success = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            status.get_type().const_zero(),
+            "tcp_attach_is_ok",
+        )
+        .llvm_ctx("tcp attach status compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("TCP attach call has no parent function".into()))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "tcp_attach_ok_bb");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "tcp_attach_err_bb");
+    fn_ctx
+        .builder
+        .build_conditional_branch(success, ok_bb, err_bb)
+        .llvm_ctx("tcp attach result branch")?;
+    let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
+        CodegenError::FailClosed(format!("hew_tcp_attach_local next bb{next} missing"))
+    })?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, "TCP attach Result::Ok")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("TCP attach Ok branch")?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, "TCP attach Result::Err")?;
+    let (error_ptr, error_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
     )?;
+    fn_ctx
+        .builder
+        .build_store(error_ptr, error_ty.const_zero())
+        .llvm_ctx("store AttachError::Refused")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("TCP attach Err branch")?;
     Ok(())
 }
 
@@ -29121,8 +29196,9 @@ fn lower_terminator<'ctx>(
             // Typed TCP/TLS/WebSocket attach calls carry distinct runtime-call
             // families. Codegen resolves the concrete actor from the handler's
             // `LocalPid<A>`, synthesises the transport handler msg_ids, and
-            // emits the real four-argument runtime ABI. `attach` returns Unit,
-            // so any `dest` is a checker-boundary bug.
+            // emits the real four-argument runtime ABI. TCP exposes the status
+            // as `Result<(), AttachError>`; TLS and WebSocket retain their
+            // Unit-returning borrowing surfaces.
             if matches!(
                 builtin,
                 Some(
@@ -29131,7 +29207,7 @@ fn lower_terminator<'ctx>(
                         | RtFamily::WebSocketAttachLocal
                 )
             ) {
-                if dest.is_some() {
+                if builtin != Some(RtFamily::TcpAttachLocal) && dest.is_some() {
                     return Err(CodegenError::FailClosed(format!(
                         "{callee} (transport.attach) returns Unit and must not carry a \
                              Terminator::Call dest"
@@ -29149,7 +29225,7 @@ fn lower_terminator<'ctx>(
                     }
                     _ => unreachable!("guarded active transport attach family"),
                 };
-                emit_transport_attach_local_call(
+                let status = emit_transport_attach_local_call(
                     fn_ctx,
                     args,
                     callee,
@@ -29158,6 +29234,10 @@ fn lower_terminator<'ctx>(
                     close_handler,
                     ids_are_i64,
                 )?;
+                if builtin == Some(RtFamily::TcpAttachLocal) {
+                    emit_tcp_attach_result(fn_ctx, status, dest.as_ref(), *next)?;
+                    return Ok(());
+                }
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                     CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;

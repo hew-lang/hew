@@ -88,6 +88,15 @@ pub enum NetError {
     Other(i64);
 }
 
+/// Failure to transfer a TCP connection into active mode.
+///
+/// A refused attach has already closed the consumed connection. The caller
+/// receives no connection back and must not attempt a second close.
+pub enum AttachError {
+    /// The runtime refused the active-mode registration.
+    Refused;
+}
+
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `NetError` variant.
 ///
@@ -666,10 +675,14 @@ impl Connection {
     }
     /// Attach this connection to an actor for active-mode delivery.
     ///
-    /// The runtime takes over the connection's lifecycle, so this is a
-    /// terminal transfer just like `close` and `into_stream_sink`. Every call
-    /// site is rewritten to `hew_tcp_attach_local` by the checker/codegen.
-    fn attach(consuming self, handler: LocalPid<ConnectionHandler>) {}
+    /// The runtime takes over the connection's lifecycle on success, so this
+    /// is a terminal transfer just like `close` and `into_stream_sink`. On
+    /// refusal the runtime closes the consumed connection before returning
+    /// `Err(AttachError::Refused)`. Every call site is rewritten to
+    /// `hew_tcp_attach_local` by the checker/codegen.
+    fn attach(consuming self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
+        Err(AttachError::Refused)
+    }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
     fn into_stream_sink(consuming self) -> (Stream<bytes>, Sink<bytes>) {
         unsafe {

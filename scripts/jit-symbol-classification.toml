@@ -2418,12 +2418,21 @@ discharge-depth = "none"
 
 # string singles — hew-runtime/src/string.rs. hew_string_drop is THE universal
 # String release (free_cstring; consume). hew_char_to_string allocates a fresh
-# string; hew_string_to_bytes forwards to bytes.rs hew_bytes_from_str (fresh
-# rc=1 buffer, released via hew_bytes_drop); hew_string_compare and the
+# string; the string transformation rows below return one independently
+# releasable share; hew_string_to_bytes forwards to bytes.rs hew_bytes_from_str
+# (fresh rc=1 buffer, released via hew_bytes_drop); hew_string_compare and the
 # hew_unicode_* codepoint predicates/mappers are read-only.
 [[ownership.contracts]]
 symbol = "hew_char_to_string"
 result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_clone"
+result = "retained"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
@@ -2444,10 +2453,58 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_string_repeat"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_replace"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_slice"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_string_to_bytes"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_to_lowercase"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_to_uppercase"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_trim"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 

@@ -13,10 +13,10 @@ use super::{
     FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
     HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
     MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
-    ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
-    ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
-    VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
-    SYNTHETIC_TEMP_ARG_NAME,
+    ProducedValueOwnership, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
+    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, RuntimeCallContext, SiteId, SuspendKind,
+    Terminator, TrapKind, UnaryOp, ValueClass, VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX,
+    SENTINEL_RECV_GEN_COMPANION_BINDING, SYNTHETIC_TEMP_ARG_NAME,
 };
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
@@ -9413,6 +9413,88 @@ impl Builder {
         )
     }
 
+    /// Hand a borrowing call's anonymous owned arguments from their typed
+    /// publication generation to the ordinary scope-exit planner.
+    fn finalize_borrowed_argument_owners(
+        &mut self,
+        callee_symbol: &str,
+        hir_args: &[HirExpr],
+        arg_places: &[Place],
+        proven_borrow_args: &HashSet<usize>,
+    ) {
+        for (index, arg) in hir_args.iter().enumerate() {
+            let ownership = self
+                .param_ownership
+                .produced_value_facts
+                .get(&arg.site)
+                .map(|fact| fact.ownership);
+            if !matches!(ownership, Some(ProducedValueOwnership::Owned { .. })) {
+                continue;
+            }
+            let owned_ty = self.subst_ty(&arg.ty);
+            if ValueClass::of_ty(&owned_ty, &self.type_classes) == ValueClass::Linear
+                || (!matches!(owned_ty, ResolvedTy::TraitObject { .. })
+                    && !crate::model::ty_owns_heap_mir(
+                        &owned_ty,
+                        &self.record_field_orders,
+                        &self.enum_layouts,
+                    ))
+            {
+                continue;
+            }
+            let callee_borrows = if matches!(owned_ty, ResolvedTy::String) {
+                // Runtime string receivers already receive exactly one inline
+                // release. Only an analyzed Hew function borrows the anonymous
+                // string through the ordinary caller-owner path.
+                !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
+                    .borrows_string_call_args()
+                    && self.callee_is_analyzed_hew_arg_sink(callee_symbol)
+            } else {
+                proven_borrow_args.contains(&index)
+            };
+            if !callee_borrows {
+                continue;
+            }
+            let Some(Place::Local(local)) = arg_places.get(index).copied() else {
+                continue;
+            };
+            if self.parameter_locals.contains(&local) {
+                continue;
+            }
+            let Some((binding, published_ty)) = self.finalize_typed_produced_value_owner(
+                SYNTHETIC_TEMP_ARG_NAME,
+                arg.site,
+                Place::Local(local),
+            ) else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "owned borrowing argument without provisional owner".to_string(),
+                        site: arg.site,
+                    },
+                    note: "the typed owned argument must publish its exact MIR generation before the borrowing call sink"
+                        .to_string(),
+                });
+                continue;
+            };
+            if published_ty != owned_ty {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "borrowing argument owner changed type at handoff".to_string(),
+                        site: arg.site,
+                    },
+                    note: format!(
+                        "typed argument has type {owned_ty:?}, but its provisional owner has type {published_ty:?}"
+                    ),
+                });
+                continue;
+            }
+            if matches!(published_ty, ResolvedTy::TraitObject { .. }) {
+                self.dyn_trait_storage
+                    .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+            }
+        }
+    }
+
     /// Lower a direct call using the checker/HIR-projected authority. The
     /// `Extern` variant is the capability to read an audited FFI parameter
     /// contract; it does not select a specialised codegen ABI.
@@ -9499,15 +9581,12 @@ impl Builder {
                     .then_some(index)
             })
             .collect();
-        // #2743 — mint a caller-side scope-exit drop for every fresh owned
+        // #2743 — complete the caller-side owner handoff for every typed owned
         // composite/string argument TEMPORARY passed to a BORROWING parameter.
-        // The temporary has no user `let`, so #2735's preserve-the-drop exemption
-        // (`proven_borrow_whole_arg_locals`) has nothing to preserve and the fresh
-        // value leaks. Binding the already-materialised arg local to a synthetic
-        // owned local routes it through the SAME `owned_locals` machinery as
-        // `let x = Row{..}; g(x)` — the per-type sole-owner prover then decides
-        // admission, so an escaping value is still excluded (leak, never a
-        // double-free), and registration alone never forces a drop.
+        // The temporary has no user `let`, so its publication owner is the one
+        // exact generation that must reach scope-exit planning. This sink only
+        // changes that owner's structural role; it never reclassifies or remints
+        // the value.
         //
         // Exactly-once gate is per type, aligned with the prover's own
         // borrow-vs-consume exemption:
@@ -9516,7 +9595,7 @@ impl Builder {
         //    the composite provers read). A CONSUMING composite callee's temp is
         //    NOT registered here (its arg is absent from `proven_borrow_args`); the
         //    callee owns and drops it (#2732 for enums) — mutually exclusive.
-        //  - string: minted iff the callee is a USER free function (a string
+        //  - string: handed off iff the callee is a USER free function (a string
         //    param is never recorded in `proven_borrow_arg_sites` — its borrow
         //    model is the separate refcount contract). The string sole-owner
         //    prover then gates the actual drop exactly as for the named
@@ -9524,60 +9603,12 @@ impl Builder {
         //    Runtime borrowing receivers (`(a+b).len()` = `hew_string_length`)
         //    are deliberately excluded: their nested temp already gets an
         //    exactly-once inline release from `apply_nested_fresh_string_temp_drops`.
-        for (index, arg) in hir_args.iter().enumerate() {
-            let Some(owned_ty) = self.caller_borrowed_temp_arg_owned_ty(arg) else {
-                continue;
-            };
-            let callee_borrows = if matches!(owned_ty, ResolvedTy::String) {
-                // A string temp earns a caller drop only when passed to a USER
-                // free function (the #2735/#2743 seam), NOT to a runtime borrowing
-                // receiver: `(a + b).len()` lowers `hew_string_length` through this
-                // same `lower_direct_call` path (its stdlib shim is registered in
-                // `module_fn_names`), and that nested temp already gets its
-                // exactly-once INLINE release from
-                // `apply_nested_fresh_string_temp_drops` — minting a synthetic
-                // scope-exit owner over it merely relocates the drop and drifts the
-                // nested-producer canary. A runtime string op carries a
-                // `borrows_string_call_args` ownership contract; a user free fn does
-                // not, so that contract is the exact discriminator. The string
-                // sole-owner prover then gates the actual drop (borrow admits,
-                // consume/escape excludes), as for the named `let s = a+b; h(s)`.
-                // Extern veto + dispatch-set test: see `callee_is_analyzed_hew_arg_sink`.
-                !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
-                    .borrows_string_call_args()
-                    && self.callee_is_analyzed_hew_arg_sink(callee_symbol)
-            } else {
-                proven_borrow_args.contains(&index)
-            };
-            if !callee_borrows {
-                continue;
-            }
-            // A fresh producer always materialises into a fresh MIR local (never a
-            // parameter slot or an existing binding base); the guard keeps the mint
-            // fail-closed if a future arg shape reuses a slot.
-            let Some(Place::Local(local)) = arg_places.get(index).copied() else {
-                continue;
-            };
-            if self.parameter_locals.contains(&local) {
-                continue;
-            }
-            let warrant = if matches!(owned_ty, ResolvedTy::String) {
-                self.owner_warrant_for_owned_string_carrier_temp(arg)
-            } else {
-                self.owner_warrant_for_admitted_temp(arg)
-            };
-            let binding = self.adopt_synthetic_owned_local(
-                SYNTHETIC_TEMP_ARG_NAME,
-                arg.site,
-                local,
-                owned_ty.clone(),
-                warrant,
-            );
-            if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
-                self.dyn_trait_storage
-                    .insert(binding, crate::TraitObjectStorage::HeapBoxed);
-            }
-        }
+        self.finalize_borrowed_argument_owners(
+            callee_symbol,
+            hir_args,
+            &arg_places,
+            &proven_borrow_args,
+        );
         if !proven_borrow_args.is_empty() {
             self.proven_borrow_call_args
                 .insert(self.current_block_id, proven_borrow_args);

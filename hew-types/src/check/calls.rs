@@ -1292,6 +1292,7 @@ impl Checker {
                 },
                 extern_symbol: exact_extern_symbol,
                 extern_declaring_module: source_extern.and_then(|decl| decl.declaring_module),
+                extern_param_count: sig.params.len(),
                 resolved_result_ty,
             },
         );
@@ -1473,6 +1474,7 @@ impl Checker {
                     },
                     extern_symbol: None,
                     extern_declaring_module: None,
+                    extern_param_count: 0,
                     resolved_result_ty: result_ty.clone(),
                 },
             );
@@ -2191,6 +2193,7 @@ impl Checker {
                         },
                         extern_symbol: None,
                         extern_declaring_module: None,
+                        extern_param_count: 0,
                         resolved_result_ty,
                     },
                 );
@@ -2298,6 +2301,7 @@ impl Checker {
                         },
                         extern_symbol: None,
                         extern_declaring_module: None,
+                        extern_param_count: 0,
                         resolved_result_ty,
                     },
                 );

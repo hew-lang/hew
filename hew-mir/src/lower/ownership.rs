@@ -562,6 +562,13 @@ impl Builder {
         let ProducedValueOwnership::Owned { .. } = fact.ownership else {
             return;
         };
+        if ValueClass::of_ty(&expected_ty, &self.type_classes) == ValueClass::BitCopy {
+            // Generic clone bodies retain their abstract owned publication
+            // after monomorphisation. A concrete scalar clone deliberately
+            // reuses the parameter slot because the value has no release
+            // obligation and therefore cannot mint a local owner.
+            return;
+        }
         let aggregate_payloads: Vec<&HirExpr> = match &expr.kind {
             HirExprKind::TupleLiteral { elements } => elements.iter().collect(),
             HirExprKind::StructInit { fields, base, .. } => fields
@@ -4499,6 +4506,40 @@ mod typed_produced_owner_tests {
                     if construct == "owned result rewrote a live provisional owner local"
             )
         }));
+    }
+
+    #[test]
+    fn typed_scalar_clone_publication_reuses_a_parameter_without_minting_an_owner() {
+        let site = SiteId(705);
+        let expr = HirExpr {
+            node: HirNodeId(site.0),
+            site,
+            ty: ResolvedTy::I64,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Integer(7)),
+            span: 0..0,
+        };
+        let mut builder = Builder::default();
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::RecordCloneCall,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        builder.param_ownership = Rc::new(facts);
+        builder.parameter_locals.insert(9);
+
+        builder.adopt_typed_produced_value_owner(&expr, Place::Local(9));
+
+        assert!(builder.owned_locals_ledger().is_empty());
+        assert!(builder.diagnostics.is_empty());
     }
 
     #[test]

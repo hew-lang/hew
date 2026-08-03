@@ -1037,10 +1037,21 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             || a.emit_obj
             || a.debug
             || !a.link_libs.is_empty()
+            || a.common.any_set()
         {
             eprintln!(
                 "Error: build options require an input .hew file; \
                  `hew build` with no input builds the package's [native] library"
+            );
+            return 2;
+        }
+        // `--format json` has no meaningful package-mode output: the native
+        // build reports staged-artifact paths, not compiler diagnostics, so
+        // there is nothing for the JSON diagnostic array to describe.
+        if a.format == args::DiagnosticFormat::Json {
+            eprintln!(
+                "Error: --format json is not supported for `hew build` with no input \
+                 (package-mode native build has no diagnostic output to format)"
             );
             return 2;
         }
@@ -1629,10 +1640,21 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     // anywhere else it is a usage error. File-oriented flags are rejected
     // loudly rather than silently ignored (fail-closed).
     let Some(input_path) = a.input.as_deref() else {
-        if a.explain_cow || a.show_stack_hints || a.target.is_some() {
+        if a.explain_cow || a.show_stack_hints || a.target.is_some() || a.common.any_set() {
             eprintln!(
                 "Error: check options require an input .hew file; \
                  `hew check` with no input validates the project manifest"
+            );
+            return 2;
+        }
+        // `--format json` has no meaningful package-mode output: manifest
+        // validation reports free-form issue strings, not structured
+        // compiler diagnostics, so there is nothing for the JSON array to
+        // describe.
+        if json {
+            eprintln!(
+                "Error: --format json is not supported for `hew check` with no input \
+                 (package-mode manifest validation has no diagnostic output to format)"
             );
             return 2;
         }

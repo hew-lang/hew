@@ -274,6 +274,19 @@ impl CommonBuildArgs {
             ..Default::default()
         }
     }
+
+    /// True when any compile-only flag was passed. No-input package-mode
+    /// `check`/`build` cannot honor these (there is no `.hew` file to apply
+    /// them to) — callers reject loudly rather than silently ignoring them.
+    pub fn any_set(&self) -> bool {
+        self.werror
+            || self.no_typecheck
+            || self.pkg_path.is_some()
+            || self.project_dir.is_some()
+            || !self.allow.is_empty()
+            || !self.warn.is_empty()
+            || !self.deny.is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------

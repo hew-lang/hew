@@ -2729,20 +2729,35 @@ pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
         BuiltinLinkage::RuntimeFfiShim { symbol } => {
             let contract =
                 hew_types::ffi_contracts::extern_ownership_contract(symbol).contract()?;
-            match contract.result {
-                hew_types::ffi_contracts::ExternResultOwnership::Fresh => Some(
-                    ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
-                ),
-                hew_types::ffi_contracts::ExternResultOwnership::Retained => Some(
-                    ProducedValueOwnership::owned(ProducedValueAcquisition::Retained),
-                ),
-                hew_types::ffi_contracts::ExternResultOwnership::Borrowed => {
-                    Some(ProducedValueOwnership::Borrowed)
-                }
-                hew_types::ffi_contracts::ExternResultOwnership::None => None,
-            }
+            runtime_ffi_result_ownership(contract)
         }
         _ => None,
+    }
+}
+
+fn runtime_ffi_result_ownership(
+    contract: &hew_types::ffi_contracts::ExternOwnershipContract,
+) -> Option<ProducedValueOwnership> {
+    use hew_types::ffi_contracts::{
+        ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    };
+
+    match contract.result {
+        ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+            if !contract.release_symbol.is_empty()
+                && contract.discharge_depth != ReleaseDischargeDepth::None
+                && contract.result_retention == ExternResultRetention::Transferred =>
+        {
+            Some(ProducedValueOwnership::owned(match contract.result {
+                ExternResultOwnership::Fresh => ProducedValueAcquisition::Fresh,
+                ExternResultOwnership::Retained => ProducedValueAcquisition::Retained,
+                ExternResultOwnership::Borrowed | ExternResultOwnership::None => unreachable!(),
+            }))
+        }
+        ExternResultOwnership::Borrowed => Some(ProducedValueOwnership::Borrowed),
+        ExternResultOwnership::Fresh
+        | ExternResultOwnership::Retained
+        | ExternResultOwnership::None => None,
     }
 }
 
@@ -2854,7 +2869,9 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compiler_synthetic_runtime_ownership_symbol, result_ownership};
+    use super::{
+        compiler_synthetic_runtime_ownership_symbol, result_ownership, runtime_ffi_result_ownership,
+    };
     use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
 
     #[test]
@@ -2882,6 +2899,41 @@ mod tests {
         }
         assert_eq!(result_ownership("println_i64"), None);
         assert_eq!(result_ownership("missing"), None);
+    }
+
+    #[test]
+    fn fresh_ffi_result_without_transferred_retention_cannot_mint() {
+        use hew_types::ffi_contracts::{
+            ExternOwnershipContract, ExternResultOwnership, ExternResultRetention,
+            ReleaseDischargeDepth,
+        };
+
+        let contract = ExternOwnershipContract {
+            params: &[],
+            resource_param_types: &[],
+            resource_result_type: None,
+            result: ExternResultOwnership::Fresh,
+            release_symbol: "hew_string_drop",
+            discharge_depth: ReleaseDischargeDepth::Shallow,
+            result_retention: ExternResultRetention::Unspecified,
+        };
+        assert_eq!(runtime_ffi_result_ownership(&contract), None);
+    }
+
+    #[test]
+    fn reachable_vec_ffi_results_keep_their_owners() {
+        assert_eq!(
+            result_ownership("hew_vec_clone"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("hew_vec_get_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Retained
+            ))
+        );
     }
 
     #[test]

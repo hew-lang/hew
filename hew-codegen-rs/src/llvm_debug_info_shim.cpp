@@ -54,10 +54,9 @@ extern "C" LLVMMetadataRef hewLLVMDIBuilderCreateVariantPart(
 }
 
 extern "C" void hewLLVMDICompositeTypeAppendVariantPart(
-    LLVMDIBuilderRef builder, LLVMMetadataRef composite,
-    LLVMMetadataRef existing_member, LLVMMetadataRef variant_part) {
+    LLVMDIBuilderRef builder, LLVMMetadataRef composite, LLVMMetadataRef,
+    LLVMMetadataRef variant_part) {
   Metadata *elements[] = {
-      reinterpret_cast<Metadata *>(existing_member),
       reinterpret_cast<Metadata *>(variant_part),
   };
   unwrapMetadata<DICompositeType>(composite)->replaceElements(

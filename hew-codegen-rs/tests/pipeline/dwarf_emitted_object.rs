@@ -281,17 +281,19 @@ fn emitted_object_active_variant_payload_fits_inside_enclosing_enum() {
         eprintln!("skip: no llvm-dwarfdump/dwarfdump on host");
         return;
     };
-    // The Packet payload sits at offset 8 (after the tag + padding). Its type
-    // size plus that offset must fit exactly within Status.
+    // Each variant type describes the complete enum storage, while its payload
+    // fields begin after the tag + padding.
     let enum_size = byte_size_of(&dump, "Status").expect("Status size");
     let payload_size = byte_size_of(&dump, "Packet").expect("Packet size");
     let payload_offset = member_offset_of(&dump, "Packet").expect("Packet member offset");
     assert_eq!(
-        payload_size + payload_offset,
-        enum_size,
-        "Packet size ({payload_size:#x}) + offset {payload_offset:#x} must equal \
-         the enclosing Status size ({enum_size:#x}); the payload must not extend \
-         past the object\n{dump}"
+        payload_size, enum_size,
+        "Packet must describe the complete Status storage; Packet={payload_size:#x}, \
+         Status={enum_size:#x}\n{dump}"
+    );
+    assert_eq!(
+        payload_offset, 0,
+        "the variant member overlays the complete enum storage\n{dump}"
     );
 }
 

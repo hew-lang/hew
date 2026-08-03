@@ -32048,7 +32048,7 @@ fn resolve_enum_di_type<'ctx>(
         .create_basic_type("u32", tag_bits.max(8), DW_ATE_UNSIGNED, DIFlags::PUBLIC)
         .expect("DWARF base type for the enum tag is infallible")
         .as_type();
-    let tag_di = dctx
+    let _tag_di = dctx
         .di_builder
         .create_enumeration_type(
             dctx.compile_unit.as_debug_info_scope(),
@@ -32065,9 +32065,9 @@ fn resolve_enum_di_type<'ctx>(
     // Recursion guard (Risk C): a recursive enum (`indirect enum List { Cons {
     // tail: List }; Nil }`) would re-enter this function while resolving the
     // `tail: List` payload field, with no cache entry yet → infinite recursion
-    // → stack overflow. Insert the outer struct DIE with only its tag member
-    // BEFORE the payload loop, so the recursive field resolves to that same
-    // node and terminates. The variant part is appended in place after every
+    // → stack overflow. Insert the outer struct DIE with no children BEFORE the
+    // payload loop, so the recursive field resolves to that same node and
+    // terminates. The completed variant part is installed in place after every
     // payload type is resolved.
     let tag_offset_for_placeholder = target_data
         .offset_of_element(&outer_struct, 0)
@@ -32077,14 +32077,14 @@ fn resolve_enum_di_type<'ctx>(
         .di_builder
         .create_member_type(
             dctx.compile_unit.as_debug_info_scope(),
-            "tag",
+            "",
             dctx.file,
             0,
             tag_bits.max(8),
-            0,
+            enum_layout.tag_width.max(8),
             tag_offset_for_placeholder,
-            DIFlags::PUBLIC,
-            tag_di,
+            DIFlags::ARTIFICIAL,
+            tag_underlying,
         )
         .as_type();
     let placeholder = dctx
@@ -32098,7 +32098,7 @@ fn resolve_enum_di_type<'ctx>(
             struct_align_bits,
             DIFlags::PUBLIC,
             None,
-            &[placeholder_tag_member],
+            &[],
             0,
             None,
             enum_name,
@@ -32146,7 +32146,7 @@ fn resolve_enum_di_type<'ctx>(
                 break;
             };
             let field_idx = u32::try_from(i).unwrap_or(u32::MAX);
-            let offset_bits = if field_idx < variant_struct.count_fields() {
+            let payload_field_offset_bits = if field_idx < variant_struct.count_fields() {
                 target_data
                     .offset_of_element(&variant_struct, field_idx)
                     .map(|b| b * 8)
@@ -32154,6 +32154,7 @@ fn resolve_enum_di_type<'ctx>(
             } else {
                 0
             };
+            let offset_bits = payload_offset_bits + payload_field_offset_bits;
             let member_name = variant
                 .field_names
                 .get(i)
@@ -32175,8 +32176,6 @@ fn resolve_enum_di_type<'ctx>(
         if !ok {
             continue;
         }
-        let variant_size_bits = target_data.get_bit_size(&variant_struct);
-        let variant_align_bits = target_data.get_abi_alignment(&variant_struct) * 8;
         let variant_struct_di = dctx
             .di_builder
             .create_struct_type(
@@ -32184,8 +32183,8 @@ fn resolve_enum_di_type<'ctx>(
                 short_name(&variant.name),
                 dctx.file,
                 0,
-                variant_size_bits,
-                variant_align_bits,
+                struct_size_bits,
+                struct_align_bits,
                 DIFlags::PUBLIC,
                 None,
                 &members,
@@ -32206,21 +32205,21 @@ fn resolve_enum_di_type<'ctx>(
             dctx.compile_unit.as_debug_info_scope(),
             short_name(&variant.name),
             dctx.file,
-            variant_size_bits,
-            variant_align_bits,
-            payload_offset_bits,
+            struct_size_bits,
+            struct_align_bits,
+            0,
             discriminant,
             variant_struct_di,
         );
         variant_members.push(variant_member);
     }
 
-    // The variant part references the exact tag member already installed on
-    // the recursive outer type through DW_AT_discr.
+    // The discriminant is a child of the variant part (rather than a sibling
+    // outer member), matching the DWARF shape rustc and LLDB agree on.
     let variant_part = create_di_variant_part(
         dctx.di_builder,
         dctx.compile_unit.as_debug_info_scope(),
-        enum_name,
+        "",
         dctx.file,
         struct_size_bits,
         struct_align_bits,
@@ -32378,9 +32377,9 @@ fn append_di_variant_part<'ctx>(
         );
     }
 
-    // SAFETY: `composite` is the live outer enum DICompositeType and
-    // `discriminator` is its existing child. The replacement only appends the
-    // newly-created variant part, satisfying LLVM's replaceElements invariant.
+    // SAFETY: `composite` is the live outer enum DICompositeType. It was created
+    // with no children, so installing the completed variant part cannot discard
+    // an existing member.
     unsafe {
         hewLLVMDICompositeTypeAppendVariantPart(
             di_builder.as_mut_ptr(),
@@ -34352,7 +34351,11 @@ fn build_module_for_target<'ctx>(
                 .unwrap_or_else(|| ".".to_string());
             let (di_builder, compile_unit) = llvm_mod.create_debug_info_builder(
                 /* allow_unresolved */ true,
-                DWARFSourceLanguage::C,
+                // Hew's algebraic enums use the same DW_TAG_variant_part shape
+                // as Rust. LLDB only enables that active-variant renderer for a
+                // Rust-language compile unit; DW_LANG_C leaves the valid DIEs
+                // present but displays the value as an empty struct.
+                DWARFSourceLanguage::Rust,
                 &file_name,
                 &directory,
                 concat!("hew ", env!("CARGO_PKG_VERSION")),

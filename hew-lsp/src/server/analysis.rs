@@ -2471,7 +2471,7 @@ mod tests {
     /// unresolved while `hew check` accepts it — the lying-LSP class this change
     /// exists to eliminate.
     ///
-    /// Layout mirrors how `hew package add hew::template` would install into a
+    /// Layout mirrors how `hew add hew::template` would install into a
     /// local package directory: `<pkg_root>/template/template.hew` with a bare
     /// Hew source file (no manifest needed for this resolution layer).
     #[test]

@@ -26,14 +26,8 @@
 //!
 //! - Owned-rewrite test: `target_symbol == "hew_vec_push_layout"`
 //!   plus a `Vec<owned>` receiver, with `target_family` set to a
-//!   *non-push* Vec variant (`VecMethod::Pop`). The owned-rewrite
-//!   in `hew-mir/src/lower.rs::ResolvedImplCall` is gated on
-//!   `matches!(target_family, Vec(VecMethod::Push))` — string-keyed
-//!   dispatch (pre-S2) checked only the symbol and would rewrite
-//!   the callee to `hew_vec_push_owned`. Typed-family dispatch
-//!   (post-S2) sees the Pop family discriminator and leaves the
-//!   callee as `hew_vec_push_layout`. The test inspects the emitted
-//!   `Terminator::Call.callee` directly.
+//!   *non-push* Vec variant (`VecMethod::Pop`). Exact typed dispatch rejects
+//!   that contradictory hand-built HIR before emitting a call.
 //!
 //! - Positive MIR-shape anchor: a well-formed call (symbol and family
 //!   agree, arity correct) lowers without panicking and emits the
@@ -55,7 +49,7 @@ use hew_hir::{
     HirStmtKind, IntentKind, ScopeId, TypeClassTable, ValueClass,
 };
 use hew_mir::lower_hir_module;
-use hew_mir::model::{IrPipeline, Terminator};
+use hew_mir::model::{IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::{
     BuiltinType, CallTarget, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy,
     TyPattern, VecMethod,
@@ -424,17 +418,10 @@ fn owned_push_rewrite_fires_when_target_family_is_vec_push() {
 }
 
 #[test]
-fn owned_push_rewrite_skipped_when_target_family_is_not_vec_push() {
-    // Same symbol, same receiver — but target_family is Vec(Pop), not
-    // Vec(Push). The S2 owned-rewrite predicate is gated on
-    // matches!(target_family, Vec(VecMethod::Push)), so the rewrite must
-    // NOT fire and the callee must stay as the literal target_symbol
-    // (hew_vec_push_layout).
-    //
-    // A regression that reverts the gate to a symbol-only check
-    // (`target_symbol == "hew_vec_push_layout"` alone) would rewrite
-    // to hew_vec_push_owned and the assertion below — that the layout
-    // callee survives — would fail.
+fn contradictory_vec_method_family_fails_closed_before_call_emission() {
+    // Same symbol and receiver as a push, but the exact family is Vec(Pop).
+    // The closed authority cannot resolve that contradiction and must stop
+    // before either the layout or owned callee reaches codegen.
     let mut ids = IdGen::default();
     let receiver = vec_owned_receiver(&mut ids);
     let arg = unit_expr(&mut ids, ResolvedTy::Tuple(vec![ResolvedTy::String]));
@@ -465,15 +452,18 @@ fn owned_push_rewrite_skipped_when_target_family_is_not_vec_push() {
     let pipeline = lower_hir_module(&module);
     let callees = callees_of(&pipeline);
     assert!(
-        callees.iter().any(|c| c == "hew_vec_push_layout"),
-        "callee must stay as target_symbol when target_family is not \
-         Vec(Push); the owned-rewrite is family-gated. Got: {callees:?}"
+        callees.is_empty(),
+        "contradictory collection authority must not emit a callee: {callees:?}"
     );
     assert!(
-        !callees.iter().any(|c| c == "hew_vec_push_owned"),
-        "owned-rewrite must NOT fire when target_family says Pop; a \
-         regression to symbol-keyed dispatch would rewrite anyway. \
-         Got: {callees:?}"
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct
+                    == "collection call `hew_vec_push_layout` has no runtime authority"
+        )),
+        "contradictory collection authority must fail closed: {:#?}",
+        pipeline.diagnostics
     );
 }
 

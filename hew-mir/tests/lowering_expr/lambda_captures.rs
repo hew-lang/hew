@@ -264,7 +264,7 @@ fn main() {
     let f = actor |n: i64| -> i64 { xs[0] + n };
 }
 ";
-    let p = pipeline(source);
+    let p = lower_checked(source);
     assert!(
         p.diagnostics.iter().any(|d| matches!(
             d.kind,

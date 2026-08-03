@@ -7,12 +7,13 @@ use super::{
     derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
     generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
-    ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DischargeSite, DropKind,
-    ElabDrop, FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement, NestedDefSite,
-    NestedUseSite, Place, RawMirFunction, ResolvedTy, SelectArmKind, SiteId, StringDropDerivation,
-    StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
+    propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
+    terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
+    BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
+    ClosureEnvFieldOwnership, DischargeSite, DropKind, ElabDrop, FieldOffset, HashMap, HashSet,
+    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
@@ -277,6 +278,11 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
     builder: &Builder,
 ) -> HashSet<(u32, usize, Place)> {
     let owned_locals = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
     derive_cow_sole_owner(
         blocks,
         &builder.suspend_kinds,
@@ -285,7 +291,7 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
         &builder.match_project_consumed_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
-        &builder.borrowed_string_param_locals,
+        &borrowed_string_locals,
         &builder.parameter_locals,
         &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
@@ -1112,8 +1118,12 @@ pub(super) fn derive_cow_sole_owner(
         candidate_local_to_binding.insert(local, *binding);
     }
 
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        candidate_local_to_binding.keys().copied(),
+        &retained_string_moves,
+    );
     let entry_block = blocks.first().map(|block| block.id);
     let mut handoff_move_sites: HashSet<(u32, usize)> = HashSet::new();
     let mut handoff_bindings: HashSet<BindingId> = HashSet::new();
@@ -1224,8 +1234,11 @@ pub(super) fn derive_cow_sole_owner(
         }
     };
 
-    let borrowed_alias_of =
-        propagate_whole_value_alias_roots(blocks, borrowed_param_locals.iter().copied());
+    let borrowed_alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        borrowed_param_locals.iter().copied(),
+        &retained_string_moves,
+    );
     let binding_local_bases: HashSet<u32> = binding_locals
         .values()
         .filter_map(|place| base_local(*place))
@@ -1687,10 +1700,19 @@ pub(super) fn derive_cow_sole_owner(
         }
     }
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             let owned_dest = fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
                 .or_else(|| string_field_load_producer_dest(instr, locals))
                 .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .or_else(|| {
+                    corroborated_retained_string_move_dest(
+                        instr,
+                        block.id,
+                        instr_index,
+                        &retained_string_moves,
+                    )
+                    .map(Place::Local)
+                })
                 .or(match instr {
                     Instr::StringLit { dest, .. } => Some(*dest),
                     _ => None,
@@ -1716,7 +1738,7 @@ pub(super) fn derive_cow_sole_owner(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 let Instr::Move { dest, src } = instr else {
                     continue;
                 };
@@ -1725,6 +1747,9 @@ pub(super) fn derive_cow_sole_owner(
                     continue;
                 };
                 if !string_place_is_typed(*dest, locals) {
+                    continue;
+                }
+                if retained_string_moves.contains(&(block.id, instr_index)) {
                     continue;
                 }
                 let src_bits = return_source_bits
@@ -3731,6 +3756,69 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     }
     allowed
 }
+
+struct CowOwnershipInputs {
+    owned_locals: Vec<(BindingId, String, ResolvedTy)>,
+    path_sensitive_consumed: HashSet<BindingId>,
+    borrowed_locals: HashSet<u32>,
+}
+
+fn cow_ownership_inputs(builder: &Builder, target: &ResolvedTy) -> CowOwnershipInputs {
+    let scope_exit_locals = builder.owned_locals_snapshot();
+    let mut owned_locals = scope_exit_locals.clone();
+    let mut path_sensitive_consumed = HashSet::new();
+    for candidate in builder.owned_locals_exit_candidates() {
+        if candidate.2 == *target
+            && !scope_exit_locals
+                .iter()
+                .any(|(binding, _, _)| *binding == candidate.0)
+            && builder
+                .typed_produced_value_owner_bindings
+                .contains(&candidate.0)
+        {
+            path_sensitive_consumed.insert(candidate.0);
+            owned_locals.push(candidate);
+        }
+    }
+    let borrowed_locals = match target {
+        ResolvedTy::String => builder
+            .borrowed_string_param_locals
+            .union(&builder.typed_borrowed_string_publication_locals)
+            .copied()
+            .collect(),
+        ResolvedTy::Bytes => builder
+            .borrowed_bytes_param_locals
+            .union(&builder.typed_borrowed_bytes_publication_locals)
+            .copied()
+            .collect(),
+        _ => HashSet::new(),
+    };
+    CowOwnershipInputs {
+        owned_locals,
+        path_sensitive_consumed,
+        borrowed_locals,
+    }
+}
+
+fn remove_consumed_cow_bindings(
+    allowed: &mut HashSet<BindingId>,
+    path_sensitive_consumed: &HashSet<BindingId>,
+    actor_message_flags: &HashMap<BindingId, Place>,
+    dataflow_result: &dataflow::DataflowResult,
+) {
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if (matches!(state, dataflow::BindingState::MaybeConsumed(_))
+                || (matches!(state, dataflow::BindingState::Consumed(_))
+                    && !path_sensitive_consumed.contains(binding)))
+                && !actor_message_flags.contains_key(binding)
+            {
+                allowed.remove(binding);
+            }
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the two derivation passes bracket exact retain-site materialization"
@@ -3740,7 +3828,11 @@ pub(super) fn finalize_string_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> StringDropDerivation {
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let CowOwnershipInputs {
+        owned_locals: owned_locals_snapshot,
+        path_sensitive_consumed,
+        borrowed_locals: borrowed_string_locals,
+    } = cow_ownership_inputs(builder, &ResolvedTy::String);
     let mut derivation = derive_cow_sole_owner(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -3749,7 +3841,7 @@ pub(super) fn finalize_string_ownership(
         &builder.match_project_consumed_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
-        &builder.borrowed_string_param_locals,
+        &borrowed_string_locals,
         &builder.parameter_locals,
         &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
@@ -3772,17 +3864,15 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     ));
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
-            }
-        }
-    }
+    derivation
+        .allowed
+        .extend(path_sensitive_consumed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &path_sensitive_consumed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
     let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
         let typed_handoff = matches!(site.condition, StringRetainCondition::Always)
@@ -3844,17 +3934,12 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     ));
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
-            }
-        }
-    }
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &path_sensitive_consumed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
     derivation
 }
 struct NestedTempDataflow {
@@ -6876,14 +6961,18 @@ pub(super) fn finalize_bytes_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> BytesDropDerivation {
-    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let CowOwnershipInputs {
+        owned_locals: owned_locals_snapshot,
+        path_sensitive_consumed,
+        borrowed_locals: borrowed_bytes_locals,
+    } = cow_ownership_inputs(builder, &ResolvedTy::Bytes);
     let mut derivation = derive_local_bytes_drop_allowed(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
-        &builder.borrowed_bytes_param_locals,
+        &borrowed_bytes_locals,
     );
     // A mailbox-owned `bytes` parameter conditionally transferred on one CFG
     // path is deliberately visible to the path-insensitive escape scan, which
@@ -6902,17 +6991,15 @@ pub(super) fn finalize_bytes_ownership(
             })
             .map(|(binding, _, _)| *binding),
     );
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
-            }
-        }
-    }
+    derivation
+        .allowed
+        .extend(path_sensitive_consumed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &path_sensitive_consumed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
     let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
         let typed_handoff = matches!(site.placement, BytesRetainPlacement::Before)

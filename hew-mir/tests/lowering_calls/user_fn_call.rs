@@ -288,15 +288,15 @@ fn callee_params_resolve_to_local_slots_no_unresolved_place() {
 }
 
 /// An unresolved call (a callee name that is neither a runtime-ABI symbol
-/// nor a declared module function) must produce `NotYetImplemented`, not
-/// `Terminator::Call`. Guards the fail-closed boundary in `lower_value`.
+/// nor a declared module function) must produce `UnsupportedNode`, not
+/// `Terminator::Call`. Guards the fail-closed checker boundary.
 ///
 /// The test uses a bare identifier `unknown_fn(42)` that is not declared in
 /// the module — the HIR bridge emits `BindingRef { resolved: Unresolved }`.
-/// After the runtime-ABI and module-fn checks both fail, the fallthrough
-/// path must emit `NotYetImplemented`.
+/// With no checker target, HIR records the unsupported node and MIR must
+/// preserve that hard diagnostic.
 #[test]
-fn unresolved_call_emits_not_yet_implemented_not_call_terminator() {
+fn unresolved_call_emits_unsupported_node_not_call_terminator() {
     // `unknown_fn` is not declared in this module and is not a runtime symbol.
     let src = r"
         fn main() -> i64 {
@@ -320,14 +320,16 @@ fn unresolved_call_emits_not_yet_implemented_not_call_terminator() {
     );
     let pipeline = hew_mir::lower_hir_module(&output.module);
 
-    // Must produce NotYetImplemented for the unresolved call.
-    let has_nyi = pipeline
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, MirDiagnosticKind::NotYetImplemented { .. }));
+    let has_unsupported = pipeline.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::UnsupportedNode { reason, .. }
+                if reason == "ordinary call has no checker target"
+        )
+    });
     assert!(
-        has_nyi,
-        "unresolved call must produce NotYetImplemented; got diagnostics: {:#?}",
+        has_unsupported,
+        "unresolved call must preserve the missing-checker-target diagnostic: {:#?}",
         pipeline.diagnostics
     );
 

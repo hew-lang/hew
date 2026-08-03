@@ -697,6 +697,16 @@ pub(super) fn propagate_whole_value_alias_roots(
     blocks: &[BasicBlock],
     candidate_locals: impl IntoIterator<Item = u32>,
 ) -> HashMap<u32, u32> {
+    propagate_whole_value_alias_roots_excluding_moves(blocks, candidate_locals, &HashSet::new())
+}
+
+/// Propagate whole-value aliases while treating exact owner-minting moves as
+/// provenance barriers.
+pub(super) fn propagate_whole_value_alias_roots_excluding_moves(
+    blocks: &[BasicBlock],
+    candidate_locals: impl IntoIterator<Item = u32>,
+    excluded_moves: &HashSet<(u32, usize)>,
+) -> HashMap<u32, u32> {
     let mut alias_of: HashMap<u32, u32> = HashMap::new();
     for local in candidate_locals {
         alias_of.insert(local, local);
@@ -707,8 +717,11 @@ pub(super) fn propagate_whole_value_alias_roots(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
+                    if excluded_moves.contains(&(block.id, instr_index)) {
+                        continue;
+                    }
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
                         // Only whole-value Local→Local copies propagate the
                         // alias. An interior-projection src is a payload

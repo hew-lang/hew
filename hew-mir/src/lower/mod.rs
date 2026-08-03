@@ -155,7 +155,8 @@ use self::split_consume::{
     binding_ref_target, check_duplex_split_state, close_alias_binders_forward,
     collect_record_field_binders, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
-    place_is_tag_read, propagate_whole_value_alias_roots, validate_cross_block_split_consume,
+    place_is_tag_read, propagate_whole_value_alias_roots,
+    propagate_whole_value_alias_roots_excluding_moves, validate_cross_block_split_consume,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;
@@ -717,6 +718,12 @@ struct Builder {
     /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
     /// ordinary calls continue to borrow the caller's reference.
     pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// Exact join publications whose HIR result fact is a borrowed string.
+    /// Return and owning-sink planning may mint a share from this typed row;
+    /// ordinary reads keep borrowing the selected source owner.
+    pub(crate) typed_borrowed_string_publication_locals: HashSet<u32>,
+    /// Bytes counterpart of `typed_borrowed_string_publication_locals`.
+    pub(crate) typed_borrowed_bytes_publication_locals: HashSet<u32>,
     /// Binding-reference sites used as the RHS of `let next = current` for
     /// `bytes`. Stage S1 treats these as retained shares, so their checker use
     /// intent is downgraded from `Consume` to `Read`.

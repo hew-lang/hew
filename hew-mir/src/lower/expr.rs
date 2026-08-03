@@ -3097,7 +3097,7 @@ impl Builder {
                 }
                 _ => {}
             }
-            self.published_value_places.insert(expr.site, place);
+            self.publish_produced_value_place(expr, place);
             if !self
                 .suppress_typed_produced_owner_sites
                 .contains(&expr.site)

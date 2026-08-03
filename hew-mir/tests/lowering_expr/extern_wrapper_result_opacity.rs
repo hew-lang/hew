@@ -12,17 +12,16 @@
 //! fn main() -> i64 { println(f"value={wrapper()}"); 0 }
 //! ```
 //!
-//! `main` bound the result to `__hew_temp_arg` and emitted
-//! `drop _1 ty=string kind=cow_heap(hew_string_drop)` — the exact caller drop
-//! the table forbids for a direct extern. These cases pin that no synthetic
-//! owner and no `CowHeap` drop survive for the wrapper shapes, while a Hew-bodied
-//! producer keeps its mint (that mint IS the f-string temp leak fix).
+//! `main` emitted `drop _1 ty=string kind=cow_heap(hew_string_drop)` — the exact
+//! caller drop the table forbids for a direct extern. These cases pin that no
+//! `CowHeap` drop survives for the wrapper shapes, while a Hew-bodied producer
+//! keeps the release required by the f-string temporary fix.
 
-use hew_mir::{DropKind, IrPipeline, MirStatement, Terminator};
+use std::collections::HashSet;
+
+use hew_mir::{DropFnSpec, DropKind, Instr, IrPipeline, Place, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
-
-const SYNTHETIC_TEMP_ARG: &str = "__hew_temp_arg";
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -42,20 +41,6 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     hew_mir::lower_hir_module(&output.module)
 }
 
-fn synthetic_binds(p: &IrPipeline, fn_name: &str) -> usize {
-    p.raw_mir
-        .iter()
-        .find(|f| f.name == fn_name)
-        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter(
-            |stmt| matches!(stmt, MirStatement::Bind { name, .. } if name == SYNTHETIC_TEMP_ARG),
-        )
-        .count()
-}
-
 fn cow_heap_drops(p: &IrPipeline, fn_name: &str) -> usize {
     p.elaborated_mir
         .iter()
@@ -66,6 +51,51 @@ fn cow_heap_drops(p: &IrPipeline, fn_name: &str) -> usize {
         .flat_map(|(_, plan)| plan.drops.iter())
         .filter(|drop| matches!(drop.kind, DropKind::CowHeap { .. }))
         .count()
+}
+
+fn call_result_release_count(p: &IrPipeline, fn_name: &str, callee: &str) -> usize {
+    let raw = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"));
+    let destinations: HashSet<Place> = raw
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee: symbol,
+                dest: Some(dest),
+                ..
+            } if symbol == callee => Some(*dest),
+            _ => None,
+        })
+        .collect();
+    let inline = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| {
+            matches!(instruction, Instr::Drop {
+                place,
+                drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                ..
+            } if destinations.contains(place))
+        })
+        .count();
+    let exit = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| {
+            destinations.contains(&drop.place) && matches!(drop.kind, DropKind::CowHeap { .. })
+        })
+        .count();
+    inline + exit
 }
 
 fn record_in_place_drops(p: &IrPipeline, fn_name: &str) -> usize {
@@ -119,12 +149,6 @@ fn direct_extern_wrapper_result_mints_no_owner_and_no_drop() {
         r#"println(f"value={wrapper()}");"#,
     );
     assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "a wrapper around an opaque extern must not produce a synthetic \
-         caller-owned temporary: the handle is the host's, not ours"
-    );
-    assert_eq!(
         cow_heap_drops(&p, "main"),
         0,
         "and no `hew_string_drop` may be scheduled over it"
@@ -138,12 +162,6 @@ fn wrapper_of_a_wrapper_mints_no_owner_and_no_drop() {
          fn wrapper2() -> string { wrapper() }",
         r#"println(f"value={wrapper2()}");"#,
     );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "the veto is a fixpoint and must be TRANSITIVE: adding Hew frames \
-         cannot turn a foreign handle into a fresh one"
-    );
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
@@ -152,12 +170,6 @@ fn generic_wrapper_mints_no_owner_and_no_drop() {
     let p = main_with(
         "fn gwrap<T>(t: T) -> string { unsafe { host_string() } }",
         r#"println(f"value={gwrap(1)}");"#,
-    );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "a monomorphisation's callee resolves to the generic ORIGIN item, so \
-         the origin must carry the veto"
     );
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
@@ -168,7 +180,6 @@ fn recursive_wrapper_mints_no_owner_and_no_drop() {
         "fn rec(n: i64) -> string { if n > 0 { rec(n - 1) } else { unsafe { host_string() } } }",
         r#"println(f"value={rec(2)}");"#,
     );
-    assert_eq!(synthetic_binds(&p, "main"), 0, "a cycle must fail closed");
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
@@ -178,12 +189,6 @@ fn argument_launderer_mints_no_owner_and_no_drop() {
         "fn forward(s: string) -> string { s }\n\
          fn launder() -> string { forward(unsafe { host_string() }) }",
         r#"println(f"value={launder()}");"#,
-    );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "passing the foreign handle THROUGH a pass-through Hew fn does not \
-         make it ours"
     );
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
@@ -195,13 +200,7 @@ fn hew_bodied_producer_keeps_its_mint() {
         r#"println(f"value={mk(1)}");"#,
     );
     assert_eq!(
-        synthetic_binds(&p, "main"),
-        1,
-        "control: the f-string interpolation temp leak fix depends on this \
-         mint surviving for an analyzed Hew producer"
-    );
-    assert_eq!(
-        cow_heap_drops(&p, "main"),
+        call_result_release_count(&p, "main", "mk"),
         1,
         "and on exactly one `hew_string_drop` releasing it"
     );
@@ -213,14 +212,6 @@ fn temp_argument_passed_to_an_extern_mints_no_owner() {
         "fn mk(i: i64) -> string { f\"tok{i}\" }",
         "unsafe { host_sink(mk(2)); }",
     );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "the temp-arg mint must consult the audited contract table, not the \
-         call-DISPATCH set: `host_sink` is in `module_fn_names` only so the \
-         extern call lowers as a `Terminator::Call`, and the host may retain \
-         or release the handle it is passed"
-    );
     assert_eq!(cow_heap_drops(&p, "main"), 0);
 }
 
@@ -230,12 +221,6 @@ fn temp_argument_passed_to_a_hew_fn_keeps_its_mint() {
         "fn mk(i: i64) -> string { f\"tok{i}\" }\n\
          fn hew_sink(s: string) -> i64 { s.len() }",
         "hew_sink(mk(3));",
-    );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        1,
-        "control: an analyzed Hew callee that only BORROWS its string argument \
-         leaves the caller holding the sole owner"
     );
     assert_eq!(cow_heap_drops(&p, "main"), 1);
 }
@@ -260,13 +245,6 @@ fn record_wrapper_result_passed_to_a_borrowing_callee_mints_no_owner_and_no_drop
         "borrowRecord(wrapRecord());",
     );
     assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "a Hew wrapper over an opaque extern is not a fresh producer for a \
-         RECORD either: minting a caller-owned temp here hands a drop to a \
-         handle the host still owns"
-    );
-    assert_eq!(
         record_in_place_drops(&p, "main"),
         0,
         "and exactly zero in-place record releases may be scheduled over it"
@@ -282,12 +260,6 @@ fn hew_bodied_record_producer_keeps_its_mint_and_drops_once() {
         "fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }\n\
          fn borrowRecord(h: Holder) -> i64 { h.label.len() }",
         "borrowRecord(mkRecord(1));",
-    );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        1,
-        "control: an analyzed Hew record producer still earns its caller-side \
-         temp owner"
     );
     assert_eq!(
         record_in_place_drops(&p, "main"),
@@ -375,12 +347,6 @@ fn record_literal_embedding_a_direct_extern_mints_no_owner_and_no_drop() {
         "unsafe { borrowOuter(Outer { inner: host_record() }); }",
     );
     assert_eq!(
-        synthetic_binds(&p, "main"),
-        0,
-        "freshness of the CONTAINER is not ownership of its contents: the \
-         recursive release of `Outer` would free the host's `Holder`"
-    );
-    assert_eq!(
         record_in_place_drops(&p, "main"),
         0,
         "and no in-place release may be scheduled over the container either"
@@ -398,7 +364,6 @@ fn record_literal_embedding_a_wrapper_mints_no_owner_and_no_drop() {
          fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
         "borrowOuter(Outer { inner: wrapRecord() });",
     );
-    assert_eq!(synthetic_binds(&p, "main"), 0);
     assert_eq!(record_in_place_drops(&p, "main"), 0);
 }
 
@@ -413,12 +378,6 @@ fn record_literal_of_a_domestic_field_keeps_its_mint_and_drops_once() {
          fn mkRecord(i: i64) -> Holder { Holder { label: f\"tok{i}\" } }\n\
          fn borrowOuter(o: Outer) -> i64 { o.inner.label.len() }",
         "borrowOuter(Outer { inner: mkRecord(1) });",
-    );
-    assert_eq!(
-        synthetic_binds(&p, "main"),
-        1,
-        "control: a container whose every field is domestic still earns its \
-         caller-side temp owner"
     );
     assert_eq!(
         record_in_place_drops(&p, "main"),
@@ -469,7 +428,6 @@ fn nested_container_embedding_a_direct_extern_mints_no_owner() {
          fn borrowMid(m: Mid) -> i64 { m.o.inner.label.len() }",
         "unsafe { borrowMid(Mid { o: Outer { inner: host_record() } }); }",
     );
-    assert_eq!(synthetic_binds(&p, "main"), 0);
     assert_eq!(record_in_place_drops(&p, "main"), 0);
 }
 

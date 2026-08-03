@@ -1528,7 +1528,7 @@ fn cross_function_call_types_lower_via_call_terminator() {
     // calls to module functions. The pipeline() helper asserts HIR is clean;
     // this test pins the MIR acceptance shape: both functions appear in
     // `raw_mir` and the diagnostic stream is clean.
-    let pipeline = pipeline(
+    let pipeline = lower_source(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
     );
@@ -1590,10 +1590,9 @@ fn unknown_user_type_rejected_at_mir_boundary() {
 }
 
 #[test]
-fn registered_fieldless_user_type_still_requires_codegen_readiness() {
-    // A fieldless declared type is present in HIR type_classes but has no record
-    // layout for codegen to resolve. The MIR gate must not treat checker knownness
-    // alone as readiness.
+fn registered_fieldless_user_type_has_zero_field_layout() {
+    // A fieldless declared type is a concrete zero-field record. Its layout is
+    // sufficient for MIR and codegen readiness.
     let parsed = hew_parser::parse(
         r"
         #[linear]
@@ -1616,11 +1615,17 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
     let pipeline = lower_hir_module(&output.module);
 
     assert!(
-        pipeline.diagnostics.iter().any(|d| {
-            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Token")
-        }),
-        "fieldless registered Token must fail MIR readiness: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "{:?}",
         pipeline.diagnostics
+    );
+    assert!(
+        pipeline
+            .record_layouts
+            .iter()
+            .any(|layout| layout.name == "Token" && layout.field_tys.is_empty()),
+        "fieldless Token must carry a concrete zero-field record layout: {:?}",
+        pipeline.record_layouts
     );
 }
 

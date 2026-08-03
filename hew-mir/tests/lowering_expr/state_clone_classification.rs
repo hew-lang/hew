@@ -19,7 +19,8 @@ use std::collections::HashSet;
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
-    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, StateFieldCloneKind,
+    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, ResourceCloseAuthority,
+    StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -152,7 +153,7 @@ fn trivial_state_actor_gets_paired_clone_and_drop_symbols() {
 }
 
 #[test]
-fn unproven_opaque_resource_actor_field_stays_opaque_directly_and_when_wrapped() {
+fn exact_opaque_resource_close_is_registered_directly_and_when_wrapped() {
     let src = r"
         #[resource]
         #[opaque]
@@ -181,14 +182,18 @@ fn unproven_opaque_resource_actor_field_stays_opaque_directly_and_when_wrapped()
         pipeline.diagnostics
     );
 
-    let resource_kind = StateFieldCloneKind::OpaqueHandle {
-        name: "Dq".to_string(),
-    };
     let direct = find_actor(&pipeline, "Direct");
-    assert_eq!(
-        direct.state_field_clone_kinds.as_deref(),
-        Some(std::slice::from_ref(&resource_kind)),
-        "a source marker without an exact admitted release body must not mint lifecycle authority",
+    assert!(
+        matches!(
+            direct.state_field_clone_kinds.as_deref(),
+            Some([StateFieldCloneKind::Resource {
+                name,
+                close: ResourceCloseAuthority::User(lifecycle),
+            }]) if name == "Dq"
+                && lifecycle.resource_declaration == hew_types::DefId::new("Dq")
+        ),
+        "the exact inherent close body must classify Dq as a typed resource: {:?}",
+        direct.state_field_clone_kinds
     );
 
     let wrapped = find_actor(&pipeline, "Wrapped");
@@ -201,12 +206,12 @@ fn unproven_opaque_resource_actor_field_stays_opaque_directly_and_when_wrapped()
         ),
         "the already-supported record-wrapped resource path must remain unchanged",
     );
-    assert_eq!(
+    assert!(
         pipeline
             .lifecycle_registry
-            .opaque_resource(&hew_types::DefId::new("Dq")),
-        None,
-        "the immutable HIR registry must not admit a marker-only opaque lifecycle",
+            .opaque_resource(&hew_types::DefId::new("Dq"))
+            .is_some(),
+        "the exact Dq lifecycle must survive in the immutable registry",
     );
 }
 
@@ -260,21 +265,24 @@ fn main() {{}}
             "root opaque user `{name}` must outrank builtin registration: {:?}",
             keeper.state_field_tys
         );
-        assert_eq!(
-            keeper.state_field_clone_kinds.as_deref(),
-            Some(
-                &[StateFieldCloneKind::OpaqueHandle {
-                    name: name.to_string(),
-                }][..]
+        assert!(
+            matches!(
+                keeper.state_field_clone_kinds.as_deref(),
+                Some([StateFieldCloneKind::Resource {
+                    name: actual,
+                    close: ResourceCloseAuthority::User(lifecycle),
+                }]) if actual == name
+                    && lifecycle.resource_declaration == hew_types::DefId::new(name)
             ),
-            "root opaque user `{name}` must not inherit a builtin lifecycle by leaf name"
+            "root opaque user `{name}` must keep its exact user lifecycle: {:?}",
+            keeper.state_field_clone_kinds
         );
         assert!(
             pipeline
                 .lifecycle_registry
                 .opaque_resource(&hew_types::DefId::new(name))
-                .is_none(),
-            "root opaque user `{name}` must remain absent from the exact lifecycle registry"
+                .is_some(),
+            "root opaque user `{name}` must be present in the exact lifecycle registry"
         );
     }
 }

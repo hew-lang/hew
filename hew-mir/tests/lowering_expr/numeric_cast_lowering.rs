@@ -202,8 +202,8 @@ fn normalizes_checker_admitted_default_literal_binding_before_int_cmp() {
         .collect();
     assert_eq!(comparisons.len(), 1, "comparisons: {comparisons:#?}");
     for (lhs, rhs) in comparisons {
-        assert_eq!(local_ty(main, lhs), &ResolvedTy::I64);
-        assert_eq!(local_ty(main, rhs), &ResolvedTy::I64);
+        assert_eq!(local_ty(main, lhs), &ResolvedTy::I32);
+        assert_eq!(local_ty(main, rhs), &ResolvedTy::I32);
     }
 }
 

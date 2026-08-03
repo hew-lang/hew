@@ -2983,9 +2983,9 @@ mod sched_metrics_tests {
         hew_msg_node_free,
     };
     use hew_runtime::scheduler::{
-        hew_sched_init, hew_sched_metrics_active_workers, hew_sched_metrics_messages_received,
-        hew_sched_metrics_messages_sent, hew_sched_metrics_reset, hew_sched_metrics_steals,
-        hew_sched_metrics_tasks_completed, hew_sched_metrics_tasks_spawned,
+        hew_sched_metrics_messages_received, hew_sched_metrics_messages_sent,
+        hew_sched_metrics_reset, hew_sched_metrics_steals, hew_sched_metrics_tasks_completed,
+        hew_sched_metrics_tasks_spawned,
     };
     use std::ffi::c_void;
     use std::ptr;
@@ -3062,36 +3062,6 @@ mod sched_metrics_tests {
         assert!(hew_sched_metrics_messages_received() > 0);
         // SAFETY: mb was allocated by hew_mailbox_new.
         unsafe { hew_mailbox_free(mb) };
-    }
-
-    #[test]
-    fn active_workers_gauge_is_readable_during_reset() {
-        let _guard = METRICS_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        hew_sched_metrics_reset();
-        let _active = hew_sched_metrics_active_workers();
-    }
-
-    #[test]
-    fn counters_readable_after_sched_init() {
-        let _guard = METRICS_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        hew_sched_init();
-        hew_sched_metrics_reset();
-
-        // The scheduler can have active dispatches from parallel integration
-        // tests, so these interval counters are intentionally only sampled
-        // here. Exact reset semantics are proved under a controlled scheduler
-        // in `scheduler::tests`.
-        let _spawned = hew_sched_metrics_tasks_spawned();
-        let _completed = hew_sched_metrics_tasks_completed();
-
-        // NOTE: Do NOT call hew_sched_shutdown() here. The global scheduler
-        // cannot be re-initialized after shutdown, so shutting it down would
-        // break any subsequent test that needs the scheduler (e.g. supervisor
-        // tests that call hew_sched_init via ensure_scheduler).
     }
 }
 

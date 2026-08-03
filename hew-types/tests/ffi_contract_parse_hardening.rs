@@ -137,3 +137,63 @@ fn malformed_non_resource_retention_fails_closed() {
         "result-retention = \"callee-keeps-alias\"",
     ));
 }
+
+// The generated table interpolates resource-param-types, resource-result-type,
+// and release-symbol straight into `"..."` Rust string literals
+// (`generate_ffi_ownership_table`); an unescaped `"` or `\` in any of the
+// three would corrupt the generated source rather than fail the build
+// cleanly. These six tests pin each field rejecting each character.
+
+#[test]
+#[should_panic(expected = "resource-param-types for example_socket_close must not contain")]
+fn resource_param_types_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-param-types = [\"example.io.Socket\"]",
+        "resource-param-types = [\"example.io.Soc\"ket\"]",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-param-types for example_socket_close must not contain")]
+fn resource_param_types_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-param-types = [\"example.io.Socket\"]",
+        "resource-param-types = [\"example.io.Soc\\ket\"]",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-result-type for example_socket_open must not contain")]
+fn resource_result_type_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-result-type = \"example.io.Socket\"",
+        "resource-result-type = \"example.io.Soc\"ket\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-result-type for example_socket_open must not contain")]
+fn resource_result_type_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-result-type = \"example.io.Socket\"",
+        "resource-result-type = \"example.io.Soc\\ket\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "release-symbol for example_socket_open must not contain")]
+fn release_symbol_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "release-symbol = \"example_socket_close\"",
+        "release-symbol = \"example_sock\"et_close\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "release-symbol for example_socket_open must not contain")]
+fn release_symbol_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "release-symbol = \"example_socket_close\"",
+        "release-symbol = \"example_sock\\et_close\"",
+    ));
+}

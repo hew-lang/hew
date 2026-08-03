@@ -1,5 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
+# generating-revision: 907232119
 # generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
 #   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were

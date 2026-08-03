@@ -205,6 +205,26 @@ mod tests {
     }
 
     #[test]
+    fn generated_send_error_requires_discriminator_and_exact_catalog_owner() {
+        let send = crate::builtin_enums::monomorphic_builtin_enum("SendError")
+            .expect("generated SendError catalog row");
+        assert!(error_kind(&named(send.canonical_name, Some(BuiltinType::SendError))).is_some());
+
+        for missing_or_wrong in [None, Some(BuiltinType::AskError)] {
+            assert!(
+                error_kind(&named(send.canonical_name, missing_or_wrong)).is_none(),
+                "the canonical owner alone must not grant SendError authority"
+            );
+        }
+        for foreign_or_leaf in ["foreign.SendError", "SendError"] {
+            assert!(
+                error_kind(&named(foreign_or_leaf, Some(BuiltinType::SendError))).is_none(),
+                "the discriminator alone must not grant SendError authority"
+            );
+        }
+    }
+
+    #[test]
     fn write_error_requires_exact_std_net_source_identity() {
         assert!(error_kind(&named(crate::stdlib::STD_NET_WRITE_ERROR, None)).is_some());
         assert!(error_kind(&named("WriteError", None)).is_none());

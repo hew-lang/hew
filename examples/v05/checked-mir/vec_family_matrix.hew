@@ -1,0 +1,109 @@
+// Golden MIR coverage for concrete Vec runtime families.
+
+fn identity(x: i64) -> i64 { x }
+
+fn shared_families() {
+    let left: Vec<i64> = Vec::new();
+    let right: Vec<i64> = Vec::new();
+    left.append(right);
+    let copy = left.clone();
+    let _ = copy.is_empty();
+    copy.clear();
+
+    let words: Vec<string> = Vec::new();
+    words.push("a");
+    let _joined = words.join(",");
+}
+
+fn i8_families() {
+    let values: Vec<i8> = Vec::new();
+    values.push(1 as i8);
+    values.set(0, 2 as i8);
+    let _ = values.pop();
+    values.push(3 as i8);
+    let _ = values.remove(0);
+}
+
+fn u8_families() {
+    let values: Vec<u8> = Vec::new();
+    values.push(1 as u8);
+    values.set(0, 2 as u8);
+    let _ = values.pop();
+    values.push(3 as u8);
+    let _ = values.remove(0);
+}
+
+fn i16_families() {
+    let values: Vec<i16> = Vec::new();
+    values.push(1 as i16);
+    values.set(0, 2 as i16);
+    let _ = values.pop();
+    values.push(3 as i16);
+    let _ = values.remove(0);
+}
+
+fn u16_families() {
+    let values: Vec<u16> = Vec::new();
+    values.push(1 as u16);
+    values.set(0, 2 as u16);
+    let _ = values.pop();
+    values.push(3 as u16);
+    let _ = values.remove(0);
+}
+
+fn i32_families() {
+    let values: Vec<i32> = Vec::new();
+    values.push(1 as i32);
+    let _ = values.contains(1 as i32);
+    let _ = values.pop();
+    values.push(3 as i32);
+    let _ = values.remove(0);
+}
+
+fn i64_families() {
+    let values: Vec<i64> = Vec::new();
+    values.push(1);
+    values.set(0, 2);
+    let _ = values.contains(2);
+    let _ = values.pop();
+    values.push(3);
+    let _ = values.remove(0);
+}
+
+fn f32_families() {
+    let values: Vec<f32> = Vec::new();
+    values.push(1.0 as f32);
+    values.set(0, 2.0 as f32);
+    let _ = values.pop();
+    values.push(3.0 as f32);
+    let _ = values.remove(0);
+}
+
+fn f64_families() {
+    let values: Vec<f64> = Vec::new();
+    values.push(1.0);
+    values.set(0, 2.0);
+    let _ = values.contains(2.0);
+    let _ = values.pop();
+    values.push(3.0);
+    let _ = values.remove(0);
+}
+
+fn string_families() {
+    let values: Vec<string> = Vec::new();
+    values.push("a");
+    values.set(0, "b");
+    let _ = values.contains("b");
+    let _ = values.pop();
+    values.push("c");
+    let _ = values.remove(0);
+}
+
+fn pointer_families() {
+    let values: Vec<fn(i64) -> i64> = Vec::new();
+    values.push(identity);
+    values.set(0, identity);
+    let _ = values.pop();
+    values.push(identity);
+    let _ = values.remove(0);
+}

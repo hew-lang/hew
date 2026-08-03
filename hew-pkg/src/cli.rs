@@ -423,22 +423,36 @@ fn write_init_gitignore(dir: &Path) {
 }
 
 /// Append `entry` to `.gitignore` if not already present.
+///
+/// Never destructive: a `.gitignore` that exists but cannot be read as UTF-8
+/// (or fails to read for any reason other than being absent) is left
+/// untouched rather than overwritten. Only a genuinely missing file is
+/// created from scratch.
 fn ensure_gitignore_entry(dir: &Path, entry: &str) {
     let path = dir.join(".gitignore");
-    if let Ok(contents) = std::fs::read_to_string(&path) {
-        if contents.lines().any(|l| l.trim() == entry) {
-            return;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            if contents.lines().any(|l| l.trim() == entry) {
+                return;
+            }
+            let updated = if contents.ends_with('\n') {
+                format!("{contents}{entry}\n")
+            } else if contents.is_empty() {
+                format!("{entry}\n")
+            } else {
+                format!("{contents}\n{entry}\n")
+            };
+            let _ = std::fs::write(&path, updated);
         }
-        let updated = if contents.ends_with('\n') {
-            format!("{contents}{entry}\n")
-        } else if contents.is_empty() {
-            format!("{entry}\n")
-        } else {
-            format!("{contents}\n{entry}\n")
-        };
-        let _ = std::fs::write(&path, updated);
-    } else {
-        let _ = std::fs::write(&path, format!("{entry}\n"));
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::write(&path, format!("{entry}\n"));
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not update {}: {e} (leaving the file unchanged)",
+                path.display()
+            );
+        }
     }
 }
 
@@ -2142,6 +2156,17 @@ mod tests {
         ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(contents.matches(".hew/").count(), 1);
+    }
+
+    #[test]
+    fn ensure_gitignore_entry_leaves_non_utf8_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gitignore");
+        let original_bytes: &[u8] = b"target/\n\xff\xfe invalid utf8 \xc0\xc0\n";
+        std::fs::write(&path, original_bytes).unwrap();
+        ensure_gitignore_entry(dir.path(), ".hew/");
+        let bytes_after = std::fs::read(&path).unwrap();
+        assert_eq!(bytes_after, original_bytes);
     }
 
     #[test]

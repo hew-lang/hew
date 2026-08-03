@@ -32200,7 +32200,7 @@ fn resolve_enum_di_type<'ctx>(
             )
             .expect("LLVM accepts the enum tag integer width")
             .const_int(u64::try_from(variant_index).unwrap_or(u64::MAX), false);
-        let variant_member = create_di_variant_member_type(
+        let Some(variant_member) = create_di_variant_member_type(
             dctx.di_builder,
             dctx.compile_unit.as_debug_info_scope(),
             short_name(&variant.name),
@@ -32210,13 +32210,15 @@ fn resolve_enum_di_type<'ctx>(
             0,
             discriminant,
             variant_struct_di,
-        );
+        ) else {
+            continue;
+        };
         variant_members.push(variant_member);
     }
 
     // The discriminant is a child of the variant part (rather than a sibling
     // outer member), matching the DWARF shape rustc and LLDB agree on.
-    let variant_part = create_di_variant_part(
+    let Some(variant_part) = create_di_variant_part(
         dctx.di_builder,
         dctx.compile_unit.as_debug_info_scope(),
         "",
@@ -32225,23 +32227,30 @@ fn resolve_enum_di_type<'ctx>(
         struct_align_bits,
         placeholder_tag_member,
         &variant_members,
-    );
-    append_di_variant_part(
+    ) else {
+        dctx.di_type_cache.borrow_mut().remove(&cache_key);
+        return None;
+    };
+    let Some(completed) = set_cached_di_composite_type_variant_part(
         dctx.di_builder,
+        &dctx.di_type_cache,
+        cache_key.clone(),
         placeholder,
-        placeholder_tag_member,
         variant_part,
-    );
+    ) else {
+        dctx.di_type_cache.borrow_mut().remove(&cache_key);
+        return None;
+    };
 
     if enum_layout.is_indirect {
         let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
         Some(
             dctx.di_builder
-                .create_pointer_type(enum_name, placeholder, ptr_bits, 0, AddressSpace::default())
+                .create_pointer_type(enum_name, completed, ptr_bits, 0, AddressSpace::default())
                 .as_type(),
         )
     } else {
-        Some(placeholder)
+        Some(completed)
     }
 }
 
@@ -32269,7 +32278,7 @@ fn create_di_variant_member_type<'ctx>(
     offset_in_bits: u64,
     discriminant: IntValue<'ctx>,
     ty: inkwell::debug_info::DIType<'ctx>,
-) -> inkwell::llvm_sys::prelude::LLVMMetadataRef {
+) -> Option<inkwell::llvm_sys::prelude::LLVMMetadataRef> {
     use inkwell::values::AsValueRef;
 
     unsafe extern "C" {
@@ -32292,7 +32301,7 @@ fn create_di_variant_member_type<'ctx>(
     // SAFETY: all wrappers belong to the same live LLVM context and DIBuilder.
     // The C++ shim forwards directly to LLVM 22's DIBuilder method; StringRef
     // borrows `name` only for the duration of the call.
-    unsafe {
+    let metadata = unsafe {
         hewLLVMDIBuilderCreateVariantMemberType(
             di_builder.as_mut_ptr(),
             scope.as_mut_ptr(),
@@ -32307,7 +32316,8 @@ fn create_di_variant_member_type<'ctx>(
             DIFlags::PUBLIC,
             ty.as_mut_ptr(),
         )
-    }
+    };
+    (!metadata.is_null()).then_some(metadata)
 }
 
 #[expect(
@@ -32323,7 +32333,7 @@ fn create_di_variant_part<'ctx>(
     align_in_bits: u32,
     discriminator: inkwell::debug_info::DIType<'ctx>,
     elements: &[inkwell::llvm_sys::prelude::LLVMMetadataRef],
-) -> inkwell::llvm_sys::prelude::LLVMMetadataRef {
+) -> Option<inkwell::llvm_sys::prelude::LLVMMetadataRef> {
     unsafe extern "C" {
         fn hewLLVMDIBuilderCreateVariantPart(
             builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
@@ -32336,7 +32346,7 @@ fn create_di_variant_part<'ctx>(
             align_in_bits: u32,
             flags: inkwell::llvm_sys::debuginfo::LLVMDIFlags,
             discriminator: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            elements: *mut inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            elements: *const inkwell::llvm_sys::prelude::LLVMMetadataRef,
             element_count: u32,
         ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
     }
@@ -32344,7 +32354,7 @@ fn create_di_variant_part<'ctx>(
     let element_count = u32::try_from(elements.len()).unwrap_or(u32::MAX);
     // SAFETY: every metadata node belongs to `di_builder`'s context. LLVM copies
     // the pointer slice into an MDTuple during the call.
-    unsafe {
+    let metadata = unsafe {
         hewLLVMDIBuilderCreateVariantPart(
             di_builder.as_mut_ptr(),
             scope.as_mut_ptr(),
@@ -32356,38 +32366,61 @@ fn create_di_variant_part<'ctx>(
             align_in_bits,
             DIFlags::PUBLIC,
             discriminator.as_mut_ptr(),
-            elements.as_ptr().cast_mut(),
+            elements.as_ptr(),
             element_count,
         )
-    }
+    };
+    (!metadata.is_null()).then_some(metadata)
 }
 
-fn append_di_variant_part<'ctx>(
+fn set_di_composite_type_variant_part<'ctx>(
     di_builder: &DebugInfoBuilder<'ctx>,
     composite: inkwell::debug_info::DIType<'ctx>,
-    discriminator: inkwell::debug_info::DIType<'ctx>,
     variant_part: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-) {
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
     unsafe extern "C" {
-        fn hewLLVMDICompositeTypeAppendVariantPart(
+        fn hewLLVMDICompositeTypeSetVariantPart(
             builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
             composite: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            existing_member: inkwell::llvm_sys::prelude::LLVMMetadataRef,
             variant_part: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-        );
+        ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
     }
 
-    // SAFETY: `composite` is the live outer enum DICompositeType. It was created
-    // with no children, so installing the completed variant part cannot discard
-    // an existing member.
-    unsafe {
-        hewLLVMDICompositeTypeAppendVariantPart(
+    // SAFETY: `composite` is the outer enum DICompositeType and `variant_part`
+    // is the completed DICompositeType child. LLVM may relocate the uniqued
+    // outer node; the shim returns that live address.
+    let metadata = unsafe {
+        hewLLVMDICompositeTypeSetVariantPart(
             di_builder.as_mut_ptr(),
             composite.as_mut_ptr(),
-            discriminator.as_mut_ptr(),
             variant_part,
-        );
+        )
+    };
+    if metadata.is_null() {
+        return None;
     }
+
+    // Inkwell 0.9 exposes no constructor for a DIType returned by a raw LLVM
+    // extension. Its wrapper is exactly an LLVMMetadataRef plus PhantomData;
+    // this bridge is confined to the pinned inkwell 0.9 FFI seam.
+    Some(unsafe {
+        std::mem::transmute::<
+            inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            inkwell::debug_info::DIType<'ctx>,
+        >(metadata)
+    })
+}
+
+fn set_cached_di_composite_type_variant_part<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    cache: &RefCell<HashMap<String, inkwell::debug_info::DIType<'ctx>>>,
+    cache_key: String,
+    composite: inkwell::debug_info::DIType<'ctx>,
+    variant_part: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    let completed = set_di_composite_type_variant_part(di_builder, composite, variant_part)?;
+    cache.borrow_mut().insert(cache_key, completed);
+    Some(completed)
 }
 
 /// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`

@@ -41,6 +41,81 @@ fn extern_borrow_signature_registers_exact_types() {
 }
 
 #[test]
+fn duplicate_extern_symbol_rejects_type_and_ownership_drift() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_duplicate")]
+            fn first(consume value: string) -> i64;
+            #[extern_symbol("hew_duplicate")]
+            fn second(value: bytes) -> i64;
+        }
+        "#,
+    );
+    let conflicts = output
+        .errors
+        .iter()
+        .filter(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_duplicate"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(conflicts.len(), 1, "errors: {:#?}", output.errors);
+    assert!(conflicts[0].message.contains("consume string"));
+    assert!(conflicts[0].message.contains("bytes"));
+}
+
+#[test]
+fn duplicate_extern_symbol_rejects_ownership_only_drift() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_duplicate_mode")]
+            fn first(consume value: string);
+            #[extern_symbol("hew_duplicate_mode")]
+            fn second(value: string);
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_duplicate_mode"
+            )
+        }),
+        "errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_extern_symbol_accepts_identical_contracts() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_same")]
+            fn first(consume value: string) -> i64;
+            #[extern_symbol("hew_same")]
+            fn second(consume value: string) -> i64;
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { .. }
+        )),
+        "identical extern contracts must coexist: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn injected_ordinary_function_borrow_fails_closed() {
     let mut parsed = hew_parser::parse("fn ordinary(value: i64) {}");
     assert!(parsed.errors.is_empty());

@@ -28,7 +28,9 @@ use hew_runtime::process::{
     hew_process_result_free, hew_process_result_stderr, hew_process_result_stdout, HewProcessResult,
 };
 use hew_runtime::stdio::{hew_io_read_all, hew_io_read_line};
-use hew_runtime::stream::{hew_stream_collect_string, hew_stream_from_bytes};
+use hew_runtime::stream::{
+    hew_file_read_stream_collect_string, hew_stream_collect_string, hew_stream_from_bytes,
+};
 
 const STDIN_CHILD: &str = "HEW_OS_IO_RETENTION_STDIN_CHILD";
 
@@ -252,6 +254,16 @@ fn stream_collect_string_result_is_transferred() {
         unsafe {
             let stream = hew_stream_from_bytes(payload.as_ptr(), payload.len(), 0);
             hew_stream_collect_string(stream)
+        }
+    });
+    assert_result_is_transferred("hew_file_read_stream_collect_string", || {
+        // The nominal adapter has the same consuming representation. Each
+        // observation still needs an independently owned input stream.
+        // SAFETY: `payload` remains readable for its stated length, and the
+        // returned stream is consumed exactly once by collect.
+        unsafe {
+            let stream = hew_stream_from_bytes(payload.as_ptr(), payload.len(), 0);
+            hew_file_read_stream_collect_string(stream)
         }
     });
 }

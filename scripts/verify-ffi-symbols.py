@@ -47,13 +47,13 @@ OWNERSHIP_RESULTS = {"fresh", "retained", "borrowed", "none"}
 PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
 DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 # The RETENTION axis: whether the callee provably keeps no pointer into the
-# allocation it returned. Only "transferred" is spellable, and only on an
-# owned result; the axis is absent by default because absent is the
+# allocation it returned, or whether the result is an independently balanced
+# refcount share of existing storage. The axis is absent by default because absent is the
 # fail-closed answer (no caller-side release is minted from an unanswered
-# row). A row may only claim "transferred" once an executable oracle has
+# row). A row may only claim a positive answer once an executable oracle has
 # established it for that symbol -- see the `*_result_retention.rs` tests in
 # hew-runtime/tests/ and hew-std/src/.
-RESULT_RETENTIONS = {"transferred"}
+RESULT_RETENTIONS = {"shared-refcount", "transferred"}
 
 # Exact function names that are codegen-internal (intercepted/rewritten, never linked).
 # For example, hew_log_debug is rewritten to hew_log_emit with a level argument.
@@ -496,6 +496,10 @@ def validate_ownership_contracts(
                 errors.append(
                     f"{location} result-retention is meaningless without an "
                     "owned result"
+                )
+            elif retention == "shared-refcount" and result != "retained":
+                errors.append(
+                    f"{location} shared-refcount retention requires a retained result"
                 )
 
     # A typed resource result is admitted only through an exact edge in this

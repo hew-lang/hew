@@ -942,9 +942,7 @@ impl Checker {
                     .implements_marker(&resolved_result, MarkerTrait::Copy);
             let mut fact = pending.fact;
             if let Some(symbol) = pending.extern_symbol.as_deref() {
-                use crate::ffi_contracts::{
-                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
-                };
+                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
@@ -957,7 +955,7 @@ impl Checker {
                     .contract()
                     .filter(|contract| contract.params.len() == pending.extern_param_count)
                     .filter(|contract| {
-                        contract.result_retention == ExternResultRetention::Transferred
+                        contract.result_retention.authorizes_caller_release()
                             && contract.discharge_depth != ReleaseDischargeDepth::None
                             && !contract.release_symbol.is_empty()
                     });
@@ -1021,9 +1019,7 @@ impl Checker {
                 .materialize_literal_defaults();
             let mut fact = pending.fact;
             if let Some(identity) = pending.extern_identity {
-                use crate::ffi_contracts::{
-                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
-                };
+                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
@@ -1035,7 +1031,7 @@ impl Checker {
                 let contract =
                     crate::ffi_contracts::extern_ownership_contract(&identity.endpoint).contract();
                 let lifecycle_authorized = contract.is_some_and(|contract| {
-                    contract.result_retention == ExternResultRetention::Transferred
+                    contract.result_retention.authorizes_caller_release()
                         && contract.discharge_depth != ReleaseDischargeDepth::None
                         && !contract.release_symbol.is_empty()
                         && match (&resolved_result, contract.resource_result_type) {

@@ -80,8 +80,33 @@ fn depth_spelling(depth: ReleaseDischargeDepth) -> &'static str {
 fn retention_spelling(retention: ExternResultRetention) -> &'static str {
     match retention {
         ExternResultRetention::Transferred => "transferred",
+        ExternResultRetention::SharedRefcount => "shared-refcount",
         ExternResultRetention::Unspecified => "",
     }
+}
+
+#[test]
+fn string_clone_records_an_independently_balanced_shared_owner() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_clone")
+        .expect("TOML string clone ownership row");
+    assert_eq!(source.result, "retained");
+    assert_eq!(source.result_retention, "shared-refcount");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_clone")
+        .expect("compiled string clone ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Retained);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::SharedRefcount
+    );
+    assert!(compiled.result_retention.authorizes_caller_release());
 }
 
 #[test]

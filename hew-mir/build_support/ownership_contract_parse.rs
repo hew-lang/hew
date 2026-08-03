@@ -20,12 +20,11 @@ struct ContractRow {
     resource_result_type: Option<String>,
     release_symbol: String,
     discharge_depth: String,
-    /// The RETENTION answer for an owned result: `"transferred"` when the
-    /// callee provably keeps no pointer into the returned allocation, empty
-    /// when the question has not been answered for this symbol. Empty is the
-    /// fail-closed default and is what every row carries unless an executable
-    /// oracle established otherwise — see the `result-retention` section of
-    /// `scripts/jit-symbol-classification.toml`.
+    /// The RETENTION answer for an owned result: `"transferred"` for an
+    /// exclusive handoff, `"shared-refcount"` for an independently balanced
+    /// retained alias, and empty when the question has not been answered.
+    /// Empty is the fail-closed default — see the `result-retention` section
+    /// of `scripts/jit-symbol-classification.toml`.
     result_retention: String,
 }
 
@@ -123,16 +122,20 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         );
     }
     // The RETENTION axis. Absence is the fail-closed answer "not established",
-    // so the only spelling is the positive one, and it is only meaningful about
-    // an allocation the caller was actually given.
+    // so only measured positive spellings are allowed, and they are meaningful
+    // only about an allocation the caller was actually given.
     assert!(
-        ["", "transferred"].contains(&row.result_retention.as_str()),
+        ["", "shared-refcount", "transferred"].contains(&row.result_retention.as_str()),
         "unknown result-retention for {symbol}: {}",
         row.result_retention
     );
     assert!(
         row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
         "result-retention for {symbol} is meaningless without an owned result"
+    );
+    assert!(
+        row.result_retention != "shared-refcount" || row.result == "retained",
+        "shared-refcount result-retention for {symbol} requires a retained result"
     );
     assert!(
         row.resource_result_type.is_none() || row.result_retention == "transferred",

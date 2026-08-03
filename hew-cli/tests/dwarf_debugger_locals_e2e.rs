@@ -57,8 +57,114 @@ fn main() {
 ";
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const AWAIT_SRC: &str = "\
+actor Calculator {
+    receive fn value(n: i64) -> i64 {
+        n + 1
+    }
+}
+
+fn main() {
+    let before: i64 = 41;
+    let calculator = spawn Calculator;
+    let reply = await calculator.value(before);
+    let after = before + 1;
+    println(after);
+    match reply {
+        Ok(value) => println(value),
+        Err(_) => println(-1),
+    }
+}
+";
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const HANDLER_SRC: &str = "\
+actor Source {
+    receive fn value() -> i64 {
+        42
+    }
+}
+
+actor Handler {
+    let source: LocalPid<Source>;
+
+    receive fn run() -> i64 {
+        let before: i64 = 7;
+        let reply = await source.value();
+        let after = before + 1;
+        println(after);
+        match reply {
+            Ok(value) => value,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let source = spawn Source;
+    let handler = spawn Handler(source: source);
+    let _ = await handler.run();
+}
+";
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const ENUM_SRC: &str = "\
+record Payload {
+    code: i64,
+}
+
+enum Status {
+    Idle;
+    Packet(Payload);
+}
+
+fn main() {
+    let status = Status::Packet(Payload { code: 7 });
+    println(1);
+}
+";
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn workspace() -> tempfile::TempDir {
     tempdir()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+struct DebugFixture {
+    _dir: tempfile::TempDir,
+    src: std::path::PathBuf,
+    binary: std::path::PathBuf,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn build_debug_fixture(slug: &str, source: &str) -> DebugFixture {
+    let dir = workspace();
+    let src = dir.path().join(format!("{slug}.hew"));
+    std::fs::write(&src, source).expect("write source");
+    let binary = dir
+        .path()
+        .join(format!("{slug}{}", std::env::consts::EXE_SUFFIX));
+    let build = Command::new(hew_binary())
+        .args([
+            "build",
+            "-g",
+            src.to_str().expect("source path utf8"),
+            "-o",
+            binary.to_str().expect("binary path utf8"),
+        ])
+        .output()
+        .expect("run hew build -g");
+    assert!(
+        build.status.success(),
+        "hew build -g failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(binary.exists(), "binary not produced");
+    DebugFixture {
+        _dir: dir,
+        src,
+        binary,
+    }
 }
 
 /// First available batch debugger. `lldb -b -o ...` and `gdb --batch -ex ...`
@@ -203,5 +309,192 @@ fn debugger_reads_shadowed_local_by_innermost_binding() {
     assert!(
         outer.contains("42"),
         "outer breakpoint must read the outer `first` = 42 (selector+1); got:\n{outer}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
+    require_codegen();
+    let Some(dbg) = debugger() else {
+        eprintln!("skip: no lldb/gdb on host");
+        return;
+    };
+    let fixture = build_debug_fixture("await-locals", AWAIT_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+    // Hardware breakpoints avoid patching coroutine code while runtime threads execute it.
+    let cmd = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 10"),
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 12"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable before",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable before after",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("hbreak {src}:10"),
+            "-ex",
+            &format!("hbreak {src}:12"),
+            "-ex",
+            "run",
+            "-ex",
+            "print before",
+            "-ex",
+            "continue",
+            "-ex",
+            "print before",
+            "-ex",
+            "print after",
+            bin,
+        ]);
+        command
+    };
+    let out = run_bounded_command(cmd, format!("{dbg} await pre/post suspend"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{dbg} failed while debugging await body:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("before = 41") || text.contains("$1 = 41"),
+        "pre-suspend breakpoint must expose `before = 41`:\n{text}"
+    );
+    assert!(
+        text.contains("after = 42") || text.contains("$3 = 42"),
+        "post-suspend breakpoint must expose `after = 42`:\n{text}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
+    require_codegen();
+    let Some(dbg) = debugger() else {
+        eprintln!("skip: no lldb/gdb on host");
+        return;
+    };
+    let fixture = build_debug_fixture("handler-backtrace", HANDLER_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+    let cmd = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 13"),
+            "-o",
+            "run",
+            "-o",
+            "bt",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("hbreak {src}:13"),
+            "-ex",
+            "run",
+            "-ex",
+            "backtrace",
+            bin,
+        ]);
+        command
+    };
+    let out = run_bounded_command(cmd, format!("{dbg} handler backtrace"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{dbg} failed while reading handler backtrace:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("Handler__recv__run"),
+        "backtrace must name the Hew handler frame:\n{text}"
+    );
+    assert!(
+        text.contains("coro_resume") || text.contains("hew_cont_resume"),
+        "backtrace must show the honest transition into the runtime coroutine \
+         resume boundary:\n{text}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_renders_only_active_enum_variant_payload() {
+    require_codegen();
+    let Some(dbg) = debugger() else {
+        eprintln!("skip: no lldb/gdb on host");
+        return;
+    };
+    let fixture = build_debug_fixture("enum-render", ENUM_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+    let cmd = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set --file {src} --line 12"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable status",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("break {src}:12"),
+            "-ex",
+            "run",
+            "-ex",
+            "print status",
+            bin,
+        ]);
+        command
+    };
+    let out = run_bounded_command(cmd, format!("{dbg} enum rendering"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{dbg} failed while rendering enum:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("Packet") && text.contains("code = 7"),
+        "debugger must render the active Packet payload:\n{text}"
+    );
+    assert!(
+        !text.contains("Idle =") && !text.contains("Idle {"),
+        "debugger must not render the inactive Idle variant:\n{text}"
     );
 }

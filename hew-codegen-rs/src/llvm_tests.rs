@@ -562,6 +562,240 @@ fn non_windows_debug_build_omits_codeview_module_flag() {
     );
 }
 
+#[test]
+fn debug_subroutine_keeps_unresolved_parameter_slot_order() {
+    let source = "fn handler(pid: LocalPid<Source>, value: i64) -> i64 { value }\n";
+    let actor_ty = ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![ResolvedTy::Named {
+            name: "Source".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }],
+        builtin: Some(BuiltinType::LocalPid),
+        is_opaque: false,
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    let handler = &mut pipeline.raw_mir[0];
+    handler.source_origin = SourceOrigin::RootUnit;
+    handler.name = "handler".to_string();
+    handler.params = vec![actor_ty.clone(), ResolvedTy::I64];
+    handler.locals = vec![actor_ty, ResolvedTy::I64];
+    handler.local_names = vec![Some("pid".to_string()), Some("value".to_string())];
+    handler.local_scopes = vec![None, None];
+    handler.local_decl_bytes = vec![Some(11), Some(34)];
+    handler.span = Some((
+        0,
+        u32::try_from(source.len()).expect("source length fits u32"),
+    ));
+    handler.blocks[0].instructions = vec![Instr::Move {
+        dest: Place::ReturnSlot,
+        src: Place::Local(1),
+    }];
+
+    let ctx = Context::create();
+    let debug = DebugInput {
+        source_path: Path::new("handler.hew"),
+        source_text: source,
+    };
+    let module = build_module_for_target(&ctx, &pipeline, "handler_param_slots", None, Some(debug))
+        .expect("handler debug module");
+    let ir = module.print_to_string().to_string();
+    let signature_tuple = ir
+        .lines()
+        .find(|line| {
+            line.contains(" = !{")
+                && line
+                    .split_once(" = !{")
+                    .and_then(|(_, fields)| fields.split_once('}'))
+                    .is_some_and(|(fields, _)| {
+                        let slots: Vec<_> = fields.split(", ").collect();
+                        slots.len() == 3 && slots.get(1) == Some(&"null")
+                    })
+        })
+        .unwrap_or_else(|| {
+            panic!("expected return + unresolved LocalPid + i64 slots without repacking; IR:\n{ir}")
+        });
+    assert!(
+        signature_tuple.contains(", null, "),
+        "the unresolved first parameter must retain its unspecified slot: {signature_tuple}"
+    );
+}
+
+#[test]
+fn debug_recursive_enum_relocated_composite_replaces_cache_identity() {
+    let ctx = Context::create();
+    let module = ctx.create_module("recursive_enum_di_cache");
+    let (di_builder, compile_unit) = module.create_debug_info_builder(
+        true,
+        DWARFSourceLanguage::Rust,
+        "recursive.hew",
+        ".",
+        "hew test",
+        false,
+        "",
+        0,
+        "",
+        DWARFEmissionKind::Full,
+        0,
+        false,
+        false,
+        "",
+        "",
+    );
+    let file = compile_unit.get_file();
+    let scope = compile_unit.as_debug_info_scope();
+    let tag_ty = di_builder
+        .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .expect("tag type")
+        .as_type();
+    let placeholder = di_builder
+        .create_struct_type(
+            scope,
+            "List",
+            file,
+            0,
+            128,
+            64,
+            DIFlags::PUBLIC,
+            None,
+            &[],
+            0,
+            None,
+            "List",
+        )
+        .as_type();
+    let discriminator = di_builder
+        .create_member_type(scope, "", file, 0, 8, 8, 0, DIFlags::ARTIFICIAL, tag_ty)
+        .as_type();
+    let recursive_pointer = di_builder
+        .create_pointer_type("List", placeholder, 64, 0, AddressSpace::default())
+        .as_type();
+    let tail = di_builder
+        .create_member_type(
+            scope,
+            "tail",
+            file,
+            0,
+            64,
+            64,
+            64,
+            DIFlags::PUBLIC,
+            recursive_pointer,
+        )
+        .as_type();
+    let cons = di_builder
+        .create_struct_type(
+            scope,
+            "Cons",
+            file,
+            0,
+            128,
+            64,
+            DIFlags::PUBLIC,
+            None,
+            &[tail],
+            0,
+            None,
+            "List::Cons",
+        )
+        .as_type();
+    let variant_member = create_di_variant_member_type(
+        &di_builder,
+        scope,
+        "Cons",
+        file,
+        128,
+        64,
+        0,
+        ctx.i8_type().const_zero(),
+        cons,
+    )
+    .expect("recursive variant member");
+    let variant_part = create_di_variant_part(
+        &di_builder,
+        scope,
+        "",
+        file,
+        128,
+        64,
+        discriminator,
+        &[variant_member],
+    )
+    .expect("recursive variant part");
+    let cache = RefCell::new(HashMap::from([("enum:List".to_string(), placeholder)]));
+
+    let completed = set_cached_di_composite_type_variant_part(
+        &di_builder,
+        &cache,
+        "enum:List".to_string(),
+        placeholder,
+        variant_part,
+    )
+    .expect("recursive composite replacement");
+    let cached = cache
+        .borrow()
+        .get("enum:List")
+        .copied()
+        .expect("relocated composite cached");
+    assert_eq!(
+        cached.as_mut_ptr(),
+        completed.as_mut_ptr(),
+        "the cache must hold the live composite returned by replaceArrays"
+    );
+
+    di_builder.finalize();
+    module.verify().expect("recursive debug graph must verify");
+}
+
+#[test]
+fn debug_variant_part_rejects_wrong_metadata_kind() {
+    let ctx = Context::create();
+    let module = ctx.create_module("variant_part_metadata_reject");
+    let (di_builder, compile_unit) = module.create_debug_info_builder(
+        true,
+        DWARFSourceLanguage::Rust,
+        "reject.hew",
+        ".",
+        "hew test",
+        false,
+        "",
+        0,
+        "",
+        DWARFEmissionKind::Full,
+        0,
+        false,
+        false,
+        "",
+        "",
+    );
+    let wrong_discriminator = di_builder
+        .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .expect("basic type")
+        .as_type();
+
+    assert!(
+        create_di_variant_part(
+            &di_builder,
+            compile_unit.as_debug_info_scope(),
+            "",
+            compile_unit.get_file(),
+            8,
+            8,
+            wrong_discriminator,
+            &[],
+        )
+        .is_none(),
+        "wrong-typed metadata must be rejected instead of unchecked-cast"
+    );
+
+    di_builder.finalize();
+    module
+        .verify()
+        .expect("rejected metadata must leave valid IR");
+}
+
 /// Decode the architecture tag from a relocatable object's header without
 /// pulling in the `object` crate. Returns a stable `(format, arch)` label
 /// pair. Covers the Mach-O and ELF headers the cross-arch tests exercise.

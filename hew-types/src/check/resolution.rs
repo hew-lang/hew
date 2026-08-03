@@ -1989,7 +1989,7 @@ impl Checker {
     /// checker-owned source identity.  This is deliberately narrower than a
     /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user
     /// declarations and returns `None` when no owner proof exists.
-    fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
+    pub(super) fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Named {
                 name,

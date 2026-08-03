@@ -116,6 +116,86 @@ fn duplicate_extern_symbol_accepts_identical_contracts() {
 }
 
 #[test]
+fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
+    let stream = hew_parser::parse(
+        r#"
+        pub type Stream<T> {}
+        extern "C" {
+            #[extern_symbol("hew_cross_module_same")]
+            fn first() -> Stream<bytes>;
+        }
+        "#,
+    );
+    assert!(stream.errors.is_empty(), "parse: {:#?}", stream.errors);
+    let mut net = hew_parser::parse(
+        r#"
+        import std::stream;
+        extern "C" {
+            #[extern_symbol("hew_cross_module_same")]
+            fn second() -> stream.Stream<bytes>;
+        }
+        "#,
+    );
+    assert!(net.errors.is_empty(), "parse: {:#?}", net.errors);
+    let import_span = net.program.items[0].1.clone();
+    let Item::Import(import) = &mut net.program.items[0].0 else {
+        panic!("expected import");
+    };
+    import.resolved_items = Some(stream.program.items.clone());
+
+    let root_id = ModuleId::root();
+    let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);
+    let net_id = ModuleId::new(vec!["std".to_string(), "net".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: stream_id.clone(),
+            items: stream.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add stream module");
+    graph
+        .add_module(Module {
+            id: net_id.clone(),
+            items: net.program.items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: stream_id.clone(),
+                spec: None,
+                span: import_span,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add net module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root module");
+    graph.topo_order = vec![stream_id, net_id, root_id];
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { .. }
+        )),
+        "alias-qualified copies of one nominal contract must coexist: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn injected_ordinary_function_borrow_fails_closed() {
     let mut parsed = hew_parser::parse("fn ordinary(value: i64) {}");
     assert!(parsed.errors.is_empty());

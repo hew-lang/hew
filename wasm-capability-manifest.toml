@@ -513,7 +513,7 @@ tracking_label = "WASM-TODO(crypto-sign):"
 native_only_modules = ["sign"]
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (30 rows; mirror of the backlog table).
+# WASM-TODO backlog (40 rows; mirror of the backlog table).
 # ---------------------------------------------------------------------------
 
 [[backlog]]

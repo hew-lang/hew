@@ -10114,7 +10114,7 @@ impl Checker {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    let qualified = format!("{module_short}.{}", cd.name);
+                    let qualified = format!("{module_full_path}.{}", cd.name);
                     self.env.define(qualified, ty, false);
                 }
                 _ => {}

@@ -859,6 +859,34 @@ fn stdlib_named_import_publishes_bare_type() {
 }
 
 #[test]
+fn stdlib_const_uses_full_registry_owner() {
+    let parsed = hew_parser::parse("pub const MAX_READS: i64 = 4096;");
+    assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("codec".to_string());
+    checker.module_import_bindings.insert(
+        (None, "codec".to_string()),
+        "std.net.http.codec".to_string(),
+    );
+
+    checker.register_stdlib_hew_items(
+        "codec",
+        "std.net.http.codec",
+        &parsed.program.items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    assert!(
+        checker
+            .env
+            .lookup_ref("std.net.http.codec.MAX_READS")
+            .is_some(),
+        "the constant key must match the exact owner behind the lexical module binding"
+    );
+    assert!(checker.env.lookup_ref("codec.MAX_READS").is_none());
+}
+
+#[test]
 fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup() {
     let connection = make_pub_struct("Connection", "fd");
     let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];

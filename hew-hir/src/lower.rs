@@ -17877,13 +17877,12 @@ impl LowerCtx {
                 // (which would `lower_expr(object)` on a bare module name and
                 // fail with `UnresolvedSymbol`).
                 //
-                // Guard: object is a bare `Expr::Identifier` and the qualified
-                // key `"{module_short}.{field}"` is in `const_registry`.  The
-                // `const_registry` pre-pass inserts pub consts from every
-                // imported module under qualified keys, so any hit here is
-                // authoritative.
+                // Guard: object is a bare `Expr::Identifier` and the checker-resolved
+                // owner key is in `const_registry`. The registry pre-pass stores
+                // imported consts under exact source owners, so the lexical module
+                // binding must cross the same owner map used by type checking.
                 if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = format!("{module_name}.{field}");
+                    let qualified_key = self.imported_module_member_key(module_name, field);
                     if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
@@ -22086,6 +22085,15 @@ impl LowerCtx {
             }
         }
         name.to_string()
+    }
+
+    fn imported_module_member_key(&self, module_binding: &str, member: &str) -> String {
+        self.module_import_bindings
+            .get(&(self.current_module_name.clone(), module_binding.to_string()))
+            .map_or_else(
+                || format!("{module_binding}.{member}"),
+                |owner| format!("{owner}.{member}"),
+            )
     }
 
     /// Whether bare `name` is authored by the scope currently being lowered.
@@ -34291,6 +34299,24 @@ fn main() {}
             )),
             ResolvedTy::named_user("std.net.NetError", Vec::new()),
             "a checker-produced lexical module binding must agree with the exact std declaration identity"
+        );
+    }
+
+    #[test]
+    fn imported_const_key_uses_the_checker_module_owner() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.module_import_bindings.insert(
+            (None, "codec".to_string()),
+            "std.net.http.codec".to_string(),
+        );
+
+        assert_eq!(
+            ctx.imported_module_member_key("codec", "MAX_READS"),
+            "std.net.http.codec.MAX_READS"
         );
     }
 

@@ -13,7 +13,8 @@
 #   resource-result-type = "<qualified source nominal>" (optional)
 #   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
 #   discharge-depth = "shallow" | "deep" | "none"
-#   result-retention = "transferred"   (optional; owned results only)
+#   result-retention = "transferred" | "shared-refcount"
+#                      (optional; owned results only)
 #
 # `fresh` transfers a newly owned allocation to the caller. `retained`
 # transfers an additional reference to an existing ref-counted allocation.
@@ -36,17 +37,20 @@
 #
 # "transferred" therefore means: the callee provably keeps no pointer into the
 # returned allocation, the caller holds the SOLE owner, and `release-symbol` is
-# the balancing release. It is the only spelling, it is only legal on an owned
-# result, and it is the ONLY thing that licenses the compiler to mint a
-# caller-side release for a pointer-bearing extern result
+# the balancing release. "shared-refcount" means a retained result aliases an
+# existing allocation, but the callee incremented that allocation's refcount so
+# one `release-symbol` call independently balances the returned share. Both are
+# measured positive answers that license the compiler to mint a caller-side
+# release for a pointer-bearing extern result
 # (hew_mir::return_provenance::build_extern_contract_table).
 #
 # ABSENCE is the fail-closed default and means the question has not been
 # answered for that symbol — no mint, which costs a leak rather than a double
-# free. A row may claim "transferred" only once an executable oracle has
-# established it for that symbol by measuring the runtime's actual retention
-# behaviour: distinct addresses for two live results, refcount 1 at handoff,
-# and the callee's own state surviving the caller's release. Those oracles are
+# free. A row may claim either positive spelling only once an executable oracle
+# has established it for that symbol. A transferred oracle requires distinct
+# live addresses, refcount 1 at handoff, and surviving producer state. A
+# shared-refcount oracle requires the same live address, an exact refcount bump,
+# and validity in both release orders. Those oracles are
 # hew-runtime/tests/{last_error_result_retention,string_result_retention,
 # identity_format_result_retention,os_io_string_result_retention}.rs,
 # hew-std/src/{last_error_retention,string_result_retention,
@@ -2446,7 +2450,7 @@ result = "retained"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "shared-refcount"
 
 [[ownership.contracts]]
 symbol = "hew_string_compare"

@@ -33,11 +33,23 @@ pub enum ReleaseDischargeDepth {
     None,
 }
 
-/// Whether the foreign callee retained a pointer into an owned result.
+/// The measured aliasing disposition of an owned foreign result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum ExternResultRetention {
+    /// The caller receives the sole owner of the allocation.
     Transferred,
+    /// The caller receives an independently releasable refcount share of an
+    /// allocation that remains aliased by another owner.
+    SharedRefcount,
     Unspecified,
+}
+
+impl ExternResultRetention {
+    /// Whether one caller-side release is proven to balance this result.
+    #[must_use]
+    pub const fn authorizes_caller_release(self) -> bool {
+        matches!(self, Self::Transferred | Self::SharedRefcount)
+    }
 }
 
 /// Complete contract for one FFI symbol.

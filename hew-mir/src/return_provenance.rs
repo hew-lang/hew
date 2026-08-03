@@ -1992,12 +1992,15 @@ fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) 
 ///     declaration that disagrees with the audited signature is not a
 ///     declaration of the audited callee.
 ///
-/// C2. the row's RETENTION axis reads `transferred`. This is the conjunct that
-///     carries the answer, and it is a strictly different question from C1:
-///     `fresh` says the allocation is new, not that the callee stopped
-///     referring to it. A callee that allocates AND keeps the pointer — to free
-///     it later, to overwrite it on the next call, or to hand the same address
-///     back again — yields a value the caller must not release. Both members of
+/// C2. the row's RETENTION axis carries a measured positive answer. An
+///     exclusive `transferred` result has no surviving alias. A retained
+///     `shared-refcount` result may have the same address as another live
+///     owner, but one caller release is independently balanced by the callee's
+///     retain. This is a strictly different question from C1: `fresh` says the
+///     allocation is new, not that the callee stopped referring to it. A
+///     callee that allocates AND keeps an uncounted pointer — to free it later,
+///     to overwrite it on the next call, or to hand the same address back again
+///     — yields a value the caller must not release. Both members of
 ///     the `*_last_error` family are `hew_*` C-string returns and only one of
 ///     them transfers (hew-lang/hew#2828): `hew_process_last_error` copies its
 ///     thread-local into a fresh header-aware allocation and keeps nothing,
@@ -2033,16 +2036,15 @@ fn extern_result_is_measured_transfer(
     crate::ffi_contracts::extern_ownership_contract(symbol)
         .contract()
         .is_some_and(|contract| {
-            if contract.result_retention != crate::ffi_contracts::ExternResultRetention::Transferred
-            {
-                return false;
-            }
             match declared_return_release(&decl.return_ty, decls, 0) {
                 // Heap values whose compiler-derived release is a direct C ABI
-                // symbol (string, bytes, and a structurally homogeneous
-                // record) keep the existing exact-symbol proof.
+                // symbol (string, bytes, and a structurally homogeneous record)
+                // admit either an exclusive handoff or an independently
+                // balanced refcount share.
                 ReturnRelease::One(planned) => {
-                    contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+                    contract.result_retention.authorizes_caller_release()
+                        && contract.discharge_depth
+                            == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
                         && contract.release_symbol == planned
                 }
                 // An opaque `#[resource]` discharges through its inherent
@@ -2053,12 +2055,16 @@ fn extern_result_is_measured_transfer(
                 // fresh `Connection` cannot be minted merely because a source
                 // marker says resource, nor can a similarly-spelled producer
                 // select an unrelated close ritual.
-                ReturnRelease::Unresolved => resource_opaque_return_releases_through(
-                    &decl.return_ty,
-                    module,
-                    contract.release_symbol,
-                    contract.discharge_depth,
-                ),
+                ReturnRelease::Unresolved => {
+                    contract.result_retention
+                        == crate::ffi_contracts::ExternResultRetention::Transferred
+                        && resource_opaque_return_releases_through(
+                            &decl.return_ty,
+                            module,
+                            contract.release_symbol,
+                            contract.discharge_depth,
+                        )
+                }
                 ReturnRelease::Nothing => false,
             }
         })
@@ -7060,6 +7066,30 @@ fn main() {}
             table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
             "the exact fresh/transfer/release contract must mint the returned bytes; \
              caller-side produced-value registration remains a separate authority"
+        );
+    }
+
+    #[test]
+    fn string_clone_mints_one_release_for_its_retained_share() {
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_string_clone(input: string) -> string;
+}
+fn main() {}
+"#;
+        let contract = crate::ffi_contracts::extern_ownership_contract("hew_string_clone")
+            .contract()
+            .expect("guard: hew_string_clone must carry an audited contract");
+        assert_eq!(
+            contract.result,
+            crate::ffi_contracts::ExternResultOwnership::Retained
+        );
+        assert_eq!(
+            contract.result_retention,
+            crate::ffi_contracts::ExternResultRetention::SharedRefcount
+        );
+        assert!(
+            table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_clone"),
+            "the retained share must mint exactly the release balanced by its refcount bump"
         );
     }
 

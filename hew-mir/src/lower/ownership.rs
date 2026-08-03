@@ -784,7 +784,18 @@ impl Builder {
         }
         for (binding, _) in owners {
             self.binding_locals.insert(binding, result_place);
-            if let Some(scope) = self.active_scopes.last().copied() {
+            if let Some(current_scope) = self.active_scopes.last().copied() {
+                let scope = self
+                    .binding_scope
+                    .get(&binding)
+                    .copied()
+                    .filter(|existing_scope| {
+                        self.active_scopes
+                            .iter()
+                            .position(|active| active == existing_scope)
+                            .is_some_and(|existing_depth| existing_depth < self.active_scopes.len())
+                    })
+                    .unwrap_or(current_scope);
                 self.binding_scope.insert(binding, scope);
             }
             if self
@@ -4434,7 +4445,7 @@ mod typed_produced_owner_tests {
     use crate::{BasicBlock, DropFnSpec, Instr, Terminator};
     use hew_hir::{
         HirExpr, HirExprKind, HirLiteral, HirNodeId, HirProducedValueFact,
-        HirProducedValueProducer, IntentKind, ValueClass,
+        HirProducedValueProducer, IntentKind, ScopeId, ValueClass,
     };
     use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
 
@@ -4674,6 +4685,48 @@ mod typed_produced_owner_tests {
         builder.consume_typed_publication_owners_at_inline_release(&blocks);
 
         assert_eq!(builder.owned_locals_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn identity_transfer_inside_loop_keeps_outer_binding_scope() {
+        let receiver_site = SiteId(711);
+        let receiver = owned_resource(receiver_site);
+        let outer_scope = ScopeId(20);
+        let loop_scope = ScopeId(21);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            receiver_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            active_scopes: vec![outer_scope],
+            ..Builder::default()
+        };
+        let receiver_place = Place::Local(16);
+        builder.adopt_typed_produced_value_owner(&receiver, receiver_place);
+        builder
+            .published_value_places
+            .insert(receiver_site, receiver_place);
+        let binding = builder.owned_locals[0].binding;
+        assert_eq!(builder.binding_scope[&binding], outer_scope);
+
+        builder.active_scopes.push(loop_scope);
+        builder.loop_back_edge_blocks.insert(7, loop_scope);
+        builder.transfer_identity_owner(receiver_site, Some(receiver_site), Place::Local(17));
+
+        assert_eq!(builder.binding_scope[&binding], outer_scope);
+        assert_ne!(
+            builder.binding_scope[&binding], builder.loop_back_edge_blocks[&7],
+            "the loop back-edge must not select an outer owner for per-iteration release"
+        );
     }
 
     #[test]

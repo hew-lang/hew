@@ -14,7 +14,8 @@ description: >
   WHY: ilammy/msvc-dev-cmd@v1.13.0 is still node20 (abandoned upstream) and
   was the sole blocker for a fully node24-native actions surface. The vswhere +
   vcvarsall pattern is the Microsoft-canonical way to initialise an MSVC
-  developer shell in CI (same approach used in prebuild-llvm.yml).
+  developer shell in CI (same approach used by hew-lang/llvm-toolchain's
+  prebuild-llvm.yml, which owns the Windows LLVM source build).
   WHEN obsolete: never — this is the proper first-party pattern.
 
 inputs:

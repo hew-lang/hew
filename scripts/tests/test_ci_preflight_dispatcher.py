@@ -443,7 +443,7 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     assert "make test-vertical-slice" in result.stdout, result.stdout
     # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
     # eval_e2e, …) runs inside make test-compiler-pipeline (-p hew-cli
-    # -p adze-cli, ci profile); a separate single-test hew-cli command here
+    # -p hew-pkg, ci profile); a separate single-test hew-cli command here
     # would be a duplicate run of tests the lane already covers.
     assert "--test await_e2e" not in result.stdout, result.stdout
 
@@ -516,7 +516,7 @@ def test_types_lane_includes_checked_mir_run() -> None:
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep
-    -p hew-cli and -p adze-cli under the ci profile.  If a Makefile edit drops
+    -p hew-cli and -p hew-pkg under the ci profile.  If a Makefile edit drops
     either package, the compiled leak/drop oracles and the e2e suites silently
     stop running for HIR/MIR/codegen and type-checker diffs — exactly the
     consumer-corpus escape class this ratchet exists to block.
@@ -529,7 +529,7 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
     recipe = match.group(0)
     assert "--profile ci" in recipe, recipe
     assert "-p hew-cli" in recipe, recipe
-    assert "-p adze-cli" in recipe, recipe
+    assert "-p hew-pkg" in recipe, recipe
 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
@@ -728,7 +728,7 @@ def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
 def test_hew_compile_routes_to_cli_lane() -> None:
     """hew-compile/* changes route to the cli lane.
 
-    is_cli_path matches hew-cli/*, adze-cli/*, hew-compile/*,
+    is_cli_path matches hew-cli/*, hew-pkg/*, hew-compile/*,
     hew-cabi/*, hew-capability-gen/*.
     """
     result = run_dispatcher("hew-compile/src/lib.rs")

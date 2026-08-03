@@ -183,8 +183,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-observe (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+    info "cargo" "hew-cli hew-lsp hew-observe (release)..."
+    cargo build -p hew-cli -p hew-lsp -p hew-observe --release
     info "cargo" "hew-lib (release-lib)..."
     cargo build -p hew-lib --profile release-lib
 
@@ -199,7 +199,7 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-    for bin in hew adze hew-lsp hew-observe; do
+    for bin in hew hew-lsp hew-observe; do
         if [[ -f "${release_dir}/${bin}" ]]; then
             cp "${release_dir}/${bin}" "${staging}/bin/"
             chmod +x "${staging}/bin/${bin}"
@@ -220,7 +220,6 @@ build_tarball() {
     # Generate shell completions from built binaries
     for shell in bash zsh fish; do
         "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
-        "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
     done
 
     cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
@@ -461,7 +460,7 @@ build_alpine() {
         info "cargo" "Building Rust binaries for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-observe)
+                -p hew-cli -p hew-lsp -p hew-observe)
         info "cargo" "Building hew-lib (release-lib) for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --profile release-lib --target "${musl_target}" -p hew-lib)
@@ -480,7 +479,7 @@ build_alpine() {
         musl_release_lib="$(
             _cargo_output_dir --native --profile release-lib --target "${musl_target}"
         )"
-        for bin in hew adze hew-lsp hew-observe; do
+        for bin in hew hew-lsp hew-observe; do
             if [[ -f "${musl_release}/${bin}" ]]; then
                 cp "${musl_release}/${bin}" "${staging}/bin/"
                 chmod +x "${staging}/bin/${bin}"
@@ -501,7 +500,6 @@ build_alpine() {
         # Generate shell completions from built binaries
         for shell in bash zsh fish; do
             "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
-            "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
         done
 
         cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
@@ -609,7 +607,6 @@ RUN apk add --no-cache \
       gcompat \
       ca-certificates
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/

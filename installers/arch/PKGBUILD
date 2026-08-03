@@ -6,7 +6,7 @@ pkgdesc="The Hew programming language compiler and package manager"
 arch=('x86_64' 'aarch64')
 url="https://hew.sh"
 license=('MIT' 'Apache-2.0')
-provides=('hew' 'adze')
+provides=('hew')
 conflicts=('hew' 'hew-git')
 # Rust binaries link only glibc; LLVM is statically linked into the hew binary.
 # glibc is in Arch's base but listed explicitly to document the requirement.
@@ -32,7 +32,6 @@ package() {
 
   # Binaries
   install -Dm755 "${_srcdir}/bin/hew"          "${pkgdir}/usr/bin/hew"
-  install -Dm755 "${_srcdir}/bin/adze"         "${pkgdir}/usr/bin/adze"
   install -Dm755 "${_srcdir}/bin/hew-lsp"      "${pkgdir}/usr/bin/hew-lsp"
   install -Dm755 "${_srcdir}/bin/hew-observe"  "${pkgdir}/usr/bin/hew-observe"
 
@@ -58,18 +57,6 @@ package() {
   if [ -f "${_srcdir}/completions/hew.fish" ]; then
     install -Dm644 "${_srcdir}/completions/hew.fish" \
       "${pkgdir}/usr/share/fish/vendor_completions.d/hew.fish"
-  fi
-  if [ -f "${_srcdir}/completions/adze.bash" ]; then
-    install -Dm644 "${_srcdir}/completions/adze.bash" \
-      "${pkgdir}/usr/share/bash-completion/completions/adze"
-  fi
-  if [ -f "${_srcdir}/completions/adze.zsh" ]; then
-    install -Dm644 "${_srcdir}/completions/adze.zsh" \
-      "${pkgdir}/usr/share/zsh/site-functions/_adze"
-  fi
-  if [ -f "${_srcdir}/completions/adze.fish" ]; then
-    install -Dm644 "${_srcdir}/completions/adze.fish" \
-      "${pkgdir}/usr/share/fish/vendor_completions.d/adze.fish"
   fi
 
   # Licenses

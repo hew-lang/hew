@@ -133,9 +133,7 @@ def assert_windows_staged_build_transport_contract(text: str) -> None:
         )
         == 1
     )
-    assert (
-        "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release" in text
-    )
+    assert "cargo build -p hew-cli -p hew-lsp -p hew-observe --release" in text
     assert "release library consumer proof" in text
     assert "& $Hew build $SmokeSource -o $SmokeOutput" in text
     assert "Smoke test passed" in text
@@ -193,7 +191,6 @@ def assert_cargo_output_dir_contract(text: str) -> None:
     assert "Resolve-UniqueCargoArtifact" in windows
     assert "did not emit exactly one $LeafName artifact" in windows
     assert "'hew.exe' 'release binary build' -Executable" in windows
-    assert "'adze.exe' 'release binary build' -Executable" in windows
     assert "'hew-lsp.exe' 'release binary build' -Executable" in windows
     assert "'hew-observe.exe' 'release binary build' -Executable" in windows
     assert "'hew.lib' 'release-lib build'" in windows
@@ -207,10 +204,8 @@ def assert_cargo_output_dir_contract(text: str) -> None:
     )
     assert "$ReleaseDir = Split-Path -Parent $Hew" in windows
     assert "$ReleaseLibDir = Split-Path -Parent $ReleaseLib" in windows
-    assert "& $Adze --version" in windows
     assert "& $HewLsp --version" in windows
     assert "& $HewObserve --version" in windows
-    assert "Join-Path $ReleaseDir 'adze.exe'" not in windows
     assert "Join-Path $ReleaseDir 'hew-lsp.exe'" not in windows
     assert "Join-Path $ReleaseDir 'hew-observe.exe'" not in windows
     assert "cargo-output-dir.py" not in windows
@@ -219,7 +214,6 @@ def assert_cargo_output_dir_contract(text: str) -> None:
 
     for stale in (
         "target/release/hew",
-        "target/release/adze",
         "target/release/hew-lsp",
         "target/release/hew-observe",
         "target/release-lib/libhew.a",
@@ -592,11 +586,6 @@ def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
             "did not emit exactly one $LeafName artifact", "artifact missing", 1
         ),
         original.replace(
-            "$Adze = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'adze.exe' 'release binary build' -Executable",
-            "$Adze = Join-Path $ReleaseDir 'adze.exe'",
-            1,
-        ),
-        original.replace(
             "$HewLsp = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-lsp.exe' 'release binary build' -Executable",
             "$HewLsp = Join-Path $ReleaseDir 'hew-lsp.exe'",
             1,
@@ -631,7 +620,6 @@ def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
             assert "if ($Message.reason -eq 'compiler-artifact')" in windows
             assert "Resolve-UniqueCargoArtifact" in windows
             assert "did not emit exactly one $LeafName artifact" in windows
-            assert "'adze.exe' 'release binary build' -Executable" in windows
             assert "'hew-lsp.exe' 'release binary build' -Executable" in windows
             assert "'hew-observe.exe' 'release binary build' -Executable" in windows
             assert (
@@ -644,10 +632,8 @@ def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
             )
             assert "$ReleaseDir = Split-Path -Parent $Hew" in windows
             assert "$ReleaseLibDir = Split-Path -Parent $ReleaseLib" in windows
-            assert "& $Adze --version" in windows
             assert "& $HewLsp --version" in windows
             assert "& $HewObserve --version" in windows
-            assert "Join-Path $ReleaseDir 'adze.exe'" not in windows
             assert "Join-Path $ReleaseDir 'hew-lsp.exe'" not in windows
             assert "Join-Path $ReleaseDir 'hew-observe.exe'" not in windows
             assert "cargo-output-dir.py" not in windows
@@ -903,7 +889,7 @@ def _run_linux_target_dir_contract(
     release.mkdir()
     release_lib.mkdir()
     _write_executable(release / "hew", _FAKE_HEW)
-    for name in ("adze", "hew-lsp", "hew-observe"):
+    for name in ("hew-lsp", "hew-observe"):
         _write_executable(release / name, _FAKE_VERSION_BINARY)
     (release_lib / "libhew.a").write_text("fake archive")
 

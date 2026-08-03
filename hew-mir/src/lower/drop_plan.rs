@@ -1939,10 +1939,10 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // `forward_param` shape passes — by-value params are caller-retained CoW
 // borrows and are excluded from the mint set entirely).
 //
-// SCOPE EXCLUSION: functions whose CFG carries a suspend terminator
-// (coroutine ramps) are excluded — across a suspend point ownership moves
-// through the coro frame and the single teardown outline, which the lite
-// whole-local model does not carry. The S2/OWN-V1 stages own that extension.
+// SUSPEND EXITS: `ExitPath::Suspend` is folded into the verdict alongside
+// `Return` (see `validate_obligation_balance`'s "suspend-abandon" edge) —
+// ownership moved through the coro frame at a suspend point is accounted for,
+// not excluded from this pass.
 //
 // LESSONS: lifecycle-symmetry (the invariant IS the row), checker-authority
 // (with the independence twist above), boundary-fail-closed (findings reject

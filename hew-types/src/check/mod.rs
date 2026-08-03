@@ -214,6 +214,9 @@ fn clear_copy_owner_authority(
     if copy_result && !matches!(fact.ownership, Ownership::Unknown) {
         // Copy-ness governs only the published result. Call leaves also carry
         // receiver and source-argument contracts, so clear only its obligation.
+        // `Unknown` is excluded on purpose: an unresolved ownership fact must
+        // stay `Unknown` rather than being downgraded to `NoOwner`, so MIR
+        // still rejects it fail-closed instead of silently treating it as safe.
         fact.ownership = Ownership::NoOwner;
     }
 }

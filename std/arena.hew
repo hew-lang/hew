@@ -50,6 +50,10 @@ type Slot<T> {
 // An Arena owns mutable identity state and must not fork. A no-op affine
 // witness makes clone admissibility fail closed transitively, including when
 // an Arena is nested in another record. The witness owns no runtime resource.
+// WHEN OBSOLETE: once Hew has a first-class non-cloneable-without-close
+// attribute (an affine marker independent of `#[resource]`'s close-obligation
+// semantics), this witness field goes away and `Arena` carries that attribute
+// directly. WHAT: `#[noclone]` or equivalent, applied straight to `Arena<T>`.
 #[resource]
 type ArenaCloneGuard {
     marker: i64;

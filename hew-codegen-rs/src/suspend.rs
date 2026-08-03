@@ -27,6 +27,10 @@ use hew_mir::{
     ActorLayout, ChildInitArg, Place, PoolCount, RecordLayout, StateFieldCloneKind,
     SupervisorChildLayout, SupervisorLayout,
 };
+// `HEW_TRAP_JOIN_BRANCH_FAILED` is borrowed by select-no-winner (no branch
+// ready and no default) — a distinct failure mode reusing the join-branch
+// code because a dedicated discriminant is an ABI addition past the rc1
+// freeze. WHEN OBSOLETE: rc2, once select-no-winner gets its own trap code.
 use hew_runtime::internal::types::{HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_JOIN_BRANCH_FAILED};
 use hew_types::ResolvedTy;
 

@@ -37985,6 +37985,66 @@ fn main() {}
             );
         }
     }
+
+    /// A variant-bearing `#[resource]` `#[opaque]` declaration has no
+    /// single-representation lifecycle boundary to admit. Every sibling
+    /// rejection in `admit_declared_opaque_resource_lifecycles`'s filter
+    /// emits a `CheckerBoundaryViolation`; this pins that the variants case
+    /// does the same instead of falling out of the iterator silently.
+    ///
+    /// The surface parser rejects `#[opaque] enum` outright (`#[opaque]`
+    /// requires an empty-body `type`), so this shape is unreachable through
+    /// ordinary source syntax — the HIR item is hand-built here to exercise
+    /// the defence-in-depth diagnostic directly.
+    #[test]
+    fn opaque_resource_with_variants_emits_checker_boundary_violation() {
+        use crate::HirNodeId;
+        let decl = HirTypeDecl {
+            id: ItemId(0),
+            node: HirNodeId(0),
+            declaration: hew_types::DefId::new("app.Handle"),
+            name: "Handle".to_string(),
+            defining_module: None,
+            marker: ResourceMarker::Resource,
+            is_opaque: true,
+            is_indirect: false,
+            consuming_methods: Vec::new(),
+            type_params: Vec::new(),
+            fields: Vec::new(),
+            variants: vec![HirVariant {
+                name: "A".to_string(),
+                kind: HirVariantKind::Unit,
+            }],
+            span: 0..0,
+        };
+        let items = vec![HirItem::TypeDecl(decl)];
+        let graph = hew_types::OpaqueResourceCandidateGraph::default();
+        let mut type_classes = crate::value_class::TypeClassTable::new();
+        let mut diagnostics = Vec::new();
+        admit_declared_opaque_resource_lifecycles(
+            &items,
+            &graph,
+            &mut type_classes,
+            &mut diagnostics,
+        );
+
+        let violation = diagnostics.iter().find(|d| {
+            matches!(&d.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "app.Handle")
+        });
+        assert!(
+            violation.is_some(),
+            "variant-bearing opaque resource must emit CheckerBoundaryViolation; \
+             diagnostics: {diagnostics:?}"
+        );
+        let HirDiagnosticKind::CheckerBoundaryViolation { reason, .. } = &violation.unwrap().kind
+        else {
+            unreachable!()
+        };
+        assert!(
+            reason.contains("variants have no single-representation lifecycle boundary to admit"),
+            "reason must name the variants-lifecycle-boundary gap; got: {reason:?}"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -340,6 +340,83 @@ def test_unmeasured_resource_result_is_accepted_without_mint_authority() -> None
     ), errors
 
 
+def test_malformed_resource_result_type_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = (
+        'symbol = "hew_stream_channel"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'resource-result-type = "std.stream.StreamPair"'
+    )
+    bad = good.replace(
+        'resource-result-type = "std.stream.StreamPair"',
+        'resource-result-type = "StreamPair"',
+    )
+    assert source.count(good) == 1, "fixture must target exactly one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "ownership contract for hew_stream_channel resource-result-type must be a qualified nominal"
+        in error
+        for error in errors
+    ), errors
+
+
+def test_malformed_resource_param_types_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = 'resource-param-types = ["std.fs.FileReadStream"]'
+    bad = 'resource-param-types = ["FileReadStream"]'
+    assert source.count(good) >= 1, "fixture must target at least one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad, 1), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "resource-param-types[0] must be a qualified nominal" in error
+        for error in errors
+    ), errors
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
@@ -354,6 +431,8 @@ _TESTS = [
     test_transferred_result_with_resource_basis_fails_verification,
     test_resource_transfer_without_body_basis_fails_verification,
     test_unmeasured_resource_result_is_accepted_without_mint_authority,
+    test_malformed_resource_result_type_fails_verification,
+    test_malformed_resource_param_types_fails_verification,
 ]
 
 if __name__ == "__main__":

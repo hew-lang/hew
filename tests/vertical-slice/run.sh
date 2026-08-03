@@ -764,6 +764,19 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \
   "is not a fixed-size Copy type" \
   "hashmap_key_owned_vec_field"
+# A user nominal sharing the compiler's synthetic `HashMapIter` leaf name
+# keeps its own independent Iterator impl (dispatches user code), while a
+# real HashMap pipeline still dispatches through the compiler cursor.
+run_accept_expect_status "hashmap_iter_user_shadow" 43
+
+# Ownership markers (#[resource], #[linear]) are only valid on nominal `type`
+# / `enum` declarations, never on `record`. Positive control on `type`, plus
+# the reject boundary on `record`.
+run_accept_expect_status "resource_marker_nominal_type" 0
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
+  "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+  "resource_marker_on_record_reject"
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
@@ -850,6 +863,13 @@ expect_check_fail_contains \
 # `net.Listener` remains the pointer-backed TCP handle.  Exercise both
 # codegen representations and the handle's real close ownership path.
 run_accept_expect_stdout "opaque_handle_user_shadow"
+# Negative guard: qualified-owner identity resolves this collision without
+# ever falling back to a raw LLVM type dump in user-facing compile output.
+if grep -qF -- "resolves to non-pointer type" "${accept_output}"; then
+  echo "opaque_handle_user_shadow: raw LLVM dump leaked into compile output" >&2
+  cat "${accept_output}" >&2
+  exit 1
+fi
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
 compile_accept "generic_decl_bound_satisfied"
@@ -940,6 +960,10 @@ run_accept_expect_status_and_stdout "for_range_rev_empty_signed_min" 0
 # by testing general emptiness `raw_start >= raw_end` instead).
 run_accept_expect_status_and_stdout "for_range_rev_empty_unsigned_gt" 0
 run_accept_expect_status_and_stdout "for_range_rev_empty_signed_gt" 0
+# Mixed-width bounds in a `for x in lo..hi`: narrower and wider integer
+# operands on either side of the range, forward and reversed, plus the
+# analogous mixed-width if/if-let branch-merge normalization.
+run_accept_expect_stdout "for_range_mixed_width_normalization"
 
 # platform-int-arith (W60.040): isize/usize as first-class integers. Each
 # fixture asserts exact values via assert_eq/assert and exits 0 on success

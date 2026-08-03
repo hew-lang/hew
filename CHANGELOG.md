@@ -1,12 +1,16 @@
 # Changelog
 
-## [0.6.0-rc1] - 2026-07-29
+## [0.6.0-rc1] - Unreleased
 
 Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the
 ownership model, closes a batch of actor and machine correctness gaps, and
 reshapes several language surfaces. The headline change is that ownership and
-drop elaboration are now unconditional and type-directed: every owned value is
-released exactly once, with no reliance on ad-hoc per-shape heap walkers.
+drop elaboration are now unconditional and type-directed: every owned value
+walks a single type-directed release authority instead of an ad-hoc per-shape
+heap walker. A small number of edges (a never-resolved crash-path projection
+transfer, an unvalidated Cancel/Panic drop path, one documented constant
+credential-file allocation) remain tracked residual leak-only surfaces rather
+than double-free risks.
 
 ### Changed — ownership and drop elaboration
 

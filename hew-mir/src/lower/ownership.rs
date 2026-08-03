@@ -544,7 +544,8 @@ impl Builder {
                     .get(source_site)
                     .is_some_and(|source_place| {
                         self.owned_locals.iter().any(|entry| {
-                            self.binding_locals.get(&entry.binding) == Some(source_place)
+                            entry.disposition == Disposition::ScopeExit
+                                && self.binding_locals.get(&entry.binding) == Some(source_place)
                         })
                     })
                 {
@@ -4540,6 +4541,60 @@ mod typed_produced_owner_tests {
 
         assert!(builder.owned_locals_ledger().is_empty());
         assert!(builder.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn projection_mints_after_parent_owner_was_consumed() {
+        let parent_site = SiteId(706);
+        let projection_site = SiteId(707);
+        let parent = owned_resource(parent_site);
+        let mut projection = owned_resource(projection_site);
+        let mut facts = ParamOwnershipFacts::default();
+        for (site, relation) in [
+            (parent_site, hew_hir::HirProducedValueRelation::Leaf),
+            (
+                projection_site,
+                hew_hir::HirProducedValueRelation::Projection(parent_site),
+            ),
+        ] {
+            facts.produced_value_facts.insert(
+                site,
+                HirProducedValueFact {
+                    producer: HirProducedValueProducer::Literal,
+                    ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                    relation,
+                    receiver: None,
+                    receiver_boundary: None,
+                    arguments: Vec::new(),
+                },
+            );
+        }
+
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        let parent_place = Place::Local(9);
+        builder.adopt_typed_produced_value_owner(&parent, parent_place);
+        let parent_binding = builder.owned_locals[0].binding;
+        builder.set_owned_local_consumed(
+            parent_binding,
+            Some(Place::Local(10)),
+            super::DischargeSite::BindingMoved,
+        );
+
+        projection.ty = parent.ty;
+        builder.adopt_typed_produced_value_owner(&projection, Place::Local(11));
+
+        assert_eq!(builder.owned_locals_ledger().len(), 2);
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(
+                builder.owned_locals[1].binding,
+                "__hew_produced_value".to_string(),
+                projection.ty,
+            )]
+        );
     }
 
     #[test]

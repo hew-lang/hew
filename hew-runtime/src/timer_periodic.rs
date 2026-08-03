@@ -19,8 +19,8 @@ use crate::lifetime::PoisonSafe;
 use crate::actor::{hew_actor_send, HewActor};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms,
-    hew_timer_wheel_remove, hew_timer_wheel_tick, timer_wheel_schedule_at_handle, HewTimerHandle,
-    HewTimerWheel,
+    hew_timer_wheel_remove, hew_timer_wheel_tick, timer_wheel_cursor_ms,
+    timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
 };
 
 // ---------------------------------------------------------------------------
@@ -420,10 +420,9 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
         return;
     }
 
-    // Fire one message per wheel tick. Re-arming preserves the absolute
-    // cadence; if the next deadline is still past due, later wheel ticks each
-    // deliver one catch-up message until the cadence catches up. This bounds
-    // catch-up work performed by any single tick.
+    // Fire one message for this due cadence slot. Re-arming preserves the
+    // absolute phase while dropping any other slots missed during a cursor
+    // stall, so the ticker cannot spin through overdue intervals.
     //
     // Send a zero-payload message to the actor's dispatch function.
     // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
@@ -446,10 +445,16 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
         unregister_timer(ctx.actor, ctx_addr);
         return;
     }
-    let next_fire_ms = ctx
+    let mut next_fire_ms = ctx
         .next_fire_ms
         .load(Ordering::SeqCst)
         .saturating_add(ctx.interval_ms);
+    // SAFETY: ctx owns a live wheel for the lifetime of the periodic timer.
+    let cursor_ms = unsafe { timer_wheel_cursor_ms(ctx.wheel) };
+    if next_fire_ms < cursor_ms {
+        let skipped_slots = cursor_ms.saturating_sub(next_fire_ms) / ctx.interval_ms + 1;
+        next_fire_ms = next_fire_ms.saturating_add(ctx.interval_ms.saturating_mul(skipped_slots));
+    }
     ctx.next_fire_ms.store(next_fire_ms, Ordering::SeqCst);
 
     // Hand a fresh strong reference to the wheel for the next one-shot.
@@ -480,9 +485,9 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
 ///
 /// On an absolute cadence every `interval_ms` milliseconds, sends a
 /// zero-payload message with type `msg_type` to the actor's dispatch function.
-/// A late timer catches up at most once per wheel tick until it reaches that
-/// cadence. The timer repeats until the actor is freed or the handle is
-/// cancelled.
+/// A late timer fires once and drops any cadence slots missed while the wheel
+/// cursor was stalled. The timer repeats until the actor is freed or the
+/// handle is cancelled.
 ///
 /// Returns a handle (opaque pointer) that can be passed to
 /// [`hew_actor_cancel_periodic`] to stop the timer.
@@ -777,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn late_fire_catches_up_one_tick_at_anchored_cadence() {
+    fn late_fire_skips_missed_slots_at_anchored_cadence() {
         let mut actor = create_test_actor(50_050);
         actor
             .actor_state
@@ -788,7 +793,7 @@ mod tests {
         let wheel = unsafe { hew_timer_wheel_new() };
         assert!(!wheel.is_null());
         // SAFETY: `wheel` is live and test-owned.
-        let now = unsafe { crate::timer_wheel::timer_wheel_cursor_ms_for_test(wheel) };
+        let now = unsafe { crate::timer_wheel::timer_wheel_cursor_ms(wheel) };
         // SAFETY: actor and wheel remain live until the timer is cancelled.
         let handle = unsafe { schedule_periodic_on_wheel(actor_ptr, 7, 10, wheel, now) };
         assert!(!handle.is_null());
@@ -798,21 +803,65 @@ mod tests {
         let first_fire = next_fire.load(Ordering::SeqCst);
         let late_tick = first_fire.saturating_add(25);
 
-        // A late tick fires once, then each tick at the same cursor catches up
-        // one anchored cadence slot. It must not burst within one tick or
-        // drift to `late_tick + interval`.
+        // A late tick fires once and skips missed slots without drifting from
+        // the original cadence phase.
         // SAFETY: wheel and callback payload remain live throughout.
         unsafe {
             assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 1);
-            assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 10);
-
-            assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 1);
-            assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 20);
-
-            assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 1);
             assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 30);
-
             assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 0);
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, first_fire + 30),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 40);
+            hew_actor_cancel_periodic(handle);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let mut actor = create_test_actor(50_051);
+        actor
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::SeqCst);
+        let actor_ptr = &raw mut actor;
+
+        // SAFETY: the test owns this wheel for its complete lifetime.
+        let wheel = unsafe { hew_timer_wheel_new() };
+        assert!(!wheel.is_null());
+        // Move the initially fresh cursor before modelling the stall; otherwise
+        // a zero-based cursor can make the stall setup a no-op.
+        // SAFETY: wheel is live and exclusively owned by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 1) };
+        // SAFETY: wheel is live and test-owned.
+        let now = unsafe { crate::timer_wheel::timer_wheel_cursor_ms(wheel) };
+        // SAFETY: actor and wheel remain live until the timer is cancelled.
+        let handle = unsafe { schedule_periodic_on_wheel(actor_ptr, 7, 1, wheel, now) };
+        assert!(!handle.is_null());
+
+        // SAFETY: the registry keeps this context live through cancellation.
+        let next_fire = unsafe { &(*handle.cast::<PeriodicCtx>()).next_fire_ms };
+        let first_fire = next_fire.load(Ordering::SeqCst);
+        let stalled_cursor = first_fire + 5_000;
+
+        // SAFETY: wheel and callback payload remain live throughout.
+        unsafe {
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), stalled_cursor + 1);
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor),
+                0
+            );
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor + 1),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), stalled_cursor + 2);
             hew_actor_cancel_periodic(handle);
             hew_timer_wheel_free(wheel);
         }

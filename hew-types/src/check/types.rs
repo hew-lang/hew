@@ -398,10 +398,11 @@ pub struct TypeCheckOutput {
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Canonical trait/method identities published through each exact import
-    /// binding.  The key is `(importer module, binding spelling, method)`;
-    /// HIR uses it when an impl names an imported trait bare or through an
-    /// alias, rather than inferring an owner from a leaf name.
+    /// Canonical trait/method identities published through each exact source
+    /// binding. The key is `(module, binding spelling, method)`; HIR uses it
+    /// when an impl names an imported trait bare or through an alias, rather
+    /// than inferring an owner from a leaf name. This also records a bare trait
+    /// reference resolved unambiguously through a module import.
     pub trait_method_ids_by_binding:
         HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
     /// Checker-allocated impl-method declaration identities keyed by their
@@ -2580,9 +2581,10 @@ pub struct Checker {
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Source-owned trait method IDs as exposed through an import binding.
-    /// Lookup registries may retain short compatibility keys, but call targets
-    /// use this full-path table and never mint identities from those keys.
+    /// Source-owned trait method IDs as exposed through an exact source
+    /// binding. Lookup registries may retain short compatibility keys, but
+    /// call targets use this full-path table and never mint identities from
+    /// those keys.
     pub(super) trait_method_ids_by_binding:
         HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
     /// Declaration identities for impl methods, keyed by the checker-selected

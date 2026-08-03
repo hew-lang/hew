@@ -3246,7 +3246,7 @@ assert_value_tree_exit_plans() {
     active && seen && $0 ~ "^fn " { exit }
     active { print; seen = 1 }
   ' target="_panic_exit" "${accept_output}")"
-  grep -qF "call[bb4 panic" <<<"${function_body}"
+  grep -qF "call[bb4 hew_panic_msg" <<<"${function_body}"
   test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 2
 
   function_body="$(awk '
@@ -3266,9 +3266,9 @@ assert_value_tree_exit_plans() {
   test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq "${main_close_count}"
 }
 
-assert_value_tree_exit_plans "json_value_resource_exactly_once" "json" 2
-assert_value_tree_exit_plans "toml_value_resource_exactly_once" "toml" 1
-assert_value_tree_exit_plans "yaml_value_resource_exactly_once" "yaml" 1
+assert_value_tree_exit_plans "json_value_resource_exactly_once" "std.encoding.json" 2
+assert_value_tree_exit_plans "toml_value_resource_exactly_once" "std.encoding.toml" 1
+assert_value_tree_exit_plans "yaml_value_resource_exactly_once" "std.encoding.yaml" 1
 
 compile_accept "http_client_response_resource_close"
 compile_accept "websocket_message_resource_close"
@@ -3876,7 +3876,8 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/duplicate_short_name.he
   echo "W3.025: expected duplicate_short_name to fail" >&2
   exit 1
 fi
-grep -q 'two imported modules share the short name' "${reject_output}"
+grep -q "imports both \`alpha\` and \`beta::alpha\` under the ambiguous binding \`alpha\`" \
+  "${reject_output}"
 
 # Reject: ambiguous module resolution (both flat ambig_mod.hew and dir ambig_mod/ambig_mod.hew exist)
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/ambiguous_module.hew" \

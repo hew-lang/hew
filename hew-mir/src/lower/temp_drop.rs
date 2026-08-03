@@ -57,6 +57,18 @@ fn aggregate_handoff_destination(instruction: &Instr, value: Place) -> Option<Pl
     }
 }
 
+fn aggregate_handoff_occurrences(instruction: &Instr, value: Place) -> usize {
+    match instruction {
+        Instr::TupleConstruct { elements, .. } => {
+            elements.iter().filter(|element| **element == value).count()
+        }
+        Instr::RecordInit { fields, .. } => {
+            fields.iter().filter(|(_, field)| *field == value).count()
+        }
+        _ => 0,
+    }
+}
+
 /// Prove that `value` at the aggregate ingress is still the generation moved
 /// into its named slot by a typed publication handoff.
 ///
@@ -158,13 +170,13 @@ fn typed_named_aggregate_handoff(
     block: u32,
     instr_index: usize,
     value: Place,
-) -> Option<(BindingId, Place)> {
+) -> Option<(BindingId, Place, bool)> {
     if builder.current_function_call_conv != crate::model::FunctionCallConv::Default {
         return None;
     }
     let instruction = block_by_id(blocks, block)?.instructions.get(instr_index)?;
     let destination = aggregate_handoff_destination(instruction, value)?;
-    let source_bindings: HashSet<BindingId> = builder
+    let mut source_bindings: HashSet<BindingId> = builder
         .typed_produced_value_handoffs
         .iter()
         .filter(|(_, destination)| *destination == value)
@@ -181,6 +193,18 @@ fn typed_named_aggregate_handoff(
                 })
         })
         .collect();
+    source_bindings.extend(
+        builder
+            .binding_locals
+            .iter()
+            .filter_map(|(binding, place)| {
+                (*place == value
+                    && builder
+                        .typed_produced_value_owner_bindings
+                        .contains(binding))
+                .then_some(*binding)
+            }),
+    );
     let mut source_bindings = source_bindings.into_iter();
     let binding = source_bindings.next()?;
     if source_bindings.next().is_some() {
@@ -200,7 +224,8 @@ fn typed_named_aggregate_handoff(
     if fresh_generation_is_used_after(blocks, &builder.suspend_kinds, local, block, instr_index) {
         return None;
     }
-    Some((binding, destination))
+    let direct = builder.binding_locals.get(&binding).copied() == Some(value);
+    Some((binding, destination, direct))
 }
 
 pub(super) fn finalize_string_local_share_intents(
@@ -1039,6 +1064,7 @@ fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[StringRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<(Place, StringRetainCondition)>> = HashMap::new();
     for site in retain_sites {
@@ -1074,6 +1100,18 @@ fn apply_string_retain_sites(
             rewritten.push(instr);
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::StringLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
             }
         }
         if let Some(span) = old_spans
@@ -3847,8 +3885,88 @@ pub(super) fn finalize_string_ownership(
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
     );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.condition, StringRetainCondition::Always) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::String))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
+            }
+        }
+    }
+    let mut aggregate_handoffs = HashSet::new();
     let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
+        if matches!(site.condition, StringRetainCondition::Always) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
         let typed_handoff = matches!(site.condition, StringRetainCondition::Always)
             && raw
                 .blocks
@@ -3863,19 +3981,22 @@ pub(super) fn finalize_string_ownership(
                     )
                 });
         if typed_handoff {
-            return false;
-        }
-        if matches!(site.condition, StringRetainCondition::Always) {
-            if let Some(handoff) = typed_named_aggregate_handoff(
-                &raw.blocks,
-                builder,
-                site.block,
-                site.instr_index,
-                site.value,
-            ) {
-                named_aggregate_handoffs.push(handoff);
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
                 return false;
             }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
         }
         site.required_bindings
             .iter()
@@ -3889,6 +4010,7 @@ pub(super) fn finalize_string_ownership(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
     );
     // Retains are explicit MIR only after the splice above. Re-run the fresh,
     // borrow-only admission over that final instruction stream so a uniquely
@@ -6790,6 +6912,7 @@ fn apply_bytes_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[BytesRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
     let mut after: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
@@ -6827,6 +6950,18 @@ fn apply_bytes_retain_sites(
             rewritten.push(instr);
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::BytesLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
             }
             if let Some(values) = after.get(&(block.id, old_index)) {
                 for value in values {
@@ -6943,6 +7078,10 @@ pub(super) fn derive_bytes_actor_transfer_blocks(
     transfer_blocks
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the derivation, exact handoff proof, and retain splice form one ownership boundary"
+)]
 pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
     builder: &mut Builder,
@@ -6984,8 +7123,88 @@ pub(super) fn finalize_bytes_ownership(
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
     );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.placement, BytesRetainPlacement::Before) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::Bytes))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
+            }
+        }
+    }
+    let mut aggregate_handoffs = HashSet::new();
     let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
+        if matches!(site.placement, BytesRetainPlacement::Before) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
         let typed_handoff = matches!(site.placement, BytesRetainPlacement::Before)
             && raw
                 .blocks
@@ -7000,19 +7219,22 @@ pub(super) fn finalize_bytes_ownership(
                     )
                 });
         if typed_handoff {
-            return false;
-        }
-        if matches!(site.placement, BytesRetainPlacement::Before) {
-            if let Some(handoff) = typed_named_aggregate_handoff(
-                &raw.blocks,
-                builder,
-                site.block,
-                site.instr_index,
-                site.value,
-            ) {
-                named_aggregate_handoffs.push(handoff);
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
                 return false;
             }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
         }
         let fresh_handoff = matches!(site.placement, BytesRetainPlacement::Before)
             && base_local(site.value).is_some_and(|local| {
@@ -7049,6 +7271,7 @@ pub(super) fn finalize_bytes_ownership(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
     );
     derivation
 }
@@ -7214,7 +7437,7 @@ mod cow_sole_owner_derivation {
 
         assert_eq!(
             typed_named_aggregate_handoff(&blocks, &builder, 0, 1, transfer),
-            Some((binding, aggregate)),
+            Some((binding, aggregate, false)),
             "the typed source generation stays authoritative after its transfer local"
         );
     }

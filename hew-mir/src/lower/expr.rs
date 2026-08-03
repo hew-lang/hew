@@ -80,6 +80,32 @@ fn catalog_display_call_authority(callee: &str) -> crate::CallAuthority {
         .unwrap_or_default()
 }
 
+/// Project a checker-validated catalog endpoint onto its compiler-owned MIR
+/// operation. The caller must supply the endpoint carried by
+/// `CallTarget::Builtin`; arbitrary source or linker spellings never reach
+/// this discriminator.
+fn compiler_builtin_call_authority(endpoint: &str) -> Option<crate::CallAuthority> {
+    use crate::IdentityAggregateKind as Kind;
+
+    let kind = match endpoint {
+        "Node::id" => Kind::NodeId,
+        "hew_node_id_display" => Kind::NodeIdDisplay,
+        "hew_location_node_id" => Kind::LocationNodeId,
+        "hew_location_slot" => Kind::LocationSlot,
+        "hew_location_incarnation" => Kind::LocationIncarnation,
+        "hew_location_display" => Kind::LocationDisplay,
+        "hew_remote_pid_location" => Kind::RemotePidLocation,
+        "hew_remote_pid_node_id" => Kind::RemotePidNodeId,
+        "hew_remote_pid_slot" => Kind::RemotePidSlot,
+        "hew_remote_pid_incarnation" => Kind::RemotePidIncarnation,
+        "hew_remote_pid_display" => Kind::RemotePidDisplay,
+        _ => return None,
+    };
+    Some(crate::CallAuthority::Compiler(
+        crate::CompilerCallKind::IdentityAggregate(kind),
+    ))
+}
+
 /// The stdlib's generic `Iterator::next` body reaches MIR as static trait
 /// dispatch after its `I` parameter is monomorphised. `VecIter<T>` is a
 /// compiler-owned cursor, though: its concrete next operation is the same
@@ -3094,6 +3120,10 @@ impl Builder {
                         }
                     }
                 }
+                HirExprKind::SubsumedValue {
+                    source,
+                    producer: hew_hir::HirProducedValueProducer::Block,
+                } => self.publish_transparent_block_sources(source, place),
                 _ => {}
             }
             self.publish_produced_value_place(expr, place);
@@ -3105,6 +3135,17 @@ impl Builder {
             }
         }
         value
+    }
+
+    fn publish_transparent_block_sources(&mut self, source: &HirExpr, place: Place) {
+        if let HirExprKind::SubsumedValue {
+            source: inner,
+            producer: hew_hir::HirProducedValueProducer::Block,
+        } = &source.kind
+        {
+            self.publish_transparent_block_sources(inner, place);
+        }
+        self.publish_produced_value_place(source, place);
     }
 
     fn publish_produced_value_source_anchor(
@@ -4090,16 +4131,19 @@ impl Builder {
                         // ItemId-projected symbol to agree; this never grants
                         // `Extern` authority based on a user-controlled symbol
                         // spelling.
-                        let authority = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                            callee_symbol,
-                        )
-                        .map(crate::CallAuthority::Runtime)
-                        .or_else(|| {
-                            hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
-                                .filter(|symbol| *symbol == callee_symbol)
-                                .map(|_| crate::CallAuthority::Extern)
-                        })
-                        .unwrap_or_default();
+                        let authority = compiler_builtin_call_authority(endpoint)
+                            .or_else(|| {
+                                hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                                    callee_symbol,
+                                )
+                                .map(crate::CallAuthority::Runtime)
+                            })
+                            .or_else(|| {
+                                hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
+                                    .filter(|symbol| *symbol == callee_symbol)
+                                    .map(|_| crate::CallAuthority::Extern)
+                            })
+                            .unwrap_or_default();
                         return self.lower_direct_call_with_authority(
                             callee_symbol,
                             callee_item,

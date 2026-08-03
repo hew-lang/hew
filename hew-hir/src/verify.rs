@@ -279,6 +279,17 @@ fn seed_resolved_produced_value_facts(
             fact.ownership = *ownership;
         }
     }
+    for site in &verifier.extern_owned_bytes_results {
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
+            // `bytes` crosses the extern ABI as a by-value owner triple. This
+            // follows the checked return type, not the endpoint spelling, so a
+            // user declaration cannot acquire a privileged runtime contract.
+            fact.ownership = Ownership::owned(ProducedValueAcquisition::Fresh);
+        }
+    }
 }
 
 fn resolve_binding_transfer_facts(
@@ -619,6 +630,7 @@ struct Verifier {
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
     builtin_call_targets: HashMap<SiteId, String>,
+    extern_owned_bytes_results: HashSet<SiteId>,
     typed_trait_call_results: HashMap<SiteId, ProducedValueOwnership>,
     aggregate_payloads: HashMap<SiteId, Vec<SiteId>>,
     aggregate_transfer_payloads: HashSet<SiteId>,
@@ -1572,6 +1584,11 @@ impl Verifier {
                     self.builtin_call_targets
                         .insert(expr.site, endpoint.clone());
                 }
+                if matches!(target, hew_types::CallTarget::Extern { .. })
+                    && matches!(expr.ty, ResolvedTy::Bytes)
+                {
+                    self.extern_owned_bytes_results.insert(expr.site);
+                }
                 self.expr(callee);
                 for arg in args {
                     self.expr(arg);
@@ -2165,10 +2182,12 @@ impl Verifier {
                 }
             }
             HirExprKind::Unsupported(reason) => {
-                if !self.diagnostics.iter().any(|diag| {
-                    diag.span == expr.span
-                        && matches!(diag.kind, HirDiagnosticKind::NotYetImplemented { .. })
-                }) {
+                if !reason.starts_with("diagnosed:")
+                    && !self.diagnostics.iter().any(|diag| {
+                        diag.span == expr.span
+                            && matches!(diag.kind, HirDiagnosticKind::NotYetImplemented { .. })
+                    })
+                {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::NotYetImplemented {
                             construct: reason.clone(),

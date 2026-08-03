@@ -3847,9 +3847,16 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# observe C ABI — hew-runtime/src/observe.rs allocates every scrape/series
-# result through str_to_malloc, retains no pointer into it, and the normal Hew
-# string release is the balancing shallow discharge.
+# observe C ABI — read borrows its metric-name string. Scrape/series allocate
+# results through str_to_malloc, retain no pointer into them, and the normal
+# Hew string release is the balancing shallow discharge.
+[[ownership.contracts]]
+symbol = "hew_observe_read_u64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_observe_scrape"
 result = "fresh"

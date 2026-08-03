@@ -5009,6 +5009,9 @@ pub(crate) fn lower_hashmap_get_layout_call(
         })?;
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_get_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_get_some");
+    let initialized_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "hashmap_get_initialized");
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
@@ -5061,7 +5064,7 @@ pub(crate) fn lower_hashmap_get_layout_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_get_layout none br")?;
 
     // Some = variant 0. The runtime already cloned into the payload slot.
@@ -5069,8 +5072,15 @@ pub(crate) fn lower_hashmap_get_layout_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_get_layout some br")?;
+
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_get_layout initialized br")?;
     Ok(())
 }
 
@@ -5143,6 +5153,9 @@ pub(crate) fn lower_hashmap_remove_take_call(
         })?;
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_some");
+    let initialized_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "hashmap_remove_initialized");
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
@@ -5193,7 +5206,7 @@ pub(crate) fn lower_hashmap_remove_take_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_remove_take_layout none br")?;
 
     // Some = variant 0. The runtime already MOVED the value into the payload.
@@ -5201,8 +5214,14 @@ pub(crate) fn lower_hashmap_remove_take_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_remove_take_layout some br")?;
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout initialized br")?;
     Ok(())
 }
 

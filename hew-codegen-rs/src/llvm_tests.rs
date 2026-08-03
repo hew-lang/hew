@@ -9995,7 +9995,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             false,
         ),
         (
-            "generator construction without a lifecycle hook",
+            "generator construction initialized tail",
             Terminator::MakeGenerator {
                 dest: Place::Local(0),
                 body_fn: "__test_generator".to_string(),
@@ -10003,7 +10003,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
                 env: None,
             },
             None,
-            false,
+            true,
         ),
     ];
 
@@ -11981,11 +11981,16 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 r#"let owner = make_nested("nested-owner".to_upper());"#,
                 r#"if owner() == -1 { panic("closure"); }"#,
             ),
-            // The closure env owns its captured String. The caller's fresh
-            // argument is retired before suspension, so it is not a competing
-            // frame owner.
-            vec![hew_mir::DropKind::ClosurePair],
-            vec!["closure_drop_env_free_thunk"],
+            // The callee retains the String captured by the closure env. The
+            // caller keeps the original fresh argument until the suspended
+            // call completes, so both owners need independent cleanup.
+            vec![
+                hew_mir::DropKind::ClosurePair,
+                hew_mir::DropKind::CowHeap {
+                    release: hew_mir::CowHeapRelease::String,
+                },
+            ],
+            vec!["closure_drop_env_free_thunk", "call void @hew_string_drop("],
         ),
     ];
 
@@ -12350,7 +12355,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 11, 14, 19, 21],
+        [2, 5, 11, 14, 17, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -12381,7 +12386,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
                     line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
                 })
                 .count(),
-            6,
+            7,
             "{triple}: every exact owner needs one stable token alloca:\n{helper}"
         );
         let arms = helper
@@ -12390,7 +12395,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .collect::<Vec<_>>();
         assert_eq!(
             arms.len(),
-            6,
+            7,
             "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
         );
         assert!(
@@ -12401,7 +12406,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             helper
                 .matches("call i1 @hew_cont_crash_cleanup_deactivate")
                 .count(),
-            6,
+            7,
             "{triple}: every destination write must gate stale authority before replacement"
         );
         assert!(

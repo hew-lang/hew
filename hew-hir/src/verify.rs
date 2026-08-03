@@ -254,6 +254,17 @@ fn seed_resolved_produced_value_facts(
         }
         fact.ownership = resolved_runtime_call_ownership(*family);
     }
+    for (site, endpoint) in &verifier.builtin_call_targets {
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
+            continue;
+        }
+        if let Some(ownership) = crate::stdlib_catalog::result_ownership(endpoint) {
+            fact.ownership = ownership;
+        }
+    }
 }
 
 fn resolve_binding_transfer_facts(
@@ -591,6 +602,7 @@ struct Verifier {
     user_call_arguments: HashMap<SiteId, Vec<SiteId>>,
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
+    builtin_call_targets: HashMap<SiteId, String>,
     aggregate_payloads: HashMap<SiteId, Vec<SiteId>>,
     aggregate_transfer_payloads: HashSet<SiteId>,
     resource_record_constructors: HashSet<SiteId>,
@@ -1535,6 +1547,10 @@ impl Verifier {
                 }
                 if let hew_types::CallTarget::Runtime(family) = target {
                     self.runtime_call_targets.insert(expr.site, *family);
+                }
+                if let hew_types::CallTarget::Builtin { endpoint } = target {
+                    self.builtin_call_targets
+                        .insert(expr.site, endpoint.clone());
                 }
                 self.expr(callee);
                 for arg in args {

@@ -146,7 +146,7 @@ runs:
         set -euo pipefail
         asset="${{ steps.layout.outputs.asset }}"
         if [[ "${asset}" == hew-llvm-* ]]; then
-          url="https://github.com/hew-lang/llvm-toolchain/releases/download/llvm-22.1.0-windows-msvc-v1/${asset}"
+          url="https://github.com/hew-lang/llvm-toolchain/releases/download/llvm-${{ steps.layout.outputs.version }}/${asset}"
         else
           url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${asset}"
         fi

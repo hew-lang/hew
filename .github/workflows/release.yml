@@ -145,8 +145,10 @@ jobs:
             exit 1
           }
           $names = ($info | ConvertFrom-Json).assets.name
-          if ($names -notcontains $asset) {
-            Write-Host "::error::Asset $asset missing from toolchain release $toolchainTag. Dispatch prebuild-llvm.yml in $toolchainRepo to publish it first."
+          $required = @($asset, "$asset.sha256")
+          $missing = $required | Where-Object { $names -notcontains $_ }
+          if ($missing) {
+            Write-Host "::error::Missing asset(s) from toolchain release ${toolchainTag}: $($missing -join ', '). Dispatch prebuild-llvm.yml in $toolchainRepo to publish them first."
             exit 1
           }
 

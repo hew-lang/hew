@@ -18,6 +18,20 @@ impl Builder {
             || self.string_local_share_sites.contains_key(&expr.site)
         {
             IntentKind::Read
+        } else if self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .is_some_and(|fact| {
+                matches!(
+                    fact.ownership,
+                    hew_types::ProducedValueOwnership::Owned {
+                        acquisition: hew_types::ProducedValueAcquisition::MoveOut
+                    }
+                )
+            })
+        {
+            IntentKind::Consume
         } else {
             expr.intent
         }

@@ -1733,6 +1733,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 instr,
                 Instr::Move { .. }
                     | Instr::Drop { .. }
+                    | Instr::BytesRetain { .. }
+                    | Instr::StringRetain { .. }
                     | Instr::RecordFieldLoad { .. }
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldDrop { .. }

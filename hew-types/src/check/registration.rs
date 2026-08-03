@@ -5892,6 +5892,39 @@ impl Checker {
                                     ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
+                                let receiver_name = if self.registration_is_flat_file_import
+                                    || type_name.contains('.')
+                                {
+                                    type_name.clone()
+                                } else {
+                                    self.canonical_nominal_name(type_name).unwrap_or_else(|| {
+                                        self.current_module.as_ref().map_or_else(
+                                            || type_name.clone(),
+                                            |module| format!("{module}.{type_name}"),
+                                        )
+                                    })
+                                };
+                                if let Ok(receiver_args) = self_type_args
+                                    .iter()
+                                    .map(ResolvedTy::from_ty)
+                                    .collect::<Result<Vec<_>, _>>()
+                                {
+                                    let declaration = crate::default_impl_method_declaration(
+                                        &crate::DefId::new(trait_key.clone()),
+                                        &crate::NominalInstance {
+                                            nominal: crate::NominalId::new(receiver_name),
+                                            args: receiver_args,
+                                        },
+                                        &m.name,
+                                    );
+                                    let symbol = format!("{type_name}::{}", m.name);
+                                    self.impl_method_declaration_ids
+                                        .insert(symbol.clone(), declaration.clone());
+                                    if let Some(module) = self.current_module.as_deref() {
+                                        self.impl_method_declaration_ids
+                                            .insert(format!("{module}.{symbol}"), declaration);
+                                    }
+                                }
                                 if let Some(td) = self.lookup_type_def_mut(type_name) {
                                     td.methods.insert(
                                         m.name.clone(),
@@ -7089,11 +7122,14 @@ impl Checker {
         // that can never be resolved by the method body.
         self.fn_sigs.insert(registered_key.clone(), sig.clone());
         if sig.extern_symbol.is_some() {
-            let trusted_compiled_stdlib = self.registration_origin_module.is_some();
             let declaring_module = self
                 .registration_origin_module
                 .clone()
                 .or_else(|| self.current_module.clone());
+            let trusted_compiled_stdlib = self.registration_origin_module.is_some()
+                || declaring_module
+                    .as_deref()
+                    .is_some_and(|module| self.checking_canonical_stdlib_source(module));
             let origin = (declaring_module, trusted_compiled_stdlib);
             self.extern_method_origins
                 .insert(method_key.clone(), origin.clone());

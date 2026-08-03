@@ -22070,6 +22070,13 @@ fn collect_helper_crash_cleanup_descriptors(
             for place in hew_mir::dataflow::instr_write_places(instr) {
                 supported_producers.insert(place);
             }
+            if let Instr::Move {
+                dest: Place::MachineTag(local) | Place::EnumTag(local),
+                ..
+            } = instr
+            {
+                supported_producers.insert(Place::Local(*local));
+            }
         }
         let terminator_writes = hew_mir::dataflow::terminator_write_places(&block.terminator);
         match &block.terminator {
@@ -22125,7 +22132,8 @@ fn collect_helper_crash_cleanup_descriptors(
                 return Err(CodegenError::FailClosed(format!(
                     "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
                      for its producer; supported producers are parameters, \
-                     whole-slot instruction writes, collapsed-suspend ready \
+                     whole-slot instruction writes, completed enum/machine \
+                     aggregate construction, collapsed-suspend ready \
                      destinations, select/join bindings, compiler-owned handle \
                      constructors, generic Real-call destinations, and Vec clone \
                      destinations",
@@ -22290,6 +22298,30 @@ fn helper_owner_arm_waits_for_projection_transfer(
         }
     }
     pending
+}
+
+/// Whether the current tag/payload write is followed immediately by another
+/// write in the same aggregate construction sequence.
+///
+/// Payload expressions are evaluated before this sequence begins. Deferring
+/// cleanup authority through every tag and payload store therefore keeps a
+/// partially initialized aggregate inactive and publishes exactly once after
+/// the final store.
+fn helper_owner_arm_waits_for_aggregate_publication(
+    block: &hew_mir::BasicBlock,
+    instr_idx: usize,
+    owner: Place,
+) -> bool {
+    let Some(next) = block.instructions.get(instr_idx + 1) else {
+        return false;
+    };
+    let Instr::Move { dest, .. } = next else {
+        return false;
+    };
+    matches!(
+        *dest,
+        Place::MachineVariant { .. } | Place::EnumVariant { .. }
+    ) && helper_crash_cleanup_owner_root(*dest) == Some(owner)
 }
 
 fn allocate_helper_crash_cleanup_owners<'ctx>(
@@ -33759,6 +33791,13 @@ fn lower_function<'ctx>(
                             && seen_interior_owner_writes.insert(*place)
                     })
                     .collect();
+            let deferred_interior_owner_arms: HashSet<_> = interior_owner_writes
+                .iter()
+                .copied()
+                .filter(|place| {
+                    helper_owner_arm_waits_for_aggregate_publication(block, instr_idx, *place)
+                })
+                .collect();
             let next_instruction_writes = block
                 .instructions
                 .get(instr_idx + 1)
@@ -33834,7 +33873,9 @@ fn lower_function<'ctx>(
             // This MUST precede arming a projection transferee so the source
             // escrow can never retain the moved-out pointer concurrently.
             for place in interior_owner_writes {
-                emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+                if !deferred_interior_owner_arms.contains(&place) {
+                    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+                }
             }
             // Guard writes are lifecycle writes even though the guard is a
             // separate scalar slot: reconcile the registered owner to the

@@ -22352,24 +22352,11 @@ impl LowerCtx {
     ) -> Option<hew_types::DefId> {
         let self_ty = self_ty?;
         let instance = crate::dispatch::receiver_self_type_for_impl_lookup_instance(self_ty)?;
-        let nominal = instance.nominal.declaration().full_path();
-        let receiver = if instance.args.is_empty() {
-            nominal.to_string()
-        } else {
-            format!(
-                "{nominal}<{}>",
-                instance
-                    .args
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        Some(hew_types::DefId::new(format!(
-            "{nominal}::<default impl {} for {receiver}>::{method}",
-            declaring_trait.full_path(),
-        )))
+        Some(hew_types::default_impl_method_declaration(
+            declaring_trait,
+            &instance,
+            method,
+        ))
     }
 
     /// Decide whether a `Named` type reference resolves to a `#[opaque]`
@@ -25875,6 +25862,15 @@ impl LowerCtx {
                                 self_type.nominal.declaration().full_path(),
                                 &method_name,
                             );
+                            let concrete_target = self.registered_symbol_target(&c_symbol);
+                            if !self.ensure_executable_target(&concrete_target, &c_symbol, &span) {
+                                return (
+                                    HirExprKind::Unsupported(format!(
+                                        "trait default call `{c_symbol}` has no concrete target"
+                                    )),
+                                    ret_ty,
+                                );
+                            }
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,
@@ -25921,7 +25917,7 @@ impl LowerCtx {
                             };
                             return (
                                 HirExprKind::Call {
-                                    target,
+                                    target: concrete_target,
                                     callee: Box::new(callee),
                                     args: lowered_args,
                                 },

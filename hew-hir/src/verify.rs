@@ -74,7 +74,11 @@ pub fn complete_produced_value_facts(
             .or_insert(crate::node::HirProducedValueFact {
                 producer,
                 ownership: ProducedValueOwnership::Unknown,
-                relation: crate::node::HirProducedValueRelation::Leaf,
+                relation: verifier
+                    .synthetic_structural_relations
+                    .get(&site)
+                    .cloned()
+                    .unwrap_or(crate::node::HirProducedValueRelation::Leaf),
                 receiver: None,
                 receiver_boundary: None,
                 arguments: Vec::new(),
@@ -104,6 +108,12 @@ fn resolved_producer_ownership(
 }
 
 fn resolved_runtime_call_ownership(family: RuntimeCallFamily) -> ProducedValueOwnership {
+    if !matches!(
+        family.result_ownership(),
+        hew_types::runtime_call::RuntimeResultOwnership::Untracked
+    ) {
+        return ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh);
+    }
     match family {
         RuntimeCallFamily::ChannelRecvLayout
         | RuntimeCallFamily::ChannelTryRecvLayout
@@ -179,12 +189,14 @@ fn finalize_resolved_produced_value_facts(
         .len()
         .saturating_add(verifier.user_call_targets.len())
         .saturating_add(verifier.aggregate_payloads.len())
+        .saturating_add(verifier.binding_reference_targets.len())
         .saturating_add(1);
     for _ in 0..limit {
-        propagate_produced_value_relations(facts);
+        let relations_changed = propagate_produced_value_relations(facts);
+        let bindings_changed = resolve_binding_transfer_facts(verifier, facts);
         let aggregates_changed = resolve_aggregate_facts(verifier, facts);
         let calls_changed = resolve_user_call_facts(verifier, facts);
-        if !aggregates_changed && !calls_changed {
+        if !relations_changed && !bindings_changed && !aggregates_changed && !calls_changed {
             break;
         }
     }
@@ -237,10 +249,108 @@ fn seed_resolved_produced_value_facts(
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        if !matches!(fact.ownership, Ownership::Unknown) {
+        if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
         fact.ownership = resolved_runtime_call_ownership(*family);
+    }
+}
+
+fn resolve_binding_transfer_facts(
+    verifier: &Verifier,
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) -> bool {
+    use ProducedValueOwnership as Ownership;
+
+    let mut changed = false;
+    for (site, binding) in &verifier.binding_reference_targets {
+        if facts
+            .get(site)
+            .is_some_and(|fact| !matches!(fact.ownership, Ownership::Unknown))
+        {
+            continue;
+        }
+        let source = verifier.binding_definitions.get(binding).map_or_else(
+            || {
+                facts
+                    .get(site)
+                    .map_or(Ownership::Unknown, |fact| fact.ownership)
+            },
+            |definitions| {
+                join_produced_value_ownership(definitions.iter().map(|definition| {
+                    facts.get(definition).map_or(Ownership::Unknown, |fact| {
+                        if matches!(fact.ownership, Ownership::Borrowed)
+                            && fact.producer == crate::node::HirProducedValueProducer::Literal
+                        {
+                            Ownership::owned(ProducedValueAcquisition::Retained)
+                        } else {
+                            fact.ownership
+                        }
+                    })
+                }))
+            },
+        );
+        let ownership = match verifier.binding_transfer_sites.get(site) {
+            Some(acquisition) => match source {
+                Ownership::Owned { .. } => Ownership::owned(*acquisition),
+                Ownership::Borrowed if *acquisition == ProducedValueAcquisition::Retained => {
+                    Ownership::owned(*acquisition)
+                }
+                Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
+                Ownership::NoOwner => Ownership::NoOwner,
+                Ownership::Unknown => Ownership::Unknown,
+            },
+            None => match source {
+                Ownership::Owned { .. } | Ownership::Borrowed | Ownership::ReceiverIdentity => {
+                    Ownership::Borrowed
+                }
+                Ownership::NoOwner => Ownership::NoOwner,
+                Ownership::Unknown => Ownership::Unknown,
+            },
+        };
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if fact.ownership != ownership {
+            fact.ownership = ownership;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn join_produced_value_ownership(
+    ownership: impl IntoIterator<Item = ProducedValueOwnership>,
+) -> ProducedValueOwnership {
+    use ProducedValueOwnership as Ownership;
+
+    let mut saw_owned = None;
+    let mut saw_borrowed = false;
+    let mut saw_identity = false;
+    let mut saw_unknown = false;
+    for ownership in ownership {
+        match ownership {
+            Ownership::Owned { acquisition } => {
+                saw_owned.get_or_insert(acquisition);
+            }
+            Ownership::Borrowed => saw_borrowed = true,
+            Ownership::ReceiverIdentity => saw_identity = true,
+            Ownership::Unknown => saw_unknown = true,
+            Ownership::NoOwner => {}
+        }
+    }
+    if saw_unknown || saw_identity && (saw_owned.is_some() || saw_borrowed) {
+        Ownership::Unknown
+    } else if saw_owned.is_some() && saw_borrowed {
+        Ownership::owned(ProducedValueAcquisition::Retained)
+    } else if let Some(acquisition) = saw_owned {
+        Ownership::owned(acquisition)
+    } else if saw_borrowed {
+        Ownership::Borrowed
+    } else if saw_identity {
+        Ownership::ReceiverIdentity
+    } else {
+        Ownership::NoOwner
     }
 }
 
@@ -255,12 +365,11 @@ fn resolve_aggregate_facts(
         let Some(fact) = facts.get(site) else {
             continue;
         };
-        if !matches!(fact.ownership, Ownership::Unknown) {
+        if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
         let mut owns_payload = false;
         let mut borrows_payload = false;
-        let mut unknown_payloads = 0usize;
         let mut resolved = true;
         for payload in payloads {
             match facts.get(payload).map(|payload| payload.ownership) {
@@ -281,16 +390,11 @@ fn resolve_aggregate_facts(
                     borrows_payload = true;
                 }
                 Some(Ownership::Unknown) | None => {
-                    unknown_payloads += 1;
                     resolved = false;
                 }
             }
         }
-        if !resolved
-            && verifier.resource_record_constructors.contains(site)
-            && unknown_payloads > 0
-            && !owns_payload
-            && !borrows_payload
+        if verifier.resource_record_constructors.contains(site) && !owns_payload && !borrows_payload
         {
             resolved = true;
             owns_payload = true;
@@ -300,14 +404,16 @@ fn resolve_aggregate_facts(
         }
         let ownership = if borrows_payload {
             Ownership::Borrowed
-        } else if owns_payload || !payloads.is_empty() {
+        } else if owns_payload {
             Ownership::owned(ProducedValueAcquisition::Fresh)
         } else {
             Ownership::NoOwner
         };
         if let Some(fact) = facts.get_mut(site) {
-            fact.ownership = ownership;
-            changed = true;
+            if fact.ownership != ownership {
+                fact.ownership = ownership;
+                changed = true;
+            }
         }
     }
     changed
@@ -321,19 +427,18 @@ fn function_return_ownership_summaries(
         .function_return_sites
         .iter()
         .map(|(declaration, sites)| {
-            let mut ownership = sites
-                .iter()
-                .filter_map(|site| facts.get(site))
-                .map(|fact| fact.ownership);
-            let summary = ownership
-                .next()
-                .map_or(ProducedValueOwnership::Unknown, |first| {
-                    if ownership.all(|next| next == first) {
-                        first
+            let ownership = sites.iter().filter_map(|site| {
+                facts.get(site).map(|fact| {
+                    if matches!(fact.ownership, ProducedValueOwnership::Borrowed)
+                        && verifier.site_types.get(site) == Some(&ResolvedTy::String)
+                    {
+                        ProducedValueOwnership::owned(ProducedValueAcquisition::Retained)
                     } else {
-                        ProducedValueOwnership::Unknown
+                        fact.ownership
                     }
-                });
+                })
+            });
+            let summary = join_produced_value_ownership(ownership);
             (declaration.clone(), summary)
         })
         .collect()
@@ -348,31 +453,58 @@ fn resolve_user_call_facts(
     let summaries = function_return_ownership_summaries(verifier, facts);
     let mut changed = false;
     for (site, targets) in &verifier.user_call_targets {
-        let mut target_summaries = targets
+        let target_summaries: Vec<_> = targets
             .iter()
-            .filter_map(|target| summaries.get(target).copied());
-        let Some(first) = target_summaries.next() else {
+            .filter_map(|target| summaries.get(target).copied())
+            .collect();
+        if target_summaries.is_empty() {
             continue;
-        };
-        let summary = if target_summaries.all(|next| next == first) {
-            first
-        } else {
+        }
+        let summary = join_produced_value_ownership(target_summaries);
+        let summary = if matches!(
+            summary,
+            Ownership::Owned {
+                acquisition: ProducedValueAcquisition::Retained
+            }
+        ) && verifier
+            .user_call_arguments
+            .get(site)
+            .is_some_and(|arguments| {
+                arguments.iter().any(|argument| {
+                    facts
+                        .get(argument)
+                        .is_none_or(|fact| matches!(fact.ownership, Ownership::Unknown))
+                })
+            }) {
             Ownership::Unknown
+        } else {
+            summary
         };
         let summary = if matches!(summary, Ownership::Borrowed) {
             let arguments = verifier.user_call_arguments.get(site);
-            if arguments.is_some_and(|arguments| {
-                !arguments.is_empty()
-                    && arguments.iter().all(|argument| {
-                        call_argument_is_proven_owned(
-                            *argument,
-                            verifier,
-                            facts,
-                            &mut HashSet::new(),
-                        )
+            let resolved_string_arguments = verifier.site_types.get(site)
+                == Some(&ResolvedTy::String)
+                && arguments.is_some_and(|arguments| {
+                    arguments.iter().all(|argument| {
+                        facts
+                            .get(argument)
+                            .is_some_and(|fact| !matches!(fact.ownership, Ownership::Unknown))
                     })
-            }) {
-                Ownership::owned(ProducedValueAcquisition::Fresh)
+                });
+            if resolved_string_arguments
+                || arguments.is_some_and(|arguments| {
+                    !arguments.is_empty()
+                        && arguments.iter().all(|argument| {
+                            call_argument_is_proven_owned(
+                                *argument,
+                                verifier,
+                                facts,
+                                &mut HashSet::new(),
+                            )
+                        })
+                })
+            {
+                Ownership::owned(ProducedValueAcquisition::Retained)
             } else {
                 summary
             }
@@ -382,7 +514,9 @@ fn resolve_user_call_facts(
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        if matches!(fact.ownership, Ownership::Unknown) && !matches!(summary, Ownership::Unknown) {
+        if matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed)
+            && !matches!(summary, Ownership::Unknown)
+        {
             fact.ownership = summary;
             changed = true;
         }
@@ -392,45 +526,50 @@ fn resolve_user_call_facts(
 
 fn propagate_produced_value_relations(
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
-) {
+) -> bool {
     use ProducedValueOwnership as Ownership;
 
     let snapshot: HashMap<SiteId, Ownership> = facts
         .iter()
         .map(|(site, fact)| (*site, fact.ownership))
         .collect();
+    let mut changed = false;
     for fact in facts.values_mut() {
         if !matches!(fact.ownership, Ownership::Unknown) {
             continue;
         }
-        fact.ownership = match &fact.relation {
+        let ownership = match &fact.relation {
             HirProducedValueRelation::Identity(source)
             | HirProducedValueRelation::Subsumes(source) => {
                 snapshot.get(source).copied().unwrap_or(Ownership::Unknown)
             }
-            HirProducedValueRelation::MoveOut(source)
-            | HirProducedValueRelation::Projection(source) => match snapshot.get(source) {
+            HirProducedValueRelation::MoveOut(source) => match snapshot.get(source) {
                 Some(Ownership::Owned { .. }) => {
                     Ownership::owned(ProducedValueAcquisition::MoveOut)
                 }
                 Some(Ownership::Borrowed | Ownership::ReceiverIdentity) => Ownership::Borrowed,
                 Some(Ownership::NoOwner | Ownership::Unknown) | None => Ownership::Unknown,
             },
-            HirProducedValueRelation::Join(sources) => {
-                let mut ownership = sources
+            HirProducedValueRelation::Projection(source) => match snapshot.get(source) {
+                Some(
+                    Ownership::Owned { .. } | Ownership::Borrowed | Ownership::ReceiverIdentity,
+                ) => Ownership::Borrowed,
+                Some(Ownership::NoOwner) => Ownership::NoOwner,
+                Some(Ownership::Unknown) | None => Ownership::Unknown,
+            },
+            HirProducedValueRelation::Join(sources) => join_produced_value_ownership(
+                sources
                     .iter()
-                    .map(|site| snapshot.get(site).copied().unwrap_or(Ownership::Unknown));
-                ownership.next().map_or(Ownership::Unknown, |first| {
-                    if ownership.all(|next| next == first) {
-                        first
-                    } else {
-                        Ownership::Unknown
-                    }
-                })
-            }
+                    .map(|site| snapshot.get(site).copied().unwrap_or(Ownership::Unknown)),
+            ),
             HirProducedValueRelation::Leaf => Ownership::Unknown,
         };
+        if fact.ownership != ownership {
+            fact.ownership = ownership;
+            changed = true;
+        }
     }
+    changed
 }
 
 #[derive(Debug, Default)]
@@ -459,6 +598,8 @@ struct Verifier {
     binding_definitions: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_sites: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_targets: HashMap<SiteId, BindingId>,
+    binding_transfer_sites: HashMap<SiteId, ProducedValueAcquisition>,
+    synthetic_structural_relations: HashMap<SiteId, HirProducedValueRelation>,
     nested_callable_depth: usize,
     trait_method_implementations: HashMap<DefId, Vec<DefId>>,
 }
@@ -800,25 +941,30 @@ impl Verifier {
                     }
                 }
             }
-            if let HirProducedValueRelation::Join(sources) = &fact.relation {
-                if let Some(result_ty) = self.site_types.get(site) {
-                    for source in sources {
-                        if let Some(source_ty) = self.site_types.get(source) {
-                            if source_ty != result_ty
-                                && !source_ty.can_implicitly_numeric_normalize_to(result_ty)
-                            {
-                                self.diagnostics.push(self.diagnostic(
-                                    HirDiagnosticKind::CheckerBoundaryViolation {
-                                        name: "produced value join".to_string(),
-                                        reason: format!(
-                                            "join source {source} has type {source_ty:?}, but result {site} has type {result_ty:?}"
-                                        ),
-                                    },
-                                    self.site_spans
-                                        .get(site)
-                                        .map_or(0..0, |source| source.span.clone()),
-                                    "join ownership convergence requires type-congruent storage or a checker-admitted numeric normalization",
-                                ));
+            if !matches!(
+                fact.ownership,
+                ProducedValueOwnership::NoOwner | ProducedValueOwnership::Unknown
+            ) {
+                if let HirProducedValueRelation::Join(sources) = &fact.relation {
+                    if let Some(result_ty) = self.site_types.get(site) {
+                        for source in sources {
+                            if let Some(source_ty) = self.site_types.get(source) {
+                                if source_ty != result_ty
+                                    && !source_ty.can_implicitly_numeric_normalize_to(result_ty)
+                                {
+                                    self.diagnostics.push(self.diagnostic(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: "produced value join".to_string(),
+                                            reason: format!(
+                                                "join source {source} has type {source_ty:?}, but result {site} has type {result_ty:?}"
+                                            ),
+                                        },
+                                        self.site_spans
+                                            .get(site)
+                                            .map_or(0..0, |source| source.span.clone()),
+                                        "join ownership convergence requires type-congruent storage or a checker-admitted numeric normalization",
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1024,6 +1170,12 @@ impl Verifier {
                     // register them here so later references resolve.
                     for binding in bindings {
                         self.binding(binding.binding, scrutinee.span.clone());
+                        if self.nested_callable_depth == 0 {
+                            self.binding_definitions
+                                .entry(binding.binding)
+                                .or_default()
+                                .push(scrutinee.site);
+                        }
                     }
                     // Aggregate payload destructure (e.g. `Ok((n, s))`): the
                     // prelude's `Let` statements introduce the leaf binders
@@ -1034,6 +1186,12 @@ impl Verifier {
                         if let HirStmtKind::Let(binding, value) = &prelude_stmt.kind {
                             self.binding(binding.id, binding.span.clone());
                             if let Some(value) = value {
+                                if self.nested_callable_depth == 0 {
+                                    self.binding_definitions
+                                        .entry(binding.id)
+                                        .or_default()
+                                        .push(value.site);
+                                }
                                 self.expr(value);
                             }
                         }
@@ -1094,6 +1252,33 @@ impl Verifier {
         self.site_types.insert(expr.site, expr.ty.clone());
         let actual_producer = crate::node::HirProducedValueProducer::classify(&expr.kind);
         self.observed_producers.insert(expr.site, actual_producer);
+        let structural_relation = match &expr.kind {
+            HirExprKind::Block(block)
+            | HirExprKind::Scope { body: block }
+            | HirExprKind::ForkBlock { body: block, .. } => block
+                .tail
+                .as_ref()
+                .map(|tail| HirProducedValueRelation::Identity(tail.site)),
+            HirExprKind::If {
+                then_expr,
+                else_expr: Some(else_expr),
+                ..
+            } => Some(HirProducedValueRelation::Join(vec![
+                then_expr.site,
+                else_expr.site,
+            ])),
+            HirExprKind::Match { arms, .. } if !arms.is_empty() => Some(
+                HirProducedValueRelation::Join(arms.iter().map(|arm| arm.body.site).collect()),
+            ),
+            HirExprKind::SubsumedValue { source, .. } => {
+                Some(HirProducedValueRelation::Subsumes(source.site))
+            }
+            _ => None,
+        };
+        if let Some(relation) = structural_relation {
+            self.synthetic_structural_relations
+                .insert(expr.site, relation);
+        }
         if let Some(fact) = self.produced_value_facts.get(&expr.site) {
             if fact.producer != actual_producer {
                 self.diagnostics.push(self.diagnostic(
@@ -1150,6 +1335,10 @@ impl Verifier {
                         .or_default()
                         .push(expr.site);
                     self.binding_reference_targets.insert(expr.site, *binding);
+                    if matches!(expr.intent, crate::IntentKind::Consume) {
+                        self.binding_transfer_sites
+                            .insert(expr.site, ProducedValueAcquisition::MoveOut);
+                    }
                 }
                 if *resolved == ResolvedRef::Unresolved {
                     self.diagnostics.push(self.diagnostic(
@@ -1322,12 +1511,8 @@ impl Verifier {
                     expr.site,
                     elements.iter().map(|element| element.site).collect(),
                 );
-                self.aggregate_transfer_payloads.extend(
-                    elements
-                        .iter()
-                        .filter(|element| matches!(element.intent, crate::IntentKind::Consume))
-                        .map(|element| element.site),
-                );
+                self.aggregate_transfer_payloads
+                    .extend(elements.iter().map(|element| element.site));
                 for elem in elements {
                     self.expr(elem);
                 }
@@ -1480,12 +1665,8 @@ impl Verifier {
                     expr.site,
                     payloads.iter().map(|payload| payload.site).collect(),
                 );
-                self.aggregate_transfer_payloads.extend(
-                    payloads
-                        .iter()
-                        .filter(|payload| matches!(payload.intent, crate::IntentKind::Consume))
-                        .map(|payload| payload.site),
-                );
+                self.aggregate_transfer_payloads
+                    .extend(payloads.iter().map(|payload| payload.site));
                 if matches!(
                     &expr.ty,
                     ResolvedTy::Named { name, .. }
@@ -1807,12 +1988,8 @@ impl Verifier {
                         .collect(),
                 );
                 if let Some(fields) = payload {
-                    self.aggregate_transfer_payloads.extend(
-                        fields
-                            .iter()
-                            .filter(|(_, value)| matches!(value.intent, crate::IntentKind::Consume))
-                            .map(|(_, value)| value.site),
-                    );
+                    self.aggregate_transfer_payloads
+                        .extend(fields.iter().map(|(_, value)| value.site));
                     for (_, val) in fields {
                         self.expr(val);
                     }
@@ -1860,6 +2037,12 @@ impl Verifier {
                     }
                     for binding in &arm.bindings {
                         self.binding(binding.binding, arm.span.clone());
+                        if self.nested_callable_depth == 0 {
+                            self.binding_definitions
+                                .entry(binding.binding)
+                                .or_default()
+                                .push(scrutinee.site);
+                        }
                     }
                     if let Some(guard) = &arm.guard {
                         self.expr(guard);
@@ -1894,6 +2077,12 @@ impl Verifier {
                     // register them here so the duplicate-binding check
                     // covers the new shape, mirroring `Match` arm bindings.
                     self.binding(binding.binding, expr.span.clone());
+                    if self.nested_callable_depth == 0 {
+                        self.binding_definitions
+                            .entry(binding.binding)
+                            .or_default()
+                            .push(scrutinee.site);
+                    }
                 }
                 self.block(body);
             }
@@ -1909,6 +2098,12 @@ impl Verifier {
                     // If-let payload bindings are scoped to the then-body;
                     // register them here mirroring `WhileLet` and `Match`.
                     self.binding(binding.binding, expr.span.clone());
+                    if self.nested_callable_depth == 0 {
+                        self.binding_definitions
+                            .entry(binding.binding)
+                            .or_default()
+                            .push(scrutinee.site);
+                    }
                 }
                 self.block(body);
                 if let Some(eb) = else_body {

@@ -2959,6 +2959,9 @@ impl Builder {
                     field_offset,
                     src,
                 });
+                if !copy_in {
+                    self.transfer_typed_produced_value_owner(value.site, src, record_place);
+                }
             }
             // `xs[i] = v` over a `Vec<T>` lowers to the same runtime call that
             // `xs.set(i, v)` emits.
@@ -5258,7 +5261,7 @@ impl Builder {
                 };
                 self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
-                self.register_fresh_vec_get_clone_projection_base_owner(object, record_place);
+                self.finalize_vec_clone_projection_base_owner(object, record_place);
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.push_instr(Instr::RecordFieldLoad {
                     record: record_place,
@@ -6161,7 +6164,7 @@ impl Builder {
                 }
                 // COPY-IN param embeds stay caller-borrowed; only the source
                 // temp's independently retained string share gains an owner.
-                self.register_copy_in_param_embed_temp_owner(&callee, args, &arg_places);
+                self.finalize_vec_copy_in_source_owner(&callee, args, &arg_places);
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
                     None
                 } else {
@@ -6495,17 +6498,23 @@ impl Builder {
                 // args (e.g. `Option<I64>`) are preserved all the way through
                 // MIR. Using `expr.ty` matches the RecordInit precedent and
                 // ensures codegen sees the fully-parameterised type name.
-                //
-                // Tag-dominance invariant (Place doc, `MachineVariant`): the
-                // `Place::MachineTag` store dominates every `Place::MachineVariant`
-                // field store because they are emitted in straight-line order
-                // within the same block, and Slice 4c (drop-elaborator) reads the
-                // tag store first when computing per-variant drop plans.
                 let dest = self.alloc_local(expr.ty.clone());
                 let Place::Local(dest_local) = dest else {
                     unreachable!("alloc_local returns Place::Local");
                 };
-                // Tag store: Place::MachineTag(dest_local) = state_idx.
+                let mut lowered_fields = Vec::new();
+                if let Some(fields) = payload {
+                    for (field_idx, (_field_name, field_expr)) in fields.iter().enumerate() {
+                        let Some(src) = self.lower_value_for_move(field_expr) else {
+                            continue;
+                        };
+                        let field_idx =
+                            u32::try_from(field_idx).expect("field index exceeds u32::MAX");
+                        let variant_idx =
+                            u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
+                        lowered_fields.push((field_expr, field_idx, variant_idx, src));
+                    }
+                }
                 let tag_const = self.alloc_local(ResolvedTy::I64);
                 self.push_instr(Instr::ConstI64 {
                     dest: tag_const,
@@ -6515,30 +6524,17 @@ impl Builder {
                     dest: Place::MachineTag(dest_local),
                     src: tag_const,
                 });
-                // Per-payload-field store via Place::MachineVariant. HIR has
-                // already resolved field-name -> field_idx via the
-                // declaration-order layout of HirMachineState.fields; we honour
-                // the source-declared order here for determinism.
-                if let Some(fields) = payload {
-                    for (field_idx, (_field_name, field_expr)) in fields.iter().enumerate() {
-                        let Some(src) = self.lower_value_for_move(field_expr) else {
-                            continue;
-                        };
-                        let field_idx_u32 =
-                            u32::try_from(field_idx).expect("field index exceeds u32::MAX");
-                        let variant_idx_u32 =
-                            u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
-                        self.push_instr(Instr::Move {
-                            dest: Place::MachineVariant {
-                                local: dest_local,
-                                variant_idx: variant_idx_u32,
-                                field_idx: field_idx_u32,
-                            },
-                            src,
-                        });
-                        self.alias_moved_owned_operand(field_expr);
-                        self.enforce_closure_pair_ingress(field_expr);
-                    }
+                for (field_expr, field_idx, variant_idx, src) in lowered_fields {
+                    self.push_instr(Instr::Move {
+                        dest: Place::MachineVariant {
+                            local: dest_local,
+                            variant_idx,
+                            field_idx,
+                        },
+                        src,
+                    });
+                    self.alias_moved_owned_operand(field_expr);
+                    self.enforce_closure_pair_ingress(field_expr);
                 }
                 Some(dest)
             }
@@ -6890,7 +6886,9 @@ impl Builder {
                 *descending,
                 body,
             ),
-            HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
+            HirExprKind::Match { scrutinee, arms } => {
+                self.lower_match(expr.site, scrutinee, arms, &expr.ty)
+            }
             HirExprKind::WhileLet {
                 label,
                 scrutinee,
@@ -8435,7 +8433,7 @@ impl Builder {
         // cursor, however, is unreachable: do not attempt to coerce that
         // placeholder (often `!`) into this `if`'s checker-selected join
         // type or emit a dead Move.
-        if !self.cursor_unreachable {
+        if !self.cursor_unreachable && else_expr.is_some() {
             if let Some(src) = then_value {
                 let src = self.normalize_checker_numeric_value(
                     src,
@@ -9428,9 +9426,6 @@ impl Builder {
                 .produced_value_facts
                 .get(&arg.site)
                 .map(|fact| fact.ownership);
-            if !matches!(ownership, Some(ProducedValueOwnership::Owned { .. })) {
-                continue;
-            }
             let owned_ty = self.subst_ty(&arg.ty);
             if ValueClass::of_ty(&owned_ty, &self.type_classes) == ValueClass::Linear
                 || (!matches!(owned_ty, ResolvedTy::TraitObject { .. })
@@ -9455,17 +9450,28 @@ impl Builder {
             if !callee_borrows {
                 continue;
             }
+            if matches!(ownership, Some(ProducedValueOwnership::Unknown) | None) {
+                self.typed_produced_value_demand_is_resolved(
+                    arg,
+                    "borrowing argument ownership is unresolved",
+                );
+                continue;
+            }
+            if !matches!(ownership, Some(ProducedValueOwnership::Owned { .. })) {
+                continue;
+            }
             let Some(Place::Local(local)) = arg_places.get(index).copied() else {
                 continue;
             };
             if self.parameter_locals.contains(&local) {
                 continue;
             }
-            let Some((binding, published_ty)) = self.finalize_typed_produced_value_owner(
+            let owners = self.finalize_typed_produced_value_owners(
                 SYNTHETIC_TEMP_ARG_NAME,
                 arg.site,
                 Place::Local(local),
-            ) else {
+            );
+            if owners.is_empty() {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "owned borrowing argument without provisional owner".to_string(),
@@ -9475,26 +9481,30 @@ impl Builder {
                         .to_string(),
                 });
                 continue;
-            };
-            if published_ty != owned_ty {
+            }
+            if owners
+                .iter()
+                .any(|(_, published_ty)| *published_ty != owned_ty)
+            {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: "borrowing argument owner changed type at handoff".to_string(),
                         site: arg.site,
                     },
                     note: format!(
-                        "typed argument has type {owned_ty:?}, but its provisional owner has type {published_ty:?}"
+                        "typed argument has type {owned_ty:?}, but its provisional owners are {owners:?}"
                     ),
                 });
                 continue;
             }
-            if matches!(published_ty, ResolvedTy::TraitObject { .. }) {
-                self.dyn_trait_storage
-                    .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+            if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
+                for (binding, _) in owners {
+                    self.dyn_trait_storage
+                        .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+                }
             }
         }
     }
-
     /// Lower a direct call using the checker/HIR-projected authority. The
     /// `Extern` variant is the capability to read an audited FFI parameter
     /// contract; it does not select a specialised codegen ABI.

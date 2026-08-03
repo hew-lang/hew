@@ -78,7 +78,9 @@ pub use lowering_facts::{
     HashSetLoweringFact, HashSetLoweringFactError, LoweringFact, LoweringFactConsistencyError,
     LoweringFactError, LoweringKind,
 };
-pub use resolved_ty::{BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy};
+pub use resolved_ty::{
+    default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
+};
 pub use runtime_call::{
     AsyncSuspendKind, DescriptorError, MathIntrinsic, ProducedArgumentBoundary,
     ProducedValueAcquisition, ProducedValueOwnership, RuntimeCallDescriptor, RuntimeCallFamily,

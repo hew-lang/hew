@@ -206,6 +206,51 @@ pub fn build_module_search_paths() -> Vec<PathBuf> {
     build_module_search_paths_for(None)
 }
 
+/// Return the canonical dotted stdlib owner for an exact shipped source file.
+///
+/// Package directories are owned by their primary `{name}.hew` source, so a
+/// peer file in that directory has the same owner. A directory without such a
+/// primary source leaves each `.hew` file as its own module.
+#[must_use]
+pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<String> {
+    let input_canonical = std::fs::canonicalize(source_file).ok()?;
+
+    build_module_search_paths_for(Some(source_file))
+        .into_iter()
+        .find_map(|root| {
+            let root_canonical = std::fs::canonicalize(root).ok()?;
+            let relative = input_canonical.strip_prefix(&root_canonical).ok()?;
+            if relative
+                .extension()
+                .is_none_or(|extension| extension != "hew")
+                || relative
+                    .components()
+                    .next()
+                    .is_none_or(|component| component.as_os_str() != "std")
+            {
+                return None;
+            }
+
+            let parent = relative.parent()?;
+            let parent_name = parent.file_name()?.to_str()?;
+            let primary = root_canonical
+                .join(parent)
+                .join(format!("{parent_name}.hew"));
+            let module_path = if primary.is_file() {
+                parent.to_path_buf()
+            } else {
+                relative.with_extension("")
+            };
+            let dotted = module_path
+                .iter()
+                .map(|component| component.to_str())
+                .collect::<Option<Vec<_>>>()?
+                .join(".");
+
+            is_canonical_stdlib_module_source(&input_canonical, &dotted).then_some(dotted)
+        })
+}
+
 /// Whether `source_file` is the canonical source selected for `dotted_module`
 /// by Hew's stdlib search-path authority.
 ///
@@ -835,6 +880,38 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
+        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        assert_eq!(
+            canonical_stdlib_module_for_source(&stdlib.join("string.hew")).as_deref(),
+            Some("std.string")
+        );
+        assert_eq!(
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew")).as_deref(),
+            Some("std.net.http")
+        );
+        assert_eq!(
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew")).as_deref(),
+            Some("std.net.http")
+        );
+        assert_eq!(
+            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew")).as_deref(),
+            Some("std.io.scanner")
+        );
+    }
+
+    #[test]
+    fn canonical_stdlib_owner_rejects_a_user_lookalike() {
+        let user_dir = TestDir::new("module-registry-user-stdlib-lookalike");
+        let user_source = user_dir.root.join("std/string.hew");
+        fs::create_dir_all(user_source.parent().expect("lookalike has a parent"))
+            .expect("create lookalike directory");
+        fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
+
+        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+    }
 
     #[test]
     fn channel_repeated_basename_maps_only_exact_shipped_source_to_canonical_owner() {

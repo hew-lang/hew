@@ -679,28 +679,10 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
 ) -> Option<hew_parser::module::ModuleId> {
-    for dotted in hew_types::check::intrinsic_floor_modules()
-        .iter()
-        .copied()
-        // These modules carry compiler-checked ownership ABI declarations
-        // even though they are not intrinsic floors. Canonical-path matching
-        // (not a filename/module spelling) is what permits direct `hew check
-        // std/net/net.hew` to retain its std.net provenance without granting
-        // that authority to a user's net.hew.
-        .chain(["std.stream", "std.net", "std.concurrency"])
-    {
-        let segments = dotted.split('.').collect::<Vec<_>>();
-        if hew_types::module_registry::is_canonical_stdlib_module_source(source_file, dotted) {
-            return Some(hew_parser::module::ModuleId::new(
-                segments
-                    .iter()
-                    .map(|segment| (*segment).to_string())
-                    .collect(),
-            ));
-        }
-    }
-
-    None
+    let dotted = hew_types::module_registry::canonical_stdlib_module_for_source(source_file)?;
+    Some(hew_parser::module::ModuleId::new(
+        dotted.split('.').map(String::from).collect(),
+    ))
 }
 
 fn rewrite_direct_stdlib_module_root(

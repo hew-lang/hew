@@ -2715,6 +2715,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_sink_bytes"
@@ -2723,6 +2724,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_stream"
@@ -2731,6 +2733,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_stream_bytes"
@@ -2739,6 +2742,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pipe"
@@ -3449,6 +3453,7 @@ params = ["borrow"]
 resource-param-types = ["std.net.Connection"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_set_read_timeout"
@@ -3598,6 +3603,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_sha256_hew"
@@ -3628,6 +3634,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_deflate_decompress_hew"
@@ -3635,6 +3642,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_compress_last_error"
@@ -3650,6 +3658,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_gzip_decompress_hew"
@@ -3657,6 +3666,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_zlib_compress_hew"
@@ -3664,6 +3674,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_zlib_decompress_hew"
@@ -3671,6 +3682,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # msgpack — hew-std/src/msgpack.rs. Encoders borrow their scalar/string/bytes
 # input and return fresh bytes; to_json returns a fresh string.
@@ -3680,6 +3692,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_encode_int_hew"
@@ -3687,6 +3700,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_encode_string_hew"
@@ -3694,6 +3708,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_from_json_hew"
@@ -3701,6 +3716,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_last_error"
@@ -3726,6 +3742,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_public_key_from_pkcs8_hew"
@@ -3733,6 +3750,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_sign_hew"

@@ -1018,6 +1018,11 @@ struct Builder {
     /// source binding still owns the same value on tag-false and pre-reassign
     /// break/return edges.
     pub(crate) back_edge_only_iteration_owners: HashSet<BindingId>,
+    /// Fresh string publications that remain live across a borrowing operation
+    /// spanning multiple blocks. They need the ordinary exit-plan template,
+    /// unlike synthetic publications already discharged inline or transferred
+    /// into another owner.
+    pub(crate) synthetic_borrowed_temp_drop_bindings: HashSet<BindingId>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     pub(crate) diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class

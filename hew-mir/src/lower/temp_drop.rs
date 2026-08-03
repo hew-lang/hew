@@ -10,8 +10,8 @@ use super::{
     propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
     terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
     BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
-    ClosureEnvFieldOwnership, DischargeSite, DropKind, ElabDrop, FieldOffset, HashMap, HashSet,
-    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
+    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
     ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
     StringRetainSite, SuspendKind, Terminator,
 };
@@ -3826,7 +3826,7 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     );
-    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+    let mut fresh_borrowed_allowed = derive_cow_fresh_borrowed_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -3838,7 +3838,10 @@ pub(super) fn finalize_string_ownership(
         &builder
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
-    ));
+    );
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
     remove_consumed_cow_bindings(
         &mut derivation.allowed,
         &builder.actor_message_cow_drop_flags,
@@ -3892,7 +3895,7 @@ pub(super) fn finalize_string_ownership(
     // defined acyclic `StringRetain(src); Move(dst, src)` destination earns the
     // balancing drop for its independent `+1`. The pre-splice run remains
     // necessary for all established fresh producers and for retain-site gating.
-    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+    fresh_borrowed_allowed.extend(derive_cow_fresh_borrowed_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -3905,10 +3908,24 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     ));
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
     remove_consumed_cow_bindings(
         &mut derivation.allowed,
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
+    );
+    builder.synthetic_borrowed_temp_drop_bindings.extend(
+        fresh_borrowed_allowed.into_iter().filter(|binding| {
+            derivation.allowed.contains(binding)
+                && builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+                && builder.owned_locals.iter().any(|entry| {
+                    entry.binding == *binding && entry.disposition == Disposition::ScopeExit
+                })
+        }),
     );
     derivation
 }

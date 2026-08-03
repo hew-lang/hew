@@ -499,7 +499,9 @@ impl Builder {
             Place::Local(local) => self.locals.get(local as usize),
             _ => None,
         };
-        if published_ty.is_some_and(|published_ty| published_ty != &expected_ty) {
+        if published_ty
+            .is_some_and(|published_ty| !published_ty.is_storage_congruent_with(&expected_ty))
+        {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "typed produced value published into non-congruent storage"

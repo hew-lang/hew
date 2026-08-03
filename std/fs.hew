@@ -210,7 +210,7 @@ pub fn try_read(file_path: string) -> Result<string, IoError> {
     unsafe {
         let file = hew_file_read_stream_open(file_path);
         if hew_file_read_stream_is_valid(file) {
-            let contents = hew_stream_collect_string(file);
+            let contents = hew_file_read_stream_collect_string(file);
             let kind = hew_stream_last_error_kind() as i64;
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
@@ -533,6 +533,6 @@ extern "C" {
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
-    fn hew_stream_collect_string(consume stream: FileReadStream) -> string;
+    fn hew_file_read_stream_collect_string(consume stream: FileReadStream) -> string;
     fn hew_file_read_stream_close(consume stream: FileReadStream);
 }

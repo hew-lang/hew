@@ -291,6 +291,7 @@ stable = [
   "hew_file_exists",
   "hew_file_read",
   "hew_file_read_bytes",
+  "hew_file_read_stream_collect_string",
   "hew_file_read_stream_close",
   "hew_file_read_stream_is_valid",
   "hew_file_read_stream_open",
@@ -2678,7 +2679,6 @@ discharge-depth = "none"
 symbol = "hew_stream_collect_string"
 result = "fresh"
 params = ["consume"]
-resource-param-types = ["std.fs.FileReadStream"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -2704,6 +2704,15 @@ result = "none"
 params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_stream_collect_string"
+result = "fresh"
+params = ["consume"]
+resource-param-types = ["std.fs.FileReadStream"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_file_read_stream_close"

@@ -159,6 +159,8 @@ pub(super) struct SourceExternDeclaration {
     /// exact resolved expansion.
     pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
     pub(super) signature_key: String,
+    pub(super) span: Span,
+    pub(super) is_variadic: bool,
     pub(super) declaring_module: Option<String>,
     /// Exact direct module-graph targets imported by the declaring module.
     ///

@@ -43,6 +43,34 @@ struct ExplicitReturnFinder {
     saw_return: bool,
 }
 
+fn extern_signature_description(
+    signature: &FnSig,
+    consuming_params: &[bool],
+    is_variadic: bool,
+) -> String {
+    let mut params = signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            let ownership = if consuming_params.get(index).copied().unwrap_or(false) {
+                "consume "
+            } else {
+                ""
+            };
+            format!("{ownership}{}", ty.user_facing())
+        })
+        .collect::<Vec<_>>();
+    if is_variadic {
+        params.push("...".to_string());
+    }
+    format!(
+        "fn({}) -> {}",
+        params.join(", "),
+        signature.return_type.user_facing()
+    )
+}
+
 impl super::lints::NodeVisitor for ExplicitReturnFinder {
     fn visit_stmt(&mut self, stmt: &Stmt, _span: &Span) {
         self.saw_return |= matches!(stmt, Stmt::Return(_));
@@ -9136,6 +9164,57 @@ impl Checker {
                 .map(|spec| spec.template.clone());
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
+            let consuming_params = f
+                .params
+                .iter()
+                .map(|param| param.is_consume)
+                .collect::<Vec<_>>();
+            if !source_symbol.is_empty() {
+                let conflict = self.source_extern_declarations.iter().find_map(|existing| {
+                    if existing.symbol != source_symbol || existing.symbol_template.is_some() {
+                        return None;
+                    }
+                    let established = self.fn_sigs.get(&existing.signature_key)?;
+                    let disagrees = established.params != sig.params
+                        || established.return_type != sig.return_type
+                        || existing.consuming_params != consuming_params
+                        || existing.is_variadic != f.is_variadic;
+                    disagrees.then(|| {
+                        (
+                            existing.span.clone(),
+                            extern_signature_description(
+                                established,
+                                &existing.consuming_params,
+                                existing.is_variadic,
+                            ),
+                            extern_signature_description(&sig, &consuming_params, f.is_variadic),
+                        )
+                    })
+                });
+                if let Some((established_span, established, conflicting)) = conflict {
+                    self.errors.push(TypeError {
+                        severity: crate::error::Severity::Error,
+                        kind: TypeErrorKind::ConflictingExternDeclaration {
+                            symbol_name: source_symbol.clone(),
+                        },
+                        span: f.span.clone(),
+                        message: format!(
+                            "extern symbol `{source_symbol}` has conflicting declarations: \
+                             `{conflicting}` does not match the established `{established}`"
+                        ),
+                        notes: vec![(
+                            established_span,
+                            format!(
+                                "the first declaration of `{source_symbol}` established `{established}`"
+                            ),
+                        )],
+                        suggestions: vec![format!(
+                            "make every declaration of `{source_symbol}` use exactly `{established}`"
+                        )],
+                        source_module: self.current_module.clone(),
+                    });
+                }
+            }
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
@@ -9144,9 +9223,11 @@ impl Checker {
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
+                    span: f.span.clone(),
+                    is_variadic: f.is_variadic,
                     declaring_module: self.current_module.clone(),
                     direct_import_modules: self.current_module_direct_imports.clone(),
-                    consuming_params: f.params.iter().map(|param| param.is_consume).collect(),
+                    consuming_params,
                 });
             self.fn_param_ownership.insert(
                 key.clone(),

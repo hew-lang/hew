@@ -920,6 +920,14 @@ pub enum TypeErrorKind {
         /// Actionable hint for the user.
         hint: String,
     },
+    /// Two source extern declarations bind the same concrete C symbol with
+    /// different parameter/result types, variadic shape, or ownership modes.
+    ///
+    /// Envelope code: `E_CONFLICTING_EXTERN_DECLARATION`.
+    ConflictingExternDeclaration {
+        /// The concrete linker symbol named by both declarations.
+        symbol_name: String,
+    },
     /// A `gen { }` generator block appeared inside an actor receive handler.
     ///
     /// The scheduler holds the actor-state lock for the entire handler
@@ -1386,6 +1394,7 @@ impl TypeErrorKind {
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::CrossActorProtocolCollision { .. } => "CrossActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
+            Self::ConflictingExternDeclaration { .. } => "ConflictingExternDeclaration",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
             Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",
             Self::AwaitInMachineTransition => "AwaitInMachineTransition",

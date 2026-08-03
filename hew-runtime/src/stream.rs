@@ -2067,6 +2067,23 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     ptr.cast::<c_char>()
 }
 
+/// Drain and consume a nominal `std.fs.FileReadStream` into one string.
+///
+/// This distinct endpoint prevents the same C symbol from carrying both the
+/// generic `Stream<string>` and `FileReadStream` source signatures. The raw
+/// representation and consuming runtime operation are identical.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_collect_string`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_collect_string(
+    stream: *mut HewStream,
+) -> *mut c_char {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_collect_string(stream) }
+}
+
 /// Count remaining items in a stream.
 ///
 /// Consumes the stream.

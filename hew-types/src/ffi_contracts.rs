@@ -487,6 +487,39 @@ mod tests {
     }
 
     #[test]
+    fn string_vec_producers_carry_deep_transfer_contracts() {
+        for (symbol, params) in [
+            ("hew_string_chars", 1),
+            ("hew_string_lines", 1),
+            ("hew_string_split", 2),
+        ] {
+            let contract = extern_ownership_contract(symbol)
+                .contract()
+                .unwrap_or_else(|| panic!("{symbol} contract"));
+            assert_eq!(contract.params.len(), params, "{symbol}");
+            assert!(
+                contract
+                    .params
+                    .iter()
+                    .all(|param| *param == ExternParamOwnership::Borrow),
+                "{symbol}"
+            );
+            assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+            assert_eq!(contract.release_symbol, "hew_vec_free", "{symbol}");
+            assert_eq!(
+                contract.discharge_depth,
+                ReleaseDischargeDepth::Deep,
+                "{symbol}"
+            );
+            assert_eq!(
+                contract.result_retention,
+                ExternResultRetention::Transferred,
+                "{symbol}"
+            );
+        }
+    }
+
+    #[test]
     fn stream_pair_extractors_transfer_the_returned_handle() {
         for (symbol, release_symbol) in [
             ("hew_stream_pair_sink", "hew_sink_close"),

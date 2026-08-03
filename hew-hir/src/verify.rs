@@ -128,6 +128,26 @@ fn resolved_runtime_call_ownership(family: RuntimeCallFamily) -> ProducedValueOw
     }
 }
 
+fn typed_trait_call_result_ownership(
+    target: &hew_types::CallTarget,
+) -> Option<ProducedValueOwnership> {
+    let (hew_types::CallTarget::DynamicVtable {
+        declaring_trait,
+        method,
+        ..
+    }
+    | hew_types::CallTarget::StaticTraitMethod {
+        declaring_trait,
+        method,
+    }) = target
+    else {
+        return None;
+    };
+    (declaring_trait.full_path() == "std.builtins.Iterator"
+        && method.full_path() == "std.builtins.Iterator::next")
+        .then(|| ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh))
+}
+
 fn call_argument_is_proven_owned(
     site: SiteId,
     verifier: &Verifier,
@@ -263,6 +283,17 @@ fn seed_resolved_produced_value_facts(
         }
         if let Some(ownership) = crate::stdlib_catalog::result_ownership(endpoint) {
             fact.ownership = ownership;
+        }
+    }
+    for (site, ownership) in &verifier.typed_trait_call_results {
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if matches!(
+            fact.ownership,
+            ProducedValueOwnership::Unknown | ProducedValueOwnership::Borrowed
+        ) {
+            fact.ownership = *ownership;
         }
     }
 }
@@ -603,6 +634,7 @@ struct Verifier {
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
     builtin_call_targets: HashMap<SiteId, String>,
+    typed_trait_call_results: HashMap<SiteId, ProducedValueOwnership>,
     aggregate_payloads: HashMap<SiteId, Vec<SiteId>>,
     aggregate_transfer_payloads: HashSet<SiteId>,
     resource_record_constructors: HashSet<SiteId>,
@@ -1099,6 +1131,9 @@ impl Verifier {
         target: &hew_types::CallTarget,
         arguments: impl IntoIterator<Item = SiteId>,
     ) {
+        if let Some(ownership) = typed_trait_call_result_ownership(target) {
+            self.typed_trait_call_results.insert(site, ownership);
+        }
         let targets = match target {
             hew_types::CallTarget::User(declaration)
             | hew_types::CallTarget::ImplMethod(declaration) => vec![declaration.clone()],
@@ -2317,14 +2352,17 @@ mod tests {
         sync::Arc,
     };
 
-    use super::verify_hir;
+    use super::{typed_trait_call_result_ownership, verify_hir};
     use crate::ids::IdGen;
     use crate::node::{
         HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
         HirVarSelfMethodTarget,
     };
     use crate::{IntentKind, TypeClassTable, ValueClass};
-    use hew_types::{CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+    use hew_types::{
+        CallTarget, ImplId, MethodTargetFamily, ProducedValueAcquisition, ProducedValueOwnership,
+        ResolvedTy, VecMethod,
+    };
 
     fn unit_expr(ids: &mut IdGen) -> HirExpr {
         HirExpr {
@@ -2391,6 +2429,39 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn iterator_next_result_contract_requires_exact_trait_and_method_identities() {
+        let expected = Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Fresh,
+        ));
+        for target in [
+            CallTarget::static_trait(
+                hew_types::DefId::new("std.builtins.Iterator"),
+                hew_types::DefId::new("std.builtins.Iterator::next"),
+            ),
+            CallTarget::DynamicVtable {
+                declaring_trait: hew_types::DefId::new("std.builtins.Iterator"),
+                method: hew_types::DefId::new("std.builtins.Iterator::next"),
+                slot: 0,
+            },
+        ] {
+            assert_eq!(typed_trait_call_result_ownership(&target), expected);
+        }
+
+        for target in [
+            CallTarget::static_trait(
+                hew_types::DefId::new("user.Iterator"),
+                hew_types::DefId::new("std.builtins.Iterator::next"),
+            ),
+            CallTarget::static_trait(
+                hew_types::DefId::new("std.builtins.Iterator"),
+                hew_types::DefId::new("std.builtins.Iterator::peek"),
+            ),
+        ] {
+            assert_eq!(typed_trait_call_result_ownership(&target), None);
         }
     }
 

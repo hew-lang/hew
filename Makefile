@@ -806,8 +806,8 @@ test-vertical-slice: hew-native runtime $(LIBHEW_READY)
 test-pkg-import: hew-native runtime $(LIBHEW_READY)
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/pkg-import/run.sh
 
-# Package-manager consumer oracle: publish-like local setup, `hew package
-# install`, lock/materialization assertions, `hew check`, and exact `hew run`
+# Package-manager consumer oracle: publish-like local setup, `hew install`,
+# lock/materialization assertions, `hew check`, and exact `hew run`
 # stdout under an isolated HOME.
 test-package-install: hew-native runtime $(LIBHEW_READY)
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh

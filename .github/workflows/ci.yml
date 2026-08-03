@@ -736,7 +736,7 @@ jobs:
 
       - name: Run package-manager consumer oracle
         if: env.RUN_CODE_PATH == 'true'
-        # Publishes a local package, installs it with `hew package install`,
+        # Publishes a local package, installs it with `hew install`,
         # and asserts lock/materialization state plus exact `hew run` stdout
         # under an isolated HOME.
         run: make test-package-install

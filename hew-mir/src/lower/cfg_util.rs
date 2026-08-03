@@ -2,6 +2,7 @@ use super::{
     base_local, instr_source_places, terminator_source_places, BTreeMap, BasicBlock, HashMap,
     HashSet, SuspendKind, Terminator,
 };
+use crate::dataflow::instr_reads_writes;
 
 pub(super) fn local_is_used_after(
     blocks: &[BasicBlock],
@@ -40,6 +41,70 @@ pub(super) fn local_is_used_after(
         }) || terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
             .into_iter()
             .any(|place| base_local(place) == Some(source_local))
+    })
+}
+
+/// Detect a later local generation without treating a loop's next dynamic
+/// iteration as a rewrite of the generation released in this iteration.
+pub(super) fn local_is_rewritten_after_current_iteration(
+    blocks: &[BasicBlock],
+    source_local: u32,
+    release_block: u32,
+    release_index: usize,
+) -> bool {
+    let mut reachable = HashSet::new();
+    let mut frontier = blocks
+        .iter()
+        .find(|block| block.id == release_block)
+        .map(BasicBlock::successors)
+        .unwrap_or_default();
+    while let Some(block_id) = frontier.pop() {
+        if !reachable.insert(block_id) {
+            continue;
+        }
+        if let Some(block) = blocks.iter().find(|block| block.id == block_id) {
+            frontier.extend(block.successors());
+        }
+    }
+
+    let mut reaches_release = HashSet::from([release_block]);
+    loop {
+        let predecessors: Vec<_> = blocks
+            .iter()
+            .filter(|block| {
+                block
+                    .successors()
+                    .iter()
+                    .any(|successor| reaches_release.contains(successor))
+            })
+            .map(|block| block.id)
+            .collect();
+        let before = reaches_release.len();
+        reaches_release.extend(predecessors);
+        if reaches_release.len() == before {
+            break;
+        }
+    }
+
+    let writes_local = |instructions: &[super::Instr]| {
+        instructions.iter().any(|instruction| {
+            instr_reads_writes(instruction)
+                .1
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+        })
+    };
+    blocks.iter().any(|block| {
+        if block.id == release_block {
+            block
+                .instructions
+                .get(release_index.saturating_add(1)..)
+                .is_some_and(&writes_local)
+        } else {
+            reachable.contains(&block.id)
+                && !reaches_release.contains(&block.id)
+                && writes_local(&block.instructions)
+        }
     })
 }
 

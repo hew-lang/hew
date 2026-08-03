@@ -1,8 +1,8 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
-    hir_expr_contains_synthetic_vec_get_clone, local_is_used_after, machine_layout_ty_matches,
-    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    hir_expr_contains_synthetic_vec_get_clone, local_is_rewritten_after_current_iteration,
+    machine_layout_ty_matches, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -695,12 +695,8 @@ impl Builder {
                             drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
                             ..
                         } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
-                            && !local_is_used_after(
-                                blocks,
-                                &HashMap::new(),
-                                *local,
-                                block.id,
-                                index,
+                            && !local_is_rewritten_after_current_iteration(
+                                blocks, *local, block.id, index,
                             ) =>
                         {
                             Some(*local)
@@ -4657,7 +4653,7 @@ mod typed_produced_owner_tests {
     #[test]
     fn cross_block_reinitialization_keeps_inline_released_owner_live() {
         let mut builder = Builder::default();
-        builder.adopt_synthetic_owned_local(
+        let binding = builder.adopt_synthetic_owned_local(
             "__test_inline_release",
             SiteId(710),
             15,
@@ -4666,6 +4662,7 @@ mod typed_produced_owner_tests {
                 ProducedValueAcquisition::Fresh,
             )),
         );
+        builder.typed_produced_value_owner_bindings.insert(binding);
         let blocks = vec![
             BasicBlock {
                 id: 0,
@@ -4680,9 +4677,9 @@ mod typed_produced_owner_tests {
             BasicBlock {
                 id: 1,
                 statements: Vec::new(),
-                instructions: vec![Instr::Move {
+                instructions: vec![Instr::ConstI64 {
                     dest: Place::Local(15),
-                    src: Place::Local(15),
+                    value: 0,
                 }],
                 terminator: Terminator::Return,
             },
@@ -4691,6 +4688,49 @@ mod typed_produced_owner_tests {
         builder.consume_typed_publication_owners_at_inline_release(&blocks);
 
         assert_eq!(builder.owned_locals_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn loop_reentry_does_not_keep_inline_released_owner_live() {
+        let mut builder = Builder::default();
+        let binding = builder.adopt_synthetic_owned_local(
+            "__test_inline_release",
+            SiteId(710),
+            15,
+            ResolvedTy::String,
+            Builder::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh,
+            )),
+        );
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Drop {
+                    place: Place::Local(15),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                }],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ConstI64 {
+                    dest: Place::Local(15),
+                    value: 0,
+                }],
+                terminator: Terminator::Goto { target: 0 },
+            },
+        ];
+
+        assert!(
+            !crate::lower::cfg_util::local_is_rewritten_after_current_iteration(&blocks, 15, 0, 0,)
+        );
+        builder.consume_typed_publication_owners_at_inline_release(&blocks);
+
+        assert!(builder.owned_locals_snapshot().is_empty());
     }
 
     #[test]

@@ -90,6 +90,13 @@ use hew_types::{
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
 // family, extended to discriminant codes). The runtime constants are `i32`;
 // `emit_trap_with_code` takes `u64`, so each use site casts `as u64`.
+//
+// `HEW_TRAP_ACTOR_SEND_FAILED` is also borrowed by the crash-cleanup and
+// lifecycle-lock traps introduced alongside this pass — those failure modes
+// are distinct from a plain send failure and share the code only because new
+// runtime trap discriminants are an ABI addition past the rc1 freeze. WHEN
+// OBSOLETE: rc2, once dedicated trap codes for crash-cleanup and
+// lifecycle-lock failures can be minted.
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
     HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
@@ -16804,6 +16811,12 @@ fn lower_record_field_store(
             false,
         )?;
     }
+    // WHY: no release/un-clonable check runs when `record_key` is `None` —
+    // preserves the pre-change leak posture (never UAF) for builtin, opaque,
+    // or otherwise-unregistered record bases, whose field layouts this pass
+    // cannot resolve. WHEN OBSOLETE: once every record base carries a
+    // registered layout key. WHAT: fail-closed with a `CodegenError` once that
+    // holds — hard-erroring the `None` path is L13's job, not this change's.
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
@@ -17498,6 +17511,12 @@ fn emit_field_overwrite_release(
                  ({descriptor:?}); MIR must reject the store until it carries \
                  source-slot neutralisation"
         ))),
+        // Leak-over-UAF: a user `#[resource]` handle (or bit-copy/closure-pair/
+        // opaque-handle field) overwritten here is never released — the prior
+        // value is abandoned, not freed. That is deliberate: releasing without
+        // proof the old value isn't aliased elsewhere risks a double-free/UAF,
+        // which this crate treats as strictly worse than a leak. This arm now
+        // also serves the widened ordinary-record-field-store call site above.
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }

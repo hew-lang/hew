@@ -528,18 +528,15 @@ trait ConnectionMethods {
     /// Pass a negative value to clear the timeout.
     fn set_write_timeout(self, ms: i64) -> Result<(), NetError>;
 
-    /// Send raw bytes to the connection (active-mode-paired name for `write`).
+    /// Send raw bytes to the connection (convenience alias for `write`).
     ///
-    /// Identical to `write`, named `send` to match the active-mode actor
-    /// idiom: an actor that has `attach`ed a connection writes outbound data
-    /// with `conn.send(...)` while the runtime delivers inbound data to its
-    /// `on_data` handler. Returns the same `Result<(), WriteError>` as
-    /// [`write`]: an active-mode actor observes downstream backpressure on
-    /// the `Err(WriteError::BackpressureExceeded(_))` arm.
+    /// Identical to `write`. This method is unavailable after `attach`, which
+    /// consumes the connection and transfers its full lifecycle to the
+    /// reactor. Bidirectional actor protocols should use `into_stream_sink`
+    /// and give the stream and sink halves separate owners.
     fn send(self, data: bytes) -> Result<(), WriteError>;
 
-    /// Send a UTF-8 string to the connection (active-mode-paired name for
-    /// `write_string`).
+    /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(self, data: string) -> Result<(), WriteError>;
 }
 
@@ -548,9 +545,16 @@ trait ConnectionMethods {
 ///
 /// Implement this on an actor (declare matching `receive fn on_data(bytes)` /
 /// `receive fn on_close()`) and call `conn.attach(this)` to have the runtime
-/// deliver socket data as actor messages. The actor never calls `read` — the
-/// runtime reads in a background reactor thread — but it may call
-/// `conn.send(...)` for outbound data.
+/// deliver socket data as actor messages. The actor never calls `read`: the
+/// runtime owns the entire connection after the consuming attach and closes it
+/// on terminal readiness or actor teardown. No `Connection` remains available
+/// for outbound writes. Use `into_stream_sink` for a bidirectional actor
+/// protocol.
+///
+/// Pass the connection as a handler-local parameter to the code that calls
+/// `attach`; do not store it in actor state first. Consuming moves are enforced
+/// within one handler, but field bindings are reconstructed for each handler
+/// activation and currently do not carry a prior handler's move state.
 ///
 /// Declared `pub` so the type checker can recognise that a concrete actor's
 /// `receive fn`s structurally satisfy this handler trait at the
@@ -560,10 +564,15 @@ trait ConnectionMethods {
 /// # Example
 ///
 /// ```
-/// actor Echo {
-///     let conn: Connection;
+/// actor InboundLogger {
+///     receive fn start(conn: Connection) {
+///         match conn.attach(this) {
+///             Ok(()) => {},
+///             Err(AttachError::Refused) => println("attach refused"),
+///         }
+///     }
 ///     receive fn on_data(data: bytes) {
-///         conn.send(data);
+///         println(f"received {data.len()} bytes");
 ///     }
 ///     receive fn on_close() {
 ///         println("client disconnected");
@@ -646,13 +655,13 @@ impl ConnectionMethods for Connection {
             hew_tcp_set_write_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
-    /// Send raw bytes to the connection (active-mode-paired name for `write`).
+    /// Send raw bytes to the connection (alias for `write`).
     fn send(conn: Connection, data: bytes) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
             hew_tcp_write(conn, data)
         })
     }
-    /// Send a UTF-8 string to the connection (active-mode-paired name).
+    /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(conn: Connection, data: string) -> Result<(), WriteError> {
         write_result_from_status(unsafe {
             hew_tcp_write(conn, unsafe {

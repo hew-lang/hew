@@ -1,9 +1,11 @@
 //! Status: runnable (native; MQTT 3.1.1 subset)
-//! Description: MQTT 3.1.1 broker — pure Hew active-mode actor implementation
+//! Description: MQTT 3.1.1 broker — pure Hew split stream/sink actor implementation
 
 // MQTT 3.1.1 broker — pure Hew actor implementation
 // Listens on port 1883 by default (pass a port as argv[1]).
-// Uses bytes type for all TCP I/O.
+// Uses bytes type for all TCP I/O. Each accepted connection is consumed into
+// independently-owned Stream<bytes> and Sink<bytes> halves: a reader actor owns
+// inbound suspension while ClientHandler owns outbound delivery.
 //
 // Architecture:
 //   main          — constructs the actor graph and keeps the process alive
@@ -12,9 +14,11 @@
 //   Router        — tracks clients and subscriptions, fans out publishes
 //
 // Router state uses only clonable types (strings, i32, LocalPid handles) so the
-// actor is supervisor-restartable. Each live Connection stays inside its one
-// per-connection actor.
-import std::net::{AttachError, Connection};
+// actor is supervisor-restartable. Runtime stream/sink halves have one owner
+// each and close automatically with their actors.
+import std::net;
+
+import std::stream::{Sink, Stream};
 
 import std::os;
 
@@ -192,39 +196,35 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 
 // ── Actors ────────────────────────────────────────────────────────────────────
 
-// ClientHandler owns the single Connection handle. The reactor delivers reads
-// as ordinary actor messages, so an idle subscriber never blocks publication
-// delivery to the same actor.
+// ClientHandler owns only the write half. ClientReader owns the read half and
+// forwards frames as actor messages, so an idle subscriber never blocks
+// publication delivery to ClientHandler.
 actor ClientHandler {
-    let conn: Connection;
+    let sink: Sink<bytes>;
     let session_id: string;
     var client_id: string;
     let router: LocalPid<Router>;
     var buf: bytes;
     var registered: bool;
-    receive fn start() {
-        registered = true;
-        match conn.attach(this) {
-            Ok(()) => {},
-            Err(AttachError::Refused) => {
-                registered = false;
-                println("[mqtt] active-mode attach refused");
-                unsafe {
-                    hew_actor_self_stop()
-                };
-            },
+    receive fn register(reader: LocalPid<ClientReader>) {
+        let accepted = match await router.register_client(session_id.clone(), this) {
+            Ok(value) => value,
+            Err(_) => false,
+        };
+        if accepted {
+            registered = true;
+            reader.start();
+        } else {
+            reader.stop();
+            unsafe {
+                hew_actor_self_stop()
+            };
         }
     }
-    receive fn reject_registration() {
-        conn.close();
-        unsafe {
-            hew_actor_self_stop()
-        };
-    }
     receive fn deliver(packet: bytes) {
-        let _ = conn.send(packet);
+        sink.send(packet);
     }
-    receive fn on_data(chunk: bytes) {
+    receive fn on_data(chunk: bytes) -> bool {
         var connected = true;
         let next_buf = bytes::new();
         next_buf.append(buf);
@@ -293,16 +293,16 @@ actor ClientHandler {
                                         client_id = new_client_id;
                                     }
                                     println(f"[mqtt] CONNECT client_id={client_id}");
-                                    let _ = conn.send(build_connack(0, 0));
+                                    sink.send(build_connack(0, 0));
                                 } else {
                                     connect_rejected = true;
                                     connected = false;
                                     if claim_status == 0 {
                                         println(f"[mqtt] duplicate client_id={new_client_id} rejected session={session_id}");
-                                        let _ = conn.send(build_connack(0, 2));
+                                        sink.send(build_connack(0, 2));
                                     } else {
                                         println(f"[mqtt] ClientId claim unavailable session={session_id}");
-                                        let _ = conn.send(build_connack(0, 3));
+                                        sink.send(build_connack(0, 3));
                                     }
                                 }
                             }
@@ -326,7 +326,7 @@ actor ClientHandler {
                             if has_bytes(packet_end, payload_off, 2) {
                                 packet_id = read_u16(buf, payload_off);
                                 payload_off = payload_off + 2;
-                                let _ = conn.send(build_puback(packet_id));
+                                sink.send(build_puback(packet_id));
                             } else {
                                 connected = false;
                             }
@@ -368,7 +368,7 @@ actor ClientHandler {
                             topic_off = topic_off + tw + 1;
                         }
                         if connected {
-                            let _ = conn.send(build_suback(sub_packet_id, return_codes));
+                            sink.send(build_suback(sub_packet_id, return_codes));
                             println("[mqtt] SUBSCRIBE processed");
                         }
                     }
@@ -394,7 +394,7 @@ actor ClientHandler {
                             topic_off = topic_off + tw;
                         }
                         if connected {
-                            let _ = conn.send(build_unsuback(unsub_packet_id));
+                            sink.send(build_unsuback(unsub_packet_id));
                             println(f"[mqtt] UNSUBSCRIBE {client_id}");
                         }
                     }
@@ -405,7 +405,7 @@ actor ClientHandler {
                 12 => {
                     // PINGREQ
                     if pflags == 0 && remaining_len == 0 {
-                        let _ = conn.send(build_pingresp());
+                        sink.send(build_pingresp());
                     } else {
                         connected = false;
                         println(f"[mqtt] malformed PINGREQ for {client_id}");
@@ -438,11 +438,11 @@ actor ClientHandler {
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
-            conn.close();
             unsafe {
                 hew_actor_self_stop()
             };
         }
+        connected
     }
     receive fn on_close() {
         if registered {
@@ -450,7 +450,39 @@ actor ClientHandler {
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
-        conn.close();
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+}
+
+// ClientReader is the sole owner of the readable half. It awaits frames without
+// occupying a scheduler worker, then asks ClientHandler whether parsing should
+// continue. Dropping this actor closes the stream half exactly once.
+actor ClientReader {
+    let input: Stream<bytes>;
+    let client: LocalPid<ClientHandler>;
+    receive fn start() {
+        var reading = true;
+        while reading {
+            match await input.recv() {
+                Some(chunk) => {
+                    reading = match await client.on_data(chunk) {
+                        Ok(keep_reading) => keep_reading,
+                        Err(_) => false,
+                    };
+                },
+                None => {
+                    client.on_close();
+                    reading = false;
+                },
+            }
+        }
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+    receive fn stop() {
         unsafe {
             hew_actor_self_stop()
         };
@@ -599,16 +631,10 @@ actor Acceptor {
         loop {
             let conn = await lst.accept();
             let cid = f"client-{next_id}";
-            let handler = spawn ClientHandler(conn: conn, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes::new(), registered: false);
-            let accepted = match await router.register_client(cid, handler) {
-                Ok(value) => value,
-                Err(_) => false,
-            };
-            if accepted {
-                handler.start();
-            } else {
-                handler.reject_registration();
-            }
+            let (input, sink) = conn.into_stream_sink();
+            let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes::new(), registered: false);
+            let reader = spawn ClientReader(input: input, client: handler);
+            handler.register(reader);
             next_id = next_id + 1;
         }
     }

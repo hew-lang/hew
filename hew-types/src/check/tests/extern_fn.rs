@@ -123,6 +123,8 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
         extern "C" {
             #[extern_symbol("hew_cross_module_same")]
             fn first() -> Stream<bytes>;
+            #[extern_symbol("hew_cross_module_drift")]
+            fn first_drift() -> Stream<bytes>;
         }
         "#,
     );
@@ -133,6 +135,8 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
         extern "C" {
             #[extern_symbol("hew_cross_module_same")]
             fn second() -> stream.Stream<bytes>;
+            #[extern_symbol("hew_cross_module_drift")]
+            fn second_drift() -> stream.Stream<string>;
         }
         "#,
     );
@@ -187,11 +191,28 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     });
     assert!(
         !output.errors.iter().any(|error| matches!(
-            error.kind,
-            TypeErrorKind::ConflictingExternDeclaration { .. }
+            &error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                if symbol_name == "hew_cross_module_same"
         )),
         "alias-qualified copies of one nominal contract must coexist: {:#?}",
         output.errors
+    );
+    let conflict = output
+        .errors
+        .iter()
+        .find(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_cross_module_drift"
+            )
+        })
+        .expect("cross-module contract drift must be rejected");
+    assert_eq!(
+        conflict.notes[0].2.as_deref(),
+        Some("std.stream"),
+        "the established declaration note must retain its own source module"
     );
 }
 

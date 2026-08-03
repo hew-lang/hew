@@ -321,6 +321,8 @@ fn diagnostic_palette() -> DiagnosticPalette {
 /// A secondary note attached to a diagnostic.
 #[derive(Debug)]
 pub struct DiagnosticNote<'a> {
+    pub source: &'a str,
+    pub filename: &'a str,
     pub span: &'a Range<usize>,
     pub message: &'a str,
 }
@@ -360,15 +362,16 @@ pub fn render_diagnostic(
 
     // Secondary notes with their own spans
     for note in notes {
-        let (note_line, note_col) = offset_to_line_col(source, note.span.start);
+        let (note_line, note_col) = offset_to_line_col(note.source, note.span.start);
         diag_println(&format!(
-            "{bold}{filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
+            "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
             bold = palette.bold,
             cyan = palette.cyan,
             message = note.message,
+            note_filename = note.filename,
             reset = palette.reset,
         ));
-        render_source_underline(source, note.span, note_line, &palette);
+        render_source_underline(note.source, note.span, note_line, &palette);
     }
 
     // Suggestions
@@ -405,15 +408,16 @@ pub fn render_warning(
     render_source_underline(source, span, line, &palette);
 
     for note in notes {
-        let (note_line, note_col) = offset_to_line_col(source, note.span.start);
+        let (note_line, note_col) = offset_to_line_col(note.source, note.span.start);
         diag_println(&format!(
-            "{bold}{filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
+            "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
             bold = palette.bold,
             cyan = palette.cyan,
             message = note.message,
+            note_filename = note.filename,
             reset = palette.reset,
         ));
-        render_source_underline(source, note.span, note_line, &palette);
+        render_source_underline(note.source, note.span, note_line, &palette);
     }
 
     for suggestion in suggestions {
@@ -492,6 +496,8 @@ pub fn render_diagnostic_with_raw_notes(
     let notes: Vec<DiagnosticNote<'_>> = raw_notes
         .iter()
         .map(|(s, msg)| DiagnosticNote {
+            source,
+            filename,
             span: s,
             message: msg.as_str(),
         })
@@ -514,6 +520,8 @@ pub fn render_warning_with_raw_notes(
     let notes: Vec<DiagnosticNote<'_>> = raw_notes
         .iter()
         .map(|(s, msg)| DiagnosticNote {
+            source,
+            filename,
             span: s,
             message: msg.as_str(),
         })
@@ -1287,21 +1295,39 @@ pub(crate) fn render_type_diagnostics_with_sources(
     for diagnostic in diagnostics {
         let (source, filename) =
             type_diagnostic_source(root_source, root_filename, diagnostic, module_source_map);
+        let notes = diagnostic
+            .notes
+            .iter()
+            .map(|(span, message, source_module)| {
+                let (note_source, note_filename) = source_module
+                    .as_deref()
+                    .and_then(|module| module_source_map.get(module))
+                    .map_or((source, filename), |(source, filename)| {
+                        (source.as_str(), filename.as_str())
+                    });
+                DiagnosticNote {
+                    source: note_source,
+                    filename: note_filename,
+                    span,
+                    message,
+                }
+            })
+            .collect::<Vec<_>>();
         match diagnostic.severity {
-            hew_types::error::Severity::Warning => render_warning_with_raw_notes(
+            hew_types::error::Severity::Warning => render_warning(
                 source,
                 filename,
                 &diagnostic.span,
                 &diagnostic.message,
-                &diagnostic.notes,
+                &notes,
                 &diagnostic.suggestions,
             ),
-            hew_types::error::Severity::Error => render_diagnostic_with_raw_notes(
+            hew_types::error::Severity::Error => render_diagnostic(
                 source,
                 filename,
                 &diagnostic.span,
                 &diagnostic.message,
-                &diagnostic.notes,
+                &notes,
                 &diagnostic.suggestions,
             ),
         }
@@ -1551,6 +1577,43 @@ mod tests {
 
         assert_eq!(source, "fn main() {}\n");
         assert_eq!(filename, "main.hew");
+    }
+
+    #[test]
+    fn type_diagnostic_note_uses_its_own_module_source() {
+        let mut diagnostic = sample_type_error();
+        diagnostic.source_module = Some("std.net".to_string());
+        diagnostic.notes.push((
+            6..17,
+            "first declaration is here".to_string(),
+            Some("std.stream".to_string()),
+        ));
+
+        let mut module_source_map = ModuleSourceMap::new();
+        module_source_map.insert(
+            "std.net".to_string(),
+            ("net_call()\n".to_string(), "std/net/net.hew".to_string()),
+        );
+        module_source_map.insert(
+            "std.stream".to_string(),
+            (
+                "first\nstream_decl\n".to_string(),
+                "std/stream.hew".to_string(),
+            ),
+        );
+
+        start_diagnostic_capture();
+        render_type_diagnostics_with_sources(
+            "fn main() {}\n",
+            "main.hew",
+            &[diagnostic],
+            &module_source_map,
+        );
+        let captured = finish_diagnostic_capture();
+
+        assert!(captured.contains("std/net/net.hew:1:1: error"));
+        assert!(captured.contains("std/stream.hew:2:1: note: first declaration is here"));
+        assert!(captured.contains("stream_decl"));
     }
 
     #[test]

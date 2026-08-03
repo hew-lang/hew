@@ -56,6 +56,9 @@ pub enum Severity {
     Warning,
 }
 
+/// A secondary diagnostic location with its own source-file attribution.
+pub type TypeErrorNote = (Span, String, Option<String>);
+
 /// A type error with location, message, and diagnostic hints.
 #[derive(Debug, Clone)]
 pub struct TypeError {
@@ -68,7 +71,7 @@ pub struct TypeError {
     /// Human-readable error message
     pub message: String,
     /// Additional context with locations
-    pub notes: Vec<(Span, String)>,
+    pub notes: Vec<TypeErrorNote>,
     /// "Did you mean?" suggestions
     pub suggestions: Vec<String>,
     /// Dotted module path of the non-root module this diagnostic originates from
@@ -107,7 +110,20 @@ impl TypeError {
     /// Add a note with location.
     #[must_use]
     pub fn with_note(mut self, span: Span, note: impl Into<String>) -> Self {
-        self.notes.push((span, note.into()));
+        self.notes
+            .push((span, note.into(), self.source_module.clone()));
+        self
+    }
+
+    /// Add a note whose span belongs to a specific module source.
+    #[must_use]
+    pub fn with_note_source(
+        mut self,
+        span: Span,
+        note: impl Into<String>,
+        source_module: Option<String>,
+    ) -> Self {
+        self.notes.push((span, note.into(), source_module));
         self
     }
 

@@ -47,7 +47,7 @@ fn expect_duplicate_definition_span_kind_name(source: &str, name: &str) {
         "DuplicateDefinition primary span should point at the SECOND `{name}` declaration"
     );
     assert_eq!(
-        err.notes.first().map(|(span, _)| span.clone()),
+        err.notes.first().map(|(span, _, _)| span.clone()),
         Some(first_span),
         "DuplicateDefinition related span should point at the FIRST `{name}` declaration"
     );

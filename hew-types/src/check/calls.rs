@@ -813,6 +813,7 @@ impl Checker {
             notes: vec![(
                 span.clone(),
                 "actor receive functions run synchronously on scheduler worker threads".to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec![suggestion],
             source_module: self.current_module.clone(),

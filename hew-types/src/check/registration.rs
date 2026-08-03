@@ -6872,6 +6872,7 @@ impl Checker {
                      intrinsic as a top-level free function in the floor module and \
                      call it from the impl method body if needed."
                         .to_string(),
+                    self.current_module.clone(),
                 )],
                 suggestions: vec![
                     "remove the `#[intrinsic(\"…\")]` attribute from this method".to_string(),
@@ -6922,6 +6923,7 @@ impl Checker {
                  they never declare `#[intrinsic]` themselves. There is no \
                  user-visible `unsafe`/`@unsafe` surface (A605)."
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec!["remove the `#[intrinsic(\"…\")]` attribute and call the \
                  corresponding stdlib function instead"
@@ -9125,6 +9127,7 @@ impl Checker {
                              (e.g. cooperate safepoints, actor-state locks). Neither \
                              may be named by user code in `extern \"rt\"` blocks."
                                 .to_string(),
+                            self.current_module.clone(),
                         )],
                         suggestions: vec![format!(
                             "add `\"{}\"` to the `stable` list in \
@@ -9213,6 +9216,7 @@ impl Checker {
                     disagrees.then(|| {
                         (
                             existing.span.clone(),
+                            existing.declaring_module.clone(),
                             extern_signature_description(
                                 established,
                                 &existing.consuming_params,
@@ -9222,7 +9226,9 @@ impl Checker {
                         )
                     })
                 });
-                if let Some((established_span, established, conflicting)) = conflict {
+                if let Some((established_span, established_module, established, conflicting)) =
+                    conflict
+                {
                     self.errors.push(TypeError {
                         severity: crate::error::Severity::Error,
                         kind: TypeErrorKind::ConflictingExternDeclaration {
@@ -9238,6 +9244,7 @@ impl Checker {
                             format!(
                                 "the first declaration of `{source_symbol}` established `{established}`"
                             ),
+                            established_module,
                         )],
                         suggestions: vec![format!(
                             "make every declaration of `{source_symbol}` use exactly `{established}`"

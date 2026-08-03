@@ -1082,6 +1082,43 @@ pub(super) fn insert_diagnostic(
     diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
 }
 
+fn type_related_information(
+    diagnostic: &hew_types::TypeError,
+    target_uri: &Url,
+    target_source: &str,
+    target_line_offsets: &[usize],
+    module_sources: &HashMap<String, DiagnosticSource>,
+) -> Option<Vec<DiagnosticRelatedInformation>> {
+    (!diagnostic.notes.is_empty()).then(|| {
+        diagnostic
+            .notes
+            .iter()
+            .map(|(note_span, note_msg, source_module)| {
+                let note_target = source_module
+                    .as_ref()
+                    .and_then(|module_name| module_sources.get(module_name));
+                let (note_uri, note_source, note_line_offsets) = note_target.map_or(
+                    (target_uri.clone(), target_source, target_line_offsets),
+                    |target| {
+                        (
+                            target.uri.clone(),
+                            target.source.as_str(),
+                            target.line_offsets.as_slice(),
+                        )
+                    },
+                );
+                DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: note_uri,
+                        range: super::span_to_range(note_source, note_line_offsets, note_span),
+                    },
+                    message: note_msg.clone(),
+                }
+            })
+            .collect()
+    })
+}
+
 #[cfg(test)]
 pub(super) fn build_diagnostics(
     uri: &Url,
@@ -1157,27 +1194,13 @@ pub(super) fn build_diagnostics_by_uri(
                 )
             };
 
-            // Surface notes as related information with their own spans.
-            let related_information = if diag.notes.is_empty() {
-                None
-            } else {
-                Some(
-                    diag.notes
-                        .iter()
-                        .map(|(note_span, note_msg)| DiagnosticRelatedInformation {
-                            location: Location {
-                                uri: target_uri.clone(),
-                                range: super::span_to_range(
-                                    target_source,
-                                    target_line_offsets,
-                                    note_span,
-                                ),
-                            },
-                            message: note_msg.clone(),
-                        })
-                        .collect(),
-                )
-            };
+            let related_information = type_related_information(
+                diag,
+                &target_uri,
+                target_source,
+                target_line_offsets,
+                module_sources,
+            );
 
             insert_diagnostic(
                 &mut diagnostics_by_uri,

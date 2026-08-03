@@ -60,6 +60,9 @@ pub enum FrontendDiagnosticKind {
 pub struct FrontendDiagnostic {
     pub source: Option<String>,
     pub filename: Option<String>,
+    /// Per-note source text and filename when a secondary span belongs to a
+    /// different module than the primary diagnostic.
+    pub note_sources: Vec<Option<(String, String)>>,
     pub kind: FrontendDiagnosticKind,
 }
 
@@ -68,6 +71,7 @@ impl FrontendDiagnostic {
         Self {
             source: None,
             filename: None,
+            note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Message(message.into()),
         }
     }
@@ -76,14 +80,31 @@ impl FrontendDiagnostic {
         Self {
             source: Some(source.to_string()),
             filename: Some(filename.to_string()),
+            note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Parse(diagnostic),
         }
     }
 
-    fn type_(source: &str, filename: &str, diagnostic: hew_types::TypeError) -> Self {
+    fn type_(
+        source: &str,
+        filename: &str,
+        diagnostic: hew_types::TypeError,
+        module_source_map: &ModuleSourceMap,
+    ) -> Self {
+        let note_sources = diagnostic
+            .notes
+            .iter()
+            .map(|(_, _, source_module)| {
+                source_module
+                    .as_deref()
+                    .and_then(|module| module_source_map.get(module))
+                    .cloned()
+            })
+            .collect();
         Self {
             source: Some(source.to_string()),
             filename: Some(filename.to_string()),
+            note_sources,
             kind: FrontendDiagnosticKind::Type(diagnostic),
         }
     }
@@ -96,6 +117,7 @@ impl FrontendDiagnostic {
         Self {
             source: source.map(str::to_string),
             filename: filename.map(str::to_string),
+            note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Hir(diagnostic),
         }
     }
@@ -430,7 +452,7 @@ fn type_diagnostic_to_frontend(
     } else {
         (root_source, root_filename)
     };
-    FrontendDiagnostic::type_(source, filename, diagnostic)
+    FrontendDiagnostic::type_(source, filename, diagnostic, module_source_map)
 }
 
 fn hir_diagnostic_to_frontend(

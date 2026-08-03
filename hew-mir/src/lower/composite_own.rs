@@ -8,6 +8,7 @@ mod bytes_payload_handoff;
 mod foundation;
 mod predicate_string_temp_drop;
 mod retained_string_aliases;
+mod tuple_handle_projection;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -46,6 +47,7 @@ use predicate_string_temp_drop::predicate_string_temp_drop_proof;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
+pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
@@ -1415,7 +1417,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         transferee,
                         authority:
                             crate::model::NeutralizeAuthority::SendTransferLastUse
-                            | crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                            | crate::model::NeutralizeAuthority::WholeCarrierConsume
+                            | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
                     } => *place == source && *transferee == Some(dest),
                     _ => false,
                 })

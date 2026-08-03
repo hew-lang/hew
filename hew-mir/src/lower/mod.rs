@@ -103,11 +103,12 @@ use self::composite_own::{
     derive_borrowed_builtin_handle_projection_alias_bindings,
     derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
     derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
-    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, detect_actor_state_handle_consume,
-    detect_actor_state_resource_overwrite, detect_builtin_handle_record_field_overwrite,
-    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
+    derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
+    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
+    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
+    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
+    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
+    detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -5079,6 +5080,112 @@ fn prepare_outbound_actor_payloads(
     }
 }
 
+/// Null scalar handle sources after an exact tuple/record constructor has
+/// moved them into a value that reaches the return slot.
+///
+/// Aggregate construction byte-copies handle words. The returned-member drop
+/// proof already makes the constructor destination the caller's owner and
+/// suppresses the source close on that path; this companion rewrite clears the
+/// stale source slot so crash-cleanup escrow cannot close the selected handle
+/// again during the normal return sweep. Unselected siblings are untouched and
+/// keep their path-sensitive exit closes.
+fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates = builder.owned_locals_exit_candidates();
+    let returned_members =
+        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
+    if returned_members.is_empty() {
+        return;
+    }
+
+    let candidate_places: HashSet<Place> = candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            returned_members.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
+        })
+        .filter_map(|(binding, _name, _ty)| builder.binding_locals.get(binding).copied())
+        .collect();
+    if candidate_places.is_empty() {
+        return;
+    }
+
+    // Reverse the exact whole-value move graph from the return slot. A
+    // constructor qualifies only when its own destination is in this closure;
+    // another aggregate built from the same source in the same block cannot
+    // trigger an early neutralize.
+    let mut returned_value_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            } => base_local(*src),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for instr in blocks.iter().flat_map(|block| &block.instructions) {
+            let Instr::Move { dest, src } = instr else {
+                continue;
+            };
+            if base_local(*dest).is_some_and(|dest| returned_value_locals.contains(&dest)) {
+                if let Some(source) = base_local(*src) {
+                    changed |= returned_value_locals.insert(source);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for block in blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let (dest, sources): (Place, Vec<Place>) = match &block.instructions[index] {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            if !base_local(dest).is_some_and(|local| returned_value_locals.contains(&local)) {
+                index += 1;
+                continue;
+            }
+
+            let mut neutralized = HashSet::new();
+            let sources: Vec<Place> = sources
+                .into_iter()
+                .filter(|source| candidate_places.contains(source) && neutralized.insert(*source))
+                .collect();
+            index += 1;
+            for source in sources {
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(
+                    index,
+                    Instr::NeutralizePayloadSlot {
+                        place: source,
+                        transferee: Some(dest),
+                        authority:
+                            crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
+                    },
+                );
+                index += 1;
+            }
+        }
+    }
+}
+
 #[must_use]
 pub fn validate_outbound_actor_modes(raw: &RawMirFunction) -> Vec<MirCheck> {
     let payload_requires_mode = |value: Place| {
@@ -5413,6 +5520,7 @@ pub(crate) fn lower_function(
         &resolved_outbound,
         &projection_tainted,
     );
+    neutralize_returned_aggregate_handle_sources(&mut blocks, &mut builder);
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
@@ -5723,6 +5831,18 @@ pub(crate) fn lower_function(
         &builder.binding_locals,
         &builder.locals,
     );
+    let alias_field_binders = builder.alias_owner_field_binders();
+    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+        &raw.blocks,
+        &raw.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.record_field_orders,
+        &builder.enum_layouts,
+        &alias_field_binders,
+        &builder.proven_borrow_call_args,
+    );
     let mut source_excluded = returned_aggregate_members;
     source_excluded.extend(consumed_local_aggregate_members);
     source_excluded.extend(spawn_consumed_handle_members);
@@ -5737,23 +5857,22 @@ pub(crate) fn lower_function(
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
-    source_excluded.extend(derive_borrowed_builtin_handle_projection_alias_bindings(
-        &builder.binding_locals,
-        &builder.locals,
-        &projection_alias_tainted,
-    ));
-    let alias_field_binders = builder.alias_owner_field_binders();
-    let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
+    let mut borrowed_builtin_handle_projection_aliases =
+        derive_borrowed_builtin_handle_projection_alias_bindings(
+            &builder.binding_locals,
+            &builder.locals,
+            &projection_alias_tainted,
+        );
+    let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
         &raw.blocks,
-        &raw.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
-        &builder.record_field_orders,
-        &builder.enum_layouts,
-        &alias_field_binders,
-        &builder.proven_borrow_call_args,
+        &tuple_composite_drop_allowed,
     );
+    borrowed_builtin_handle_projection_aliases
+        .retain(|binding| !owned_tuple_handle_projections.contains(binding));
+    source_excluded.extend(borrowed_builtin_handle_projection_aliases);
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let record_field_store_preserves_owner = |record, field_offset| {
         builder.record_field_store_preserves_record_owner(record, field_offset)

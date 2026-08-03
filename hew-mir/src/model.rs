@@ -4442,6 +4442,11 @@ pub enum NeutralizeAuthority {
     /// fresh owner `dest` and its source slot nulled
     /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
     WholeCarrierConsume,
+    /// A scalar owned handle moved into a tuple or record that flows to the
+    /// return slot. The constructor has already copied the handle into its
+    /// aggregate `dest`; nulling the source leaves the returned aggregate as
+    /// the sole close authority. `transferee` is that constructor destination.
+    ReturnedAggregateMemberConsume,
 }
 
 impl NeutralizeAuthority {
@@ -4454,9 +4459,9 @@ impl NeutralizeAuthority {
     #[must_use]
     pub fn requires_transferee(self) -> bool {
         match self {
-            NeutralizeAuthority::SendTransferLastUse | NeutralizeAuthority::WholeCarrierConsume => {
-                true
-            }
+            NeutralizeAuthority::SendTransferLastUse
+            | NeutralizeAuthority::WholeCarrierConsume
+            | NeutralizeAuthority::ReturnedAggregateMemberConsume => true,
             NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
                 false
             }

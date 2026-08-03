@@ -912,7 +912,7 @@ mod tests {
     #[test]
     fn extract_url_path_https() {
         assert_eq!(
-            extract_url_path("https://pkg.hew.sh/packages/alice/router/0.1.0.tar.gz"),
+            extract_url_path("https://cdn.hewpkg.com/packages/alice/router/0.1.0.tar.gz"),
             "/packages/alice/router/0.1.0.tar.gz"
         );
     }

@@ -104,7 +104,7 @@ fn test_unpack_does_not_check_symlinks() {
     // Compress
     let compressed = zstd::encode_all(tar_data.as_slice(), 22).unwrap();
 
-    // Try to unpack with the current adze-cli code
+    // Try to unpack with the current hew-pkg code
     let temp = TempDir::new().unwrap();
     let target = temp.path().join("extracted");
 

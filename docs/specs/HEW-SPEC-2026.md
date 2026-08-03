@@ -955,7 +955,7 @@ list and uses the first matching module root. The search order is:
 configure module search paths.
 
 > **Scope note:** `HEWPATH` affects stdlib module resolution. User-module
-> file-import paths use `HEW_STD` and `.adze/packages` instead; they are not
+> file-import paths use `HEW_STD` and `.hew/packages` instead; they are not
 > governed by `HEWPATH`. Unification of `HEWPATH` across both stdlib and
 > user-module file imports is planned for a future edition.
 

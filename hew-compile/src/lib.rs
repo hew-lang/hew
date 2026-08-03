@@ -1104,18 +1104,18 @@ fn resolve_file_imports_internal(
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
-                    candidates.push(ctx.project_dir.join(".adze/packages").join(&versioned_rel));
+                    candidates.push(ctx.project_dir.join(".hew/packages").join(&versioned_rel));
                     if let Some(pkg) = ctx.extra_pkg_path {
                         candidates.push(pkg.join(&versioned_rel));
                     }
                 }
 
                 if !is_std_import {
-                    candidates.push(ctx.project_dir.join(".adze/packages").join(&rel_path));
+                    candidates.push(ctx.project_dir.join(".hew/packages").join(&rel_path));
                     let project_package_dir =
-                        ctx.project_dir.join(".adze/packages").join(&module_dir);
+                        ctx.project_dir.join(".hew/packages").join(&module_dir);
                     let project_package_entry =
-                        ctx.project_dir.join(".adze/packages").join(&dir_path);
+                        ctx.project_dir.join(".hew/packages").join(&dir_path);
                     if let Some(version) = locked_version {
                         locked_project_candidates.push((
                             project_package_entry.clone(),
@@ -1676,7 +1676,7 @@ struct TomlManifest {
 }
 
 #[derive(Debug, Deserialize)]
-struct AdzeTomlLock {
+struct HewTomlLock {
     #[serde(default)]
     package: Vec<LockedEntry>,
 }
@@ -1724,14 +1724,14 @@ fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
 fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), FrontendFailure> {
     let Some(manifest) = load_manifest(&check.package_dir)? else {
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `hew install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `hew install` to refresh .hew/packages",
             check.name,
             check.package_dir.display()
         )));
     };
     let Some(package) = manifest.package else {
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` has no [package] section\n  hint: run `hew install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` has no [package] section\n  hint: run `hew install` to refresh .hew/packages",
             check.name,
             check.package_dir.display()
         )));
@@ -1742,7 +1742,7 @@ fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), Front
             |version| format!("{}@{version}", package.name),
         );
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` does not match adze.lock (expected {}@{}, found {found})\n  hint: run `hew install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` does not match hew.lock (expected {}@{}, found {found})\n  hint: run `hew install` to refresh .hew/packages",
             check.name,
             check.package_dir.display(),
             check.name,
@@ -1768,8 +1768,8 @@ fn load_manifest_metadata(
 }
 
 fn load_lockfile(dir: &Path) -> Result<Option<Vec<(String, String)>>, FrontendFailure> {
-    let path = dir.join("adze.lock");
-    let Some(lock) = load_optional_toml::<AdzeTomlLock>(&path)? else {
+    let path = dir.join("hew.lock");
+    let Some(lock) = load_optional_toml::<HewTomlLock>(&path)? else {
         return Ok(None);
     };
     Ok(Some(
@@ -1808,8 +1808,8 @@ mod tests {
     }
 
     fn write_lockfile(dir: &Path, content: &str) {
-        let mut file = File::create(dir.join("adze.lock")).expect("create adze.lock");
-        file.write_all(content.as_bytes()).expect("write adze.lock");
+        let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
+        file.write_all(content.as_bytes()).expect("write hew.lock");
     }
 
     fn write_source(dir: &Path, name: &str, content: &str) -> String {
@@ -2927,7 +2927,7 @@ fn main() {
         write_lockfile(dir.path(), "this is not valid toml {{{\n");
         let err = load_lockfile(dir.path()).expect_err("invalid lockfile should error");
         assert!(err.message.contains("cannot parse"), "{}", err.message);
-        assert!(err.message.contains("adze.lock"), "{}", err.message);
+        assert!(err.message.contains("hew.lock"), "{}", err.message);
     }
 
     #[test]
@@ -2960,7 +2960,7 @@ fn main() {
         )
         .expect_err("invalid lockfile should fail closed");
         assert!(err.message.contains("cannot parse"), "{}", err.message);
-        assert!(err.message.contains("adze.lock"), "{}", err.message);
+        assert!(err.message.contains("hew.lock"), "{}", err.message);
     }
 
     #[test]
@@ -3335,11 +3335,11 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn std_import_does_not_resolve_from_adze_package_std_root() {
+    fn std_import_does_not_resolve_from_package_cache_std_root() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let adze_std_dir = dir.path().join(".adze/packages/std");
-        fs::create_dir_all(&adze_std_dir).expect("create fake .adze std package dir");
-        write_source(&adze_std_dir, "bogus.hew", "pub fn marker() -> i64 { 1 }\n");
+        let pkg_std_dir = dir.path().join(".hew/packages/std");
+        fs::create_dir_all(&pkg_std_dir).expect("create fake .hew std package dir");
+        write_source(&pkg_std_dir, "bogus.hew", "pub fn marker() -> i64 { 1 }\n");
         let input = write_source(
             dir.path(),
             "main.hew",
@@ -3354,17 +3354,17 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 ..Default::default()
             },
         )
-        .expect_err("std::bogus must not resolve from .adze/packages/std/bogus.hew");
+        .expect_err("std::bogus must not resolve from .hew/packages/std/bogus.hew");
 
         assert!(
             failure.message.contains("module `std::bogus` not found"),
             "expected std::bogus to fail closed, got: {}",
             failure.message
         );
-        let fake_std_candidate = adze_std_dir.join("bogus.hew").display().to_string();
+        let fake_std_candidate = pkg_std_dir.join("bogus.hew").display().to_string();
         assert!(
             !failure.message.contains(&fake_std_candidate),
-            "std:: imports must not try .adze std-root candidate `{fake_std_candidate}`: {}",
+            "std:: imports must not try .hew std-root candidate `{fake_std_candidate}`: {}",
             failure.message
         );
     }
@@ -3882,7 +3882,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let err = check_program(program, source, "main.hew", &options)
             .expect_err("invalid lockfile should fail closed");
         assert!(err.message.contains("cannot parse"), "{}", err.message);
-        assert!(err.message.contains("adze.lock"), "{}", err.message);
+        assert!(err.message.contains("hew.lock"), "{}", err.message);
     }
 
     #[test]

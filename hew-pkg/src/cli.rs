@@ -31,7 +31,7 @@ pub enum PkgCommand {
         #[arg(long, short = 'r')]
         registry: Option<String>,
     },
-    /// Install dependencies into .adze/packages/
+    /// Install dependencies into .hew/packages/
     Install {
         /// Require an up-to-date lock file
         #[arg(long)]
@@ -304,7 +304,7 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
             let cfg = load_config_or_exit();
             let remote = config::get_named_registry(&cfg, name).unwrap_or_else(|| {
                 eprintln!("hew: unknown registry '{name}'");
-                eprintln!("Configure it in ~/.adze/config.toml under [registries.{name}]");
+                eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
                 std::process::exit(1);
             });
             let mut c = client::RegistryClient::with_url(remote.api);
@@ -318,14 +318,14 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     }
 }
 
-fn load_config_or_exit() -> config::AdzeConfig {
+fn load_config_or_exit() -> config::PkgConfig {
     config::load_config().unwrap_or_else(|error| {
         eprintln!("hew: {error}");
         std::process::exit(1);
     })
 }
 
-fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::AdzeConfig) {
+fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgConfig) {
     let name = dir
         .canonicalize()
         .ok()
@@ -365,7 +365,7 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::Adze
             // Write template source file (skip-if-exists).
             write_template_source(dir, &name, template);
 
-            // Write .gitignore with target/ and .adze/ (merged, never replaced).
+            // Write .gitignore with target/ and .hew/ (merged, never replaced).
             write_init_gitignore(dir);
             let source = template.scaffold_source();
             let follow_up = init_follow_up_hint(template);
@@ -416,9 +416,9 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
     }
 }
 
-/// Write a `.gitignore` with `target/` and `.adze/` entries.
+/// Write a `.gitignore` with `target/` and `.hew/` entries.
 fn write_init_gitignore(dir: &Path) {
-    ensure_gitignore_entry(dir, ".adze/");
+    ensure_gitignore_entry(dir, ".hew/");
     ensure_gitignore_entry(dir, "target/");
 }
 
@@ -487,14 +487,14 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         }
     };
 
-    let lock_path = cwd.join("adze.lock");
+    let lock_path = cwd.join("hew.lock");
 
     if locked {
         // --locked: read existing lock and validate against manifest.
         let lf = match lockfile::read_lockfile(&lock_path) {
             Ok(lf) => lf,
             Err(lockfile::LockError::Missing) => {
-                eprintln!("hew install: --locked requires an adze.lock file, but none was found");
+                eprintln!("hew install: --locked requires an hew.lock file, but none was found");
                 std::process::exit(1);
             }
             Err(e) => {
@@ -542,11 +542,11 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
     let local_packages = project_packages_path(&cwd);
     if let Err(e) = std::fs::create_dir_all(&local_packages) {
-        eprintln!("hew install: cannot create .adze/packages/: {e}");
+        eprintln!("hew install: cannot create .hew/packages/: {e}");
         std::process::exit(1);
     }
 
-    ensure_gitignore_entry(&cwd, ".adze/");
+    ensure_gitignore_entry(&cwd, ".hew/");
 
     if m.dependencies.is_empty() {
         // Write an empty lockfile for consistency.
@@ -554,7 +554,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
             packages: Vec::new(),
         };
         if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-            eprintln!("hew install: cannot write adze.lock: {e}");
+            eprintln!("hew install: cannot write hew.lock: {e}");
         }
         println!("Nothing to install.");
         return;
@@ -589,7 +589,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         let version = &package.version;
         let target = registry.package_dir(name, version);
         if !registry.is_installed(name, version) {
-            eprintln!("warning: {name}@{version} not found in global registry (~/.adze/packages/)");
+            eprintln!("warning: {name}@{version} not found in global registry (~/.hew/packages/)");
         }
 
         // Compute checksum if the package directory exists.
@@ -642,10 +642,10 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         packages: lock_packages,
     };
     if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-        eprintln!("hew install: cannot write adze.lock: {e}");
+        eprintln!("hew install: cannot write hew.lock: {e}");
         std::process::exit(1);
     }
-    println!("Wrote adze.lock");
+    println!("Wrote hew.lock");
 }
 
 /// Fetch missing packages from the remote registry.
@@ -1360,7 +1360,7 @@ fn cmd_remove(package: &str) {
 }
 
 /// `hew build` — build this package's `[native]` FFI library and stage it under
-/// `.adze/native/` so the compiler can link it.
+/// `.hew/native/` so the compiler can link it.
 fn cmd_build() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let artifact = match native::build_native(&cwd) {
@@ -1374,7 +1374,7 @@ fn cmd_build() {
             std::process::exit(1);
         }
     };
-    let dest_dir = cwd.join(".adze").join("native");
+    let dest_dir = cwd.join(".hew").join("native");
     match native::stage_native(&artifact, &dest_dir) {
         Ok(staged) => {
             println!("Built native lib `{}`", artifact.lib);
@@ -1925,7 +1925,7 @@ fn cmd_index_list(package: &str) {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn project_packages_path(cwd: &Path) -> PathBuf {
-    cwd.join(".adze").join("packages")
+    cwd.join(".hew").join("packages")
 }
 
 fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
@@ -2070,7 +2070,7 @@ fn find_latest_version(
         .map(|v| v.to_string())
 }
 
-/// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.adze`.
+/// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.hew`.
 ///
 /// # Errors
 ///
@@ -2102,46 +2102,46 @@ mod tests {
     #[test]
     fn ensure_gitignore_entry_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(contents.contains(".adze/"));
+        assert!(contents.contains(".hew/"));
     }
 
     #[test]
     fn ensure_gitignore_entry_no_duplicate() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents.matches(".adze/").count(), 1);
+        assert_eq!(contents.matches(".hew/").count(), 1);
     }
 
     #[test]
     fn ensure_gitignore_entry_appends_to_existing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(contents.contains("target/"));
-        assert!(contents.contains(".adze/"));
+        assert!(contents.contains(".hew/"));
     }
 
     #[test]
     fn ensure_gitignore_entry_appends_after_missing_trailing_newline() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents, "target/\n.adze/\n");
+        assert_eq!(contents, "target/\n.hew/\n");
     }
 
     #[test]
     fn ensure_gitignore_entry_matches_trimmed_existing_line() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".gitignore"), ".adze/   \n").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        std::fs::write(dir.path().join(".gitignore"), ".hew/   \n").unwrap();
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents.matches(".adze/").count(), 1);
+        assert_eq!(contents.matches(".hew/").count(), 1);
     }
 
     #[test]
@@ -2187,7 +2187,7 @@ mod tests {
         std::fs::write(src.path().join("x.hew"), "pub fn answer() -> i64 { 2 }").unwrap();
 
         let project = tempfile::tempdir().unwrap();
-        let link = project.path().join(".adze").join("packages").join("x");
+        let link = project.path().join(".hew").join("packages").join("x");
         std::fs::create_dir_all(&link).unwrap();
         std::fs::write(link.join("stale.hew"), "old").unwrap();
 
@@ -2458,7 +2458,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2491,7 +2491,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2538,7 +2538,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2573,7 +2573,7 @@ mod tests {
         write_init_gitignore(dir.path());
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("*.o"), "should keep existing entries");
-        assert!(gi.contains(".adze/"), "should add .adze/");
+        assert!(gi.contains(".hew/"), "should add .hew/");
         assert!(gi.contains("target/"), "should add target/");
     }
 
@@ -2589,7 +2589,7 @@ mod tests {
         // Simulate installed package symlink directory.
         let pkg_dir = dir
             .path()
-            .join(".adze")
+            .join(".hew")
             .join("packages")
             .join("std")
             .join("net")

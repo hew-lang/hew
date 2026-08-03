@@ -3,7 +3,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-const SKIPPED_PACKAGE_DIRS: &[&str] = &[".git", "target", ".adze"];
+const SKIPPED_PACKAGE_DIRS: &[&str] = &[".git", "target", ".hew"];
 
 /// Return true when a directory should be skipped for package traversal.
 #[must_use]

@@ -194,7 +194,7 @@ pub struct Package {
 }
 
 /// `[native]` — declares the Rust FFI library that backs this package's `extern`
-/// functions. `adze` builds the crate at [`crate_dir`](NativeLib::crate_dir) and
+/// functions. `hew build` builds the crate at [`crate_dir`](NativeLib::crate_dir) and
 /// stages the produced `lib<lib>.a` (or `.dylib`); the compiler links it when the
 /// package is imported, so consumers never pass `--link-lib` manually.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_error() {
-        let path = std::path::Path::new("/tmp/nonexistent_hew_manifest_xyz_adze.toml");
+        let path = std::path::Path::new("/tmp/nonexistent_hew_manifest_xyz_pkg.toml");
         assert!(parse_manifest(path).is_err());
     }
 

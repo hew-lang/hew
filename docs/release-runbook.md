@@ -87,10 +87,10 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 
 | Platform       | Build scope                              | Test scope                          |
 |----------------|------------------------------------------|-------------------------------------|
-| Linux x86_64   | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| Linux aarch64  | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| macOS arm64    | hew-cli, adze-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
-| Windows x86_64 | hew-cli, adze-cli, hew-lsp, hew-observe, hew-lib | Rust workspace + C-ABI + executable release-library consumer |
+| Linux x86_64   | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| Linux aarch64  | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| macOS arm64    | hew-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
+| Windows x86_64 | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace + C-ABI + executable release-library consumer |
 
 **Wait for all release gate jobs to go green, including `gate-sanitizers`.**
 The sanitizer job executes ASan and rejects missing, ambiguous, expired, vague,

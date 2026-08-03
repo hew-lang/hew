@@ -65,7 +65,7 @@ default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet
 test-threads = "num-cpus"
 
 [[profile.default.overrides]]
-# eval_e2e and adze eval tests each spawn the full hew compiler binary (AOT
+# eval_e2e and package-manager eval tests each spawn the full hew compiler binary (AOT
 # compile + codegen + link + subprocess execute).  Route them into the
 # subprocess-intensive group so at most 8 run concurrently, preventing
 # compiler-process oversubscription that inflates compile times and causes

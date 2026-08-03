@@ -75,7 +75,7 @@ Always use `make` targets instead of running `cargo` directly. See the [Makefile
 | Rust only | `make test-rust` | All Rust workspace crates | medium |
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
-| CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
+| CLI | `make test-cli` | `hew-cli` + `hew-pkg` | fast |
 | Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
 | Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |

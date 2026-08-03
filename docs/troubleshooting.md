@@ -13,7 +13,7 @@ For multi-file compile/typecheck flows, `hew check` and `hew compile` operate
 on a single entry-point file and resolve imports recursively from there. Pass
 `main.hew` (or your real top-level entry file), not every file in the tree.
 
-For the standard bootstrap flow, start with `adze init <name>` so you get
+For the standard bootstrap flow, start with `hew init <name>` so you get
 `hew.toml`, `main.hew`, and `.gitignore`, then begin with
 `hew check main.hew` / `hew compile main.hew`. `hew init` remains the lighter
 source-only scaffold: it writes `main.hew` plus `README.md`, but no
@@ -108,8 +108,8 @@ What to check:
      above the binary
 - `hew.toml` does not configure module search paths. Use `HEWPATH` or
   `HEW_STD` when you need Hew to look in a non-default module root.
-- If the missing module is a package dependency, run `adze install`. If it is
-  undeclared in project metadata, add it with `adze add ...` first.
+- If the missing module is a package dependency, run `hew install`. If it is
+  undeclared in project metadata, add it with `hew add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew
   actually looked.
 - `import mod::*;` works, but wildcard imports currently can emit a

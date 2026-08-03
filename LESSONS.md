@@ -347,7 +347,7 @@ Nuance row (table under the core):
 
 | id | trigger | apply | evidence |
 | --- | --- | --- | --- |
-| `dedup-semantic-boundary` | Multiple helpers look identical but differ at one semantic edge. | Extract common parse, decode, or update scaffolding while leaving lossy conversion, interpolation-only escapes, auto-numbering, and other owner-specific semantics at the call site. | Original LESSONS C string, parser escape, wire parser, and adze-cli passes. |
+| `dedup-semantic-boundary` | Multiple helpers look identical but differ at one semantic edge. | Extract common parse, decode, or update scaffolding while leaving lossy conversion, interpolation-only escapes, auto-numbering, and other owner-specific semantics at the call site. | Original LESSONS C string, parser escape, wire parser, and package-manager (now hew-pkg) passes. |
 | `collection-traversal-owner` | Vec, HashSet, and HashMap admissibility rules repeat the same structural `Ty` recursion. | Extract one recursive walker that delegates named collection nodes to the existing validators, and keep `validate_concrete_collection_types` calling each collection lane explicitly instead of relying on a single short-circuiting pass. | JOURNEY 2026-04-09 checker collection capability dedup lane. |
 | `ty-recursion-owner` | A checker helper is only recursively rebuilding or scanning `Ty` values without checker state. | Compare candidate helper bodies for semantic identity first, then move the shared traversal onto `Ty` and delete leftover wrappers or duplicate walkers in checker-local modules. | JOURNEY 2026-04-10 refactor/ty-subst-dedup lane. |
 

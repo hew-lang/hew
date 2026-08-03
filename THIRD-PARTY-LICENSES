@@ -8579,7 +8579,6 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * adze-cli 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-analysis 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-cabi 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-capability-gen 0.6.0-rc1 — https://github.com/hew-lang/hew
@@ -8593,6 +8592,7 @@ Apache License 2.0
   * hew-mir 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-observe 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-parser 0.6.0-rc1 — https://github.com/hew-lang/hew
+  * hew-pkg 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-runtime 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-runtime-testkit 0.6.0-rc1 — https://github.com/hew-lang/hew
   * hew-sandbox-wasm 0.6.0-rc1 — https://github.com/hew-lang/hew

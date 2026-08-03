@@ -222,7 +222,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 
 ### Package Manager & Tooling
 
-- **adze-cli/** — Package manager (`adze` binary) — init, install, publish, search
+- **hew-pkg/** — Package-manager library behind the `hew` subcommands (init, add, install, publish, search)
 - **hew-lsp/** — Language server (tower-lsp)
 - **hew-observe/** — Runtime observability TUI (`hew-observe`)
 - **hew-wasm/** — Analysis-only diagnostics frontend compiled to WASM (lexer/parser/type-checker for in-browser editor tooling); the full browser execution runtime is a v0.6.0 deliverable

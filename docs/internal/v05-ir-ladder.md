@@ -516,7 +516,7 @@ normal Cargo dependency of `hew`; no retired C++ backend build step is involved:
 
 ```
 make hew          # debug: builds hew
-make release      # release: builds hew + adze + stdlib
+make release      # release: builds hew + stdlib
 ```
 
 ---

@@ -10,11 +10,10 @@ libraries that `llvm-sys` builds against.
 
 The release build produces two binary artifacts per platform:
 
-- `hew` — compiler driver (Rust), linking LLVM 22 statically through
-  `hew-codegen-rs` (inkwell)
-- `adze` — package manager (Rust)
+- `hew` — compiler driver and package manager (Rust), linking LLVM 22
+  statically through `hew-codegen-rs` (inkwell)
 
-Both Rust binaries build with `cargo build --release` once LLVM 22
+The Rust binaries build with `cargo build --release` once LLVM 22
 libraries and headers are available; set `LLVM_PREFIX` (or
 `LLVM_SYS_221_PREFIX`) to point at the install.
 

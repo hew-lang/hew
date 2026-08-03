@@ -264,43 +264,40 @@ If the file has no machine declarations, `hew machine diagram` exits non-zero.
 
 ## Scaffolding a new project
 
-`hew init` writes two files — `main.hew` and `README.md` — and nothing else.
-It intentionally does **not** create `hew.toml`. For the manifest-first
-bootstrap flow (including `hew.toml`, `.gitignore`, and dependency management)
-use `adze init` instead.
+`hew init` is manifest-first: it writes `hew.toml`, the starter source
+file (`main.hew`, or `lib.hew` with `--lib`), and a merged `.gitignore`.
+It is never destructive — an existing `hew.toml` is a hard error,
+existing source files are always preserved, and `.gitignore` entries are
+merged rather than replaced. There is no overwrite flag.
 
 **Create a new directory:**
 
 ```sh
-hew init myapp        # creates myapp/main.hew + myapp/README.md
+hew init myapp        # creates myapp/ with hew.toml + main.hew + .gitignore
 ```
 
 **Initialise the current directory:**
 
 ```sh
 cd myapp
-hew init              # writes main.hew + README.md here
+hew init              # writes hew.toml + main.hew + .gitignore here
 ```
 
-**Overwrite existing scaffold files:**
+**Templates:**
 
 ```sh
-hew init myapp --force        # overwrites main.hew and README.md if they exist
-hew init       --force        # same, but in the current directory
+hew init mylib --lib      # library scaffold (lib.hew)
+hew init myactor --actor  # actor scaffold
 ```
-
-`--force` only applies to the two scaffold files; it will not delete
-unrelated files in the directory.
 
 ### After scaffolding
 
 ```sh
 hew check main.hew    # parse and typecheck
 hew run   main.hew    # compile and run
+hew add <package>     # add a dependency to hew.toml
+hew install           # install dependencies into .hew/packages/
 ```
-
-When you are ready to add dependencies or publish, run `adze init` in the same
-directory to layer `hew.toml` on top of the existing source files.
 
 ## Multi-file projects
 

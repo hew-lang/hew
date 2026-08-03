@@ -1,86 +1,81 @@
-# adze
+# hew-pkg
 
-The Hew package manager.
-
-## Installation
-
-`adze` is built as part of the Hew compiler toolchain:
-
-```bash
-cargo install --path adze-cli
-```
+The Hew package manager, built into the `hew` CLI. This crate is a
+library: the `hew` binary flattens its command surface into its own top
+level, so every command below is a native `hew` subcommand and there is
+no separate package-manager binary.
 
 ## Quick Start
 
 ```bash
-# Create a manifest-first project
-adze init myproject
+# Create a manifest-first project (hew.toml, main.hew, .gitignore)
+hew init myproject
 cd myproject
 
-# adze init creates hew.toml, main.hew, and .gitignore
 hew check main.hew
 hew run main.hew
 
 # Add a dependency
-adze add std::net::http --version "^1.0"
+hew add std::net::http --version "^1.0"
 
 # Install dependencies
-adze install
+hew install
 ```
 
 ## Commands
 
 ### Project Setup
 
-- `adze init [NAME]` — Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
+- `hew init [NAME]` — Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
   - `--lib` — Library project template
   - `--actor` — Actor project template
-- `adze check` — Validate your manifest
+- `hew check` — Validate your manifest (with no input file)
+- `hew build` — Build and stage this package's `[native]` FFI library (with no input file)
 
 ### Dependency Management
 
-- `adze add <PACKAGE> [--version <VER>] [--registry <NAME>]` — Add a dependency
+- `hew add <PACKAGE> [--version <VER>] [--registry <NAME>]` — Add a dependency
   - `--registry`, `-r` — Use a named registry from config
-- `adze remove <PACKAGE>` — Remove a dependency
-- `adze install [--locked] [--registry <NAME>]` — Install all dependencies
+- `hew remove <PACKAGE>` — Remove a dependency
+- `hew install [--locked] [--registry <NAME>]` — Install all dependencies
   - `--registry`, `-r` — Use a named registry from config
-- `adze update [PACKAGE]` — Update dependency versions
-- `adze outdated` — Show outdated dependencies
+- `hew update [PACKAGE]` — Update dependency versions
+- `hew outdated` — Show outdated dependencies
 
 ### Authentication
 
-- `adze login` — Log in to the registry via GitHub
-- `adze logout` — Log out from the registry
-- `adze key generate` — Generate a new Ed25519 signing keypair
-- `adze key list` — List registered signing keys
-- `adze key info <FINGERPRINT>` — Look up a signing key by fingerprint
+- `hew login` — Log in to the registry via GitHub
+- `hew logout` — Log out from the registry
+- `hew key generate` — Generate a new Ed25519 signing keypair
+- `hew key list` — List registered signing keys
+- `hew key info <FINGERPRINT>` — Look up a signing key by fingerprint
 
 ### Registry
 
-- `adze publish [--registry <NAME>]` — Publish package to the registry
+- `hew publish [--registry <NAME>]` — Publish package to the registry
   - `--registry`, `-r` — Use a named registry from config
-- `adze list` — List installed packages
-- `adze search <QUERY> [--category <CATEGORY>] [--page <N>] [--per-page <N>] [--registry <NAME>]` — Search for packages
+- `hew list` — List installed packages
+- `hew search <QUERY> [--category <CATEGORY>] [--page <N>] [--per-page <N>] [--registry <NAME>]` — Search for packages
   - `--registry`, `-r` — Use a named registry from config
-- `adze info <PACKAGE> [--registry <NAME>]` — Show package details
+- `hew info <PACKAGE> [--registry <NAME>]` — Show package details
   - `--registry`, `-r` — Use a named registry from config
-- `adze tree` — Show dependency tree
-- `adze namespace register <PREFIX>` — Register a custom namespace prefix
-- `adze namespace info <PREFIX>` — Show info about a namespace
-- `adze yank <VERSION> [--reason <TEXT>] [--undo]` — Yank a published version or undo a yank
-- `adze registry-key` — Show the registry's public signing key
-- `adze deprecate [PACKAGE] [--message <TEXT>] [--successor <PACKAGE>] [--undo]` — Deprecate a package or undo deprecation
-- `adze index sync` — Sync the local package index from the registry
-- `adze index resolve <PACKAGE> [--version <VER>]` — Resolve a package version from the local index
-- `adze index list <PACKAGE>` — List all versions of a package in the local index
+- `hew tree` — Show dependency tree
+- `hew namespace register <PREFIX>` — Register a custom namespace prefix
+- `hew namespace info <PREFIX>` — Show info about a namespace
+- `hew yank <VERSION> [--reason <TEXT>] [--undo]` — Yank a published version or undo a yank
+- `hew key registry` — Show the registry's public signing key
+- `hew deprecate [PACKAGE] [--message <TEXT>] [--successor <PACKAGE>] [--undo]` — Deprecate a package or undo deprecation
+- `hew index sync` — Sync the local package index from the registry
+- `hew index resolve <PACKAGE> [--version <VER>]` — Resolve a package version from the local index
+- `hew index list <PACKAGE>` — List all versions of a package in the local index
 
 ### Developer Tools
 
-- `adze completions <bash|zsh|fish|powershell>` — Generate shell completion scripts
+- `hew completions <bash|zsh|fish|powershell>` — Generate shell completion scripts (covers every subcommand)
 
 ## Manifest Format (hew.toml)
 
-`adze init` writes a starter manifest like:
+`hew init` writes a starter manifest like:
 
 ```toml
 [package]
@@ -103,12 +98,12 @@ target. Currently only `"2026"` is accepted; the compiler refuses to build a
 package that names an unsupported edition. When the field is omitted the
 current edition is assumed, but new manifests should set it explicitly.
 
-## Lock File (adze.lock)
+## Lock File (hew.lock)
 
-`adze install` generates an `adze.lock` file pinning exact dependency versions
-for reproducible builds. Use `adze install --locked` to enforce the lock file.
+`hew install` generates a `hew.lock` file pinning exact dependency versions
+for reproducible builds. Use `hew install --locked` to enforce the lock file.
 
-## Configuration (~/.adze/config.toml)
+## Configuration (~/.hew/config.toml)
 
 ```toml
 [defaults]
@@ -116,12 +111,12 @@ author = "Your Name"
 license = "MIT"
 
 [registry]
-path = "~/.adze/packages"
+path = "~/.hew/packages"
 ```
 
 ## Version Requirements
 
-adze supports semver version requirements:
+The resolver supports semver version requirements:
 
 | Syntax  | Meaning                       |
 | ------- | ----------------------------- |

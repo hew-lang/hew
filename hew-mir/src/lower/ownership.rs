@@ -826,10 +826,7 @@ impl Builder {
                 .iter()
                 .filter(|entry| {
                     self.binding_locals.get(&entry.binding) == Some(&source_place)
-                        && matches!(
-                            entry.disposition,
-                            Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                        )
+                        && entry.disposition == Disposition::ScopeExit
                 })
                 .map(|entry| entry.binding)
                 .collect();
@@ -4595,6 +4592,53 @@ mod typed_produced_owner_tests {
                 projection.ty,
             )]
         );
+    }
+
+    #[test]
+    fn join_does_not_readmit_a_consumed_predecessor() {
+        let source_site = SiteId(708);
+        let result_site = SiteId(709);
+        let source = owned_resource(source_site);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            source_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        let source_place = Place::Local(12);
+        let original_transferee = Place::Local(13);
+        builder.adopt_typed_produced_value_owner(&source, source_place);
+        builder
+            .published_value_places
+            .insert(source_site, source_place);
+        let source_binding = builder.owned_locals[0].binding;
+        builder.set_owned_local_consumed(
+            source_binding,
+            Some(original_transferee),
+            super::DischargeSite::BindingMoved,
+        );
+
+        builder.transfer_join_owners(result_site, &[source_site], Place::Local(14));
+
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+        assert!(matches!(
+            builder.owned_locals[0].disposition,
+            super::Disposition::ConsumedAt {
+                transferee: Some(place),
+                site: super::DischargeSite::BindingMoved,
+            } if place == original_transferee
+        ));
     }
 
     #[test]

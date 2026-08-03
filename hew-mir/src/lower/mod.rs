@@ -56,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod borrowed_argument_owner;
 mod cfg_util;
 mod closure_gen;
 mod composite_own;

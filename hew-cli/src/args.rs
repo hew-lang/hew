@@ -59,7 +59,7 @@ pub enum Command {
     Machine(MachineCommand),
     /// Format source files in-place or from stdin.
     Fmt(FmtArgs),
-    /// Scaffold a source-only project with `main.hew` + `README.md` (no `hew.toml`).
+    /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
     /// Curated playground example tools.
     Playground(PlaygroundCommand),
@@ -372,8 +372,9 @@ impl DebugArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file. Omit inside a `hew.toml` project to validate the
+    /// manifest instead (text output only).
+    pub input: Option<PathBuf>,
     /// Print alias-vs-copy decision for every actor send site.
     ///
     /// Shows whether each `actor.method(arg)` call crossed the mailbox
@@ -413,8 +414,9 @@ impl CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file. Omit inside a `hew.toml` project to build and stage
+    /// the package's `[native]` FFI library instead.
+    pub input: Option<PathBuf>,
     /// Output binary path. Default: `./<stem>` (no extension on Unix targets,
     /// `.exe` on Windows targets). Ignored with `--emit-obj`.
     #[arg(long, short = 'o', value_name = "PATH")]
@@ -730,11 +732,14 @@ pub struct FmtArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// Project name (creates a directory with `main.hew` + `README.md`; omit to init in current dir).
+    /// Project name (creates the directory if needed; omit to init the current directory).
     pub name: Option<String>,
-    /// Overwrite existing scaffold files.
+    /// Scaffold a library project (`lib.hew`).
+    #[arg(long, conflicts_with = "actor")]
+    pub lib: bool,
+    /// Scaffold an actor project.
     #[arg(long)]
-    pub force: bool,
+    pub actor: bool,
 }
 
 // ---------------------------------------------------------------------------

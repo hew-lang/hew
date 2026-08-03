@@ -2062,7 +2062,7 @@ impl RuntimeCallFamily {
                 elem: VecScalarElem::Str,
             }
             | Self::VecJoinStr => RuntimeResultOwnership::FreshOwnedString,
-            Self::VecClone => RuntimeResultOwnership::FreshOwnedVec,
+            Self::VecClone | Self::VecNew => RuntimeResultOwnership::FreshOwnedVec,
             Self::BytesNew => RuntimeResultOwnership::FreshOwnedBytes,
             _ => RuntimeResultOwnership::Untracked,
         }
@@ -3014,6 +3014,10 @@ mod tests {
         }
         assert_eq!(
             RuntimeCallFamily::VecClone.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedVec
+        );
+        assert_eq!(
+            RuntimeCallFamily::VecNew.result_ownership(),
             RuntimeResultOwnership::FreshOwnedVec
         );
         assert_eq!(

@@ -871,6 +871,46 @@ fn monitor_registration_resource_close_elaborates_scope_exit_drop() {
     );
 }
 
+/// A generator extracted from a returned tuple is a transferred projection:
+/// the tuple slot is neutralized before the handle is re-packed and consumed.
+/// The MIR obligation model must count that as one owner moving through the
+/// chain, never as a retained second owner.
+#[test]
+fn generator_projection_transfer_repack_stays_one_owner() {
+    let pipeline = lower_source(
+        r"
+        gen fn count() -> i64 { yield 1; yield 2; yield 3 }
+
+        fn make() -> (Generator<i64, ()>, i64) {
+            let g = count();
+            return (g, 0);
+        }
+
+        fn main() {
+            let pair = make();
+            let g = pair.0;
+            let repacked = (g, 99);
+            var total = 0;
+            for n in repacked.0 {
+                total = total + n;
+            }
+            println(total);
+        }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::ObligationUnderReleased { .. }
+                | MirDiagnosticKind::ObligationOverReleased { .. }
+                | MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
+        )),
+        "a neutralized generator projection/repack is one transferred owner:\n{}\ndiagnostics: {:#?}",
+        hew_mir::dump_mir(&pipeline, hew_mir::DumpStage::Raw),
+        pipeline.diagnostics
+    );
+}
+
 /// #1933 — a `#[resource]` consumed on ONE branch of an `if` (live on the
 /// fall-through) reaches the function's single exit at dataflow state
 /// `MaybeConsumed`. The binding must STAY in the scope-exit drop set there
@@ -1488,7 +1528,7 @@ fn cross_function_call_types_lower_via_call_terminator() {
     // calls to module functions. The pipeline() helper asserts HIR is clean;
     // this test pins the MIR acceptance shape: both functions appear in
     // `raw_mir` and the diagnostic stream is clean.
-    let pipeline = pipeline(
+    let pipeline = lower_source(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
     );
@@ -1550,10 +1590,9 @@ fn unknown_user_type_rejected_at_mir_boundary() {
 }
 
 #[test]
-fn registered_fieldless_user_type_still_requires_codegen_readiness() {
-    // A fieldless declared type is present in HIR type_classes but has no record
-    // layout for codegen to resolve. The MIR gate must not treat checker knownness
-    // alone as readiness.
+fn registered_fieldless_user_type_has_zero_field_layout() {
+    // A fieldless declared type is a concrete zero-field record. Its layout is
+    // sufficient for MIR and codegen readiness.
     let parsed = hew_parser::parse(
         r"
         #[linear]
@@ -1576,11 +1615,17 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
     let pipeline = lower_hir_module(&output.module);
 
     assert!(
-        pipeline.diagnostics.iter().any(|d| {
-            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Token")
-        }),
-        "fieldless registered Token must fail MIR readiness: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "{:?}",
         pipeline.diagnostics
+    );
+    assert!(
+        pipeline
+            .record_layouts
+            .iter()
+            .any(|layout| layout.name == "Token" && layout.field_tys.is_empty()),
+        "fieldless Token must carry a concrete zero-field record layout: {:?}",
+        pipeline.record_layouts
     );
 }
 

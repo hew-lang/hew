@@ -1,12 +1,13 @@
-//! Call-scrutinee return provenance (#2648) — the sound, precise authority for
-//! *what a called function's by-value return may alias*.
+//! Return provenance (#2648) — analysis of what a called function's by-value
+//! return may alias.
 //!
 //! # Why this module exists
 //!
-//! The match/while-let/let-else/if-let/discarded call-scrutinee owner mint
-//! (`call_scrutinee_owned_ty`, #2429) and #2523's projected-payload move-out
-//! neutralize both rest on one premise: *a `Call` scrutinee's by-value return is
-//! a fresh sole owner*. That premise is FALSE for an identity-forwarding callee
+//! Legacy call-scrutinee owner minting and projected-payload neutralization once
+//! rested on one premise: *a `Call` scrutinee's by-value return is a fresh sole
+//! owner*. Those paths now consume HIR's typed produced-value fact instead. This
+//! analysis remains for foreign-provenance and alias-safety consumers that are
+//! outside produced-value owner publication. The old premise is FALSE for an identity-forwarding callee
 //! (`fn passthru(x: Box) -> Box { x }`) — by-value heap params are `Read`
 //! borrows (`by-value-heap-params-are-borrows`), so the return aliases storage
 //! the caller still owns; minting a second owner over it double-frees (#2648).
@@ -17,16 +18,6 @@
 //! distinguishes an arg-rescuable forward (`ParamsOnly`, `{PARAM}`) from a
 //! never-rescuable alias (`Opaque`, `⊇{OPAQUE}` — a capture, a global, an
 //! interior borrow, an indirect callee), which a boolean cannot.
-//!
-//! # Status: UNWIRED (S1)
-//!
-//! Every item here is analysis machinery with NO behaviour change: the sole
-//! live edge is [`return_value_may_alias_borrow`] delegating to
-//! [`return_alias_bits`] under [`CoarsePolicy`], whose output is byte-identical
-//! to the pre-refactor boolean walk (proven by the `coarse_verdict_differential`
-//! frozen-reference test). The Precise driver, the interprocedural mutation
-//! summary, the preflight classifier, and the extern contract table are all
-//! authored here but consumed by no lowering path until S2+.
 //!
 //! # The one-authority discipline (`vec-element-width-symmetric-abi`)
 //!
@@ -3125,37 +3116,6 @@ pub fn is_typed_recv_callee(callee: &HirExpr) -> bool {
     )
 }
 
-/// True when `scrutinee` is a `Call` — the ONLY kind the from-call owner mint
-/// (`call_scrutinee_owned_ty`) engages on. A non-`Call` scrutinee (a `Block`/`If`
-/// synthetic `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place) is
-/// structurally `NotApplicable` — it can never reach the from-call owner mint, so
-/// its own release discipline runs unchanged. This is the `let HirExprKind::Call
-/// { .. } = &scrutinee.kind else { return None }` gate the preflight reproduces
-/// FIRST, before any runtime-identity or three-way `Call` resolution.
-#[must_use]
-pub fn scrutinee_is_call_kind(scrutinee: &HirExpr) -> bool {
-    matches!(&scrutinee.kind, HirExprKind::Call { .. })
-}
-
-/// The admission verdict a call/method/aggregate scrutinee consumer acts on
-/// (#2648 preflight). Pure-analysis shape; the wiring site (S2) maps `Admit` onto
-/// the `ProjectedPayloadOrigin` the #2523 classifier + the #2429 owner mint
-/// consume, and a reject onto a `MirDiagnostic` returned as `Err`.
-///
-/// `Reject` is NOT a variant here: the preflight returns `Result<_, MirDiagnostic>`
-/// at the wiring site, so a reject is `Err` (one diagnostic, early return, no
-/// partial MIR). This enum is the `Ok(..)` payload.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CallScrutineeAdmission {
-    /// Not a from-call owner shape (a non-`Call` scrutinee, a typed-recv/iter-next
-    /// carve-out, a builtin callee) → behave as today's `None`: no owner minted,
-    /// no reject, the scrutinee's own release discipline runs unchanged.
-    NotApplicable,
-    /// A `Fresh` (or `ParamsOnly`-with-all-fresh-args) scrutinee → mint the #2429
-    /// owner and classify #2523's move-out as `EphemeralTemp`.
-    Admit,
-}
-
 // ---------------------------------------------------------------------------
 // Total HIR reachability visitor + intra-procedural alias partition [F2-Rev6]
 // ---------------------------------------------------------------------------
@@ -5184,6 +5144,17 @@ pub(crate) mod tests {
 
     /// Front-end-lower a `.hew` source string to a `HirModule`.
     pub(crate) fn lower_source(source: &str) -> hew_hir::HirModule {
+        lower_source_with_opaque_candidate(source, None)
+    }
+
+    /// Front-end-lower a source string while supplying the exact checker-owned
+    /// opaque lifecycle that an isolated unit fixture cannot derive from the
+    /// real stdlib module graph.
+    pub(crate) fn lower_source_with_opaque_candidate(
+        source: &str,
+        candidate: Option<hew_types::OpaqueResourceLifecycleCandidate>,
+    ) -> hew_hir::HirModule {
+        let expects_candidate = candidate.is_some();
         let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
@@ -5192,13 +5163,34 @@ pub(crate) mod tests {
         );
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let tc_output = checker.check_program(&parsed.program);
+        let mut tc_output = checker.check_program(&parsed.program);
+        if let Some(mut candidate) = candidate {
+            let close_dispatch_key = format!("{}::close", candidate.resource_type);
+            candidate.close_declaration = tc_output
+                .impl_method_declaration_ids
+                .get(&close_dispatch_key)
+                .unwrap_or_else(|| {
+                    panic!("missing checker close identity for {close_dispatch_key}")
+                })
+                .clone();
+            tc_output
+                .opaque_resource_candidates
+                .candidates
+                .insert(candidate.resource_declaration.clone(), candidate);
+        }
         let output = hew_hir::lower_program(
             &parsed.program,
             &tc_output,
             &hew_hir::ResolutionCtx,
             hew_hir::TargetArch::host(),
         );
+        if expects_candidate {
+            assert!(
+                output.diagnostics.is_empty(),
+                "candidate lowering diagnostics: {:#?}",
+                output.diagnostics
+            );
+        }
         output.module
     }
 
@@ -5735,49 +5727,6 @@ pub(crate) mod tests {
             "a heap-return extern has no trusted-root marker in the interim → OPAQUE"
         );
         assert_eq!(table.len(), 1, "only the scalar extern is a row");
-    }
-
-    // -- Preflight structural carve-out --
-
-    #[test]
-    fn only_call_scrutinees_engage_the_owner_mint() {
-        let module = lower_source(
-            r#"
-            fn producer() -> Result<string, string> { Ok("x") }
-            fn use_call(r: Result<string, string>) -> i64 {
-                match producer() { Ok(_) => 1, Err(_) => 0 }
-            }
-            "#,
-        );
-        // Find the `match producer()` scrutinee inside `use_call` and confirm it
-        // is a Call kind; a bare-place / block scrutinee would not be.
-        let mut saw_call_scrutinee = false;
-        for item in &module.items {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "use_call" {
-                    for stmt in &f.body.statements {
-                        collect_call_scrutinee(stmt, &mut saw_call_scrutinee);
-                    }
-                    if let Some(tail) = &f.body.tail {
-                        if let hew_hir::HirExprKind::Match { scrutinee, .. } = &tail.kind {
-                            saw_call_scrutinee |= scrutinee_is_call_kind(scrutinee);
-                        }
-                    }
-                }
-            }
-        }
-        assert!(
-            saw_call_scrutinee,
-            "the `match producer()` scrutinee must be recognised as a Call kind"
-        );
-    }
-
-    fn collect_call_scrutinee(stmt: &hew_hir::HirStmt, out: &mut bool) {
-        if let hew_hir::HirStmtKind::Expr(e) = &stmt.kind {
-            if let hew_hir::HirExprKind::Match { scrutinee, .. } = &e.kind {
-                *out |= scrutinee_is_call_kind(scrutinee);
-            }
-        }
     }
 
     // -- Interprocedural may-mutate-heap-param summary [F2] --
@@ -6691,23 +6640,32 @@ mod measured_extern_result_transfer {
     }
 
     fn table_for_tcp_lifecycle(source: &str, release_symbol: &str) -> ExternContractTable {
-        let mut module = tests::lower_source(source);
-        module
-            .type_classes
-            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+        let module = tests::lower_source_with_opaque_candidate(
+            source,
+            Some(hew_types::OpaqueResourceLifecycleCandidate {
                 resource_declaration: hew_types::DefId::new("Connection"),
+                resource_type: "Connection".to_string(),
+                owner_module: String::new(),
                 close_declaration: hew_types::DefId::new("Connection::close"),
-                release_declaration: hew_types::DefId::new("hew_tcp_connection_close"),
-                close_symbol: "Connection::close".to_string(),
+                release_declaration: hew_types::DefId::new(release_symbol),
                 release_symbol: release_symbol.to_string(),
+                release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
+                result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
+                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
                     .into_iter()
                     .collect(),
-                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_modules: ["std.net".to_string()].into_iter().collect(),
-            })
-            .expect("test lifecycle must be unique");
+            }),
+        );
+        let lifecycle = module
+            .type_classes
+            .opaque_resource_lifecycle_for_type_name("Connection")
+            .expect("lowering must admit the exact Connection lifecycle");
+        assert_eq!(lifecycle.release_symbol, release_symbol);
+        assert_eq!(lifecycle.close_symbol, "Connection::close");
         build_extern_contract_table(&module)
     }
 
@@ -6795,23 +6753,35 @@ extern "C" {
 }
 fn main() {}
 "#;
-        let mut module = tests::lower_source(SOURCE);
-        module
-            .type_classes
-            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+        let module = tests::lower_source_with_opaque_candidate(
+            SOURCE,
+            Some(hew_types::OpaqueResourceLifecycleCandidate {
                 resource_declaration: hew_types::DefId::new("Value"),
+                resource_type: "Value".to_string(),
+                owner_module: String::new(),
                 close_declaration: hew_types::DefId::new("Value::close"),
                 release_declaration: hew_types::DefId::new("hew_json_free"),
-                close_symbol: "Value::close".to_string(),
                 release_symbol: "hew_json_free".to_string(),
+                release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
+                result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
+                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
                     .into_iter()
                     .collect(),
-                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
-            })
-            .expect("test lifecycle must be unique");
+            }),
+        );
+        let lifecycle = module
+            .type_classes
+            .opaque_resource_lifecycle_for_type_name("Value")
+            .expect("lowering must admit the exact Value lifecycle");
+        assert_eq!(lifecycle.release_symbol, "hew_json_free");
+        assert_eq!(
+            lifecycle.discharge_depth,
+            crate::ffi_contracts::ReleaseDischargeDepth::Deep
+        );
         let table = build_extern_contract_table(&module);
         assert!(
             table.extern_return_is_audited_fresh_owner("hew_json_array_new"),

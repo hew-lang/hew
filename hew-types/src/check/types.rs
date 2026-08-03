@@ -398,10 +398,11 @@ pub struct TypeCheckOutput {
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Canonical trait/method identities published through each exact import
-    /// binding.  The key is `(importer module, binding spelling, method)`;
-    /// HIR uses it when an impl names an imported trait bare or through an
-    /// alias, rather than inferring an owner from a leaf name.
+    /// Canonical trait/method identities published through each exact source
+    /// binding. The key is `(module, binding spelling, method)`; HIR uses it
+    /// when an impl names an imported trait bare or through an alias, rather
+    /// than inferring an owner from a leaf name. This also records a bare trait
+    /// reference resolved unambiguously through a module import.
     pub trait_method_ids_by_binding:
         HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
     /// Checker-allocated impl-method declaration identities keyed by their
@@ -1473,6 +1474,7 @@ pub(super) struct PendingDirectCallOwnership {
     pub(super) fact: ProducedValueFact,
     pub(super) extern_symbol: Option<String>,
     pub(super) extern_declaring_module: Option<String>,
+    pub(super) extern_param_count: usize,
     pub(super) resolved_result_ty: Ty,
 }
 
@@ -2533,6 +2535,10 @@ pub struct Checker {
     /// `await listener.accept()` suspending-accept sites. Mirrors
     /// [`TypeCheckOutput::listener_await_accepts`].
     pub(super) listener_await_accepts: HashSet<SpanKey>,
+    /// Exact receiver nominal proven when a suspending network method is
+    /// admitted. Ownership publication requires this witness in addition to
+    /// the public lowering side-table membership.
+    pub(super) suspending_io_receiver_nominals: HashMap<SpanKey, String>,
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
@@ -2575,9 +2581,10 @@ pub struct Checker {
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
-    /// Source-owned trait method IDs as exposed through an import binding.
-    /// Lookup registries may retain short compatibility keys, but call targets
-    /// use this full-path table and never mint identities from those keys.
+    /// Source-owned trait method IDs as exposed through an exact source
+    /// binding. Lookup registries may retain short compatibility keys, but
+    /// call targets use this full-path table and never mint identities from
+    /// those keys.
     pub(super) trait_method_ids_by_binding:
         HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
     /// Declaration identities for impl methods, keyed by the checker-selected
@@ -3427,6 +3434,7 @@ impl Checker {
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
+            suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),

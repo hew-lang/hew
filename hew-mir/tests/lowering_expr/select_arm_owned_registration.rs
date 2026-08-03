@@ -1,31 +1,9 @@
 //! Owned-local registration coverage for `select` arm bindings (#1875).
 //!
-//! The registration site in `lower_select`'s body-block loop is shared by
-//! every value-bearing arm kind, but only two kinds are exercisable by a
-//! compiled leak oracle (`hew-cli/tests/select_arm_owned_binding_leak_oracle.rs`):
-//!
-//! - **`ActorAsk`** and **`ChannelRecv`** compile to native and are pinned there.
-//! - **`TaskAwait`** (`t from await actor.method()`) passes the checker and
-//!   lowers to a real `SelectArmKind::TaskAwait` MIR arm, but codegen fails
-//!   closed with `E_NOT_YET_IMPLEMENTED` (the task-await winner edge reads a
-//!   `Place::MachineTag` off a non-machine local), so no native binary — and
-//!   therefore no leak-slope or poisoned-allocator oracle — can exist for it
-//!   yet. The MIR-level assertions here pin the registration half of the seam;
-//!   the runtime half (the task-winner slot drop vs `hew_task_free`) gets its
-//!   compiled oracle when the codegen surface lands.
-//! - **`StreamNext`** is not source-reachable at all: the checker rejects both
-//!   `next(<stream>)` and `stream.recv()` arm sources
-//!   (`synthesize_actor_concurrency_source`, hew-types/src/check/calls.rs —
-//!   "select arm source must be actor.method(args)"; reject fixtures
-//!   `tests/vertical-slice/reject/select_arm_{stream_recv,await_task}_dropped.hew`),
-//!   so it cannot reach MIR from source and is covered by the shared
-//!   registration site by construction.
-//!
-//! These tests prove the shared site registers the binding for the arm kinds
-//! that reach MIR: the elaborated statement stream carries the binding's
-//! owned-local `Drop` entry, and (for the await form) the raw terminator
-//! really is a `TaskAwait` arm, so the coverage cannot silently degrade to
-//! `ActorAsk` if the HIR sealed-form recognition changes.
+//! Actor replies and awaited task results share one registration site. The
+//! checker currently exposes actor asks but no source-level `Task<T>` select
+//! carrier, so the task tests stamp a synthetic HIR operand with the exact
+//! builtin task type before MIR lowering.
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, MirStatement, SelectArmKind, Terminator};
@@ -46,6 +24,38 @@ fn lower_source(src: &str) -> hew_mir::IrPipeline {
         hew_hir::TargetArch::host(),
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    lower_hir_module(&output.module)
+}
+
+fn lower_synthetic_task_await(src: &str) -> hew_mir::IrPipeline {
+    let parsed = hew_parser::parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut output = lower_program(
+        &parsed.program,
+        &hew_types::TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    for item in &mut output.module.items {
+        let hew_hir::HirItem::Function(function) = item else {
+            continue;
+        };
+        for statement in &mut function.body.statements {
+            let hew_hir::HirStmtKind::Expr(expr) = &mut statement.kind else {
+                continue;
+            };
+            let hew_hir::HirExprKind::Select(select) = &mut expr.kind else {
+                continue;
+            };
+            for arm in &mut select.arms {
+                if let hew_hir::HirSelectArmKind::TaskAwait { task } = &mut arm.kind {
+                    task.ty = ResolvedTy::Task(Box::new(ResolvedTy::String));
+                    arm.binding_name = Some("t".to_string());
+                    arm.binding_id = Some(hew_hir::BindingId(u32::MAX - 80));
+                }
+            }
+        }
+    }
     lower_hir_module(&output.module)
 }
 
@@ -81,16 +91,9 @@ fn main() {
 "#;
 
 const AWAIT_STRING_BINDING: &str = r#"
-actor Svc {
-    receive fn get() -> string {
-        "owned-reply".to_upper()
-    }
-}
-
 fn main() {
-    let svc = spawn Svc;
     select {
-        t from await svc.get() => println("won"),
+        t from await 1 => println("won"),
         after 1s => println("timeout"),
     };
 }
@@ -116,38 +119,29 @@ fn actor_ask_arm_string_binding_registers_owned_drop() {
 }
 
 /// The `TaskAwait` arm binding enters `owned_locals` through the same shared
-/// site. Codegen-NYI beyond MIR (see module docs), so this MIR-level pin is
-/// the deepest coverage available for the arm kind today.
-///
-/// The registered type is currently `Unit`, NOT the reply type: the
-/// `TaskAwait` arm-setup derives `await_ty` from a `ResolvedTy::Task(inner)`
-/// task expression and falls back to `Unit` for this `await actor.method()`
-/// form (`lower_select`'s `HirSelectArmKind::TaskAwait` arm). The codegen
-/// NYI keeps that placeholder unreachable in native code; when the
-/// task-await winner edge lands, the type derivation must resolve the real
-/// reply type and the compiled leak oracle takes over from this pin — do
-/// not weaken this assertion, replace it with the typed one.
+/// site and retains the task's concrete string result type.
 #[test]
 fn task_await_arm_string_binding_registers_owned_drop() {
-    let pipeline = lower_source(AWAIT_STRING_BINDING);
+    let pipeline = lower_synthetic_task_await(AWAIT_STRING_BINDING);
     assert!(
         pipeline.diagnostics.is_empty(),
         "{:?}",
         pipeline.diagnostics
     );
-    assert!(
-        main_drop_ty(&pipeline, "t").is_some(),
+    assert_eq!(
+        main_drop_ty(&pipeline, "t"),
+        Some(ResolvedTy::String),
         "TaskAwait select-arm binding `t` must register an owned-local Drop \
          entry via the shared body-block site in lower_select"
     );
 }
 
-/// Guard the arm-kind discriminator: `t from await svc.get()` must lower to
+/// Guard the arm-kind discriminator: `t from await task` must lower to
 /// a `TaskAwait` MIR arm, not an `ActorAsk` — otherwise the test above would
 /// silently stop covering the `TaskAwait` branch of the shared site.
 #[test]
 fn await_form_lowers_to_task_await_arm() {
-    let pipeline = lower_source(AWAIT_STRING_BINDING);
+    let pipeline = lower_synthetic_task_await(AWAIT_STRING_BINDING);
     let has_task_await_arm = pipeline
         .raw_mir
         .iter()
@@ -161,7 +155,7 @@ fn await_form_lowers_to_task_await_arm() {
         });
     assert!(
         has_task_await_arm,
-        "`t from await svc.get()` must produce a SelectArmKind::TaskAwait arm \
+        "`t from await task` must produce a SelectArmKind::TaskAwait arm \
          on main's select terminator"
     );
 }

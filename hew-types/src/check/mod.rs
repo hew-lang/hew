@@ -194,18 +194,28 @@ fn resolve_produced_node(
             })
         }
     };
-    if expr_types
-        .get(key)
-        .is_some_and(|ty| ty.is_copy() || registry.implements_marker(ty, MarkerTrait::Copy))
-    {
-        // Copy-ness governs only the published result. Call leaves also carry
-        // receiver and source-argument boundary contracts, so retain the rest
-        // of the fact while clearing only its ownership obligation.
-        fact.ownership = Ownership::NoOwner;
-    }
+    clear_copy_owner_authority(key, &mut fact, expr_types, registry);
     visiting.remove(key);
     memo.insert(key.clone(), fact.clone());
     fact
+}
+
+fn clear_copy_owner_authority(
+    key: &SpanKey,
+    fact: &mut ProducedValueFact,
+    expr_types: &HashMap<SpanKey, Ty>,
+    registry: &TraitRegistry,
+) {
+    use crate::runtime_call::ProducedValueOwnership as Ownership;
+
+    let copy_result = expr_types
+        .get(key)
+        .is_some_and(|ty| ty.is_copy() || registry.implements_marker(ty, MarkerTrait::Copy));
+    if copy_result && !matches!(fact.ownership, Ownership::Unknown) {
+        // Copy-ness governs only the published result. Call leaves also carry
+        // receiver and source-argument contracts, so clear only its obligation.
+        fact.ownership = Ownership::NoOwner;
+    }
 }
 
 #[must_use]
@@ -337,22 +347,14 @@ impl Checker {
                 }
                 // A shipped stdlib file can be checked directly as the graph
                 // root (`hew check std/string.hew`). Its root module has no
-                // dotted identity, so recover only the closed set of
-                // compiler-lowered stdlib extern owners from the canonical
+                // dotted identity, so recover its owner from the canonical
                 // source path. A user root cannot obtain this authority.
                 if directly_checked_stdlib {
-                    for declaration in crate::runtime_call::canonical_std_io_extern_signatures() {
-                        if module.source_paths.iter().any(|source| {
-                            crate::module_registry::is_canonical_stdlib_module_source(
-                                source,
-                                declaration.module,
-                            )
-                        }) {
-                            self.canonical_std_module_sources
-                                .insert(declaration.module.to_string());
-                            self.canonical_std_root_sources
-                                .insert(declaration.module.to_string());
-                        }
+                    for owner in module.source_paths.iter().filter_map(|source| {
+                        crate::module_registry::canonical_stdlib_module_for_source(source)
+                    }) {
+                        self.canonical_std_module_sources.insert(owner.clone());
+                        self.canonical_std_root_sources.insert(owner);
                     }
                 }
             }
@@ -939,25 +941,62 @@ impl Checker {
                     .registry
                     .implements_marker(&resolved_result, MarkerTrait::Copy);
             let mut fact = pending.fact;
-            if non_owning {
-                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
-            } else if let Some(symbol) = pending.extern_symbol.as_deref() {
-                use crate::ffi_contracts::ExternResultOwnership;
+            if let Some(symbol) = pending.extern_symbol.as_deref() {
+                use crate::ffi_contracts::{
+                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+                };
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
-                let owned = match &resolved_result {
-                    Ty::Named { name, .. } => opaque_resource_candidates
-                        .candidates
-                        .get(name.as_str())
-                        .filter(|candidate| candidate.producer_symbols.contains(symbol))
-                        .filter(|candidate| {
-                            pending
-                                .extern_declaring_module
-                                .as_ref()
-                                .is_some_and(|module| candidate.producer_modules.contains(module))
-                        })
-                        .map(|candidate| match candidate.result_ownership {
+                if !matches!(&resolved_result, Ty::String | Ty::Bytes | Ty::Named { .. }) {
+                    fact.ownership = Ownership::NoOwner;
+                    produced_value_ownership.insert(key, fact);
+                    continue;
+                }
+                let contract = crate::ffi_contracts::extern_ownership_contract(symbol)
+                    .contract()
+                    .filter(|contract| contract.params.len() == pending.extern_param_count)
+                    .filter(|contract| {
+                        contract.result_retention == ExternResultRetention::Transferred
+                            && contract.discharge_depth != ReleaseDischargeDepth::None
+                            && !contract.release_symbol.is_empty()
+                    });
+                let trusted_compiled_stdlib = pending
+                    .extern_declaring_module
+                    .as_ref()
+                    .is_some_and(|module| self.canonical_std_module_sources.contains(module));
+                let lifecycle_matches = contract.is_some_and(|contract| match &resolved_result {
+                    Ty::String => {
+                        contract.resource_result_type.is_none()
+                            && contract.release_symbol == "hew_string_drop"
+                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                    }
+                    Ty::Bytes => {
+                        contract.resource_result_type.is_none()
+                            && contract.release_symbol == "hew_bytes_drop"
+                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                    }
+                    Ty::Named { name, .. } => {
+                        contract
+                            .resource_result_type
+                            .map_or(trusted_compiled_stdlib, |_| {
+                                opaque_resource_candidates
+                                    .candidates
+                                    .get(name.as_str())
+                                    .filter(|candidate| candidate.producer_symbols.contains(symbol))
+                                    .is_some_and(|candidate| {
+                                        pending.extern_declaring_module.as_ref().is_some_and(
+                                            |module| candidate.producer_modules.contains(module),
+                                        )
+                                    })
+                            })
+                    }
+                    _ => false,
+                });
+                let owned =
+                    contract
+                        .filter(|_| lifecycle_matches)
+                        .map(|contract| match contract.result {
                             ExternResultOwnership::Fresh => Ownership::owned(Acquisition::Fresh),
                             ExternResultOwnership::Retained => {
                                 Ownership::owned(Acquisition::Retained)
@@ -965,10 +1004,10 @@ impl Checker {
                             ExternResultOwnership::Borrowed | ExternResultOwnership::None => {
                                 Ownership::Unknown
                             }
-                        }),
-                    _ => None,
-                };
+                        });
                 fact.ownership = owned.unwrap_or(Ownership::Unknown);
+            } else if non_owning {
+                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
             }
             produced_value_ownership.insert(key, fact);
         }
@@ -981,19 +1020,18 @@ impl Checker {
                 .resolve(&pending.resolved_result_ty)
                 .materialize_literal_defaults();
             let mut fact = pending.fact;
-            if resolved_result.is_copy()
-                || self
-                    .registry
-                    .implements_marker(&resolved_result, MarkerTrait::Copy)
-            {
-                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
-            } else if let Some(identity) = pending.extern_identity {
+            if let Some(identity) = pending.extern_identity {
                 use crate::ffi_contracts::{
                     ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
                 };
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
+                if !matches!(&resolved_result, Ty::String | Ty::Bytes | Ty::Named { .. }) {
+                    fact.ownership = Ownership::NoOwner;
+                    produced_value_ownership.insert(key, fact);
+                    continue;
+                }
                 let contract =
                     crate::ffi_contracts::extern_ownership_contract(&identity.endpoint).contract();
                 let lifecycle_authorized = contract.is_some_and(|contract| {
@@ -1031,6 +1069,12 @@ impl Checker {
                 } else {
                     Ownership::Unknown
                 };
+            } else if resolved_result.is_copy()
+                || self
+                    .registry
+                    .implements_marker(&resolved_result, MarkerTrait::Copy)
+            {
+                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
             }
             produced_value_ownership.insert(key, fact);
         }

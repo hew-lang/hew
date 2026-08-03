@@ -174,6 +174,20 @@ fn assert_no_nyi(pl: &IrPipeline) {
     );
 }
 
+#[test]
+fn borrowed_projection_from_owned_index_uses_the_parent_owner() {
+    let pl = pipeline_with_tc(
+        r"
+        fn borrow_len(value: string) -> i64 { value.len() }
+
+        fn projected(values: Vec<(string, string)>) -> i64 {
+            borrow_len(values[0].0)
+        }
+        ",
+    );
+    assert_no_nyi(&pl);
+}
+
 // ---------------------------------------------------------------------------
 // Canary 1 — BOUND Vec<string> getter: `let y = xs[i]; y.len()` → one drop.
 // ---------------------------------------------------------------------------
@@ -345,11 +359,17 @@ fn canary4b_string_call_temp_arg_releases_once() {
 // A whole by-value string parameter is retained before the return-slot move.
 // A string projection is retained by the field load. Both therefore hand the
 // caller exactly one independently releasable share even though the returned
-// pointer can alias input storage. A direct borrowing consumer must give that
-// anonymous call-result carrier exactly one caller-side release.
+// pointer can alias input storage. A direct borrowing consumer gives each
+// checker-owned anonymous carrier one caller-side release. The generic identity
+// call is checker-authored `Borrowed`, so it must keep the parameter's existing
+// owner instead of letting HIR closure mint another one.
 // ---------------------------------------------------------------------------
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture compares every direct return-carrier route"
+)]
 fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
     let pl = pipeline_with_tc(
         "record Holder { value: string }\n\
@@ -429,7 +449,6 @@ fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
         "nested_call",
         "early_call",
         "return_join_twice_call",
-        "generic_call",
     ] {
         assert_eq!(
             return_exit_string_drops(&pl, caller),
@@ -444,6 +463,17 @@ fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
              by the nested runtime-temp path"
         );
     }
+    assert_eq!(
+        return_exit_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: a concrete Borrowed checker verdict must keep the parameter owner \
+         instead of minting a caller-side release"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: borrowing the identity result needs no independent temp release"
+    );
     assert_eq!(
         total_string_drops(&pl, "return_again"),
         0,
@@ -471,16 +501,8 @@ fn bound_return_carrier_keeps_one_release_without_a_second_temp_owner() {
 }
 
 const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
-        extern "C" {
-            fn host_opaque_string() -> string;
-        }
-
         fn invoke(make: fn() -> string) -> string {
             make()
-        }
-
-        fn opaque_extern_wrapper() -> string {
-            unsafe { host_opaque_string() }
         }
 
         fn borrow_len(value: string) -> i64 {
@@ -524,9 +546,6 @@ const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
             make();
         }
 
-        fn opaque_extern_direct() -> i64 {
-            borrow_len(opaque_extern_wrapper())
-        }
         "#;
 
 #[test]
@@ -585,12 +604,28 @@ fn closure_invoke_string_carriers_release_once_without_widening_opaque_externs()
              binding-scoped owner"
         );
     }
-    assert_eq!(
-        total_string_drops(&pl, "opaque_extern_direct"),
-        0,
-        "the closure-only authority must not make a direct ownership-opaque \
-         extern wrapper releasable"
+}
+
+#[test]
+fn direct_opaque_extern_string_scrutinee_fails_closed() {
+    let pl = pipeline_with_tc(
+        r#"
+        extern "C" { fn host_opaque_string() -> string; }
+        fn opaque_extern_wrapper() -> string { unsafe { host_opaque_string() } }
+        fn borrow_len(value: string) -> i64 { value.len() }
+        fn main() -> i64 { borrow_len(opaque_extern_wrapper()) }
+        "#,
     );
+    assert!(
+        pl.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "call-scrutinee ownership is unresolved"
+        )),
+        "an ownership-opaque result must stop before codegen: {:#?}",
+        pl.diagnostics
+    );
+    assert_eq!(total_string_drops(&pl, "main"), 0);
 }
 
 #[test]
@@ -906,7 +941,12 @@ fn opaque_wrapped(make: fn() -> string) -> i64 {
              exactly one caller-side release"
         );
     }
-    for caller in ["mixed_if", "static_literal", "borrowed"] {
+    assert_eq!(
+        total_string_drops(&pl, "mixed_if"),
+        1,
+        "the fresh-or-borrowed join retains one independent result share"
+    );
+    for caller in ["static_literal", "borrowed"] {
         assert_eq!(
             total_string_drops(&pl, caller),
             0,

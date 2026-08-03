@@ -72,16 +72,30 @@ fn observed_result_dests(pipeline: &IrPipeline, name: &str) -> usize {
     raw(pipeline, name)
         .blocks
         .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter(|instruction| {
-            matches!(
-                instruction,
-                Instr::CallRuntimeAbi(call)
-                    if matches!(call.symbol(), "hew_observe_scrape" | "hew_observe_series")
-                        && matches!(call.dest(), Some(Place::Local(_)))
-            )
+        .map(|block| {
+            let inline = block
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        instruction,
+                        Instr::CallRuntimeAbi(call)
+                            if matches!(call.symbol(), "hew_observe_scrape" | "hew_observe_series")
+                                && matches!(call.dest(), Some(Place::Local(_)))
+                    )
+                })
+                .count();
+            let terminal = usize::from(matches!(
+                &block.terminator,
+                hew_mir::Terminator::Call {
+                    callee,
+                    dest: Some(Place::Local(_)),
+                    ..
+                } if matches!(callee.as_str(), "hew_observe_scrape" | "hew_observe_series")
+            ));
+            inline + terminal
         })
-        .count()
+        .sum()
 }
 
 fn inline_string_drops(pipeline: &IrPipeline, name: &str) -> usize {

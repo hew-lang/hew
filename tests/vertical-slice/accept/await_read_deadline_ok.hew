@@ -6,10 +6,6 @@
 // exit -> main fallback 99.
 import std::net::{Listener};
 
-extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
-}
-
 actor Reader {
     let port: i32;
     receive fn go() {
@@ -25,9 +21,7 @@ actor Reader {
 
 fn main() {
     let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
+    let port = listener.local_port() as i32;
     let reader = spawn Reader(port: port);
     reader.go();
     let client = listener.accept();

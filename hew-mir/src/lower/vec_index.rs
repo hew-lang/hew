@@ -188,7 +188,6 @@ impl Builder {
                 next,
             });
             self.start_block(next);
-            self.note_fresh_vec_clone_projection_base(result_place, elem_ty.clone(), site);
         } else {
             self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new(

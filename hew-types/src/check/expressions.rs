@@ -161,6 +161,28 @@ impl Checker {
         if resolved.is_instant() {
             return;
         }
+        // These compiler carriers have a closed Display ABI selected by their
+        // builtin discriminator in HIR/codegen (`hew_*_display`), with the
+        // shipped `std.builtins` impl supplying the source-level contract.
+        // The carrier representation deliberately stays canonical rather than
+        // inheriting a `std.builtins.*` nominal name, so a generic nominal-impl
+        // lookup alone cannot prove the implementation.  This is the same
+        // typed identity boundary used by f-string lowering, not a leaf-name
+        // exception; a user `NodeId` remains `builtin: None` and reaches the
+        // ordinary trait lookup below.
+        if matches!(
+            resolved,
+            Ty::Named {
+                builtin: Some(
+                    crate::BuiltinType::NodeId
+                        | crate::BuiltinType::Location
+                        | crate::BuiltinType::RemotePid
+                ),
+                ..
+            }
+        ) {
+            return;
+        }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
         // Display trait at all — in which case f-string interpolation can
@@ -1218,10 +1240,22 @@ impl Checker {
             let ty = binding.ty.clone();
             let def_span = binding.def_span.clone();
             if is_moved {
+                let is_linear = matches!(
+                    &ty,
+                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                );
                 let mut err = TypeError::new(
-                    TypeErrorKind::UseAfterMove,
+                    if is_linear {
+                        TypeErrorKind::UseAfterConsume
+                    } else {
+                        TypeErrorKind::UseAfterMove
+                    },
                     span.clone(),
-                    format!("use of moved value `{name}`"),
+                    if is_linear {
+                        format!("UseAfterConsume: use of consumed linear value `{name}`")
+                    } else {
+                        format!("use of moved value `{name}`")
+                    },
                 );
                 if let Some(ref source_module) = self.current_module {
                     err = err.with_source_module(source_module.clone());
@@ -1240,6 +1274,12 @@ impl Checker {
                          use a single consuming call per binding",
                         ty.user_facing()
                     ));
+                } else if is_linear {
+                    err = err.with_suggestion(
+                        "a `#[linear]` binding has exactly one ownership path; invoke its \
+                         consuming method only once"
+                            .to_string(),
+                    );
                 } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
                     // The value's type has a clone path, so the canonical fix is
                     // to duplicate it before the consuming use and pass the copy.
@@ -2306,6 +2346,16 @@ impl Checker {
                 self.task_scope_depth += 1;
                 self.check_block(block, None);
                 self.task_scope_depth -= 1;
+                Ty::Unit
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                // A deadline clause is unit-valued, but both of its children are
+                // still ordinary checked source. In particular, direct calls in
+                // the body must publish their canonical targets for HIR lowering;
+                // treating this node as the concurrency fallback's default Unit
+                // silently skipped the entire body.
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+                self.check_block(body, None);
                 Ty::Unit
             }
             Expr::UnsafeBlock(block) => {
@@ -6647,12 +6697,18 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let td = if is_bare_constructor {
-            self.module_local_type_def(unqualified)
+        let module_local_name = if is_bare_constructor {
+            self.current_module_identity().and_then(|owner| {
+                let qualified = format!("{owner}.{unqualified}");
+                self.type_defs.contains_key(&qualified).then_some(qualified)
+            })
         } else {
             None
-        }
-        .or_else(|| self.lookup_type_def(name));
+        };
+        let td = module_local_name
+            .as_deref()
+            .and_then(|qualified| self.lookup_type_def(qualified))
+            .or_else(|| self.lookup_type_def(name));
         if let Some(td) = td {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
@@ -6809,10 +6865,11 @@ impl Checker {
             // The helper short-circuits cleanly for bound-free names and
             // enforces the TypeDef-owned bound map for every generic nominal
             // whose arguments were inferred from the fields above.
-            self.enforce_type_def_instantiation_bounds(name, &type_args, span);
+            let result_name = module_local_name.as_deref().unwrap_or(name);
+            self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
             Ty::Named {
                 builtin: None,
-                name: name.to_string(),
+                name: result_name.to_string(),
                 args: type_args,
             }
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
@@ -7431,7 +7488,7 @@ impl Checker {
             } else {
                 Ownership::Borrowed
             }),
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+            Expr::FieldAccess { object, .. } => {
                 if no_owner {
                     ProducedValueFact::result(Ownership::NoOwner)
                 } else {
@@ -7445,6 +7502,28 @@ impl Checker {
                                 Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
                             });
                     ProducedValueFact::result(ownership)
+                }
+            }
+            Expr::Index { object, .. } => {
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if self
+                    .expr_types
+                    .get(&SpanKey::in_module(&object.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Named {
+                                builtin: Some(BuiltinType::Vec),
+                                ..
+                            }
+                        )
+                    })
+                {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Clone))
+                } else {
+                    ProducedValueFact::result(Ownership::Unknown)
                 }
             }
             Expr::Literal(Literal::String(_)) => ProducedValueFact::result(Ownership::Borrowed),
@@ -7461,7 +7540,9 @@ impl Checker {
             | Expr::MachineEmit { .. }
             | Expr::Return(_)
             | Expr::Binary { .. }
-            | Expr::AwaitRestart(_) => ProducedValueFact::result(if no_owner {
+            | Expr::AwaitRestart(_)
+            | Expr::Tuple(_)
+            | Expr::StructInit { .. } => ProducedValueFact::result(if no_owner {
                 Ownership::NoOwner
             } else {
                 Ownership::Unknown
@@ -7471,11 +7552,9 @@ impl Checker {
             } else {
                 Ownership::owned(Acquisition::Clone)
             }),
-            Expr::Tuple(_)
-            | Expr::Array(_)
+            Expr::Array(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
-            | Expr::StructInit { .. }
             | Expr::Lambda { .. }
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
@@ -7644,7 +7723,7 @@ impl Checker {
             fact.receiver_span = None;
         }
         let dependency = match expr {
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+            Expr::FieldAccess { object, .. } => {
                 let child = SpanKey::in_module(&object.1, self.current_module_idx);
                 self.expr_types
                     .contains_key(&child)

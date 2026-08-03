@@ -5,7 +5,10 @@ use super::temp_drop::{
 mod aggregate_borrowed_ingress_clone;
 mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
+mod foundation;
 mod predicate_string_temp_drop;
+mod retained_string_aliases;
+mod tuple_handle_projection;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -37,132 +40,14 @@ pub(super) use builtin_handle_record_field_overwrite::detect_builtin_handle_reco
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
+use foundation::{
+    generator_env_snapshot_init_locals, initializes_generator_env_snapshot, scope_is_same_or_nested,
+};
 use predicate_string_temp_drop::predicate_string_temp_drop_proof;
-
-fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
-    blocks
-        .iter()
-        .filter_map(|block| match &block.terminator {
-            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
-            _ => None,
-        })
-        .collect()
-}
-
-fn initializes_generator_env_snapshot(instr: &Instr, env_locals: &HashSet<u32>) -> bool {
-    matches!(
-        instr,
-        Instr::RecordInit { dest, .. }
-            if base_local(*dest).is_some_and(|local| env_locals.contains(&local))
-    )
-}
-
-/// Whether `destination` closes no later than `source`.
-///
-/// Scope ids are opaque identities, so lexical containment must follow the
-/// builder's parent graph. Missing or cyclic ancestry fails closed.
-fn scope_is_same_or_nested(
-    destination: ScopeId,
-    source: ScopeId,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-) -> bool {
-    let mut current = destination;
-    let mut visited = HashSet::new();
-    let mut contains_source = false;
-    loop {
-        if !visited.insert(current) {
-            return false;
-        }
-        contains_source |= current == source;
-        let Some(entry) = scope_info.get(&current) else {
-            return false;
-        };
-        let Some(parent) = entry.parent else {
-            return contains_source;
-        };
-        current = parent;
-    }
-}
-
-/// String field loads are emitted with an independent `+1` retain. Follow
-/// their Move aliases so the aggregate sole-owner provers do not mistake that
-/// independently owned share for an extraction of the source aggregate's
-/// original field ownership.
-fn retained_string_field_load_aliases(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let seeds = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local);
-    propagate_whole_value_alias_roots(blocks, seeds)
-        .into_keys()
-        .collect()
-}
-
-/// The generation-safe subset of retained string field-load aliases.
-///
-/// The aggregate provers key payload ownership by MIR local, while a local may
-/// be reused for multiple generations.  Removing payload-binder taint is sound
-/// only when the field load and every onward alias each uniquely define their
-/// destination.  This keeps a retained string clone from masking a different
-/// payload generation that later reuses the same local.
-fn uniquely_defined_retained_string_field_load_aliases(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let dominators = block_dominators(blocks);
-    let mut proven_defs: HashMap<u32, InstrSite> = HashMap::new();
-    for block in blocks {
-        for (index, instr) in block.instructions.iter().enumerate() {
-            let Some(dest) = string_field_load_producer_dest(instr, local_tys).and_then(base_local)
-            else {
-                continue;
-            };
-            let site = InstrSite {
-                block: block.id,
-                index,
-            };
-            if single_dominating_local_generation(blocks, &dominators, dest, site) {
-                proven_defs.insert(dest, site);
-            }
-        }
-    }
-
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (index, instr) in block.instructions.iter().enumerate() {
-                let Instr::Move {
-                    dest: Place::Local(dest),
-                    src: Place::Local(src),
-                } = instr
-                else {
-                    continue;
-                };
-                let site = InstrSite {
-                    block: block.id,
-                    index,
-                };
-                let Some(&src_def) = proven_defs.get(src) else {
-                    continue;
-                };
-                if single_dominating_local_generation(blocks, &dominators, *dest, site)
-                    && instr_site_dominates(&dominators, src_def, site)
-                    && proven_defs.insert(*dest, site).is_none()
-                {
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    proven_defs.into_keys().collect()
-}
+use retained_string_aliases::{
+    retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
+};
+pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
@@ -1532,7 +1417,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         transferee,
                         authority:
                             crate::model::NeutralizeAuthority::SendTransferLastUse
-                            | crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                            | crate::model::NeutralizeAuthority::WholeCarrierConsume
+                            | crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
                     } => *place == source && *transferee == Some(dest),
                     _ => false,
                 })
@@ -1850,6 +1736,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 instr,
                 Instr::Move { .. }
                     | Instr::Drop { .. }
+                    | Instr::BytesRetain { .. }
+                    | Instr::StringRetain { .. }
                     | Instr::RecordFieldLoad { .. }
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldDrop { .. }
@@ -1976,7 +1864,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) && !interior_enum_candidate_locals.contains(&local) {
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) && !interior_enum_candidate_locals.contains(&local) {
             allowed.insert(binding);
         }
     }
@@ -2601,7 +2490,13 @@ pub(super) fn derive_owned_record_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) {
+        // Escape facts are keyed by the byte-alias group's canonical root.
+        // A named binding may itself be a later alias member (for example a
+        // branch-join result copied from a produced record), so testing its
+        // slot directly would re-admit stale cleanup authority after another
+        // member was handed to actor state, a return, or another owning sink.
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
             allowed.insert(binding);
         }
     }
@@ -5036,7 +4931,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) {
+        let root = alias_of.get(&local).copied().unwrap_or(local);
+        if !excluded_roots.contains(&root) {
             allowed.insert(binding);
         }
     }
@@ -5098,7 +4994,7 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
     }
 }
 mod returned_member_flow;
-use returned_member_flow::retained_string_values_before;
+use returned_member_flow::retained_owner_values_before;
 
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
@@ -5106,12 +5002,11 @@ use returned_member_flow::retained_string_values_before;
 ///
 /// A composite return — `(a, b)` / `R { f: a, g: b }`, reached directly, by
 /// name, or through any control-flow tail — byte-copies each constituent into
-/// the returned aggregate struct with no retain (the M-COW spine emits no
-/// retain on share), then moves the whole aggregate to the `ReturnSlot`. The
-/// caller now owns those members; if the callee also dropped them at scope exit
-/// it would `close` / free a buffer the caller still holds (the Finding-1 hard
-/// double-free: an unguarded `Box::from_raw` twice — see the codegen
-/// Stream/Sink drop arm).
+/// the returned aggregate struct, then moves the whole aggregate to the
+/// `ReturnSlot`. Without a retain, the caller receives the member binding's
+/// owner and the callee must relinquish it. An explicit retain instead mints
+/// the caller's owner, so the member binding keeps its original exit
+/// discharge.
 ///
 /// The previous revision excluded these members by walking the SYNTACTIC return
 /// expression (`mark_returned_binding_moved`): it matched only `BindingRef` /
@@ -5248,7 +5143,7 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
                     Instr::TupleConstruct { elements, dest }
                         if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                     {
-                        let retained = retained_string_values_before(block, instr_index);
+                        let retained = retained_owner_values_before(block, instr_index);
                         for elem in elements {
                             if !retained.contains(elem) {
                                 changed |= add_member(elem, &mut flows_to_return);
@@ -5260,7 +5155,7 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
                     Instr::RecordInit { fields, dest, .. }
                         if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                     {
-                        let retained = retained_string_values_before(block, instr_index);
+                        let retained = retained_owner_values_before(block, instr_index);
                         for (_offset, field) in fields {
                             if !retained.contains(field) {
                                 changed |= add_member(field, &mut flows_to_return);
@@ -5401,7 +5296,7 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 Instr::TupleConstruct { elements, dest }
                     if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                 {
-                    let retained = retained_string_values_before(block, instr_index);
+                    let retained = retained_owner_values_before(block, instr_index);
                     for elem in elements {
                         if !retained.contains(elem) {
                             record(elem, block.id, &mut transfer_blocks);
@@ -5411,7 +5306,7 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 Instr::RecordInit { fields, dest, .. }
                     if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                 {
-                    let retained = retained_string_values_before(block, instr_index);
+                    let retained = retained_owner_values_before(block, instr_index);
                     for (_offset, field) in fields {
                         if !retained.contains(field) {
                             record(field, block.id, &mut transfer_blocks);
@@ -5939,6 +5834,44 @@ pub(super) fn derive_spawn_consumed_handle_bindings(
     }
     result
 }
+/// Bindings whose typed builtin handle is a non-owning projection of a live
+/// aggregate owner.
+///
+/// `compute_projection_alias_taint` is the physical value-flow authority: it
+/// seeds no-retain record/tuple/actor-state field loads and enum payload moves,
+/// propagates them through whole-value moves, and deliberately excludes a
+/// destination whose source projection was neutralized during an ownership
+/// transfer. This adapter intersects that physical fact with the exact builtin
+/// handle type classifier. The result is therefore narrow in both directions:
+///
+/// - a borrowed `Result::Ok(monitor_ref)`/`Option::Some(handle)` binder remains
+///   owned by its parent aggregate and must not acquire a second close;
+/// - a consumed binder whose source slot was neutralized is not tainted and
+///   remains the sole close authority;
+/// - a user resource or a same-leaf user shadow never enters this set because
+///   it has no builtin discriminator.
+///
+/// The drop planner and W3.053 gate consume this same set so legality cannot say
+/// "borrow" while elaboration still emits a second affine-resource drop.
+#[must_use]
+pub(super) fn derive_borrowed_builtin_handle_projection_alias_bindings(
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    projection_alias_tainted: &HashSet<u32>,
+) -> HashSet<BindingId> {
+    binding_locals
+        .iter()
+        .filter_map(|(binding, place)| {
+            let local = base_local(*place)?;
+            (projection_alias_tainted.contains(&local)
+                && local_tys
+                    .get(local as usize)
+                    .is_some_and(ty_is_owned_handle_leaf))
+            .then_some(*binding)
+        })
+        .collect()
+}
+
 /// W3.053 catch-all FAIL-CLOSED gate for the combinatorial owned-handle
 /// aggregate-extraction double-free class.
 ///
@@ -6984,6 +6917,48 @@ mod owned_record_drop_derivation {
         assert!(
             allowed.contains(&b),
             "an untouched owned record is its own sole owner and must be admitted"
+        );
+    }
+
+    /// Final admission must test the canonical byte-alias root, not the
+    /// candidate's immediate slot.  Branch joins commonly register both the
+    /// produced record and the named join result; after the latter escapes,
+    /// both slots describe the same transferred owner and neither may retain a
+    /// `RecordInPlace` cleanup.
+    #[test]
+    fn escaped_alias_member_excludes_every_candidate_in_its_group() {
+        let produced = BindingId(1);
+        let selected = BindingId(2);
+        let owned = vec![
+            (produced, "produced".to_string(), rec_ty()),
+            (selected, "selected".to_string(), rec_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(produced, Place::Local(0)), (selected, Place::Local(1))]
+                .into_iter()
+                .collect();
+        let local_tys = vec![rec_ty(), rec_ty()];
+        let instructions = vec![
+            Instr::Move {
+                dest: Place::Local(1),
+                src: Place::Local(0),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(1),
+            },
+        ];
+
+        let allowed = derive(
+            &[block(0, instructions, Terminator::Return)],
+            &owned,
+            &binding_locals,
+            &local_tys,
+        );
+        assert!(
+            !allowed.contains(&produced) && !allowed.contains(&selected),
+            "an escape through any whole-value alias transfers the group's one owner; \
+             no stale candidate may retain recursive cleanup authority; got {allowed:?}"
         );
     }
 
@@ -8757,6 +8732,63 @@ mod w3053_aggregate_handle_double_free_gate {
         )
     }
 
+    fn monitor_ref_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "std.link_monitor.MonitorRef",
+            BuiltinType::MonitorRef,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn borrowed_builtin_handle_projection_aliases_are_exactly_typed() {
+        let monitor = BindingId(1);
+        let stream = BindingId(2);
+        let cancellation = BindingId(3);
+        let shadow = BindingId(4);
+        let user_resource = BindingId(5);
+        let transferred = BindingId(6);
+        let binding_locals = HashMap::from([
+            (monitor, Place::Local(1)),
+            (stream, Place::Local(2)),
+            (cancellation, Place::Local(3)),
+            (shadow, Place::Local(4)),
+            (user_resource, Place::Local(5)),
+            (transferred, Place::Local(6)),
+        ]);
+        let local_tys = vec![
+            ResolvedTy::Unit,
+            monitor_ref_ty(),
+            ResolvedTy::named_builtin("std.io.Stream", BuiltinType::Stream, vec![ResolvedTy::I64]),
+            ResolvedTy::CancellationToken,
+            ResolvedTy::named_user("MonitorRef", vec![]),
+            ResolvedTy::named_user("UserResource", vec![]),
+            monitor_ref_ty(),
+        ];
+        // Locals 1-5 are no-retain aggregate projections. Local 6 models a
+        // real move-out: its source slot was neutralized, so the taint engine
+        // deliberately did not mark the destination.
+        let tainted = HashSet::from([1, 2, 3, 4, 5]);
+        let aliases = derive_borrowed_builtin_handle_projection_alias_bindings(
+            &binding_locals,
+            &local_tys,
+            &tainted,
+        );
+        assert_eq!(
+            aliases,
+            HashSet::from([monitor, stream, cancellation]),
+            "only exact builtin handles projected without transfer are borrowed aliases"
+        );
+        assert!(
+            !aliases.contains(&shadow) && !aliases.contains(&user_resource),
+            "same-leaf user types and user resources must not acquire builtin alias policy"
+        );
+        assert!(
+            !aliases.contains(&transferred),
+            "a neutralized projection move-out must retain its destination close authority"
+        );
+    }
+
     fn block(instructions: Vec<Instr>) -> BasicBlock {
         BasicBlock {
             id: 0,
@@ -8764,6 +8796,87 @@ mod w3053_aggregate_handle_double_free_gate {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    #[test]
+    fn result_option_tuple_and_record_handle_projections_share_one_alias_authority() {
+        let result_payload = Place::EnumVariant {
+            local: 10,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let option_payload = Place::EnumVariant {
+            local: 11,
+            variant_idx: 1,
+            field_idx: 0,
+        };
+        let transferred_payload = Place::EnumVariant {
+            local: 12,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(1),
+                src: result_payload,
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: option_payload,
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(13),
+                field_index: 0,
+                dest: Place::Local(3),
+            },
+            Instr::RecordFieldLoad {
+                record: Place::Local(14),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(4),
+            },
+            Instr::Move {
+                dest: Place::Local(5),
+                src: transferred_payload,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: transferred_payload,
+                transferee: None,
+                authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+            },
+        ])];
+        let mut local_tys = vec![ResolvedTy::Unit; 15];
+        for ty in local_tys.iter_mut().take(6).skip(1) {
+            *ty = monitor_ref_ty();
+        }
+        local_tys[10] = ResolvedTy::named_user("ResultCarrier", vec![]);
+        local_tys[11] = ResolvedTy::named_user("OptionCarrier", vec![]);
+        local_tys[12] = ResolvedTy::named_user("TransferCarrier", vec![]);
+        local_tys[13] = ResolvedTy::Tuple(vec![monitor_ref_ty(), ResolvedTy::I64]);
+        local_tys[14] = ResolvedTy::named_user("MonitorHolder", vec![]);
+        let binding_locals = HashMap::from([
+            (BindingId(1), Place::Local(1)),
+            (BindingId(2), Place::Local(2)),
+            (BindingId(3), Place::Local(3)),
+            (BindingId(4), Place::Local(4)),
+            (BindingId(5), Place::Local(5)),
+        ]);
+
+        let tainted =
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys);
+        let aliases = derive_borrowed_builtin_handle_projection_alias_bindings(
+            &binding_locals,
+            &local_tys,
+            &tainted,
+        );
+        assert_eq!(
+            aliases,
+            HashSet::from([BindingId(1), BindingId(2), BindingId(3), BindingId(4)]),
+            "Result, Option, tuple, and record borrows must all stay parent-owned"
+        );
+        assert!(
+            !aliases.contains(&BindingId(5)),
+            "neutralizing a variant slot transfers sole close authority to the destination"
+        );
     }
 
     fn is_refused(findings: &[MirCheck], binding: BindingId) -> bool {

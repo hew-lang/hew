@@ -996,7 +996,7 @@ impl Checker {
     /// Publish the canonical target of an admitted ordinary call.  This is the
     /// authority boundary for `HirExprKind::Call`; lowerings never recover it
     /// from a callee name or a linker symbol.
-    fn record_direct_call_target(&mut self, span: &Span, target: CallTarget) {
+    pub(super) fn record_direct_call_target(&mut self, span: &Span, target: CallTarget) {
         self.direct_call_targets
             .insert(SpanKey::in_module(span, self.current_module_idx), target);
     }
@@ -1073,6 +1073,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one declaration-identity decision tree keeps target precedence explicit"
+    )]
     fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1103,6 +1107,13 @@ impl Checker {
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
         }
+        if !self.fn_def_spans.contains_key(signature_key) {
+            if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
+                if !declaration.full_path().starts_with("std.builtins.") {
+                    return CallTarget::ImplMethod(declaration.clone());
+                }
+            }
+        }
         if let Some((_, declaring_module)) = self.fn_def_spans.get(signature_key) {
             let declaration = declaring_module.as_ref().map_or_else(
                 || signature_key.to_string(),
@@ -1132,6 +1143,9 @@ impl Checker {
         match signature_key {
             "link" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorLink);
+            }
+            "link_remote" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::LinkRemote);
             }
             "monitor" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor);
@@ -1212,7 +1226,7 @@ impl Checker {
         }
     }
 
-    fn record_resolved_direct_call_ownership(
+    pub(super) fn record_resolved_direct_call_ownership(
         &mut self,
         signature_key: &str,
         sig: &FnSig,
@@ -1248,6 +1262,16 @@ impl Checker {
             || self
                 .registry
                 .implements_marker(&resolved_result_ty, MarkerTrait::Copy);
+        let builtin_result_ownership =
+            crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
+                .and_then(crate::runtime_call::RuntimeCallFamily::from_c_symbol)
+                .map(crate::runtime_call::RuntimeCallFamily::result_ownership)
+                .filter(|ownership| {
+                    !matches!(
+                        ownership,
+                        crate::runtime_call::RuntimeResultOwnership::Untracked
+                    )
+                });
         let source_extern = self
             .source_extern_declarations
             .iter()
@@ -1280,6 +1304,8 @@ impl Checker {
                 fact: ProducedValueFact {
                     ownership: if non_owning {
                         Ownership::NoOwner
+                    } else if builtin_result_ownership.is_some() {
+                        Ownership::owned(crate::runtime_call::ProducedValueAcquisition::Fresh)
                     } else {
                         Ownership::Unknown
                     },
@@ -1289,6 +1315,7 @@ impl Checker {
                 },
                 extern_symbol: exact_extern_symbol,
                 extern_declaring_module: source_extern.and_then(|decl| decl.declaring_module),
+                extern_param_count: sig.params.len(),
                 resolved_result_ty,
             },
         );
@@ -1470,6 +1497,7 @@ impl Checker {
                     },
                     extern_symbol: None,
                     extern_declaring_module: None,
+                    extern_param_count: 0,
                     resolved_result_ty: result_ty.clone(),
                 },
             );
@@ -1687,6 +1715,10 @@ impl Checker {
                 if resolved.as_remote_pid().is_some() {
                     let result_ty = Ty::result(Ty::monitor_ref(), Ty::monitor_error());
                     self.record_type(span, &result_ty);
+                    self.record_direct_call_target(
+                        span,
+                        CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor),
+                    );
                     return result_ty;
                 }
                 // Not a RemotePid — fall through to the generic `fn_sigs` path,
@@ -2168,6 +2200,10 @@ impl Checker {
                         fact: ProducedValueFact {
                             ownership: if non_owning {
                                 crate::runtime_call::ProducedValueOwnership::NoOwner
+                            } else if matches!(&resolved_result_ty, Ty::String) {
+                                crate::runtime_call::ProducedValueOwnership::owned(
+                                    crate::runtime_call::ProducedValueAcquisition::Delivery,
+                                )
                             } else {
                                 crate::runtime_call::ProducedValueOwnership::Unknown
                             },
@@ -2184,6 +2220,7 @@ impl Checker {
                         },
                         extern_symbol: None,
                         extern_declaring_module: None,
+                        extern_param_count: 0,
                         resolved_result_ty,
                     },
                 );
@@ -2291,6 +2328,7 @@ impl Checker {
                         },
                         extern_symbol: None,
                         extern_declaring_module: None,
+                        extern_param_count: 0,
                         resolved_result_ty,
                     },
                 );

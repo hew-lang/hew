@@ -3026,6 +3026,21 @@ fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Bytes)
 }
 
+/// True for the compiler-owned Vec iterator carrier whose return transfer and
+/// caller-side drop are implemented explicitly in MIR. `VecIter<T>` is an
+/// inline `{ vec, idx }` struct at the LLVM boundary, but it is not an
+/// arbitrary generic record: the callee suppresses the escaped cursor drop and
+/// the caller assumes the cursor's buffer-owner obligation.
+fn is_owned_vec_iter_return(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::VecIter),
+            ..
+        }
+    )
+}
+
 /// True when a function return type is a heap-owning **record** composite whose
 /// per-field drop the existing spine emits (`DropKind::RecordInPlace` +
 /// `__hew_record_drop_inplace_<R>`). The caller's record binding assumes the
@@ -15469,8 +15484,8 @@ pub(crate) fn record_struct_for<'ctx>(
             let lookup_key =
                 hew_hir::layout_key_for_named(name, args, *builtin).ok_or_else(|| {
                     CodegenError::FailClosed(format!(
-                    "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
-                ))
+                        "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
+                    ))
                 })?;
             fn_ctx
                 .record_layouts
@@ -22070,6 +22085,13 @@ fn collect_helper_crash_cleanup_descriptors(
             for place in hew_mir::dataflow::instr_write_places(instr) {
                 supported_producers.insert(place);
             }
+            if let Instr::Move {
+                dest: Place::MachineTag(local) | Place::EnumTag(local),
+                ..
+            } = instr
+            {
+                supported_producers.insert(Place::Local(*local));
+            }
         }
         let terminator_writes = hew_mir::dataflow::terminator_write_places(&block.terminator);
         match &block.terminator {
@@ -22090,10 +22112,30 @@ fn collect_helper_crash_cleanup_descriptors(
             {
                 supported_producers.extend(terminator_writes);
             }
+            Terminator::Call {
+                authority:
+                    hew_mir::CallAuthority::Compiler(
+                        hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                        | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
+                    ),
+                ..
+            } => {
+                // Both compiler intercepts complete an owned Option in-place,
+                // converge their Some/None edges, and arm crash cleanup only
+                // after the tag and optional payload are fully initialized.
+                supported_producers.extend(terminator_writes);
+            }
             Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
                 supported_producers.extend(terminator_writes);
             }
             Terminator::Join { .. } => {
+                supported_producers.extend(terminator_writes);
+            }
+            Terminator::MakeGenerator { .. } | Terminator::MakeLambdaActor { .. } => {
+                // Compiler-owned handle constructors publish a complete owned
+                // carrier into their destination before following `next`.
+                // Their lowering arms bracket that publication with the same
+                // deactivate/arm lifecycle used by instruction writes.
                 supported_producers.extend(terminator_writes);
             }
             Terminator::Suspend { .. } => {
@@ -22118,9 +22160,11 @@ fn collect_helper_crash_cleanup_descriptors(
                 return Err(CodegenError::FailClosed(format!(
                     "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
                      for its producer; supported producers are parameters, \
-                     whole-slot instruction writes, collapsed-suspend ready \
-                     destinations, select/join bindings, generic Real-call \
-                     destinations, and Vec clone destinations",
+                     whole-slot instruction writes, completed enum/machine \
+                     aggregate construction, collapsed-suspend ready \
+                     destinations, select/join bindings, compiler-owned handle \
+                     constructors, generic Real-call destinations, and Vec clone \
+                     destinations",
                     drop.place, drop.ty
                 )));
             }
@@ -22282,6 +22326,30 @@ fn helper_owner_arm_waits_for_projection_transfer(
         }
     }
     pending
+}
+
+/// Whether the current tag/payload write is followed immediately by another
+/// write in the same aggregate construction sequence.
+///
+/// Payload expressions are evaluated before this sequence begins. Deferring
+/// cleanup authority through every tag and payload store therefore keeps a
+/// partially initialized aggregate inactive and publishes exactly once after
+/// the final store.
+fn helper_owner_arm_waits_for_aggregate_publication(
+    block: &hew_mir::BasicBlock,
+    instr_idx: usize,
+    owner: Place,
+) -> bool {
+    let Some(next) = block.instructions.get(instr_idx + 1) else {
+        return false;
+    };
+    let Instr::Move { dest, .. } = next else {
+        return false;
+    };
+    matches!(
+        *dest,
+        Place::MachineVariant { .. } | Place::EnumVariant { .. }
+    ) && helper_crash_cleanup_owner_root(*dest) == Some(owner)
 }
 
 fn allocate_helper_crash_cleanup_owners<'ctx>(
@@ -23456,28 +23524,17 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // dotted segments only for native symbol safety.
             Ok(mangle_with_shortened_args(name, args))
         }
-        // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which
-        // carries an owned `message: string`) is keyed by its bare name — the
-        // same key the MIR `user_record_layout_key` admit authority produces and
-        // the clone/drop synthesis seed registers, so the drop call resolves the
-        // synthesised `__hew_record_drop_inplace_CrashInfo` body.
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin: Some(_),
-            ..
-        } if args.is_empty() => Ok(name.clone()),
+        // Compiler-owned records use the discriminator-selected synthetic
+        // record namespace. This is the same key used by MIR admission and
+        // layout registration, and cannot collide with a user record that has
+        // the same source-facing leaf.
         ResolvedTy::Named {
             args,
-            builtin:
-                Some(
-                    builtin @ (hew_types::BuiltinType::VecIter
-                    | hew_types::BuiltinType::HashMapIter),
-                ),
+            builtin: Some(builtin),
             ..
-        } => hew_hir::synthetic_cursor_layout_key(*builtin, args).ok_or_else(|| {
+        } => hew_hir::compiler_record_layout_key(*builtin, args).ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "RecordInPlace drop has no synthetic cursor layout key for {ty:?}"
+                "RecordInPlace drop has no compiler record layout key for {ty:?}"
             ))
         }),
         other => Err(CodegenError::FailClosed(format!(
@@ -28520,7 +28577,15 @@ fn call_bypasses_crash_cleanup_common_tail(
                 | RtFamily::MathIntrinsic(_)
         )
     );
-    let compiler_intercept = matches!(authority, hew_mir::CallAuthority::Compiler(_));
+    let compiler_intercept = matches!(
+        authority,
+        hew_mir::CallAuthority::Compiler(kind)
+            if !matches!(
+                kind,
+                hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                    | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout
+            )
+    );
     let collection_intercept = builtin.is_some_and(|family| {
         use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as F};
 
@@ -28935,6 +29000,29 @@ fn lower_terminator<'ctx>(
                          follow specialized call intercept `{callee}` until that \
                          intercept provides a post-write rearm hook"
                     )));
+                }
+            }
+            // Runtime families marked `consumes_receiver` take ownership even
+            // when the source-level binding needs no path guard. Retire its
+            // dynamic crash-cleanup token before the call: otherwise a normal
+            // handler/coroutine exit runs the same close ritual again (channel,
+            // stream and sink handles all manifested as post-output SIGSEGVs).
+            // This reads typed runtime-family authority, never symbol spelling.
+            if let hew_mir::CallAuthority::Runtime(family) = authority {
+                if family.consumes_receiver() {
+                    if let Some(receiver) = args.first() {
+                        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *receiver)?;
+                    }
+                }
+            }
+            if let Some(modes) = fn_ctx.param_boundary_modes.get(callee) {
+                for (arg, mode) in args.iter().zip(modes) {
+                    if matches!(
+                        mode,
+                        Some(ParamBoundaryMode::TransferResource | ParamBoundaryMode::OwnedCarrier)
+                    ) {
+                        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *arg)?;
+                    }
                 }
             }
             emit_helper_crash_cleanup_deactivate_consumed_owners(fn_ctx, args)?;
@@ -29772,6 +29860,7 @@ fn lower_terminator<'ctx>(
             next,
             env,
         } => {
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *dest)?;
             // Generator construction on the `llvm.coro.*` continuation
             // substrate. The MIR producer (`lower_gen_block`) emitted this
             // terminator with the deterministic `__hew_gen_body_*` body-fn name;
@@ -30124,6 +30213,7 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(dest_slot, companion)
                 .llvm_ctx("generator companion ptr store")?;
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
             let _ = ptr_ty;
             let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                 CodegenError::FailClosed(format!("MakeGenerator next bb{next} missing"))
@@ -30143,6 +30233,7 @@ fn lower_terminator<'ctx>(
             env,
             env_field_drops,
         } => {
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *dest)?;
             // Lambda-actor construction (`hew-runtime/src/lambda_actor.rs`).
             // The MIR producer (`lower_spawn_lambda_actor`) emitted this
             // terminator with the deterministic `__hew_lambda_body_*` body-fn
@@ -30414,6 +30505,11 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(dest_slot, handle)
                 .llvm_ctx("hew_lambda_actor_new handle store")?;
+            // The handle owns the heap environment from this point. Publish
+            // cleanup authority before weak-self back-fill, whose runtime
+            // downgrade call may crash while the otherwise valid handle is
+            // still only reachable through `dest`.
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
 
             // ── Weak self back-fill (step 3, second half) ──
             if let Some((env_struct, heap_env)) = &env_struct_and_heap {
@@ -33507,6 +33603,9 @@ fn lower_function<'ctx>(
     // restores parity with `string`, which lowers to a flat `ptr` and is already
     // admitted because it never reaches the `StructType` arm. (`std::fs` import
     // was blocked solely because `fs.read_bytes -> bytes` was force-codegen'd.)
+    // `VecIter<T>` is likewise admitted through its dedicated cursor-transfer
+    // spine: MIR suppresses the callee's escaped cursor drop and registers the
+    // caller's returned cursor as the unique owner of its cloned Vec buffer.
     //
     // W5.021 — heap-owning TUPLE and RECORD composite returns are now admitted:
     // the MIR elaborator move-checks each owned member's single owner across the
@@ -33536,6 +33635,7 @@ fn lower_function<'ctx>(
         && resolved_ty_contains_heap_leaf(&fn_ctx, &func.return_ty, &mut HashSet::new())
         && !crate::layout::is_inline_enum_composite_shape(&func.return_ty, fn_ctx.enum_layouts)
         && !is_single_heap_owning_leaf_return(&func.return_ty)
+        && !is_owned_vec_iter_return(&func.return_ty)
         && !crate::layout::is_tuple_composite_shape(&func.return_ty)
         && !is_heap_owning_record_composite_return(&func.return_ty, fn_ctx.record_layouts)
     {
@@ -33731,6 +33831,13 @@ fn lower_function<'ctx>(
                             && seen_interior_owner_writes.insert(*place)
                     })
                     .collect();
+            let deferred_interior_owner_arms: HashSet<_> = interior_owner_writes
+                .iter()
+                .copied()
+                .filter(|place| {
+                    helper_owner_arm_waits_for_aggregate_publication(block, instr_idx, *place)
+                })
+                .collect();
             let next_instruction_writes = block
                 .instructions
                 .get(instr_idx + 1)
@@ -33806,7 +33913,9 @@ fn lower_function<'ctx>(
             // This MUST precede arming a projection transferee so the source
             // escrow can never retain the moved-out pointer concurrently.
             for place in interior_owner_writes {
-                emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+                if !deferred_interior_owner_arms.contains(&place) {
+                    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+                }
             }
             // Guard writes are lifecycle writes even though the guard is a
             // separate scalar slot: reconcile the registered owner to the

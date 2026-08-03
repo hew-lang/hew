@@ -1,5 +1,8 @@
 use super::*;
-use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+use hew_mir::{
+    BasicBlock, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind, DecisionFact,
+    IrPipeline,
+};
 use inkwell::values::AnyValue;
 
 #[test]
@@ -1146,8 +1149,9 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            // Probe callee: codegen-internal synthetic, no catalog family.
-            authority: Default::default(),
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::HashMap,
+            )),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -1286,7 +1290,9 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
-            authority: Default::default(),
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::Vec,
+            )),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -9815,6 +9821,63 @@ fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
 }
 
 #[test]
+fn helper_crash_cleanup_aggregate_owner_arms_after_final_payload_store() {
+    let owner = Place::Local(0);
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: Place::EnumTag(0),
+                src: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+                src: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 1,
+                },
+                src: Place::Local(3),
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 0, owner
+    ));
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 1, owner
+    ));
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &block, 2, owner
+    ));
+
+    let payload_free = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::EnumTag(0),
+            src: Place::Local(1),
+        }],
+        terminator: Terminator::Return,
+    };
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &payload_free,
+        0,
+        owner
+    ));
+}
+
+#[test]
 fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
     use hew_mir::{
         DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv, SelectArm, SelectArmKind,
@@ -9932,7 +9995,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             false,
         ),
         (
-            "generator construction without a lifecycle hook",
+            "generator construction initialized tail",
             Terminator::MakeGenerator {
                 dest: Place::Local(0),
                 body_fn: "__test_generator".to_string(),
@@ -9940,7 +10003,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
                 env: None,
             },
             None,
-            false,
+            true,
         ),
     ];
 
@@ -11904,20 +11967,10 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 };"#,
                 r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
             ),
-            // `RecordInit` retains the fresh bytes producer before copying it
-            // into `Packet`.  The record field and the original producer local
-            // are therefore two independent owners, and the Suspend plan must
-            // retire both of them.
-            vec![
-                hew_mir::DropKind::RecordInPlace,
-                hew_mir::DropKind::CowHeap {
-                    release: hew_mir::CowHeapRelease::Bytes,
-                },
-            ],
-            vec![
-                "call void @__hew_record_drop_inplace_Packet(",
-                "call void @hew_bytes_drop(",
-            ],
+            // The fresh bytes producer hands its sole owner directly to
+            // `Packet`; only the record owns a release at suspension.
+            vec![hew_mir::DropKind::RecordInPlace],
+            vec!["call void @__hew_record_drop_inplace_Packet("],
         ),
         (
             "closure",
@@ -11928,6 +11981,9 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 r#"let owner = make_nested("nested-owner".to_upper());"#,
                 r#"if owner() == -1 { panic("closure"); }"#,
             ),
+            // The callee retains the String captured by the closure env. The
+            // caller keeps the original fresh argument until the suspended
+            // call completes, so both owners need independent cleanup.
             vec![
                 hew_mir::DropKind::ClosurePair,
                 hew_mir::DropKind::CowHeap {
@@ -11949,8 +12005,8 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
                 .count();
             assert_eq!(
-                ingress_retain_count, 1,
-                "the Packet field and fresh producer may have two releases only when aggregate ingress retains the Bytes owner exactly once"
+                ingress_retain_count, 0,
+                "fresh Bytes aggregate ingress transfers its existing owner; a retain would create an unbalanced producer generation"
             );
         }
         let drops = suspending_call_closure_drops(&pipeline);
@@ -12299,7 +12355,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 9, 11, 14, 17, 19, 21],
+        [2, 5, 11, 14, 17, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -12330,7 +12386,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
                     line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
                 })
                 .count(),
-            8,
+            7,
             "{triple}: every exact owner needs one stable token alloca:\n{helper}"
         );
         let arms = helper
@@ -12339,7 +12395,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .collect::<Vec<_>>();
         assert_eq!(
             arms.len(),
-            8,
+            7,
             "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
         );
         assert!(
@@ -12350,7 +12406,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             helper
                 .matches("call i1 @hew_cont_crash_cleanup_deactivate")
                 .count(),
-            8,
+            7,
             "{triple}: every destination write must gate stale authority before replacement"
         );
         assert!(
@@ -14756,6 +14812,24 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
     assert_ne!(
         record_inplace_drop_name(&ResolvedTy::named_user("HashMapIter", cursor_args)).unwrap(),
         cursor_expected,
+    );
+    // Fixed-shape compiler records share the same disjoint namespace. A user
+    // record with the source-facing leaf `CrashInfo` keeps its own ordinary
+    // helper key and therefore cannot inherit the builtin message-field drop.
+    let crash_info_expected =
+        hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[]).unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "CrashInfo",
+            hew_types::BuiltinType::CrashInfo,
+            vec![],
+        ))
+        .unwrap(),
+        crash_info_expected,
+    );
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_user("CrashInfo", vec![])).unwrap(),
+        "CrashInfo",
     );
     // A non-record type fails closed (never a dangling helper name).
     assert!(matches!(

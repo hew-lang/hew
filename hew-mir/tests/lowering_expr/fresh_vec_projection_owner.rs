@@ -1,12 +1,10 @@
 //! Structural ownership pins for fresh owned records cloned by `Vec` indexing
 //! and used immediately as record-projection bases.
 
-use hew_mir::{DropKind, ExitPath, Instr, IrPipeline, MirStatement, Place, Terminator};
+use hew_mir::{DropKind, ExitPath, Instr, IrPipeline, Place, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 use hew_types::Checker;
-
-const OWNER_NAME: &str = "__hew_vec_get_clone_projection_base";
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -32,7 +30,7 @@ fn pipeline(source: &str) -> IrPipeline {
     pipeline
 }
 
-fn synthetic_binds(pipeline: &IrPipeline, fn_name: &str) -> usize {
+fn clone_destinations(pipeline: &IrPipeline, fn_name: &str) -> Vec<u32> {
     pipeline
         .raw_mir
         .iter()
@@ -40,25 +38,13 @@ fn synthetic_binds(pipeline: &IrPipeline, fn_name: &str) -> usize {
         .unwrap_or_else(|| panic!("function {fn_name} must be present"))
         .blocks
         .iter()
-        .flat_map(|block| block.statements.iter())
-        .filter(
-            |statement| matches!(statement, MirStatement::Bind { name, .. } if name == OWNER_NAME),
-        )
-        .count()
-}
-
-fn synthetic_locals(pipeline: &IrPipeline, fn_name: &str) -> Vec<u32> {
-    pipeline
-        .raw_mir
-        .iter()
-        .find(|function| function.name == fn_name)
-        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
-        .local_names
-        .iter()
-        .enumerate()
-        .filter(|(_, name)| name.as_deref() == Some(OWNER_NAME))
-        .map(|(local, _)| {
-            u32::try_from(local).expect("MIR local index must fit its u32 identity domain")
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee,
+                dest: Some(Place::Local(local)),
+                ..
+            } if callee == "hew_vec_get_clone" => Some(*local),
+            _ => None,
         })
         .collect()
 }
@@ -124,7 +110,7 @@ fn aggregate_neutralize_count(pipeline: &IrPipeline, fn_name: &str) -> usize {
         .count()
 }
 
-fn synthetic_drop_exits<'a>(
+fn clone_drop_exits<'a>(
     pipeline: &'a IrPipeline,
     fn_name: &str,
     local: u32,
@@ -194,10 +180,9 @@ fn borrowed_control() -> i64 {
         Some(RuntimeCallFamily::VecGet(VecGetElem::Clone)),
         "ordinary owned indexing must carry its typed clone family on the emitted terminator"
     );
-    assert_eq!(synthetic_binds(&p, "direct"), 1);
-    let direct_locals = synthetic_locals(&p, "direct");
+    let direct_locals = clone_destinations(&p, "direct");
     assert_eq!(direct_locals.len(), 1);
-    let direct_exits = synthetic_drop_exits(&p, "direct", direct_locals[0]);
+    let direct_exits = clone_drop_exits(&p, "direct", direct_locals[0]);
     assert_eq!(direct_exits.len(), 1);
     assert!(matches!(direct_exits[0], (ExitPath::Return { .. }, 1)));
 
@@ -206,12 +191,16 @@ fn borrowed_control() -> i64 {
         call_builtin(&p, "bound", "hew_vec_get_clone"),
         Some(RuntimeCallFamily::VecGet(VecGetElem::Clone))
     );
-    assert_eq!(synthetic_binds(&p, "bound"), 0);
-    assert!(synthetic_locals(&p, "bound").is_empty());
+    let bound_locals = clone_destinations(&p, "bound");
+    assert_eq!(bound_locals.len(), 1);
+    let bound_exits = clone_drop_exits(&p, "bound", bound_locals[0]);
+    assert!(
+        bound_exits.is_empty(),
+        "the ordinary binder adopts the clone and owns its terminal drop"
+    );
 
     assert_eq!(call_count(&p, "bitcopy_control", "hew_vec_get_clone"), 0);
-    assert_eq!(synthetic_binds(&p, "bitcopy_control"), 0);
-    assert!(synthetic_locals(&p, "bitcopy_control").is_empty());
+    assert!(clone_destinations(&p, "bitcopy_control").is_empty());
 
     assert_eq!(
         runtime_call_count(&p, "borrowed_control", "hew_vec_get_owned"),
@@ -219,8 +208,7 @@ fn borrowed_control() -> i64 {
         "the nested collection must use the borrow getter, not the fresh composite clone route"
     );
     assert_eq!(call_count(&p, "borrowed_control", "hew_vec_get_clone"), 0);
-    assert_eq!(synthetic_binds(&p, "borrowed_control"), 0);
-    assert!(synthetic_locals(&p, "borrowed_control").is_empty());
+    assert!(clone_destinations(&p, "borrowed_control").is_empty());
 }
 
 #[test]
@@ -289,9 +277,9 @@ fn indexed(i: i64) -> i64 {
 "#,
     );
 
-    let locals = synthetic_locals(&p, "indexed");
+    let locals = clone_destinations(&p, "indexed");
     assert_eq!(locals.len(), 1);
-    let exits = synthetic_drop_exits(&p, "indexed", locals[0]);
+    let exits = clone_drop_exits(&p, "indexed", locals[0]);
     assert_eq!(exits.len(), 1);
     assert!(matches!(exits[0], (ExitPath::Return { .. }, 1)));
     assert!(
@@ -319,11 +307,10 @@ fn transfer() -> i64 {
     );
 
     assert_eq!(call_count(&p, "transfer", "hew_vec_get_clone"), 1);
-    assert_eq!(synthetic_binds(&p, "transfer"), 1);
-    let locals = synthetic_locals(&p, "transfer");
+    let locals = clone_destinations(&p, "transfer");
     assert_eq!(locals.len(), 1);
     assert!(
-        synthetic_drop_exits(&p, "transfer", locals[0]).is_empty(),
+        clone_drop_exits(&p, "transfer", locals[0]).is_empty(),
         "the destructive update transfers the projected member and must exclude the parent root"
     );
 }
@@ -359,17 +346,17 @@ fn loop_edges(stop: bool) -> i64 {
 "#,
     );
 
-    assert_eq!(synthetic_binds(&p, "early"), 2);
-    for local in synthetic_locals(&p, "early") {
-        let exits = synthetic_drop_exits(&p, "early", local);
+    let early_locals = clone_destinations(&p, "early");
+    assert_eq!(early_locals.len(), 2);
+    for local in early_locals {
+        let exits = clone_drop_exits(&p, "early", local);
         assert_eq!(exits.len(), 1, "each return-site root must drop once");
         assert!(matches!(exits[0], (ExitPath::Return { .. }, 1)));
     }
 
-    assert_eq!(synthetic_binds(&p, "loop_edges"), 1);
-    let loop_locals = synthetic_locals(&p, "loop_edges");
+    let loop_locals = clone_destinations(&p, "loop_edges");
     assert_eq!(loop_locals.len(), 1);
-    let exits = synthetic_drop_exits(&p, "loop_edges", loop_locals[0]);
+    let exits = clone_drop_exits(&p, "loop_edges", loop_locals[0]);
     assert_eq!(
         exits
             .iter()

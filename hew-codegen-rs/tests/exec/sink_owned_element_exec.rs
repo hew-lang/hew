@@ -171,6 +171,21 @@ fn count_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
         .count()
 }
 
+/// Count source-call sites, excluding elaborated drop-path calls whose loaded
+/// operand is deliberately named `<symbol> drop`. A function may carry one
+/// close on each mutually-exclusive cancellation/trap/return exit while still
+/// having exactly one source `sink.close()` call on the success path.
+fn count_source_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
+    let body = llvm_function_body(ir, function);
+    let needle = format!("@{symbol}(");
+    let drop_label = format!("\"{symbol} drop");
+    body.lines()
+        .filter(|line| {
+            line.contains(&needle) && line.contains("call ") && !line.contains(&drop_label)
+        })
+        .count()
+}
+
 #[test]
 fn close_count_is_scoped_to_its_owner_function() {
     let ir = "define void @owner() {\n  call void @hew_sink_close(ptr null)\n}\n\
@@ -439,9 +454,10 @@ fn main() {
         "the moved Stream half must be closed EXACTLY once (state_drop_fn)"
     );
     assert_eq!(
-        count_calls_in_function(&ir, "main", "hew_sink_close"),
+        count_source_calls_in_function(&ir, "main", "hew_sink_close"),
         1,
-        "the main-side local sink must be closed EXACTLY once"
+        "main must contain exactly one source sink.close() call; elaborated \
+         cleanup exits are mutually exclusive and covered by the scribble run"
     );
 }
 

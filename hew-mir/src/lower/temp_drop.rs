@@ -7,17 +7,226 @@ use super::{
     derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
     generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
-    ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DropKind, ElabDrop,
-    FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite,
-    Place, RawMirFunction, ResolvedTy, SelectArmKind, SiteId, StringDropDerivation,
-    StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
+    propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
+    terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
+    BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
+    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
+    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
 const STRING_RETURN_SOURCE_OWNED: u8 = 0b010;
 const STRING_RETURN_SOURCE_UNKNOWN: u8 = 0b100;
+
+fn instruction_carries_typed_handoff(
+    instruction: &Instr,
+    value: Place,
+    handoffs: &HashSet<(Place, Place)>,
+) -> bool {
+    handoffs.iter().any(|(source, destination)| {
+        if *source != value {
+            return false;
+        }
+        match instruction {
+            Instr::Move { dest, src } => {
+                *src == value
+                    && (*dest == *destination || base_local(*dest) == base_local(*destination))
+            }
+            Instr::TupleConstruct { elements, dest } => {
+                elements.contains(&value) && *dest == *destination
+            }
+            Instr::RecordInit { fields, dest, .. } => {
+                fields.iter().any(|(_, field)| *field == value) && *dest == *destination
+            }
+            _ => false,
+        }
+    })
+}
+
+fn aggregate_handoff_destination(instruction: &Instr, value: Place) -> Option<Place> {
+    match instruction {
+        Instr::TupleConstruct { elements, dest } if elements.contains(&value) => Some(*dest),
+        Instr::RecordInit { fields, dest, .. }
+            if fields.iter().any(|(_, field)| *field == value) =>
+        {
+            Some(*dest)
+        }
+        _ => None,
+    }
+}
+
+fn aggregate_handoff_occurrences(instruction: &Instr, value: Place) -> usize {
+    match instruction {
+        Instr::TupleConstruct { elements, .. } => {
+            elements.iter().filter(|element| **element == value).count()
+        }
+        Instr::RecordInit { fields, .. } => {
+            fields.iter().filter(|(_, field)| *field == value).count()
+        }
+        _ => 0,
+    }
+}
+
+/// Prove that `value` at the aggregate ingress is still the generation moved
+/// into its named slot by a typed publication handoff.
+///
+/// The proof accepts one exact handoff instruction and follows only a
+/// single-predecessor, single-successor chain without another read or write of
+/// the destination. This keeps the result generation-specific even when the
+/// binding's local is assigned again elsewhere in the function.
+fn typed_handoff_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    handoffs: &HashSet<(Place, Place)>,
+    value: Place,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let Some(local) = base_local(value) else {
+        return false;
+    };
+    let mut definitions = blocks.iter().flat_map(|block| {
+        block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, instruction)| match instruction {
+                Instr::Move { dest, src }
+                    if *dest == value && handoffs.contains(&(*src, *dest)) =>
+                {
+                    Some((block.id, index))
+                }
+                _ => None,
+            })
+    });
+    let Some((mut block_id, definition_index)) = definitions.next() else {
+        return false;
+    };
+    if definitions.next().is_some() {
+        return false;
+    }
+
+    let predecessor_counts = blocks.iter().flat_map(BasicBlock::successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let mut start = definition_index.saturating_add(1);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instruction in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instruction);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = block.successors();
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
+fn typed_named_aggregate_handoff(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+    block: u32,
+    instr_index: usize,
+    value: Place,
+) -> Option<(BindingId, Place, bool)> {
+    if builder.current_function_call_conv != crate::model::FunctionCallConv::Default {
+        return None;
+    }
+    let instruction = block_by_id(blocks, block)?.instructions.get(instr_index)?;
+    let destination = aggregate_handoff_destination(instruction, value)?;
+    let mut source_bindings: HashSet<BindingId> = builder
+        .typed_produced_value_handoffs
+        .iter()
+        .filter(|(_, destination)| *destination == value)
+        .flat_map(|(source, _)| {
+            builder
+                .binding_locals
+                .iter()
+                .filter_map(move |(binding, place)| {
+                    (*place == *source
+                        && builder
+                            .typed_produced_value_owner_bindings
+                            .contains(binding))
+                    .then_some(*binding)
+                })
+        })
+        .collect();
+    source_bindings.extend(
+        builder
+            .binding_locals
+            .iter()
+            .filter_map(|(binding, place)| {
+                (*place == value
+                    && builder
+                        .typed_produced_value_owner_bindings
+                        .contains(binding))
+                .then_some(*binding)
+            }),
+    );
+    let mut source_bindings = source_bindings.into_iter();
+    let binding = source_bindings.next()?;
+    if source_bindings.next().is_some() {
+        return None;
+    }
+    if !typed_handoff_owner_reaches_site(
+        blocks,
+        &builder.suspend_kinds,
+        &builder.typed_produced_value_handoffs,
+        value,
+        block,
+        instr_index,
+    ) {
+        return None;
+    }
+    let local = base_local(value)?;
+    if fresh_generation_is_used_after(blocks, &builder.suspend_kinds, local, block, instr_index) {
+        return None;
+    }
+    let direct = builder.binding_locals.get(&binding).copied() == Some(value);
+    Some((binding, destination, direct))
+}
 
 pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
@@ -112,6 +321,11 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
     builder: &Builder,
 ) -> HashSet<(u32, usize, Place)> {
     let owned_locals = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
     derive_cow_sole_owner(
         blocks,
         &builder.suspend_kinds,
@@ -120,7 +334,7 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
         &builder.match_project_consumed_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
-        &builder.borrowed_string_param_locals,
+        &borrowed_string_locals,
         &builder.parameter_locals,
         &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
@@ -409,6 +623,106 @@ fn seed_fresh_string_instruction_locals(
     }
     fresh
 }
+
+/// Whether `local`'s active definition at `instr_index` was minted earlier in
+/// the same block by a fresh string producer.
+///
+/// This is stronger than merely knowing that a local is producer-backed
+/// somewhere in the function: the nearest preceding write proves that every
+/// execution of a cyclic block refreshes the owner before handing it onward.
+/// Such a move is a transfer even inside a loop; retaining it would preserve a
+/// synthetic source generation that has no later drop.
+fn fresh_string_owner_defined_before(
+    block: &BasicBlock,
+    instr_index: usize,
+    local: u32,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    block.instructions[..instr_index]
+        .iter()
+        .rev()
+        .find(|instr| {
+            crate::dataflow::instr_reads_writes(instr)
+                .1
+                .iter()
+                .any(|place| base_local(*place) == Some(local))
+        })
+        .is_some_and(|instr| {
+            fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .and_then(base_local)
+                == Some(local)
+        })
+}
+
+/// Whether the currently-live generation of `local` is read after a site
+/// before every path overwrites it.
+///
+/// [`local_is_used_after`] intentionally conflates loop iterations. That is
+/// conservative for borrowed aliases, but wrong for a fresh producer in a
+/// loop: the next iteration's write creates a new generation and cannot make
+/// the previous generation a co-owner. This walk stops a path at the first
+/// overwrite, keeping retain decisions tied to the actual allocation.
+fn fresh_generation_is_used_after(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    source_local: u32,
+    source_block: u32,
+    source_instr_index: usize,
+) -> bool {
+    let mut worklist = vec![(source_block, source_instr_index.saturating_add(1))];
+    let mut visited = HashSet::new();
+    while let Some((block_id, start)) = worklist.pop() {
+        if !visited.insert((block_id, start)) {
+            continue;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return true;
+        };
+        let mut overwritten = false;
+        for instr in block.instructions.iter().skip(start) {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                return true;
+            }
+            if writes
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                overwritten = true;
+                break;
+            }
+        }
+        if overwritten {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            return true;
+        }
+        if crate::dataflow::terminator_write_places(&block.terminator)
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            continue;
+        }
+        worklist.extend(
+            block
+                .successors()
+                .into_iter()
+                .map(|successor| (successor, 0)),
+        );
+    }
+    false
+}
+
 pub(super) fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // Fork-entry environments preserve their existing move-in contract: the
@@ -750,6 +1064,7 @@ fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[StringRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<(Place, StringRetainCondition)>> = HashMap::new();
     for site in retain_sites {
@@ -785,6 +1100,18 @@ fn apply_string_retain_sites(
             rewritten.push(instr);
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::StringLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
             }
         }
         if let Some(span) = old_spans
@@ -847,8 +1174,12 @@ pub(super) fn derive_cow_sole_owner(
         candidate_local_to_binding.insert(local, *binding);
     }
 
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        candidate_local_to_binding.keys().copied(),
+        &retained_string_moves,
+    );
     let entry_block = blocks.first().map(|block| block.id);
     let mut handoff_move_sites: HashSet<(u32, usize)> = HashSet::new();
     let mut handoff_bindings: HashSet<BindingId> = HashSet::new();
@@ -875,9 +1206,25 @@ pub(super) fn derive_cow_sole_owner(
             if src_binding == dest_binding {
                 continue;
             }
-            let used_after =
-                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index);
-            if !used_after && entry_block == Some(block.id) {
+            let freshly_defined_here = fresh_string_owner_defined_before(
+                block,
+                instr_index,
+                src_local,
+                locals,
+                owned_string_return_carrier_symbols,
+            );
+            let used_after = if freshly_defined_here {
+                fresh_generation_is_used_after(
+                    blocks,
+                    suspend_kinds,
+                    src_local,
+                    block.id,
+                    instr_index,
+                )
+            } else {
+                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index)
+            };
+            if !used_after && (entry_block == Some(block.id) || freshly_defined_here) {
                 handoff_move_sites.insert((block.id, instr_index));
                 let handoff_binding = candidate_local_to_binding
                     .get(&src_local)
@@ -927,13 +1274,27 @@ pub(super) fn derive_cow_sole_owner(
         }
         cyclic
     };
-    let share_needs_retain = |local: u32, block: u32, instr_index: usize| {
-        cyclic_blocks.contains(&block)
-            || local_is_used_after(blocks, suspend_kinds, local, block, instr_index)
+    let share_needs_retain = |local: u32, block: &BasicBlock, instr_index: usize| {
+        let freshly_defined_here = fresh_string_owner_defined_before(
+            block,
+            instr_index,
+            local,
+            locals,
+            owned_string_return_carrier_symbols,
+        );
+        if freshly_defined_here {
+            fresh_generation_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        } else {
+            cyclic_blocks.contains(&block.id)
+                || local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        }
     };
 
-    let borrowed_alias_of =
-        propagate_whole_value_alias_roots(blocks, borrowed_param_locals.iter().copied());
+    let borrowed_alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        borrowed_param_locals.iter().copied(),
+        &retained_string_moves,
+    );
     let binding_local_bases: HashSet<u32> = binding_locals
         .values()
         .filter_map(|place| base_local(*place))
@@ -1005,7 +1366,7 @@ pub(super) fn derive_cow_sole_owner(
                         }
                         if let Some(&root) = alias_of.get(&src_local) {
                             if let Some(&binding) = candidate_local_to_binding.get(&root) {
-                                if share_needs_retain(src_local, block.id, instr_index) {
+                                if share_needs_retain(src_local, block, instr_index) {
                                     pending_share_sites.push((
                                         block.id,
                                         instr_index,
@@ -1154,13 +1515,24 @@ pub(super) fn derive_cow_sole_owner(
                         && binding_local_bases.contains(&local)
                         && !parameter_locals.contains(&local)
                     {
-                        let survives = local_is_used_after(
-                            blocks,
-                            suspend_kinds,
-                            local,
-                            block.id,
+                        let freshly_defined_here = fresh_string_owner_defined_before(
+                            block,
                             instr_index,
+                            local,
+                            locals,
+                            owned_string_return_carrier_symbols,
                         );
+                        let survives = if freshly_defined_here {
+                            fresh_generation_is_used_after(
+                                blocks,
+                                suspend_kinds,
+                                local,
+                                block.id,
+                                instr_index,
+                            )
+                        } else {
+                            local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+                        };
                         let entry = external_groups
                             .entry(local)
                             .or_insert_with(|| (survives, Vec::new()));
@@ -1173,7 +1545,7 @@ pub(super) fn derive_cow_sole_owner(
                         continue;
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
-                    if share_needs_retain(source_local, block.id, instr_index) {
+                    if share_needs_retain(source_local, block, instr_index) {
                         // Follow whole-value moves and enclosing records to the
                         // state leaf while keeping the borrowed owner mint at
                         // the first leaf-bearing constructor, where the source
@@ -1384,10 +1756,19 @@ pub(super) fn derive_cow_sole_owner(
         }
     }
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             let owned_dest = fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
                 .or_else(|| string_field_load_producer_dest(instr, locals))
                 .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .or_else(|| {
+                    corroborated_retained_string_move_dest(
+                        instr,
+                        block.id,
+                        instr_index,
+                        &retained_string_moves,
+                    )
+                    .map(Place::Local)
+                })
                 .or(match instr {
                     Instr::StringLit { dest, .. } => Some(*dest),
                     _ => None,
@@ -1413,7 +1794,7 @@ pub(super) fn derive_cow_sole_owner(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 let Instr::Move { dest, src } = instr else {
                     continue;
                 };
@@ -1422,6 +1803,9 @@ pub(super) fn derive_cow_sole_owner(
                     continue;
                 };
                 if !string_place_is_typed(*dest, locals) {
+                    continue;
+                }
+                if retained_string_moves.contains(&(block.id, instr_index)) {
                     continue;
                 }
                 let src_bits = return_source_bits
@@ -1597,6 +1981,21 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
+                if fresh_string_owner_defined_before(
+                    block,
+                    instr_index,
+                    src_local,
+                    locals,
+                    owned_string_return_carrier_symbols,
+                ) && !fresh_generation_is_used_after(
+                    blocks,
+                    suspend_kinds,
+                    src_local,
+                    block.id,
+                    instr_index,
+                ) {
+                    continue;
+                }
                 if !string_place_is_typed(*src, locals)
                     || !((binding_local_bases.contains(&src_local)
                         && !parameter_locals.contains(&src_local))
@@ -3413,12 +3812,40 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     }
     allowed
 }
+
+fn remove_consumed_cow_bindings(
+    allowed: &mut HashSet<BindingId>,
+    actor_message_flags: &HashMap<BindingId, Place>,
+    dataflow_result: &dataflow::DataflowResult,
+) {
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) && !actor_message_flags.contains_key(binding)
+            {
+                allowed.remove(binding);
+            }
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the two derivation passes bracket exact retain-site materialization"
+)]
 pub(super) fn finalize_string_ownership(
     raw: &mut RawMirFunction,
-    builder: &Builder,
+    builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> StringDropDerivation {
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_cow_sole_owner(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -3427,7 +3854,7 @@ pub(super) fn finalize_string_ownership(
         &builder.match_project_consumed_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
-        &builder.borrowed_string_param_locals,
+        &borrowed_string_locals,
         &builder.parameter_locals,
         &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
@@ -3437,7 +3864,7 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     );
-    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+    let mut fresh_borrowed_allowed = derive_cow_fresh_borrowed_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -3449,34 +3876,148 @@ pub(super) fn finalize_string_ownership(
         &builder
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
-    ));
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
+    );
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.condition, StringRetainCondition::Always) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::String))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
             }
         }
     }
+    let mut aggregate_handoffs = HashSet::new();
+    let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
+        if matches!(site.condition, StringRetainCondition::Always) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
+        let typed_handoff = matches!(site.condition, StringRetainCondition::Always)
+            && raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .is_some_and(|instruction| {
+                    instruction_carries_typed_handoff(
+                        instruction,
+                        site.value,
+                        &builder.typed_produced_value_handoffs,
+                    )
+                });
+        if typed_handoff {
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
+                return false;
+            }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
+        }
         site.required_bindings
             .iter()
             .all(|binding| derivation.allowed.contains(binding))
     });
+    for (binding, destination) in named_aggregate_handoffs {
+        derivation.allowed.remove(&binding);
+        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+    }
     apply_string_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
     );
     // Retains are explicit MIR only after the splice above. Re-run the fresh,
     // borrow-only admission over that final instruction stream so a uniquely
     // defined acyclic `StringRetain(src); Move(dst, src)` destination earns the
     // balancing drop for its independent `+1`. The pre-splice run remains
     // necessary for all established fresh producers and for retain-site gating.
-    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+    fresh_borrowed_allowed.extend(derive_cow_fresh_borrowed_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -3489,17 +4030,25 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     ));
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
-            }
-        }
-    }
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    builder.synthetic_borrowed_temp_drop_bindings.extend(
+        fresh_borrowed_allowed.into_iter().filter(|binding| {
+            derivation.allowed.contains(binding)
+                && builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+                && builder.owned_locals.iter().any(|entry| {
+                    entry.binding == *binding && entry.disposition == Disposition::ScopeExit
+                })
+        }),
+    );
     derivation
 }
 struct NestedTempDataflow {
@@ -3779,7 +4328,6 @@ fn collect_nested_fresh_string_temp_drops(
         owned_string_return_carrier_symbols,
     );
     propagate_linear_fresh_string_moves(&mut defs, blocks, locals, &dataflow);
-
     defs.into_iter()
         .filter_map(|(local, def)| {
             nested_fresh_string_temp_drop(
@@ -5225,6 +5773,104 @@ fn fresh_bytes_producer_defs_in_block(
     }
     defs
 }
+
+/// Prove that `local` at `target_block:target_instr_index` is still the exact
+/// owner minted by one fresh bytes producer.
+///
+/// Terminator calls often split aggregate construction across several blocks
+/// (`to_bytes()` followed by another field producer, then `RecordInit`). Walk
+/// only a single-predecessor, single-successor chain and reject every intervening
+/// read or overwrite. This keeps the proof allocation-specific without relying
+/// on source-level binding names or loop-wide liveness.
+fn fresh_bytes_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    local: u32,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let mut defs = blocks
+        .iter()
+        .flat_map(|block| fresh_bytes_producer_defs_in_block(block, locals))
+        .filter(|(candidate, _)| *candidate == local);
+    let Some((_, def)) = defs.next() else {
+        return false;
+    };
+    if defs.next().is_some() {
+        return false;
+    }
+
+    let predecessor_counts = blocks.iter().flat_map(BasicBlock::successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let (mut block_id, mut start) = match def {
+        NestedDefSite::Instr { block, idx } => (block, idx.saturating_add(1)),
+        NestedDefSite::Term { block } => {
+            let Some(next) = block_by_id(blocks, block)
+                .and_then(|producer| call_terminator_next(&producer.terminator))
+            else {
+                return false;
+            };
+            if predecessor_counts.get(&next).copied().unwrap_or(0) != 1 {
+                return false;
+            }
+            (next, 0)
+        }
+    };
+
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instr in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = block.successors();
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
 /// The destination place of an `Instr::CallRuntimeAbi` whose ownership contract
 /// classifies its result as a fresh, solely-owned `bytes` (`hew_bytes_slice`) —
 /// a `+1` owner the caller must balance with exactly one `hew_bytes_drop`. Only
@@ -6266,6 +6912,7 @@ fn apply_bytes_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[BytesRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
     let mut after: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
@@ -6303,6 +6950,18 @@ fn apply_bytes_retain_sites(
             rewritten.push(instr);
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::BytesLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
             }
             if let Some(values) = after.get(&(block.id, old_index)) {
                 for value in values {
@@ -6419,19 +7078,28 @@ pub(super) fn derive_bytes_actor_transfer_blocks(
     transfer_blocks
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the derivation, exact handoff proof, and retain splice form one ownership boundary"
+)]
 pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
-    builder: &Builder,
+    builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> BytesDropDerivation {
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_bytes_locals = builder
+        .borrowed_bytes_param_locals
+        .union(&builder.typed_borrowed_bytes_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_local_bytes_drop_allowed(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
-        &builder.borrowed_bytes_param_locals,
+        &borrowed_bytes_locals,
     );
     // A mailbox-owned `bytes` parameter conditionally transferred on one CFG
     // path is deliberately visible to the path-insensitive escape scan, which
@@ -6450,18 +7118,144 @@ pub(super) fn finalize_bytes_ownership(
             })
             .map(|(binding, _, _)| *binding),
     );
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.placement, BytesRetainPlacement::Before) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::Bytes))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
             }
         }
     }
+    let mut aggregate_handoffs = HashSet::new();
+    let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
+        if matches!(site.placement, BytesRetainPlacement::Before) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
+        let typed_handoff = matches!(site.placement, BytesRetainPlacement::Before)
+            && raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .is_some_and(|instruction| {
+                    instruction_carries_typed_handoff(
+                        instruction,
+                        site.value,
+                        &builder.typed_produced_value_handoffs,
+                    )
+                });
+        if typed_handoff {
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
+                return false;
+            }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
+        }
+        let fresh_handoff = matches!(site.placement, BytesRetainPlacement::Before)
+            && base_local(site.value).is_some_and(|local| {
+                fresh_bytes_owner_reaches_site(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    &builder.locals,
+                    local,
+                    site.block,
+                    site.instr_index,
+                ) && !fresh_generation_is_used_after(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    local,
+                    site.block,
+                    site.instr_index,
+                )
+            });
+        if fresh_handoff {
+            return false;
+        }
         bytes_retain_site_is_required(
             &raw.blocks,
             &builder.actor_message_cow_drop_flags,
@@ -6469,10 +7263,15 @@ pub(super) fn finalize_bytes_ownership(
             site,
         )
     });
+    for (binding, destination) in named_aggregate_handoffs {
+        derivation.allowed.remove(&binding);
+        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+    }
     apply_bytes_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
     );
     derivation
 }
@@ -6525,6 +7324,17 @@ mod cow_sole_owner_derivation {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    fn concat(lhs: u32, rhs: u32, dest: u32) -> Instr {
+        Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_string_concat",
+                vec![Place::Local(lhs), Place::Local(rhs)],
+                Some(Place::Local(dest)),
+            )
+            .expect("hew_string_concat is an allowlisted runtime call"),
+        )
     }
 
     fn bytes_retain_site(binding: BindingId, instr_index: usize) -> BytesRetainSite {
@@ -6598,6 +7408,37 @@ mod cow_sole_owner_derivation {
                 &bytes_retain_site(binding, 0),
             ),
             "a non-actor bytes overwrite/share still needs an independent retained reference"
+        );
+    }
+
+    #[test]
+    fn typed_publication_handoff_reaches_aggregate_through_transfer_local() {
+        let binding = BindingId(9);
+        let source = Place::Local(7);
+        let transfer = Place::Local(8);
+        let aggregate = Place::Local(9);
+        let blocks = [block(vec![
+            Instr::Move {
+                dest: transfer,
+                src: source,
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Payload", vec![]),
+                fields: vec![(FieldOffset(0), transfer)],
+                dest: aggregate,
+            },
+        ])];
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(binding, source);
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        builder
+            .typed_produced_value_handoffs
+            .insert((source, transfer));
+
+        assert_eq!(
+            typed_named_aggregate_handoff(&blocks, &builder, 0, 1, transfer),
+            Some((binding, aggregate, false)),
+            "the typed source generation stays authoritative after its transfer local"
         );
     }
 
@@ -7136,6 +7977,106 @@ mod cow_sole_owner_derivation {
                 condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn cyclic_fresh_record_ingress_transfers_each_allocation_without_retain() {
+        let source = BindingId(72);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut loop_block = block(vec![
+            concat(1, 2, 3),
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Holder", vec![]),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+        ]);
+        loop_block.terminator = Terminator::Goto { target: 0 };
+
+        let derivation = derive_cow_sole_owner(
+            &[loop_block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::named_user("Holder", vec![]),
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the next loop iteration overwrites the source with a new allocation; \
+             the current generation is handed to the record"
+        );
+    }
+
+    #[test]
+    fn unbound_fresh_temp_moves_into_owned_capture_without_retain() {
+        let produced = BindingId(u32::MAX - 64);
+        let capture = BindingId(73);
+        let owned = vec![(capture, "capture".to_string(), ResolvedTy::String)];
+        let binding_locals =
+            HashMap::from([(produced, Place::Local(3)), (capture, Place::Local(4))]);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![
+                    concat(1, 2, 3),
+                    Instr::Move {
+                        dest: Place::Local(4),
+                        src: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "an unbound fresh result transfers its only owner into the capture"
         );
     }
 

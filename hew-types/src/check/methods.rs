@@ -34,8 +34,8 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
     }
     match receiver_name {
         STD_NET_CONNECTION => Some("hew_tcp_attach_local"),
-        "tls.TlsStream" => Some("hew_tls_attach_local"),
-        "websocket.Conn" => Some("hew_ws_attach_local"),
+        "std.net.tls.TlsStream" => Some("hew_tls_attach_local"),
+        "std.net.websocket.Conn" => Some("hew_ws_attach_local"),
         _ => None,
     }
 }
@@ -1557,6 +1557,31 @@ impl Checker {
     fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
         let c_symbol = c_symbol.into();
         let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol) else {
+            // Some compiler-synthetic identity accessors are closed catalog
+            // endpoints but do not need a `RuntimeCallFamily`: their lowering
+            // is owned by the identity producer in MIR/codegen.  Preserve the
+            // checker-selected catalog endpoint instead of degrading a valid
+            // source method to an unsupported call just because that producer
+            // is not represented in the runtime-family enum.
+            if crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(&c_symbol)
+                .is_some()
+            {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteToFunction {
+                        target: CallTarget::Builtin {
+                            endpoint: c_symbol.clone(),
+                        },
+                        c_symbol,
+                        descriptor: None,
+                        extern_identity: None,
+                        elem_ty: None,
+                        consumes_receiver: false,
+                        returns_receiver_identity: false,
+                    },
+                );
+                return;
+            }
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
@@ -1674,23 +1699,32 @@ impl Checker {
         // the call site, while the source impl was registered under its full
         // owner path.  Carry the ID allocated at that registration boundary;
         // do not manufacture one from the call-site signature key.
-        let target = self
-            .impl_method_declaration_ids
-            .get(&extern_identity.signature_key)
-            .cloned()
-            .map_or_else(
-                || CallTarget::Unsupported {
-                    reason: format!(
-                        "extern-symbol method `{}` has no registered declaration identity",
-                        extern_identity.signature_key
-                    ),
-                },
-                |declaration| CallTarget::Extern {
-                    declaration,
-                    endpoint: extern_identity.endpoint.clone(),
-                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
-                },
-            );
+        let target = crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(
+            &extern_identity.endpoint,
+        )
+        .map_or_else(
+            || {
+                self.impl_method_declaration_ids
+                    .get(&extern_identity.signature_key)
+                    .cloned()
+                    .map_or_else(
+                        || CallTarget::Unsupported {
+                            reason: format!(
+                                "extern-symbol method `{}` has no registered declaration identity",
+                                extern_identity.signature_key
+                            ),
+                        },
+                        |declaration| CallTarget::Extern {
+                            declaration,
+                            endpoint: extern_identity.endpoint.clone(),
+                            trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                        },
+                    )
+            },
+            |endpoint| CallTarget::Builtin {
+                endpoint: endpoint.to_string(),
+            },
+        );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
@@ -2191,8 +2225,18 @@ impl Checker {
             .unwrap_or_else(|| receiver_name.to_string());
         let symbol = transport_attach_runtime_symbol(&canonical, method)?;
         let (module, _) = canonical.rsplit_once('.')?;
+        // The registry carries the original loaded spelling (`tls.TlsStream` /
+        // `websocket.Conn`), while nominal resolution carries its exact full
+        // source owner. Join the two identities here rather than asking the
+        // registry to recognise the canonical spelling directly: a user
+        // module may use either leaf spelling but cannot produce the same
+        // loaded source identity.
         if self.user_modules.contains(module)
-            || !self.module_registry.is_handle_type(canonical.as_str())
+            || self
+                .module_registry
+                .canonical_handle_type_identity(receiver_name)
+                .as_deref()
+                != Some(canonical.as_str())
         {
             return None;
         }
@@ -2561,17 +2605,6 @@ impl Checker {
         let qualified = format!("{owner}.{type_name}");
         let td = self.type_defs.get(&qualified)?;
         td.methods.get(method).cloned()
-    }
-
-    /// Resolve a module-local type definition through its authoritative
-    /// qualified key (`{current_short}.{type_name}`).
-    ///
-    /// This avoids the bare-name last-write-wins entry when a sibling module
-    /// declares the same record/type name.
-    pub(super) fn module_local_type_def(&self, type_name: &str) -> Option<TypeDef> {
-        let owner = self.current_module_identity()?;
-        let qualified = format!("{owner}.{type_name}");
-        self.type_defs.get(&qualified).cloned()
     }
 
     pub(super) fn lookup_named_method_sig(
@@ -7056,10 +7089,19 @@ impl Checker {
                 ..
             })
         );
-        if runtime_rewrite_consumes_receiver {
+        let builtin_option_result_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        );
+        if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {
-                // The exact runtime ABI transfer overrides a surface Copy
+                // The typed consumption decision overrides a surface Copy
                 // derivation. In particular, LambdaActorHandle is represented
                 // by an empty stdlib nominal, but release still consumes its
                 // sole runtime handle and any later receiver use is invalid.
@@ -7098,6 +7140,14 @@ impl Checker {
         let resolved_call = self.resolved_calls.get(&key);
         let actor_call = self.actor_method_dispatch.get(&key);
         let machine_call = self.machine_method_dispatch.get(&key);
+        let suspending_receiver = self
+            .suspending_io_receiver_nominals
+            .get(&key)
+            .map(String::as_str);
+        let is_suspending_io_delivery = (self.conn_await_reads.contains_key(&key)
+            && suspending_receiver == Some(STD_NET_CONNECTION))
+            || (self.listener_await_accepts.contains(&key)
+                && suspending_receiver == Some(STD_NET_LISTENER));
         let runtime_family = match rewrite {
             Some(MethodCallRewrite::RewriteToFunction {
                 descriptor: Some(descriptor),
@@ -7105,6 +7155,21 @@ impl Checker {
             }) => Some(descriptor.family()),
             _ => None,
         };
+        let display_method = self.lang_items.display_method_identity();
+        let is_display_fmt = display_method.as_ref().is_some_and(|(_, display_method)| {
+            let target = dyn_call.map(|call| &call.target).or(match rewrite {
+                Some(MethodCallRewrite::StaticTraitDispatch { target, .. }) => Some(target),
+                _ => None,
+            });
+            target.is_some_and(|target| {
+                matches!(
+                    target,
+                    CallTarget::DynamicVtable { method, .. }
+                        | CallTarget::StaticTraitMethod { method, .. }
+                        if method == display_method
+                )
+            })
+        });
 
         let result_ownership = if non_owning {
             Ownership::NoOwner
@@ -7124,6 +7189,18 @@ impl Checker {
         ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
         {
             Ownership::ReceiverIdentity
+        } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
+            Ownership::owned(Acquisition::Fresh)
+        } else if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            Ownership::owned(Acquisition::MoveOut)
         } else if matches!(
             actor_call,
             Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
@@ -7137,28 +7214,11 @@ impl Checker {
                     | crate::runtime_call::RuntimeCallFamily::DuplexRecv
                     | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
             )
-        ) {
+        ) || is_suspending_io_delivery
+        {
             Ownership::owned(Acquisition::Delivery)
         } else if let Some(call) = resolved_call {
-            match call.method_target.family {
-                MethodTargetFamily::HashMap(HashMapMethod::Remove)
-                | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
-                    Ownership::owned(Acquisition::MoveOut)
-                }
-                MethodTargetFamily::HashMap(
-                    HashMapMethod::Clone
-                    | HashMapMethod::Get
-                    | HashMapMethod::Keys
-                    | HashMapMethod::Values,
-                )
-                | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
-                | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
-                    Ownership::owned(Acquisition::Clone)
-                }
-                MethodTargetFamily::HashMap(_)
-                | MethodTargetFamily::HashSet(_)
-                | MethodTargetFamily::Vec(_) => Ownership::Unknown,
-            }
+            call.method_target.family.result_ownership()
         } else {
             match rewrite {
                 Some(
@@ -7167,9 +7227,10 @@ impl Checker {
                     | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
                     | MethodCallRewrite::WireCodec { .. },
                 ) => Ownership::owned(Acquisition::Fresh),
-                Some(MethodCallRewrite::RecordCloneInplace { .. }) => {
-                    Ownership::owned(Acquisition::Clone)
-                }
+                Some(
+                    MethodCallRewrite::BuiltinVecIterNext { .. }
+                    | MethodCallRewrite::RecordCloneInplace { .. },
+                ) => Ownership::owned(Acquisition::Clone),
                 Some(
                     MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
                 ) => Ownership::owned(Acquisition::Delivery),
@@ -7220,7 +7281,14 @@ impl Checker {
                 _ => None,
             }
         };
-        let arguments = if let Some(family) = runtime_family {
+        let arguments = if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            vec![Boundary::Transfer; args.len()]
+        } else if let Some(family) = runtime_family {
             args.iter()
                 .enumerate()
                 .map(|(source_index, _)| {
@@ -7292,7 +7360,8 @@ impl Checker {
             || dyn_call.is_some()
             || resolved_call.is_some()
             || actor_call.is_some()
-            || machine_call.is_some();
+            || machine_call.is_some()
+            || is_suspending_io_delivery;
         let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
             Some(Boundary::Transfer)
         } else if !recognized {
@@ -7560,6 +7629,27 @@ impl Checker {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
+                let impl_key = format!("{name}::{method}");
+                if let Some(declaration) = self.impl_method_declaration_ids.get(&impl_key).cloned()
+                {
+                    let target = CallTarget::ImplMethod(declaration);
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                            target: target.clone(),
+                            c_symbol: impl_key.clone(),
+                            elem_ty: None,
+                        },
+                    );
+                    self.record_direct_call_target(span, target);
+                    self.record_resolved_direct_call_ownership(
+                        &impl_key,
+                        &sig,
+                        args,
+                        &sig.return_type,
+                        span,
+                    );
+                }
                 // Wire codec static deserialize methods on a `#[wire]` struct or
                 // enum. `decode` is the binary CBOR path
                 // (`Type.decode(bytes) -> Type`); `from_json`/`from_yaml` are the
@@ -7686,10 +7776,11 @@ impl Checker {
                 && name == "std.net.Connection"
                 && matches!(method, "read" | "read_string");
             if is_conn_await_read {
-                self.conn_await_reads.insert(
-                    SpanKey::in_module(span, self.current_module_idx),
-                    method == "read_string",
-                );
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.conn_await_reads
+                    .insert(key.clone(), method == "read_string");
+                self.suspending_io_receiver_nominals
+                    .insert(key, name.clone());
             } else {
                 // NEW-2: `await listener.accept()` is the non-blocking suspending
                 // accept (the listener-readiness sibling of `await conn.read()`).
@@ -7700,8 +7791,10 @@ impl Checker {
                 let is_listener_await_accept =
                     self.inside_await_expr && name == "std.net.Listener" && method == "accept";
                 if is_listener_await_accept {
-                    self.listener_await_accepts
-                        .insert(SpanKey::in_module(span, self.current_module_idx));
+                    let key = SpanKey::in_module(span, self.current_module_idx);
+                    self.listener_await_accepts.insert(key.clone());
+                    self.suspending_io_receiver_nominals
+                        .insert(key, name.clone());
                 } else {
                     // The blocking-call warning is correct for a bare (non-awaited)
                     // `conn.read()`; suppress it when the read is the non-blocking
@@ -9305,7 +9398,11 @@ impl Checker {
                         );
                     }
                     self.record_named_extern_symbol_rewrite_if_any(
-                        name, type_args, method, &sig, span,
+                        &canonical_receiver_name,
+                        type_args,
+                        method,
+                        &sig,
+                        span,
                     );
                     // W3.042 S2-S2: user-defined methods on named types (both
                     // inherent `impl Type { fn m(...) }` and trait `impl T for
@@ -10366,6 +10463,88 @@ mod tests {
     use crate::module_registry::ModuleRegistry;
 
     #[test]
+    fn suspending_io_method_results_publish_delivery_ownership() {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let receiver = (Expr::Identifier("io".to_string()), 1..3);
+
+        let read_span = 10..20;
+        let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(read_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            read_key.clone(),
+            crate::stdlib::STD_NET_CONNECTION.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &read_span,
+            &Ty::String,
+        );
+
+        let read = checker
+            .resolved_method_call_ownership
+            .get(&read_key)
+            .expect("suspending read ownership");
+        assert_eq!(read.fact.ownership, Ownership::owned(Acquisition::Delivery));
+        assert_eq!(read.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let accept_span = 30..40;
+        let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
+        checker.listener_await_accepts.insert(accept_key.clone());
+        checker.suspending_io_receiver_nominals.insert(
+            accept_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "accept",
+            &[],
+            &accept_span,
+            &Ty::Named {
+                name: crate::stdlib::STD_NET_CONNECTION.to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+        );
+
+        let accept = checker
+            .resolved_method_call_ownership
+            .get(&accept_key)
+            .expect("suspending accept ownership");
+        assert_eq!(
+            accept.fact.ownership,
+            Ownership::owned(Acquisition::Delivery)
+        );
+        assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let spoofed_span = 50..60;
+        let spoofed_key = SpanKey::in_module(&spoofed_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(spoofed_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            spoofed_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &spoofed_span,
+            &Ty::String,
+        );
+        let spoofed = checker
+            .resolved_method_call_ownership
+            .get(&spoofed_key)
+            .expect("spoofed suspending read ownership");
+        assert_eq!(spoofed.fact.ownership, Ownership::Unknown);
+    }
+
+    #[test]
     fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
         let push_signature = FnSig {
             params: vec![Ty::U8],
@@ -10503,8 +10682,8 @@ mod tests {
     fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
         for (receiver, symbol) in [
             (STD_NET_CONNECTION, "hew_tcp_attach_local"),
-            ("tls.TlsStream", "hew_tls_attach_local"),
-            ("websocket.Conn", "hew_ws_attach_local"),
+            ("std.net.tls.TlsStream", "hew_tls_attach_local"),
+            ("std.net.websocket.Conn", "hew_ws_attach_local"),
         ] {
             assert_eq!(
                 transport_attach_runtime_symbol(receiver, "attach"),

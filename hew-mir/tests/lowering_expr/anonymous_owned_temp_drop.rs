@@ -48,6 +48,28 @@ fn enum_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -
         .collect()
 }
 
+fn inline_enum_drops(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    drop_fn: Some(hew_mir::DropFnSpec::InPlace(
+                        hew_mir::InPlaceReleaseKind::Enum
+                    )),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
     p.elaborated_mir
         .iter()
@@ -278,10 +300,11 @@ fn scalar_control() {
             1,
             "{fn_name} must expose exactly one synthetic owner in raw MIR"
         );
-        assert_eq!(
-            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
-            1,
-            "{fn_name} must release the discarded owned Option exactly once"
+        assert_eq!(inline_enum_drops(&p, fn_name), 1);
+        assert!(
+            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
+            "{fn_name} transfers its publication owner into the immediate discard, so no \
+             second scope-exit release may remain"
         );
     }
 
@@ -363,7 +386,7 @@ fn run() -> i64 {
 }
 
 #[test]
-fn escaping_while_let_payload_keeps_composite_fail_closed() {
+fn escaping_while_let_payload_transfers_owner_and_drops_composite_shells() {
     let p = pipeline_with_tc(
         r#"
 fn next() -> Result<string, string> {
@@ -380,12 +403,34 @@ fn run() -> i64 {
 }
 "#,
     );
-
     let drops = enum_drops(&p, "run", |_| true);
+    assert_eq!(
+        drops.len(),
+        3,
+        "the live scrutinee must release on each reachable exit: {drops:?}"
+    );
     assert!(
-        drops.is_empty(),
-        "a payload moved into a surviving outer binding must keep the composite excluded; \
-         got {drops:?}"
+        drops.iter().all(|drop| drop.place == drops[0].place),
+        "every exit must discharge the same composite owner: {drops:?}"
+    );
+    let run = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("raw fn run");
+    assert_eq!(
+        run.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .count(),
+        1,
+        "the escaping payload must transfer out of its composite slot exactly once"
+    );
+    assert_eq!(
+        string_retain_count(&p, "run"),
+        0,
+        "the exact payload transfer must not mint a competing share"
     );
 }
 

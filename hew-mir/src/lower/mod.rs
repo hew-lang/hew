@@ -26,8 +26,7 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
-    NumericMethodOp, NumericSignedness, ProducedValueAcquisition, ProducedValueOwnership,
-    ResolvedTy,
+    NumericMethodOp, NumericSignedness, ProducedValueOwnership, ResolvedTy,
 };
 
 use crate::dataflow;
@@ -57,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod borrowed_argument_owner;
 mod cfg_util;
 mod closure_gen;
 mod composite_own;
@@ -95,14 +95,16 @@ pub(crate) use self::facts::mangle_layout_key;
 
 #[cfg(not(test))]
 use self::cfg_util::{
-    block_by_id, blocks_reachable_from, call_terminator_next, local_is_used_after,
-    shift_instr_spans_on_insert,
+    block_by_id, blocks_reachable_from, call_terminator_next,
+    local_is_rewritten_after_current_iteration, local_is_used_after, shift_instr_spans_on_insert,
 };
 #[cfg(not(test))]
 use self::composite_own::{
-    apply_escaped_record_sibling_field_drops, derive_consumed_local_aggregate_member_bindings,
-    derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
-    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
+    apply_escaped_record_sibling_field_drops,
+    derive_borrowed_builtin_handle_projection_alias_bindings,
+    derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
+    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
+    derive_owned_record_drop_allowed, derive_owned_tuple_handle_projection_bindings,
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
@@ -155,7 +157,8 @@ use self::split_consume::{
     binding_ref_target, check_duplex_split_state, close_alias_binders_forward,
     collect_record_field_binders, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, local_is_byte_copy_aggregate, place_is_interior_projection,
-    place_is_tag_read, propagate_whole_value_alias_roots, validate_cross_block_split_consume,
+    place_is_tag_read, propagate_whole_value_alias_roots,
+    propagate_whole_value_alias_roots_excluding_moves, validate_cross_block_split_consume,
 };
 pub use self::suspend_places::instr_source_places;
 pub use self::suspend_places::suspend_kind_source_places;
@@ -318,10 +321,6 @@ const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result"
 /// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
 /// target's temporary is the callee's obligation — no caller drop).
 const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
-/// Name for the owner of a fresh composite cloned from a `Vec` solely to read
-/// one of its fields. The clone result has no source binding, so this owner
-/// carries it through the ordinary scope-exit drop machinery.
-const SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME: &str = "__hew_vec_get_clone_projection_base";
 /// Name for the owner minted over a fresh Vec COPY-IN element temporary when
 /// every whole by-value parameter embedded in it is a retained string share.
 /// The binding owns the temporary's retained share only; the parameter remains
@@ -613,6 +612,10 @@ struct Builder {
     /// carrier.  Post-CFG inline releases consume only this subset; legacy
     /// sink owners keep their existing release protocol.
     typed_produced_value_owner_bindings: HashSet<BindingId>,
+    /// Exact MIR moves that transfer a typed publication generation into a
+    /// named binding. String/bytes ownership finalization uses this evidence to
+    /// avoid retaining the moved value as though the source stayed live.
+    typed_produced_value_handoffs: HashSet<(Place, Place)>,
     /// Exact successful expression publication places, keyed by HIR `SiteId`.
     /// This is identity-only metadata used for receiver-owner transfer; it
     /// neither schedules nor owns cleanup.
@@ -624,9 +627,6 @@ struct Builder {
     /// This is not a cleanup registry: it contains only the currently-lowered
     /// expression `SiteId` and is removed immediately after lowering.
     suppress_typed_produced_owner_sites: HashSet<SiteId>,
-    /// Fresh composite clone results emitted by `lower_vec_index`. A direct
-    /// record projection consumes its matching local once and mints the owner.
-    pub(crate) fresh_vec_get_clone_projection_bases: Vec<FreshVecGetCloneProjectionBase>,
     /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
     /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
     /// its heap fields — i.e. consuming it leaves no live alias, so the
@@ -641,19 +641,18 @@ struct Builder {
     /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
     /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
     pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
-    /// Module-global call-scrutinee return-provenance context (#2648) for the
-    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
-    /// each module-fn `ItemId` to its precise three-state return provenance, the
-    /// declared-extern id set, and the audited extern contract table. `Rc` so
-    /// child builders share it cheaply; the empty default classifies every callee
-    /// as an unknown item, which the fresh-owner authority then declines — no
-    /// mint, never a wrongly-Fresh admit. See
+    /// Module-global return-provenance context (#2648) for alias and foreign-
+    /// value safety checks that are not represented by produced-value facts.
+    /// Maps each module-fn `ItemId` to its precise three-state return provenance,
+    /// the declared-extern id set, and the audited extern contract table. `Rc` so
+    /// child builders share it cheaply; the empty default classifies every
+    /// callee as unknown and therefore grants no legacy safety warrant. See
     /// `crate::return_provenance::CallScrutineeProvenance`.
     ///
-    /// Its `fresh_owner_verdicts` field is the ONE place a builder holds the
-    /// TABLE-AWARE fresh-owner authority — the object every ownership consumer
-    /// asks "does this call hand back a fresh owner I may drop, move, or
-    /// consume". It is the coarse interprocedural freshness fixpoint
+    /// Its `fresh_owner_verdicts` field is retained for foreign-provenance,
+    /// destructive-update, and alias-safety consumers. Produced-value owner
+    /// publication does not consult it; HIR's typed fact is authoritative for
+    /// that path. The verdict is the coarse interprocedural freshness fixpoint
     /// (`compute_fn_returns_fresh_owner`) CONJOINED with the opaque-extern
     /// laundering veto and the direct-extern name veto. The builder deliberately
     /// keeps NO second copy: one holder, one authority. The COARSE map is never
@@ -721,6 +720,12 @@ struct Builder {
     /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
     /// ordinary calls continue to borrow the caller's reference.
     pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// Exact join publications whose HIR result fact is a borrowed string.
+    /// Return and owning-sink planning may mint a share from this typed row;
+    /// ordinary reads keep borrowing the selected source owner.
+    pub(crate) typed_borrowed_string_publication_locals: HashSet<u32>,
+    /// Bytes counterpart of `typed_borrowed_string_publication_locals`.
+    pub(crate) typed_borrowed_bytes_publication_locals: HashSet<u32>,
     /// Binding-reference sites used as the RHS of `let next = current` for
     /// `bytes`. Stage S1 treats these as retained shares, so their checker use
     /// intent is downgraded from `Consume` to `Read`.
@@ -1014,6 +1019,11 @@ struct Builder {
     /// source binding still owns the same value on tag-false and pre-reassign
     /// break/return edges.
     pub(crate) back_edge_only_iteration_owners: HashSet<BindingId>,
+    /// Fresh string publications that remain live across a borrowing operation
+    /// spanning multiple blocks. They need the ordinary exit-plan template,
+    /// unlike synthetic publications already discharged inline or transferred
+    /// into another owner.
+    pub(crate) synthetic_borrowed_temp_drop_bindings: HashSet<BindingId>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     pub(crate) diagnostics: Vec<MirDiagnostic>,
     /// Per-function de-duplication for W3.029 user-aggregate value-class
@@ -1688,13 +1698,6 @@ struct Builder {
     /// host-width guards — a fail-open hole). Defaults to `Bits64` (every native
     /// target); the host-defaulting `lower_hir_module` wrapper keeps the default.
     pub(crate) pointer_width: PointerWidth,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FreshVecGetCloneProjectionBase {
-    pub(crate) local: u32,
-    pub(crate) ty: ResolvedTy,
-    pub(crate) site: SiteId,
 }
 
 #[must_use]
@@ -4273,6 +4276,7 @@ fn prepare_owned_call_carriers(
                     })
                 });
                 let dest = builder.alloc_local(arg.ty.clone());
+                builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
                 block.instructions.push(Instr::Move {
                     dest,
                     src: arg.source,
@@ -4862,6 +4866,7 @@ fn prepare_outbound_actor_payloads(
                             }
                         }
                         let dest = builder.alloc_local(arg.ty.clone());
+                        builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
                         prep.push(Instr::Move {
                             dest,
                             src: arg.source,
@@ -5076,6 +5081,112 @@ fn prepare_outbound_actor_payloads(
                     u32::try_from(at).unwrap_or(u32::MAX),
                 );
                 block.instructions.insert(at, instr);
+            }
+        }
+    }
+}
+
+/// Null scalar handle sources after an exact tuple/record constructor has
+/// moved them into a value that reaches the return slot.
+///
+/// Aggregate construction byte-copies handle words. The returned-member drop
+/// proof already makes the constructor destination the caller's owner and
+/// suppresses the source close on that path; this companion rewrite clears the
+/// stale source slot so crash-cleanup escrow cannot close the selected handle
+/// again during the normal return sweep. Unselected siblings are untouched and
+/// keep their path-sensitive exit closes.
+fn neutralize_returned_aggregate_handle_sources(blocks: &mut [BasicBlock], builder: &mut Builder) {
+    let candidates = builder.owned_locals_exit_candidates();
+    let returned_members =
+        derive_returned_aggregate_member_bindings(blocks, &candidates, &builder.binding_locals);
+    if returned_members.is_empty() {
+        return;
+    }
+
+    let candidate_places: HashSet<Place> = candidates
+        .iter()
+        .filter(|(binding, _name, ty)| {
+            returned_members.contains(binding) && drop_plan::ty_is_owned_handle_leaf(ty)
+        })
+        .filter_map(|(binding, _name, _ty)| builder.binding_locals.get(binding).copied())
+        .collect();
+    if candidate_places.is_empty() {
+        return;
+    }
+
+    // Reverse the exact whole-value move graph from the return slot. A
+    // constructor qualifies only when its own destination is in this closure;
+    // another aggregate built from the same source in the same block cannot
+    // trigger an early neutralize.
+    let mut returned_value_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src,
+            } => base_local(*src),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for instr in blocks.iter().flat_map(|block| &block.instructions) {
+            let Instr::Move { dest, src } = instr else {
+                continue;
+            };
+            if base_local(*dest).is_some_and(|dest| returned_value_locals.contains(&dest)) {
+                if let Some(source) = base_local(*src) {
+                    changed |= returned_value_locals.insert(source);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for block in blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let (dest, sources): (Place, Vec<Place>) = match &block.instructions[index] {
+                Instr::TupleConstruct { elements, dest } => (*dest, elements.clone()),
+                Instr::RecordInit { fields, dest, .. } => (
+                    *dest,
+                    fields.iter().map(|(_offset, source)| *source).collect(),
+                ),
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            if !base_local(dest).is_some_and(|local| returned_value_locals.contains(&local)) {
+                index += 1;
+                continue;
+            }
+
+            let mut neutralized = HashSet::new();
+            let sources: Vec<Place> = sources
+                .into_iter()
+                .filter(|source| candidate_places.contains(source) && neutralized.insert(*source))
+                .collect();
+            index += 1;
+            for source in sources {
+                shift_instr_spans_on_insert(
+                    &mut builder.instr_spans,
+                    block.id,
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                );
+                block.instructions.insert(
+                    index,
+                    Instr::NeutralizePayloadSlot {
+                        place: source,
+                        transferee: Some(dest),
+                        authority:
+                            crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume,
+                    },
+                );
+                index += 1;
             }
         }
     }
@@ -5415,6 +5526,7 @@ pub(crate) fn lower_function(
         &resolved_outbound,
         &projection_tainted,
     );
+    neutralize_returned_aggregate_handle_sources(&mut blocks, &mut builder);
     debug_assert!(
         builder.pending_outbound_actor_args.is_empty(),
         "checked MIR cannot retain unresolved outbound actor arguments"
@@ -5547,8 +5659,8 @@ pub(crate) fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
-    let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-    let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+    let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+    let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads
@@ -5725,9 +5837,6 @@ pub(crate) fn lower_function(
         &builder.binding_locals,
         &builder.locals,
     );
-    let mut source_excluded = returned_aggregate_members;
-    source_excluded.extend(consumed_local_aggregate_members);
-    source_excluded.extend(spawn_consumed_handle_members);
     let alias_field_binders = builder.alias_owner_field_binders();
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
@@ -5740,6 +5849,36 @@ pub(crate) fn lower_function(
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
+    let mut source_excluded = returned_aggregate_members;
+    source_excluded.extend(consumed_local_aggregate_members);
+    source_excluded.extend(spawn_consumed_handle_members);
+    // A no-retain payload/field projection of a builtin handle is a borrow of
+    // the still-live aggregate owner, not a fresh close authority. The same
+    // typed set suppresses its affine drop during elaboration. A real move-out
+    // carries `NeutralizePayloadSlot`, which removes projection taint and keeps
+    // the destination as the sole owner instead.
+    let projection_alias_tainted = compute_projection_alias_taint(
+        &raw.blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+    );
+    let mut borrowed_builtin_handle_projection_aliases =
+        derive_borrowed_builtin_handle_projection_alias_bindings(
+            &builder.binding_locals,
+            &builder.locals,
+            &projection_alias_tainted,
+        );
+    let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
+        &raw.blocks,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &tuple_composite_drop_allowed,
+    );
+    borrowed_builtin_handle_projection_aliases
+        .retain(|binding| !owned_tuple_handle_projections.contains(binding));
+    source_excluded.extend(borrowed_builtin_handle_projection_aliases);
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let record_field_store_preserves_owner = |record, field_offset| {
         builder.record_field_store_preserves_record_owner(record, field_offset)
@@ -6356,6 +6495,17 @@ impl Builder {
                 .copied()
                 == Some(true);
             let owned_ty = self.subst_ty(&param.ty);
+            // The authored `#[resource] close(self)` receiver is a consuming
+            // ABI boundary even though its body is the close ritual itself and
+            // therefore must not register a recursive callee-side scope drop.
+            // Carry that distinction in the typed parameter mode so callers
+            // transfer dynamic crash-cleanup authority before entry.
+            let param_is_close_receiver = i == 0
+                && matches!(
+                    resource_drop_fn(&owned_ty, &self.type_classes),
+                    Some(crate::model::DropFnSpec::UserClose(ref symbol))
+                        if symbol == &self.current_function_symbol
+                );
             // A generic Iterator parameter can specialise to the compiler's
             // first-class `VecIter<T>` cursor.  Its sole release authority is
             // the guarded cursor-field protocol (`scope_vec_iter_bindings`),
@@ -6417,6 +6567,7 @@ impl Builder {
                 )
                 && !self.ty_is_machine(&self.subst_ty(&param.ty));
             let mut callee_owns_param = param_is_consumed
+                || param_is_close_receiver
                 || param_is_owned_carrier
                 || param_summary_owned
                 || self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler;
@@ -6540,7 +6691,7 @@ impl Builder {
                     .is_some_and(|pump| pump.sink == slot)
             {
                 ParamBoundaryMode::OwnedMessage
-            } else if param_is_consumed {
+            } else if param_is_consumed || param_is_close_receiver {
                 ParamBoundaryMode::TransferResource
             } else if param_is_owned_carrier
                 || ((param_summary_owned || callee_owns_param)

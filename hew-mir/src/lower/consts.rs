@@ -743,7 +743,11 @@ pub(super) fn is_crash_info_payload_ty(
         return false;
     };
     record_field_orders
-        .get(name)
+        .get(
+            &hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[])
+                .expect("CrashInfo has a compiler-owned struct layout"),
+        )
+        .or_else(|| record_field_orders.get(name))
         .or_else(|| record_field_orders.get("std.failure.CrashInfo"))
         .or_else(|| record_field_orders.get(canonical_name))
         .is_some_and(|actual_fields| {
@@ -754,16 +758,17 @@ pub(super) fn register_builtin_record_layouts(
     record_layouts: &mut Vec<crate::model::RecordLayout>,
     record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
 ) {
-    for registration in hew_hir::builtin_type_classes::builtin_type_registrations() {
+    for registration in hew_hir::builtin_type_classes::compiler_record_layout_registrations() {
         let hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(fields) = registration.shape
         else {
             continue;
         };
-        if let Some(existing_fields) = record_field_orders.get(registration.name) {
-            debug_assert!(
+        let key = hew_hir::compiler_record_layout_key(registration.builtin, &[])
+            .expect("every Struct builtin registration has a compiler record key");
+        if let Some(existing_fields) = record_field_orders.get(&key) {
+            assert!(
                 builtin_registration_fields_match(existing_fields, fields),
-                "builtin record registration for `{}` disagrees with existing record layout",
-                registration.name
+                "compiler record layout `{key}` was registered with a conflicting shape"
             );
             continue;
         }
@@ -773,11 +778,11 @@ pub(super) fn register_builtin_record_layouts(
             .map(|field| (field.name.to_string(), field.ty.to_resolved_ty()))
             .collect();
         record_layouts.push(crate::model::RecordLayout {
-            name: registration.name.to_string(),
+            name: key.clone(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
             field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
-        record_field_orders.insert(registration.name.to_string(), fields);
+        record_field_orders.insert(key, fields);
     }
 }
 
@@ -1557,6 +1562,21 @@ mod builtin_carrier_tests {
             .find(|layout| layout.name == "std.builtins.LinkError")
             .expect("canonical builtin layout must coexist");
         assert_ne!(builtin.variants.len(), user.variants.len());
+    }
+
+    #[test]
+    fn user_monitor_ref_layout_coexists_with_builtin_registration() {
+        let mut layouts = Vec::new();
+        let mut fields: HashMap<String, Vec<(String, ResolvedTy)>> =
+            HashMap::from([("MonitorRef".to_string(), Vec::new())]);
+
+        register_builtin_record_layouts(&mut layouts, &mut fields);
+
+        assert_eq!(fields.get("MonitorRef"), Some(&Vec::new()));
+        let builtin_key = hew_hir::compiler_record_layout_key(BuiltinType::MonitorRef, &[])
+            .expect("MonitorRef compiler layout key");
+        assert!(fields.contains_key(&builtin_key));
+        assert!(layouts.iter().any(|layout| layout.name == builtin_key));
     }
 
     #[test]

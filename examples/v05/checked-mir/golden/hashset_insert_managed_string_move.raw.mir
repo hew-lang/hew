@@ -7,7 +7,7 @@ fn main() -> () [conv=default]
     _4: bool
     _5: i64
   bb0:
-    _0 = call HashSet::new() [builtin=HashSetNew] -> bb1
+    _0 = call HashSet::new() [authority=Runtime(HashSetNew)] -> bb1
   bb1:
     stmt: bind BindingId(0) words site=SiteId(0) ty=HashSet<string>
     stmt: bind BindingId(1) word site=SiteId(2) ty=string
@@ -17,11 +17,11 @@ fn main() -> () [conv=default]
     _1 = move _0
     _2 = string_lit "behaviour"
     _3 = move _2
-    _4 = call hew_hashset_insert_layout(_1, _3) [builtin=HashSetInsertLayout] -> bb2
+    _4 = call hew_hashset_insert_layout(_1, _3) [authority=Runtime(HashSetInsertLayout)] -> bb2
   bb2:
     stmt: eval site=SiteId(3) ty=bool
     stmt: use BindingId(0) words site=SiteId(8) ty=HashSet<string> intent=Read
-    _5 = call hew_hashset_len_layout(_1) [builtin=HashSetLenLayout] -> bb3
+    _5 = call hew_hashset_len_layout(_1) [authority=Runtime(HashSetLenLayout)] -> bb3
   bb3:
     call println_i64(_5) -> bb4
   bb4:
@@ -36,7 +36,7 @@ fn i8::fmt(i8) -> string [conv=default]
   bb0:
     stmt: use BindingId(10) val site=SiteId(80) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(78)) ty=string
     ret = move _2
@@ -50,7 +50,7 @@ fn i16::fmt(i16) -> string [conv=default]
   bb0:
     stmt: use BindingId(11) val site=SiteId(84) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(82)) ty=string
     ret = move _2
@@ -62,7 +62,7 @@ fn i32::fmt(i32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(12) val site=SiteId(87) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(86)) ty=string
     ret = move _1
@@ -74,7 +74,7 @@ fn i64::fmt(i64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(13) val site=SiteId(90) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(89)) ty=string
     ret = move _1
@@ -86,7 +86,7 @@ fn u8::fmt(u8) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(14) val site=SiteId(93) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(92)) ty=string
     ret = move _1
@@ -98,7 +98,7 @@ fn u16::fmt(u16) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(15) val site=SiteId(96) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(95)) ty=string
     ret = move _1
@@ -110,7 +110,7 @@ fn u32::fmt(u32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(16) val site=SiteId(99) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(98)) ty=string
     ret = move _1
@@ -122,7 +122,7 @@ fn u64::fmt(u64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(17) val site=SiteId(102) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(101)) ty=string
     ret = move _1
@@ -136,7 +136,7 @@ fn isize::fmt(isize) -> string [conv=default]
   bb0:
     stmt: use BindingId(18) val site=SiteId(106) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(104)) ty=string
     ret = move _2
@@ -150,7 +150,7 @@ fn usize::fmt(usize) -> string [conv=default]
   bb0:
     stmt: use BindingId(19) val site=SiteId(110) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(108)) ty=string
     ret = move _2
@@ -162,7 +162,7 @@ fn bool::fmt(bool) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(20) val site=SiteId(113) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(112)) ty=string
     ret = move _1
@@ -174,7 +174,7 @@ fn char::fmt(char) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(21) val site=SiteId(116) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(115)) ty=string
     ret = move _1
@@ -186,7 +186,7 @@ fn f64::fmt(f64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(22) val site=SiteId(119) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(118)) ty=string
     ret = move _1
@@ -200,7 +200,7 @@ fn f32::fmt(f32) -> string [conv=default]
   bb0:
     stmt: use BindingId(23) val site=SiteId(123) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(121)) ty=string
     ret = move _2
@@ -297,9 +297,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _4: string
   bb0:
     stmt: use BindingId(29) val site=SiteId(141) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(138) ty=string
     stmt: return site=Some(SiteId(138)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

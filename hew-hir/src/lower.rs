@@ -2071,6 +2071,46 @@ fn item_is_duplicated_in_preferred_module(
     })
 }
 
+/// Whether a directory module absorbed an item from a distinct child module.
+///
+/// A directory import may contain both its same-leaf root file (`http.hew` for
+/// `std.net.http`) and child files such as `http_client.hew`. The root-file
+/// declarations retain the directory module's identity; only declarations
+/// duplicated by a preferred module with a different leaf belong to a child
+/// owner and must be skipped during directory-module function emission.
+fn item_is_duplicated_in_distinct_leaf_module(
+    program: &Program,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    current_module: &hew_parser::module::ModuleId,
+    item: &Item,
+    item_span: &Span,
+) -> bool {
+    if preferred_modules.contains(current_module) {
+        return false;
+    }
+    let Some(module_graph) = &program.module_graph else {
+        return false;
+    };
+    let current_leaf = current_module.path.last();
+    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+        module_graph.modules.get(module_id).is_some_and(|module| {
+            module
+                .items
+                .iter()
+                .any(|(candidate, candidate_span)| candidate == item && candidate_span == item_span)
+        })
+    };
+    if preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+    {
+        return false;
+    }
+    preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
+}
+
 fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
     match item {
         Item::TypeDecl(decl) => decl.name == type_name,
@@ -2241,6 +2281,26 @@ pub fn lower_program_with_mono_cap(
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     let file_import_module_idx = file_import_item_module_indices(program);
+    // Source items flattened from a file import still belong to that file's
+    // declaration namespace.  Compute the checker-aligned module-name carrier
+    // once and use it in every HIR pass that creates declaration identity,
+    // not only while lowering executable bodies in the third pass.
+    let module_idx_to_name: HashMap<u32, String> = {
+        let mut names = HashMap::new();
+        if let Some(module_graph) = &program.module_graph {
+            let mut module_idx = 0_u32;
+            for module_id in &module_graph.topo_order {
+                if *module_id == module_graph.root {
+                    continue;
+                }
+                if module_graph.modules.contains_key(module_id) {
+                    module_idx += 1;
+                    names.insert(module_idx, module_id.path.join("."));
+                }
+            }
+        }
+        names
+    };
     ctx.seed_stdlib_fn_registry();
     let builtin_receiver_impl_program = builtin_receiver_impl_program();
     let builtin_receiver_impl_output = builtin_receiver_impl_program
@@ -2351,7 +2411,9 @@ pub fn lower_program_with_mono_cap(
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
         match item {
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
@@ -2452,6 +2514,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: register user-module pub fn signatures under their qualified,
     // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
     // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
@@ -2525,9 +2589,18 @@ pub fn lower_program_with_mono_cap(
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
-                for (item, _) in &module.items {
+                for (item, item_span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                item_span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{module_full_path}.{}",
                                 func.name
@@ -3305,9 +3378,15 @@ pub fn lower_program_with_mono_cap(
     let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
         HashMap::new();
     let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
-    for (item, span) in &program.items {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         if let Item::TypeDecl(decl) = item {
-            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+            ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+            ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+            let hir_decl = if let Some(module) = ctx.current_module_name.clone() {
+                ctx.lower_imported_type_decl(decl, span.clone(), &module)
+            } else {
+                ctx.lower_type_decl(decl, span.clone())
+            };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
                 hir_decl
@@ -3331,8 +3410,13 @@ pub fn lower_program_with_mono_cap(
             } else {
                 None
             };
+            let class_entry = (marker, close_method);
             ctx.type_classes
-                .insert(hir_decl.name.clone(), (marker, close_method));
+                .insert(hir_decl.name.clone(), class_entry.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_classes
+                    .insert(hir_decl.qualified_name(), class_entry);
+            }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -3357,6 +3441,8 @@ pub fn lower_program_with_mono_cap(
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     for (item, _) in &program.items {
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
@@ -3796,22 +3882,6 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let module_idx_to_name: HashMap<u32, String> = {
-        let mut m = HashMap::new();
-        if let Some(mg) = &program.module_graph {
-            let mut idx: u32 = 0;
-            for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
-                    continue;
-                }
-                if mg.modules.contains_key(mod_id) {
-                    idx += 1;
-                    m.insert(idx, mod_id.path.join("."));
-                }
-            }
-        }
-        m
-    };
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -3895,7 +3965,12 @@ pub fn lower_program_with_mono_cap(
                         ),
                     ));
                 }
-                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone(), None)));
+                let defining_module = ctx.current_module_name.clone();
+                items.push(HirItem::Actor(ctx.lower_actor(
+                    actor,
+                    span.clone(),
+                    defining_module.as_deref(),
+                )));
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
@@ -4183,6 +4258,15 @@ pub fn lower_program_with_mono_cap(
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{source_module}.{}",
                                 func.name
@@ -4200,6 +4284,15 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{source_module}.{}",
                                 func.name
@@ -4633,11 +4726,20 @@ pub fn lower_program_with_mono_cap(
                                 symbol_owner,
                                 &method.name,
                             );
-                            if let Some(declaration) = output
+                            if let Some(declaration) = ctx
                                 .impl_method_declaration_ids
                                 .get(&emitted_symbol)
-                                .or_else(|| output.impl_method_declaration_ids.get(&source_symbol))
+                                .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
                                 .cloned()
+                                .or_else(|| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
                             {
                                 ctx.impl_method_declaration_ids
                                     .insert(emitted_symbol, declaration);
@@ -4763,6 +4865,12 @@ pub fn lower_program_with_mono_cap(
     ctx.diagnostics.extend(machine_mono_diagnostics);
 
     admit_opaque_resource_lifecycles(
+        &items,
+        &ctx.opaque_resource_candidates,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
+    admit_declared_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
         &mut ctx.type_classes,
@@ -5079,6 +5187,155 @@ fn admit_opaque_resource_lifecycles(
                 decl.span.clone(),
                 "the canonical close does not match the checker-admitted consuming release",
             )),
+        }
+    }
+}
+
+/// Admit the ordinary authored `#[resource] #[opaque]` form when it has no
+/// checker-discovered producer/release pair.  The candidate graph deliberately
+/// covers wrappers around a known external producer; it must not be mistaken
+/// for the authority on whether a source-owned resource has an automatic
+/// close.  A direct actor-state field can be constructed by arbitrary FFI or
+/// passed in from its owner and still needs its exact inherent `close` body at
+/// teardown.
+///
+/// This is declaration-keyed throughout.  In particular, a user `MonitorRef`
+/// or `Receiver` can never inherit the standard-library lifecycle merely from
+/// its leaf spelling.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates one source-owned opaque lifecycle end-to-end: declaration, exact impl method, emitted body, and registry admission"
+)]
+fn admit_declared_opaque_resource_lifecycles(
+    items: &[HirItem],
+    graph: &hew_types::OpaqueResourceCandidateGraph,
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for decl in items.iter().filter_map(|item| match item {
+        HirItem::TypeDecl(decl)
+            if decl.is_opaque
+                && decl.marker == ResourceMarker::Resource
+                && decl.variants.is_empty() =>
+        {
+            Some(decl)
+        }
+        _ => None,
+    }) {
+        // The authored fallback exists only when the checker discovered no
+        // producer/release contract for this exact declaration. Once a
+        // candidate or conflict exists, the checker graph owns the lifecycle
+        // decision; a failed validation must not be converted into an
+        // automatic close by this less-informed fallback.
+        let checker_owns_lifecycle_decision = graph.candidates.contains_key(&decl.declaration)
+            || graph
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.resource_type == decl.declaration.full_path());
+        if checker_owns_lifecycle_decision {
+            continue;
+        }
+        if type_classes
+            .lifecycle_registry()
+            .opaque_resource(&decl.declaration)
+            .is_some()
+        {
+            continue;
+        }
+        let exact_owner = decl.declaration.full_path();
+        let close_methods: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Impl(impl_block)
+                    if impl_block.trait_name.is_none()
+                        && impl_block.self_type_name == exact_owner =>
+                {
+                    Some(impl_block)
+                }
+                _ => None,
+            })
+            .flat_map(|impl_block| {
+                impl_block
+                    .method_names
+                    .iter()
+                    .zip(&impl_block.method_ids)
+                    .zip(&impl_block.method_symbols)
+            })
+            .filter_map(|((name, declaration), symbol)| {
+                (name == "close")
+                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .flatten()
+            })
+            .collect();
+        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                format!(
+                    "opaque resource requires one exact inherent close declaration; found {}",
+                    close_methods.len()
+                ),
+                &decl.span,
+                "opaque resource lifecycle identity did not survive HIR lowering",
+            ));
+            continue;
+        };
+        let close_bodies: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function)
+                    if function.declaration == *close_declaration
+                        && function.name == *close_symbol =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        let [close_body] = close_bodies.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                format!(
+                    "opaque resource close requires one exact emitted body; found {}",
+                    close_bodies.len()
+                ),
+                &decl.span,
+                "opaque resource close body did not survive HIR lowering",
+            ));
+            continue;
+        };
+        if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                "opaque resource close body must take one receiver and return unit".to_string(),
+                &decl.span,
+                "opaque resource close body has an inadmissible signature",
+            ));
+            continue;
+        }
+        let lifecycle = crate::OpaqueResourceLifecycle {
+            resource_declaration: decl.declaration.clone(),
+            close_declaration: close_declaration.clone(),
+            // There is no separately declared release ABI in this authored
+            // form.  The generated close body is the exact lifecycle endpoint;
+            // the fields are retained for the shared lifecycle carrier.
+            release_declaration: close_declaration.clone(),
+            close_symbol: close_symbol.clone(),
+            release_symbol: close_symbol.clone(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        };
+        if type_classes
+            .admit_opaque_resource_lifecycle(lifecycle)
+            .is_err()
+        {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                "duplicate exact opaque resource lifecycle admission".to_string(),
+                &decl.span,
+                "one qualified resource may have exactly one automatic lifecycle authority",
+            ));
         }
     }
 }
@@ -6227,6 +6484,11 @@ struct LowerCtx {
     produced_value_source_sites: HashMap<SpanKey, Vec<SiteId>>,
     /// Site-keyed rows awaiting receiver-span resolution at module finish.
     produced_value_fact_sites: HashMap<SiteId, HirProducedValueFact>,
+    /// Facts for compiler-generated expression roots that have no checker span
+    /// identity of their own. Kept disjoint from source-keyed facts until the
+    /// occurrence graph has resolved so a wrapper can never consume its
+    /// authored child's row merely because both share a source span.
+    generated_produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
     /// The checker key for each pending site fact.  This is retained until all
     /// expressions have lowered, at which point every dependency edge can be
     /// translated to its exact `SiteId` without relying on traversal order.
@@ -6732,6 +6994,7 @@ struct LowerCtx {
 
 struct PendingProducedValueCarrier {
     facts: HashMap<SiteId, HirProducedValueFact>,
+    generated_facts: HashMap<SiteId, HirProducedValueFact>,
     fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
     source_sites: HashMap<SpanKey, Vec<SiteId>>,
     ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -6962,6 +7225,21 @@ impl PendingProducedValueCarrier {
                 ));
             }
         }
+        for (site, fact) in self.generated_facts {
+            if self.facts.insert(site, fact).is_some() {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "generated produced value identity".to_string(),
+                        reason: format!("generated HIR site {site} collides with a source fact"),
+                    },
+                    0..0,
+                    "generated and authored produced-value facts must occupy disjoint sites",
+                ));
+                if let Some(fact) = self.facts.get_mut(&site) {
+                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
+                }
+            }
+        }
         self.facts
     }
 }
@@ -7049,6 +7327,7 @@ impl LowerCtx {
             produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
             produced_value_source_sites: HashMap::new(),
             produced_value_fact_sites: HashMap::new(),
+            generated_produced_value_facts: HashMap::new(),
             produced_value_fact_keys: HashMap::new(),
             suppress_produced_value_recording_depth: 0,
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
@@ -10503,7 +10782,10 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
-        if !matches!(target, CallTarget::User(_) | CallTarget::Runtime(_)) {
+        if !matches!(
+            target,
+            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+        ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: c_symbol.to_string(),
@@ -10521,7 +10803,9 @@ impl LowerCtx {
         }
         let symbol = crate::mangle_dotted_name(c_symbol);
         let selected_declaration = match &target {
-            CallTarget::User(declaration) => Some(declaration),
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                Some(declaration)
+            }
             CallTarget::Runtime(_) => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
@@ -10637,6 +10921,22 @@ impl LowerCtx {
                 HirExprKind::Unsupported(
                     "ordinary call has poisoned monomorphisation arguments".to_string(),
                 ),
+                ResolvedTy::Unit,
+            );
+        }
+        let source_name = Self::ordinary_call_presentation_name(function);
+        if source_name == "LambdaActorHandle::new" {
+            self.discard_rejected_call_child_facts(span);
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CallableUnsupportedInMir {
+                    name: source_name.clone(),
+                },
+                span.clone(),
+                "`LambdaActorHandle::new` is not a public constructor; use \
+                 `actor |params| { body }` to create a lambda actor",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("diagnosed: unsupported call to `{source_name}`")),
                 ResolvedTy::Unit,
             );
         }
@@ -10896,6 +11196,10 @@ impl LowerCtx {
     fn ordinary_call_presentation_name(function: &Spanned<Expr>) -> String {
         match &function.0 {
             Expr::Identifier(name) => name.clone(),
+            Expr::FieldAccess { object, field } => match &object.0 {
+                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                _ => "<call expression>".to_string(),
+            },
             _ => "<call expression>".to_string(),
         }
     }
@@ -10935,6 +11239,32 @@ impl LowerCtx {
             "checker admitted a call without an executable target",
         ));
         false
+    }
+
+    /// Remove checker-fact occurrences for children of a call rejected before
+    /// those children become HIR nodes. The call root itself remains live as an
+    /// `Unsupported` expression and retains its own fact for finalization.
+    fn discard_rejected_call_child_facts(&mut self, span: &Span) {
+        let call_key = self.mk_key(span);
+        let discarded: HashSet<SiteId> = self
+            .produced_value_fact_keys
+            .iter()
+            .filter_map(|(site, (key, _))| {
+                (key != &call_key && key.start >= call_key.start && key.end <= call_key.end)
+                    .then_some(*site)
+            })
+            .collect();
+        for sites in self.produced_value_source_sites.values_mut() {
+            sites.retain(|site| !discarded.contains(site));
+        }
+        self.produced_value_source_sites
+            .retain(|_, sites| !sites.is_empty());
+        self.produced_value_fact_sites
+            .retain(|site, _| !discarded.contains(site));
+        self.generated_produced_value_facts
+            .retain(|site, _| !discarded.contains(site));
+        self.produced_value_fact_keys
+            .retain(|site, _| !discarded.contains(site));
     }
 
     /// Return the checker-owned target for a compiler-synthesised call to an
@@ -13233,10 +13563,12 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
-            // Root-program identity. Package-module actors get their
-            // defining module stamped by `lower_imported_actor`; file-import
-            // spliced actors lower through this path and stay root-identical.
-            defining_module: None,
+            // File-import items are flattened for source-order lowering, but
+            // flattening does not erase declaration ownership.  The third
+            // pass supplies their checker-aligned module identity here; a
+            // genuine root actor still carries `None`. Package-module actors
+            // use the same identity through `lower_imported_actor`.
+            defining_module: decl_module.map(str::to_string),
             state_fields,
             init,
             receive_handlers,
@@ -15931,7 +16263,12 @@ impl LowerCtx {
             lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
             lowered.ty = normalized_ty;
         }
-        self.record_produced_value_fact(&expr.1, &lowered);
+        if !self
+            .generated_produced_value_facts
+            .contains_key(&lowered.site)
+        {
+            self.record_produced_value_fact(&expr.1, &lowered);
+        }
         lowered
     }
 
@@ -15953,10 +16290,35 @@ impl LowerCtx {
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
         if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.wrap_tail_ok(lowered, &expr.1)
+            self.record_produced_value_fact(&expr.1, &lowered);
+            let wrapped = self.wrap_tail_ok(lowered, &expr.1);
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::Unknown,
+            );
+            wrapped
         } else {
             lowered
         }
+    }
+
+    fn record_generated_produced_value_fact(
+        &mut self,
+        lowered: &HirExpr,
+        ownership: hew_types::ProducedValueOwnership,
+    ) {
+        let previous = self.generated_produced_value_facts.insert(
+            lowered.site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::classify(&lowered.kind),
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        assert!(previous.is_none(), "generated HIR site published twice");
     }
 
     /// Publish a synthetic expression root that deliberately has no checker
@@ -16141,6 +16503,7 @@ impl LowerCtx {
     fn take_pending_produced_value_carrier(&mut self) -> PendingProducedValueCarrier {
         PendingProducedValueCarrier {
             facts: std::mem::take(&mut self.produced_value_fact_sites),
+            generated_facts: std::mem::take(&mut self.generated_produced_value_facts),
             fact_keys: std::mem::take(&mut self.produced_value_fact_keys),
             source_sites: std::mem::take(&mut self.produced_value_source_sites),
             ownership: std::mem::take(&mut self.produced_value_ownership),
@@ -17024,6 +17387,7 @@ impl LowerCtx {
                         }
                         _ => (inner, &inner.1),
                     };
+                let has_block_wrapper = !std::ptr::eq(effective_inner_expr, inner.as_ref());
                 if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&self.mk_key(effective_inner_span))
@@ -17087,8 +17451,8 @@ impl LowerCtx {
                     let HirExpr {
                         node: anchor_node,
                         site: anchor_site,
-                        ty: anchor_ty,
-                        value_class: anchor_value_class,
+                        ty: _,
+                        value_class: _,
                         intent: anchor_intent,
                         kind: ask_kind,
                         span: anchor_span,
@@ -17102,6 +17466,28 @@ impl LowerCtx {
                         source_anchor: None,
                     } = ask_kind
                     {
+                        let method_anchor = HirProducedValueSourceAnchor {
+                            node: anchor_node,
+                            site: anchor_site,
+                            ty: result_ty.clone(),
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            intent: anchor_intent,
+                            producer: HirProducedValueProducer::ActorAsk,
+                            span: anchor_span,
+                            source: None,
+                        };
+                        let source_anchor = if has_block_wrapper {
+                            let mut block_anchor = self.produced_value_source_anchor(
+                                &inner.1,
+                                result_ty.clone(),
+                                intent,
+                                HirProducedValueProducer::Block,
+                            );
+                            block_anchor.source = Some(Box::new(method_anchor));
+                            block_anchor
+                        } else {
+                            method_anchor
+                        };
                         return HirExpr {
                             node: self.ids.node(),
                             site,
@@ -17114,16 +17500,7 @@ impl LowerCtx {
                                 args,
                                 reply_ty,
                                 deadline_ns,
-                                source_anchor: Some(HirProducedValueSourceAnchor {
-                                    node: anchor_node,
-                                    site: anchor_site,
-                                    ty: anchor_ty,
-                                    value_class: anchor_value_class,
-                                    intent: anchor_intent,
-                                    producer: HirProducedValueProducer::ActorAsk,
-                                    span: anchor_span,
-                                    source: None,
-                                }),
+                                source_anchor: Some(source_anchor),
                             },
                             span: span.clone(),
                         };
@@ -17632,13 +18009,12 @@ impl LowerCtx {
                 // (which would `lower_expr(object)` on a bare module name and
                 // fail with `UnresolvedSymbol`).
                 //
-                // Guard: object is a bare `Expr::Identifier` and the qualified
-                // key `"{module_short}.{field}"` is in `const_registry`.  The
-                // `const_registry` pre-pass inserts pub consts from every
-                // imported module under qualified keys, so any hit here is
-                // authoritative.
+                // Guard: object is a bare `Expr::Identifier` and the checker-resolved
+                // owner key is in `const_registry`. The registry pre-pass stores
+                // imported consts under exact source owners, so the lexical module
+                // binding must cross the same owner map used by type checking.
                 if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = format!("{module_name}.{field}");
+                    let qualified_key = self.imported_module_member_key(module_name, field);
                     if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
@@ -18250,7 +18626,8 @@ impl LowerCtx {
                     return inner;
                 }
             };
-            return HirExpr {
+            self.record_produced_value_fact(&span, &inner);
+            let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
@@ -18265,6 +18642,13 @@ impl LowerCtx {
                 },
                 span,
             };
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::Fresh,
+                ),
+            );
+            return wrapped;
         }
         inner
     }
@@ -21213,17 +21597,17 @@ impl LowerCtx {
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
-        // Root-visible source declarations (including flattened file imports)
-        // outrank the builtin catalog. A user `#[opaque] type Receiver {}` is a
+        // Root-visible source declarations outrank the builtin catalog. A user
+        // `#[opaque] type Receiver {}` is a
         // distinct nominal resource, not the std channel endpoint merely
         // because the short spelling collides.
-        if (self.current_module_name.is_none() || current_module_is_file_import)
+        if self.current_module_name.is_none()
             && !name.contains('.')
             && self.root_opaque_type_short_names.contains(name)
         {
             return ResolvedTy::named_opaque(name.to_string(), args);
         }
-        if !name.contains('.') && !current_module_is_file_import {
+        if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
                 // Several compiler carriers (notably Stream/Sink and lifecycle
@@ -21237,12 +21621,12 @@ impl LowerCtx {
                     .is_some_and(|module| module.starts_with("std."))
                 {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
                 if self.resolves_to_opaque_handle(&qualified, name) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
                 }
@@ -21289,7 +21673,7 @@ impl LowerCtx {
         let canonical = self.canonical_current_module_record_name(name);
         if canonical != name {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
             if self.resolves_to_opaque_handle(&canonical, type_name) {
                 return ResolvedTy::named_opaque(canonical, args);
@@ -21364,7 +21748,7 @@ impl LowerCtx {
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+            Self::resolved_source_builtin_ty(name, builtin, args)
         } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
@@ -21422,11 +21806,7 @@ impl LowerCtx {
             return Some(self.resolve_named_type_ref(canonical, args));
         }
 
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if (self.current_module_name.is_none() || current_module_is_file_import)
+        if self.current_module_name.is_none()
             && self.root_visible_source_type_short_names.contains(name)
         {
             return Some(if self.root_opaque_type_short_names.contains(name) {
@@ -21436,23 +21816,17 @@ impl LowerCtx {
             });
         }
 
-        if !current_module_is_file_import {
-            if let Some(module_owner) = self.current_module_name.as_deref() {
-                let qualified = format!("{module_owner}.{name}");
-                if self.source_type_identities.contains(&qualified) {
-                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return Some(ResolvedTy::named_builtin(
-                            builtin.canonical_name(),
-                            builtin,
-                            args,
-                        ));
-                    }
-                    return Some(if self.resolves_to_opaque_handle(&qualified, name) {
-                        ResolvedTy::named_opaque(qualified, args)
-                    } else {
-                        ResolvedTy::named_user(qualified, args)
-                    });
+        if let Some(module_owner) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_owner}.{name}");
+            if self.source_type_identities.contains(&qualified) {
+                if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                    return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
                 }
+                return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                    ResolvedTy::named_opaque(qualified, args)
+                } else {
+                    ResolvedTy::named_user(qualified, args)
+                });
             }
         }
 
@@ -21593,7 +21967,7 @@ impl LowerCtx {
             let canonical = self.canonical_current_module_record_name(&name);
             if canonical.contains('.') {
                 if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    return Self::resolved_source_builtin_ty(&canonical, builtin, args);
                 }
             }
             if self.resolves_to_opaque_handle(&canonical, &name) {
@@ -21612,12 +21986,12 @@ impl LowerCtx {
             };
         }
         if !name.contains('.')
-            && (self.current_module_name.is_none() || current_module_is_file_import)
+            && self.current_module_name.is_none()
             && self.root_opaque_type_short_names.contains(&name)
         {
             return ResolvedTy::named_opaque(name, args);
         }
-        if !name.contains('.') && !current_module_is_file_import {
+        if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
                 if self
@@ -21626,12 +22000,12 @@ impl LowerCtx {
                     .is_some_and(|module| module.starts_with("std."))
                 {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
                 if self.resolves_to_opaque_handle(&qualified, &name) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
                 }
@@ -21660,6 +22034,24 @@ impl LowerCtx {
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
         if let Some(builtin) = builtin {
+            // Checker-authored runtime signatures may retain the bare
+            // presentation name for a source-owned lifecycle carrier. When
+            // this scope has an exact import binding, restore that declaration
+            // identity before the builtin early-return below. The binding is
+            // checker-published from canonical source provenance, so a user
+            // same-leaf type cannot acquire lifecycle authority here.
+            if !name.contains('.')
+                && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
+            {
+                if let Some(imported) = self
+                    .import_type_name_aliases
+                    .get(&(self.current_module_name.clone(), name.clone()))
+                {
+                    if self.qualified_source_builtin(imported) == Some(builtin) {
+                        return Self::resolved_source_builtin_ty(imported, builtin, args);
+                    }
+                }
+            }
             if !name.contains('.') {
                 // Preserve the checker-authored presentation identity. Runtime
                 // classification is carried exclusively by `builtin`; a
@@ -21672,7 +22064,7 @@ impl LowerCtx {
                 };
             }
             if self.qualified_source_builtin(&name) == Some(builtin) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&name, builtin, args);
             }
             return ResolvedTy::named_user(name, args);
         }
@@ -21712,13 +22104,13 @@ impl LowerCtx {
         // grant a user package a std carrier merely from its spelling.
         if canonical.contains('.') {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
         }
         if canonical == name {
             if name.contains('.') {
                 if let Some(builtin) = self.qualified_source_builtin(&name) {
-                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    return Self::resolved_source_builtin_ty(&name, builtin, args);
                 }
             }
             // The checker-authored builtin discriminator is authoritative.
@@ -21735,7 +22127,7 @@ impl LowerCtx {
                 is_opaque,
             }
         } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+            Self::resolved_source_builtin_ty(&canonical, builtin, args)
         } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
             ResolvedTy::named_opaque(canonical, args)
         } else {
@@ -21822,53 +22214,46 @@ impl LowerCtx {
         // module has no `{module_short}.{name}` entry and stays unqualified,
         // and a root item (`current_module_name` unset) is never rewritten.
         //
-        // A FILE-import module is excluded: `flatten_file_import_items`
-        // splices its types into the ROOT namespace, where they are
-        // constructed and dispatched with BARE identity. Owner-qualifying a
-        // file-import self-record ref (`{module}.Result`) would diverge from
-        // root's bare `%Result` construction and break same-type dispatch.
-        // Only genuine package modules — whose types are referenced qualified
-        // — take the owner identity.
-        //
         // Gated on a genuine cross-module bare-name collision: a record unique
         // to its module (e.g. stdlib `xml.Node`) is never rewritten, so the
         // qualification is inert for every non-colliding type and only fires
         // for the same-bare-name shape the actor-ask identity coupling needs.
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if !current_module_is_file_import {
-            if let Some(module_full_path) = self.current_module_name.as_deref() {
-                let qualified = format!("{module_full_path}.{name}");
-                // The checker can carry a bare `Ty::Named` for either a
-                // record or an opaque source declaration. Both must recover
-                // the exact full module owner here: the record registry is
-                // layout metadata and deliberately does not contain opaque
-                // handles, while `source_type_identities` is the declaration
-                // authority for every source type.
-                if self.record_registry.contains_key(&qualified)
-                    || self.source_type_identities.contains(&qualified)
-                {
-                    return qualified;
-                }
+        if let Some(module_full_path) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_full_path}.{name}");
+            // The checker can carry a bare `Ty::Named` for either a record or
+            // an opaque source declaration. Both recover their exact full
+            // module owner here. File-import flattening controls emission
+            // order only; it is not declaration-identity authority.
+            if self.record_registry.contains_key(&qualified)
+                || self.source_type_identities.contains(&qualified)
+            {
+                return qualified;
             }
         }
         name.to_string()
     }
 
+    fn imported_module_member_key(&self, module_binding: &str, member: &str) -> String {
+        self.module_import_bindings
+            .get(&(self.current_module_name.clone(), module_binding.to_string()))
+            .map_or_else(
+                || format!("{module_binding}.{member}"),
+                |owner| format!("{owner}.{member}"),
+            )
+    }
+
     /// Whether bare `name` is authored by the scope currently being lowered.
     ///
-    /// Root and flattened file-import declarations share the root namespace.
-    /// Genuine package modules use the exact declaration identities harvested
-    /// from the module graph. This is deliberately narrower than
+    /// Root declarations use the root namespace. Every imported module,
+    /// including a flattened file import, uses the exact declaration
+    /// identities harvested from the module graph. This is deliberately narrower than
     /// `record_registry`, which is a global layout index containing imports.
     fn current_scope_declares_source_type(
         &self,
         name: &str,
-        current_module_is_file_import: bool,
+        _current_module_is_file_import: bool,
     ) -> bool {
-        if self.current_module_name.is_none() || current_module_is_file_import {
+        if self.current_module_name.is_none() {
             return self.root_visible_source_type_short_names.contains(name);
         }
         self.current_module_name
@@ -21961,6 +22346,26 @@ impl LowerCtx {
             return Some(builtin);
         }
         None
+    }
+
+    /// Retain the exact declaration identity for source-owned lifecycle
+    /// carriers while also attaching their runtime representation class.
+    /// Ordinary compiler carriers continue to use the catalog's canonical
+    /// presentation name. A lifecycle record needs both facts: its qualified
+    /// source name selects the nominal layout, while `builtin` selects the ABI.
+    fn resolved_source_builtin_ty(
+        source_name: &str,
+        builtin: BuiltinType,
+        args: Vec<ResolvedTy>,
+    ) -> ResolvedTy {
+        let name = if source_name.contains('.')
+            && hew_types::lookup_source_owned_lifecycle_type(source_name) == Some(builtin)
+        {
+            source_name
+        } else {
+            builtin.canonical_name()
+        };
+        ResolvedTy::named_builtin(name, builtin, args)
     }
 
     /// Project a checker-owned implementation declaration onto the one HIR
@@ -22121,24 +22526,11 @@ impl LowerCtx {
     ) -> Option<hew_types::DefId> {
         let self_ty = self_ty?;
         let instance = crate::dispatch::receiver_self_type_for_impl_lookup_instance(self_ty)?;
-        let nominal = instance.nominal.declaration().full_path();
-        let receiver = if instance.args.is_empty() {
-            nominal.to_string()
-        } else {
-            format!(
-                "{nominal}<{}>",
-                instance
-                    .args
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        Some(hew_types::DefId::new(format!(
-            "{nominal}::<default impl {} for {receiver}>::{method}",
-            declaring_trait.full_path(),
-        )))
+        Some(hew_types::default_impl_method_declaration(
+            declaring_trait,
+            &instance,
+            method,
+        ))
     }
 
     /// Decide whether a `Named` type reference resolves to a `#[opaque]`
@@ -23744,7 +24136,8 @@ impl LowerCtx {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "for-over-Vec desugars directly to existing Loop/Match HIR nodes"
+        clippy::if_not_else,
+        reason = "the desugar keeps diagnostic recovery before the executable iterator branch"
     )]
     fn lower_for_iter_desugar(
         &mut self,
@@ -23812,6 +24205,8 @@ impl LowerCtx {
                 .retain(|_, sites| !sites.is_empty());
             self.produced_value_fact_sites
                 .retain(|site, _| !discarded.contains(site));
+            self.generated_produced_value_facts
+                .retain(|site, _| !discarded.contains(site));
             self.produced_value_fact_keys
                 .retain(|site, _| !discarded.contains(site));
         }
@@ -23855,17 +24250,51 @@ impl LowerCtx {
                 // the prelude in outer-to-inner (original execution) order — until
                 // the tail is no longer a `Block`, so an arbitrarily block-wrapped
                 // literal source bottoms out at the same bare-`BindingRef` shape a
-                // named binding takes.
+                // named binding takes. Keep each consumed Block site as a
+                // transparent `SubsumedValue` wrapper: checker facts and their
+                // nested identity edges remain attached to live HIR expressions,
+                // while MIR evaluates only the surviving tail.
                 let elem_ty = args[0].clone();
+                let mut consumed_blocks = Vec::new();
                 while let HirExprKind::Block(block) = lowered_iterable.kind {
                     let Some(tail) = block.tail else {
                         lowered_iterable.kind = HirExprKind::Block(block);
                         break;
                     };
                     source_prelude.extend(block.statements);
+                    consumed_blocks.push((
+                        lowered_iterable.site,
+                        lowered_iterable.span,
+                        lowered_iterable.intent,
+                    ));
                     lowered_iterable = *tail;
                 }
                 lowered_iterable.intent = IntentKind::Capture;
+                let synthetic_array_tail = matches!(
+                    &lowered_iterable.kind,
+                    HirExprKind::BindingRef { name, .. }
+                        if name.starts_with("__hew_array_") || name.starts_with("__hew_repeat_")
+                ) && !self
+                    .produced_value_fact_sites
+                    .contains_key(&lowered_iterable.site);
+                if synthetic_array_tail {
+                    let (array_site, _, _) = consumed_blocks
+                        .pop()
+                        .expect("array desugar tail must retain its synthetic block site");
+                    lowered_iterable.site = array_site;
+                    if let Some(fact) = self.produced_value_fact_sites.get_mut(&array_site) {
+                        fact.producer = HirProducedValueProducer::BindingRef;
+                    }
+                }
+                for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
+                    lowered_iterable = self.subsumed_value(
+                        site,
+                        &block_span,
+                        block_intent,
+                        lowered_iterable,
+                        HirProducedValueProducer::Block,
+                    );
+                }
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
@@ -24106,7 +24535,7 @@ impl LowerCtx {
         self.push_scope();
         let block_scope = self.ids.scope();
         let iter_name = format!("__hew_for_iter_{}", self.ids.binding().0);
-        let iter_binding = self.bind(iter_name.clone(), iter_ty, true, iterable.1.clone());
+        let iter_binding = self.bind(iter_name.clone(), iter_ty.clone(), true, iterable.1.clone());
         let iter_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(iter_binding.clone(), Some(iter_init)),
@@ -24123,34 +24552,105 @@ impl LowerCtx {
             ForIterNextCall::VarSelf(target) => {
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
-                let target_label = match target {
-                    HirVarSelfMethodTarget::Direct => "direct impl method".to_string(),
+                let (call_target, target_label) = match &target {
+                    HirVarSelfMethodTarget::Direct => {
+                        let symbol = match &iter_ty {
+                            ResolvedTy::Named {
+                                builtin:
+                                    Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
+                                ..
+                            } => crate::node::HirImplBlock::method_symbol(
+                                injected_builtin_impl_symbol_owner(builtin.canonical_name()),
+                                "next",
+                            ),
+                            ResolvedTy::Named { name, .. } => {
+                                crate::node::HirImplBlock::method_symbol(name, "next")
+                            }
+                            _ => String::new(),
+                        };
+                        (self.registered_symbol_target(&symbol), symbol)
+                    }
                     HirVarSelfMethodTarget::StaticTrait {
                         declaring_trait,
                         method_name,
                         ..
-                    } => format!("{declaring_trait}::{method_name}"),
+                    } => {
+                        let label = format!("{declaring_trait}::{method_name}");
+                        let call_target = self
+                            .trait_method_identity(declaring_trait, method_name)
+                            .map_or_else(
+                                || CallTarget::Unsupported {
+                                    reason: format!(
+                                        "synthetic static-trait call `{label}` has no checker-owned target"
+                                    ),
+                                },
+                                |(trait_id, method_id)| {
+                                    CallTarget::static_trait(trait_id, method_id)
+                                },
+                            );
+                        (call_target, label)
+                    }
                 };
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: target_label,
-                        reason: "synthetic iterator var-self call has no checker target"
-                            .to_string(),
-                    },
-                    iterable.1.clone(),
-                    "the iterator desugar requires a checker-published executable target",
-                ));
-                // A legacy `HirVarSelfMethodTarget` string is not an executable
-                // authority. Do not carry it into MIR beside an Unsupported
-                // target: error recovery ends here instead.
-                self.make_expr(
-                    HirExprKind::Unsupported(
-                        "synthetic iterator var-self call has no checker target".to_string(),
-                    ),
-                    option_ty,
-                    IntentKind::Read,
-                    iterable.1.clone(),
-                )
+                if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
+                    self.make_expr(
+                        HirExprKind::Unsupported(
+                            "synthetic iterator var-self call has no checker target".to_string(),
+                        ),
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    )
+                } else {
+                    let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+                    let lowered_receiver =
+                        self.lower_synthetic_operand(&next_receiver, IntentKind::Consume);
+                    if matches!(target, HirVarSelfMethodTarget::Direct) {
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            &iter_ty,
+                            &iterable.1,
+                            lowered_receiver.site,
+                        );
+                    }
+                    let builtin_cursor = matches!(
+                        iter_ty,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::VecIter | BuiltinType::HashMapIter),
+                            ..
+                        }
+                    );
+                    let next = self.make_expr(
+                        HirExprKind::VarSelfMethodCall {
+                            receiver: Box::new(lowered_receiver),
+                            call_target,
+                            target,
+                            args: Vec::new(),
+                            ret_ty: option_ty.clone(),
+                            receiver_ty: iter_ty,
+                        },
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    );
+                    // This call root is compiler-generated and therefore has
+                    // no authored checker span. Keep its fact in the disjoint
+                    // generated-site domain. The closed builtin cursors clone
+                    // or move an independently owned element into the returned
+                    // Option; user/static iterators remain provisional until
+                    // the declaration-keyed verifier resolves their return
+                    // summary.
+                    let ownership = if next.value_class == ValueClass::BitCopy {
+                        hew_types::ProducedValueOwnership::NoOwner
+                    } else if builtin_cursor {
+                        hew_types::ProducedValueOwnership::owned(
+                            hew_types::ProducedValueAcquisition::Fresh,
+                        )
+                    } else {
+                        hew_types::ProducedValueOwnership::Unknown
+                    };
+                    self.record_generated_produced_value_fact(&next, ownership);
+                    next
+                }
             }
             ForIterNextCall::ChannelRecv => {
                 // Borrow the receiver binding (Read) so the loop binding remains
@@ -25004,6 +25504,26 @@ impl LowerCtx {
                 );
             }
         }
+        // A checker-selected typed runtime endpoint is already a complete
+        // executable dispatch decision.  It intentionally wins over the
+        // declaration-level resolver verdict that was also recorded while
+        // validating the source method surface: active transport `attach`, for
+        // example, has a source trait implementation solely for type checking,
+        // while its actual call ABI is the runtime family that synthesises
+        // concrete actor protocol IDs.  Trying to project that source stub into
+        // an imported HIR body both loses the runtime ABI and rejects valid
+        // imported handles when the trait declaration has no materialised
+        // body.  Keep this precedence structural (the typed `CallTarget`), not
+        // symbol- or receiver-name based, so every future runtime override has
+        // the same semantics.
+        let rewrite = self.method_call_rewrites.get(&key).cloned();
+        let runtime_rewrite_selected = matches!(
+            &rewrite,
+            Some(MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Runtime(_),
+                ..
+            })
+        );
         // Look up the checker's `resolved_calls` verdict unconditionally so any
         // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
         // bugs, `expr_types` side-table inconsistency, missing impl registration)
@@ -25020,101 +25540,105 @@ impl LowerCtx {
         // The legacy `method_call_rewrites` entries for that overlap are
         // removed in the C3 commit that retires the per-V allowlists, so the
         // precedence is exercised by construction once dual-emit retires.
-        if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
-            // The checker's `expr_types` is the authoritative source for
-            // the call-site result type (LESSONS `checker-authority`).
-            // A missing or non-convertible entry is a checker boundary
-            // violation — we record it eagerly so the gap is visible
-            // long before the consumer is wired.
-            let ret_ty = match self
-                .expr_types
-                .get(&key)
-                .cloned()
-                .map(|ty| ResolvedTy::from_ty(&ty))
-            {
-                Some(Ok(ty)) => Some(ty),
-                Some(Err(err)) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "checker-resolved method call has poisoned result type",
-                    ));
-                    None
-                }
-                None => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: "missing expr_types entry for call site".to_string(),
-                        },
-                        span.clone(),
-                        "checker recorded a ResolvedCall for this site but no \
+        if !runtime_rewrite_selected {
+            if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
+                // The checker's `expr_types` is the authoritative source for
+                // the call-site result type (LESSONS `checker-authority`).
+                // A missing or non-convertible entry is a checker boundary
+                // violation — we record it eagerly so the gap is visible
+                // long before the consumer is wired.
+                let ret_ty = match self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .map(|ty| ResolvedTy::from_ty(&ty))
+                {
+                    Some(Ok(ty)) => Some(ty),
+                    Some(Err(err)) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-resolved method call has poisoned result type",
+                        ));
+                        None
+                    }
+                    None => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: "missing expr_types entry for call site".to_string(),
+                            },
+                            span.clone(),
+                            "checker recorded a ResolvedCall for this site but no \
                          expr_types entry — the side-tables are inconsistent",
-                    ));
-                    None
-                }
-            };
-            #[allow(
-                clippy::items_after_statements,
-                reason = "the activation gate lives next to the guard it controls; \
+                        ));
+                        None
+                    }
+                };
+                #[allow(
+                    clippy::items_after_statements,
+                    reason = "the activation gate lives next to the guard it controls; \
                           promoting to a module-level const would scatter the \
                           deferral rationale across the file"
-            )]
-            const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
-            if RESOLVED_IMPL_CALL_ACTIVATED {
-                // Only emit when the resolver verdict survived boundary
-                // conversion; otherwise fall through to the legacy
-                // `method_call_rewrites` arm below.
-                if let Some(ret_ty) = ret_ty {
-                    if !self.ensure_executable_target(&resolved.target, "resolved impl call", &span)
-                    {
+                )]
+                const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
+                if RESOLVED_IMPL_CALL_ACTIVATED {
+                    // Only emit when the resolver verdict survived boundary
+                    // conversion; otherwise fall through to the legacy
+                    // `method_call_rewrites` arm below.
+                    if let Some(ret_ty) = ret_ty {
+                        if !self.ensure_executable_target(
+                            &resolved.target,
+                            "resolved impl call",
+                            &span,
+                        ) {
+                            return (
+                                HirExprKind::Unsupported(
+                                    "resolved impl call has no checker target".to_string(),
+                                ),
+                                ret_ty,
+                            );
+                        }
+                        // Register any enum instantiation that surfaces as the
+                        // return type (e.g. `HashMap::get -> Option<V>`,
+                        // `HashMap::remove -> Option<V>`). Without this the
+                        // module-level `enum_layouts` table lacks the matching
+                        // key for `Named { name: "Option", .. }`, MIR records
+                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
+                        // the call site, and the totality gate fires
+                        // (`DecisionMapTotal { offending_sites: [...] }`).
+                        // This mirrors the legacy `RewriteToFunction` arm
+                        // below — the new resolver-authority path inherits
+                        // the same boundary obligation.
+                        self.try_register_enum_instantiation(&span);
+                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                         return (
-                            HirExprKind::Unsupported(
-                                "resolved impl call has no checker target".to_string(),
-                            ),
+                            HirExprKind::ResolvedImplCall {
+                                receiver: Box::new(lowered_receiver),
+                                target: resolved.target,
+                                impl_id: resolved.impl_id,
+                                method_name: resolved.method_name,
+                                target_symbol: resolved.method_target.symbol_name,
+                                target_family: resolved.method_target.family,
+                                type_args: resolved.type_args,
+                                args: lowered_args,
+                                ret_ty: ret_ty.clone(),
+                            },
                             ret_ty,
                         );
                     }
-                    // Register any enum instantiation that surfaces as the
-                    // return type (e.g. `HashMap::get -> Option<V>`,
-                    // `HashMap::remove -> Option<V>`). Without this the
-                    // module-level `enum_layouts` table lacks the matching
-                    // key for `Named { name: "Option", .. }`, MIR records
-                    // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                    // the call site, and the totality gate fires
-                    // (`DecisionMapTotal { offending_sites: [...] }`).
-                    // This mirrors the legacy `RewriteToFunction` arm
-                    // below — the new resolver-authority path inherits
-                    // the same boundary obligation.
-                    self.try_register_enum_instantiation(&span);
-                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-                    return (
-                        HirExprKind::ResolvedImplCall {
-                            receiver: Box::new(lowered_receiver),
-                            target: resolved.target,
-                            impl_id: resolved.impl_id,
-                            method_name: resolved.method_name,
-                            target_symbol: resolved.method_target.symbol_name,
-                            target_family: resolved.method_target.family,
-                            type_args: resolved.type_args,
-                            args: lowered_args,
-                            ret_ty: ret_ty.clone(),
-                        },
-                        ret_ty,
-                    );
                 }
+                // Dormant path: the lookup ran (and diagnostics fired if the
+                // boundary failed), but emission is deferred. Fall through to
+                // the legacy `method_call_rewrites` branch below so live sites
+                // keep their current dispatch behaviour.
+                let _ = resolved;
             }
-            // Dormant path: the lookup ran (and diagnostics fired if the
-            // boundary failed), but emission is deferred. Fall through to
-            // the legacy `method_call_rewrites` branch below so live sites
-            // keep their current dispatch behaviour.
-            let _ = resolved;
         }
-        let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
                 let result_ty = self
@@ -25618,6 +26142,15 @@ impl LowerCtx {
                                 self_type.nominal.declaration().full_path(),
                                 &method_name,
                             );
+                            let concrete_target = self.registered_symbol_target(&c_symbol);
+                            if !self.ensure_executable_target(&concrete_target, &c_symbol, &span) {
+                                return (
+                                    HirExprKind::Unsupported(format!(
+                                        "trait default call `{c_symbol}` has no concrete target"
+                                    )),
+                                    ret_ty,
+                                );
+                            }
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,
@@ -25664,7 +26197,7 @@ impl LowerCtx {
                             };
                             return (
                                 HirExprKind::Call {
-                                    target,
+                                    target: concrete_target,
                                     callee: Box::new(callee),
                                     args: lowered_args,
                                 },
@@ -26341,6 +26874,10 @@ impl LowerCtx {
                 // failure arm never produces a value of `ret_ty`.
                 let panic_msg_expr =
                     self.build_string_literal_expr(panic_msg.to_string(), span.clone());
+                self.record_generated_produced_value_fact(
+                    &panic_msg_expr,
+                    hew_types::ProducedValueOwnership::Borrowed,
+                );
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 vec![
@@ -33699,10 +34236,15 @@ fn main() {}
             ("std.stream.Sink", BuiltinType::Sink),
             ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
         ] {
+            let expected_name = if builtin == BuiltinType::MonitorRef {
+                qualified
+            } else {
+                builtin.canonical_name()
+            };
             assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
-                "an exact canonical std carrier `{qualified}` must retain builtin identity"
+                ResolvedTy::named_builtin(expected_name, builtin, Vec::new()),
+                "an exact canonical std carrier `{qualified}` must retain declaration and builtin identity"
             );
         }
 
@@ -33924,11 +34466,7 @@ fn main() {}
         );
         assert_eq!(
             ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
-            ResolvedTy::named_builtin(
-                BuiltinType::CrashInfo.canonical_name(),
-                BuiltinType::CrashInfo,
-                Vec::new(),
-            ),
+            ResolvedTy::named_builtin("std.failure.CrashInfo", BuiltinType::CrashInfo, Vec::new(),),
             "an imported std lifecycle payload must not be stolen by the global record registry"
         );
     }
@@ -34034,6 +34572,24 @@ fn main() {}
             )),
             ResolvedTy::named_user("std.net.NetError", Vec::new()),
             "a checker-produced lexical module binding must agree with the exact std declaration identity"
+        );
+    }
+
+    #[test]
+    fn imported_const_key_uses_the_checker_module_owner() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.module_import_bindings.insert(
+            (None, "codec".to_string()),
+            "std.net.http.codec".to_string(),
+        );
+
+        assert_eq!(
+            ctx.imported_module_member_key("codec", "MAX_READS"),
+            "std.net.http.codec.MAX_READS"
         );
     }
 
@@ -34698,6 +35254,7 @@ fn main() {}
         };
         let carrier = PendingProducedValueCarrier {
             facts: HashMap::new(),
+            generated_facts: HashMap::new(),
             fact_keys: HashMap::new(),
             source_sites: HashMap::from([(key.clone(), vec![SiteId(41), SiteId(42)])]),
             ownership: HashMap::new(),

@@ -246,13 +246,26 @@ mod tests {
 
     #[test]
     fn tcp_contracts_name_borrow_and_consume_per_parameter() {
+        let read_contract = extern_ownership_contract("hew_tcp_read")
+            .contract()
+            .expect("TCP read contract");
         assert_eq!(
             extern_param_ownership("hew_tcp_read", 0),
             Some(ExternParamOwnership::Borrow)
         );
+        assert_eq!(read_contract.result, ExternResultOwnership::Fresh);
+        assert_eq!(read_contract.release_symbol, "hew_bytes_drop");
+        assert_eq!(
+            read_contract.result_retention,
+            ExternResultRetention::Transferred
+        );
         assert_eq!(
             extern_param_ownership("hew_tcp_close", 0),
             Some(ExternParamOwnership::Consume)
+        );
+        assert_eq!(
+            extern_param_ownership("hew_observe_read_u64", 0),
+            Some(ExternParamOwnership::Borrow)
         );
         assert_eq!(extern_param_ownership("hew_tcp_unclassified", 0), None);
         assert!(extern_resource_param_is_audited_borrow(
@@ -475,6 +488,87 @@ mod tests {
             contract.result_retention,
             ExternResultRetention::Transferred
         );
+    }
+
+    #[test]
+    fn string_vec_producers_carry_truthful_transfer_contracts() {
+        for (symbol, params, discharge_depth) in [
+            ("hew_string_chars", 1, ReleaseDischargeDepth::Shallow),
+            ("hew_string_lines", 1, ReleaseDischargeDepth::Deep),
+            ("hew_string_split", 2, ReleaseDischargeDepth::Deep),
+        ] {
+            let contract = extern_ownership_contract(symbol)
+                .contract()
+                .unwrap_or_else(|| panic!("{symbol} contract"));
+            assert_eq!(contract.params.len(), params, "{symbol}");
+            assert!(
+                contract
+                    .params
+                    .iter()
+                    .all(|param| *param == ExternParamOwnership::Borrow),
+                "{symbol}"
+            );
+            assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+            assert_eq!(contract.release_symbol, "hew_vec_free", "{symbol}");
+            assert_eq!(contract.discharge_depth, discharge_depth, "{symbol}");
+            assert_eq!(
+                contract.result_retention,
+                ExternResultRetention::Transferred,
+                "{symbol}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_pair_extractors_transfer_the_returned_handle() {
+        for (symbol, release_symbol) in [
+            ("hew_stream_pair_sink", "hew_sink_close"),
+            ("hew_stream_pair_sink_bytes", "hew_sink_close"),
+            ("hew_stream_pair_stream", "hew_stream_close"),
+            ("hew_stream_pair_stream_bytes", "hew_stream_close"),
+        ] {
+            let contract = extern_ownership_contract(symbol)
+                .contract()
+                .unwrap_or_else(|| panic!("{symbol} contract"));
+            assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+            assert_eq!(contract.release_symbol, release_symbol, "{symbol}");
+            assert_eq!(
+                contract.result_retention,
+                ExternResultRetention::Transferred,
+                "{symbol} must transfer the extracted handle"
+            );
+        }
+    }
+
+    #[test]
+    fn stdlib_byte_producers_transfer_the_returned_buffer() {
+        for symbol in [
+            "hew_random_bytes_hew",
+            "hew_deflate_compress_hew",
+            "hew_deflate_decompress_hew",
+            "hew_gzip_compress_hew",
+            "hew_gzip_decompress_hew",
+            "hew_zlib_compress_hew",
+            "hew_zlib_decompress_hew",
+            "hew_msgpack_encode_bytes_hew",
+            "hew_msgpack_encode_int_hew",
+            "hew_msgpack_encode_string_hew",
+            "hew_msgpack_from_json_hew",
+            "hew_ed25519_generate_pkcs8_hew",
+            "hew_ed25519_public_key_from_pkcs8_hew",
+            "hew_tcp_read",
+        ] {
+            let contract = extern_ownership_contract(symbol)
+                .contract()
+                .unwrap_or_else(|| panic!("{symbol} contract"));
+            assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+            assert_eq!(contract.release_symbol, "hew_bytes_drop", "{symbol}");
+            assert_eq!(
+                contract.result_retention,
+                ExternResultRetention::Transferred,
+                "{symbol} must transfer the returned buffer"
+            );
+        }
     }
 
     #[test]

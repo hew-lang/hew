@@ -177,6 +177,8 @@ pub enum RuntimeResultOwnership {
     FreshOwnedString,
     /// The ABI returns a fresh vector handle that the caller owns.
     FreshOwnedVec,
+    /// The ABI returns a fresh bytes allocation that the caller owns.
+    FreshOwnedBytes,
 }
 
 impl ConsumeVerdict {
@@ -2060,7 +2062,8 @@ impl RuntimeCallFamily {
                 elem: VecScalarElem::Str,
             }
             | Self::VecJoinStr => RuntimeResultOwnership::FreshOwnedString,
-            Self::VecClone => RuntimeResultOwnership::FreshOwnedVec,
+            Self::VecClone | Self::VecNew => RuntimeResultOwnership::FreshOwnedVec,
+            Self::BytesNew => RuntimeResultOwnership::FreshOwnedBytes,
             _ => RuntimeResultOwnership::Untracked,
         }
     }
@@ -3014,8 +3017,16 @@ mod tests {
             RuntimeResultOwnership::FreshOwnedVec
         );
         assert_eq!(
+            RuntimeCallFamily::VecNew.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedVec
+        );
+        assert_eq!(
             RuntimeCallFamily::VecJoinStr.result_ownership(),
             RuntimeResultOwnership::FreshOwnedString
+        );
+        assert_eq!(
+            RuntimeCallFamily::BytesNew.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedBytes
         );
     }
 

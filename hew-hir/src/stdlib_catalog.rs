@@ -4,7 +4,7 @@
 //! exported runtime symbols; compiler/codegen magic uses distinct linkage
 //! variants so the catalog never pretends a HIR shim name is a C ABI symbol.
 
-use hew_types::{MathGenericOp, ResolvedTy};
+use hew_types::{MathGenericOp, ProducedValueAcquisition, ProducedValueOwnership, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinClass {
@@ -161,21 +161,20 @@ pub enum LayoutDescriptorRole {
 }
 
 impl BuiltinLinkage {
-    /// Return the concrete ABI symbol only when this catalog row is a direct
-    /// compiled-runtime FFI shim.
+    /// Return the concrete ABI symbol when this catalog row is a
+    /// compiler-selected runtime shim.
     ///
-    /// This is deliberately narrower than [`Self::runtime_symbol`]: several
-    /// transitional catalog linkages have a runtime-adjacent implementation
-    /// detail but do not establish an ordinary audited FFI boundary.  Consumers
-    /// use this exact classification to retain checker-proven `Extern`
-    /// authority without inferring it from a linker spelling.
+    /// The catalog endpoint is an unforgeable compiler identity at the call
+    /// boundary; `ToStringShim` and `StringCloneShim` therefore retain their
+    /// audited FFI authority too. User source cannot reach this result merely
+    /// by reusing an ABI spelling.
     #[must_use]
     pub const fn trusted_ffi_symbol(self) -> Option<&'static str> {
         match self {
-            Self::RuntimeFfiShim { symbol } => Some(symbol),
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
             Self::PrintIntercept { .. }
-            | Self::ToStringShim { .. }
-            | Self::StringCloneShim { .. }
             | Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
             | Self::NodeRegisterByPid { .. }
@@ -2715,6 +2714,53 @@ pub fn resolve_overload(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static B
     CATALOG.iter().find(|entry| entry.name == lowered_name)
 }
 
+/// Return an ownership contract only for catalog linkages whose result
+/// allocation semantics are intrinsic to the typed linkage variant.
+#[must_use]
+pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
+    let entry = CATALOG.iter().find(|entry| entry.name == endpoint)?;
+    match entry.linkage {
+        BuiltinLinkage::ToStringShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Fresh,
+        )),
+        BuiltinLinkage::StringCloneShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Clone,
+        )),
+        BuiltinLinkage::RuntimeFfiShim { symbol } => {
+            let contract =
+                hew_types::ffi_contracts::extern_ownership_contract(symbol).contract()?;
+            runtime_ffi_result_ownership(contract)
+        }
+        _ => None,
+    }
+}
+
+fn runtime_ffi_result_ownership(
+    contract: &hew_types::ffi_contracts::ExternOwnershipContract,
+) -> Option<ProducedValueOwnership> {
+    use hew_types::ffi_contracts::{
+        ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    };
+
+    match contract.result {
+        ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+            if !contract.release_symbol.is_empty()
+                && contract.discharge_depth != ReleaseDischargeDepth::None
+                && contract.result_retention == ExternResultRetention::Transferred =>
+        {
+            Some(ProducedValueOwnership::owned(match contract.result {
+                ExternResultOwnership::Fresh => ProducedValueAcquisition::Fresh,
+                ExternResultOwnership::Retained => ProducedValueAcquisition::Retained,
+                ExternResultOwnership::Borrowed | ExternResultOwnership::None => unreachable!(),
+            }))
+        }
+        ExternResultOwnership::Borrowed => Some(ProducedValueOwnership::Borrowed),
+        ExternResultOwnership::Fresh
+        | ExternResultOwnership::Retained
+        | ExternResultOwnership::None => None,
+    }
+}
+
 fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static str> {
     match name {
         "println" if arg_tys.len() == 1 => {
@@ -2823,7 +2869,72 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::compiler_synthetic_runtime_ownership_symbol;
+    use super::{
+        compiler_synthetic_runtime_ownership_symbol, result_ownership, runtime_ffi_result_ownership,
+    };
+    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+
+    #[test]
+    fn string_result_linkages_publish_exact_ownership() {
+        assert_eq!(
+            result_ownership("to_string_i64"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("to_string_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Clone
+            ))
+        );
+        for endpoint in ["split_str", "lines_str", "replace_str"] {
+            assert_eq!(
+                result_ownership(endpoint),
+                Some(ProducedValueOwnership::owned(
+                    ProducedValueAcquisition::Fresh
+                )),
+                "{endpoint} must publish its audited FFI result"
+            );
+        }
+        assert_eq!(result_ownership("println_i64"), None);
+        assert_eq!(result_ownership("missing"), None);
+    }
+
+    #[test]
+    fn fresh_ffi_result_without_transferred_retention_cannot_mint() {
+        use hew_types::ffi_contracts::{
+            ExternOwnershipContract, ExternResultOwnership, ExternResultRetention,
+            ReleaseDischargeDepth,
+        };
+
+        let contract = ExternOwnershipContract {
+            params: &[],
+            resource_param_types: &[],
+            resource_result_type: None,
+            result: ExternResultOwnership::Fresh,
+            release_symbol: "hew_string_drop",
+            discharge_depth: ReleaseDischargeDepth::Shallow,
+            result_retention: ExternResultRetention::Unspecified,
+        };
+        assert_eq!(runtime_ffi_result_ownership(&contract), None);
+    }
+
+    #[test]
+    fn reachable_vec_ffi_results_keep_their_owners() {
+        assert_eq!(
+            result_ownership("hew_vec_clone"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("hew_vec_get_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Retained
+            ))
+        );
+    }
 
     #[test]
     fn identity_display_synthetics_map_only_to_real_runtime_formatters() {

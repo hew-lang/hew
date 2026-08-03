@@ -30,7 +30,7 @@
 #
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
-checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
+checked-mir-fixtures	exact	58	-	golden-MIR fixtures under examples/v05/checked-mir
 ci-parity-marked-steps	exact	33	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
 ci-required-checks	exact	36	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
 corpus-floor-registry	exact	25	-	rows in this registry, asserted by scripts/check-corpus-floors.sh

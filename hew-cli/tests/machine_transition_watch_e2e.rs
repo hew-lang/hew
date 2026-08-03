@@ -273,7 +273,7 @@ fn channel_sender_actor_message_arg_transfers_locally() {
 
 /// Ownership contract: the caller binding is consumed by the transfer.
 /// A later `rx.close()` would double-close the channel the new owner now
-/// holds — refused with the named `UseAfterConsume` diagnostic.
+/// holds — refused by the move checker with the consume site attached.
 #[test]
 fn channel_handle_use_after_transfer_refused() {
     require_codegen();
@@ -310,8 +310,8 @@ fn channel_handle_use_after_transfer_refused() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("used after it was consumed") && stderr.contains("`rx`"),
-        "expected the UseAfterConsume refusal on rx; got:\n{stderr}",
+        stderr.contains("use of moved value `rx`") && stderr.contains("value was consumed here"),
+        "expected the move-after-transfer refusal and its consume site on rx; got:\n{stderr}",
     );
 }
 

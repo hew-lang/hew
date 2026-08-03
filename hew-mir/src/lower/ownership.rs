@@ -1,19 +1,18 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
-    hir_expr_contains_synthetic_vec_get_clone, machine_layout_ty_matches,
-    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    hir_expr_contains_synthetic_vec_get_clone, local_is_rewritten_after_current_iteration,
+    machine_layout_ty_matches, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
-    FieldOffset, FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
-    HirExprKind, HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnerMintWarrant,
-    OwnershipCtx, OwnershipDecision, Place, PlaceProvenance, ProducedValueAcquisition,
-    ProducedValueOwnership, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
-    Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
-    SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
-    SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
+    FieldOffset, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
+    HirProducedValueRelation, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx,
+    OwnershipDecision, Place, PlaceProvenance, ProducedValueOwnership, Projection, ResolvedRef,
+    ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass, ValueOwnership,
+    ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME, SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
+    SYNTHETIC_DISCARDED_CALL_RESULT_NAME, SYNTHETIC_OWNED_TEMP_BINDING_BASE,
     SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
@@ -22,143 +21,6 @@ enum WholeParamEmbedClass {
     None,
     IndependentlyOwnedOnly,
     UnsupportedBorrowAlias,
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::items_after_test_module,
-    reason = "the ownership helpers below are deliberately kept adjacent to their shared imports"
-)]
-mod borrowed_temp_method_result_tests {
-    use super::Builder;
-    use hew_hir::{ids::IdGen, HirExpr, HirExprKind, HirLiteral, IntentKind, ValueClass};
-    use hew_types::{CallTarget, DefId, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
-
-    fn expr(ids: &mut IdGen, ty: ResolvedTy, kind: HirExprKind) -> HirExpr {
-        HirExpr {
-            node: ids.node(),
-            site: ids.site(),
-            ty,
-            value_class: ValueClass::Unknown,
-            intent: IntentKind::Read,
-            kind,
-            span: 0..0,
-        }
-    }
-
-    fn unit(ids: &mut IdGen) -> HirExpr {
-        expr(
-            ids,
-            ResolvedTy::Unit,
-            HirExprKind::Literal(HirLiteral::Unit),
-        )
-    }
-
-    fn dyn_ty() -> ResolvedTy {
-        ResolvedTy::TraitObject { traits: vec![] }
-    }
-
-    /// The source language presently refuses a `dyn Trait` function return,
-    /// but HIR/MIR must still preserve the ABI invariant for every constructible
-    /// method-result node that reaches this boundary (for generated and future
-    /// front-end producers). This is deliberately a real HIR-node test rather
-    /// than a callee-name allowlist: the heap-box authority belongs to the exact
-    /// result form and erased type, not to a spelling.
-    #[test]
-    #[allow(
-        deprecated,
-        reason = "legacy HIR form remains a supported MIR consumer"
-    )]
-    fn borrowed_temp_owner_admits_only_method_like_heap_boxed_dyn_results() {
-        let mut ids = IdGen::default();
-        let dyn_result = dyn_ty();
-        let static_receiver = unit(&mut ids);
-        let static_call = expr(
-            &mut ids,
-            dyn_result.clone(),
-            HirExprKind::CallTraitMethodStatic {
-                receiver: Box::new(static_receiver),
-                target: CallTarget::StaticTraitMethod {
-                    declaring_trait: DefId::new("Factory"),
-                    method: DefId::new("Factory::unrelated_spelling"),
-                },
-                receiver_type_param: "T".to_string(),
-                bound_trait: "Factory".to_string(),
-                declaring_trait: "Factory".to_string(),
-                method_name: "unrelated_spelling".to_string(),
-                args: vec![],
-                ret_ty: dyn_result.clone(),
-            },
-        );
-        let resolved_receiver = unit(&mut ids);
-        let resolved_impl = expr(
-            &mut ids,
-            dyn_result.clone(),
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(resolved_receiver),
-                target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
-                impl_id: ImplId(7),
-                method_name: "also_not_an_authority".to_string(),
-                target_symbol: "not_a_fresh_name".to_string(),
-                target_family: MethodTargetFamily::Vec(VecMethod::Len),
-                type_args: vec![],
-                args: vec![],
-                ret_ty: dyn_result.clone(),
-            },
-        );
-        let dyn_receiver = unit(&mut ids);
-        let dyn_call = expr(
-            &mut ids,
-            dyn_result.clone(),
-            HirExprKind::CallDynMethod {
-                receiver: Box::new(dyn_receiver),
-                target: CallTarget::DynamicVtable {
-                    declaring_trait: DefId::new("Factory"),
-                    method: DefId::new("Factory::still_not_a_name_authority"),
-                    slot: 3,
-                },
-                trait_name: "Factory".to_string(),
-                method_name: "still_not_a_name_authority".to_string(),
-                slot: 3,
-                args: vec![],
-                ret_ty: dyn_result.clone(),
-                signature: Box::default(),
-            },
-        );
-        let builder = Builder::default();
-        for method_result in [&static_call, &resolved_impl, &dyn_call] {
-            assert_eq!(
-                builder.caller_borrowed_temp_arg_owned_ty(method_result),
-                Some(dyn_result.clone()),
-                "each exact method-like dyn result owns one fresh HeapBoxed caller share"
-            );
-        }
-
-        // Same structural form with a non-erased return remains excluded: an
-        // arbitrary method result may be a receiver/interior alias, so a
-        // caller-side mint would be a double-free.
-        let non_dyn_receiver = unit(&mut ids);
-        let non_dyn_method = expr(
-            &mut ids,
-            ResolvedTy::String,
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(non_dyn_receiver),
-                target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
-                impl_id: ImplId(8),
-                method_name: "not_a_dyn_result".to_string(),
-                target_symbol: "not_a_fresh_name".to_string(),
-                target_family: MethodTargetFamily::Vec(VecMethod::Len),
-                type_args: vec![],
-                args: vec![],
-                ret_ty: ResolvedTy::String,
-            },
-        );
-        assert_eq!(
-            builder.caller_borrowed_temp_arg_owned_ty(&non_dyn_method),
-            None,
-            "method-like non-dyn result remains fail-closed without a fresh-owner proof"
-        );
-    }
 }
 
 impl WholeParamEmbedClass {
@@ -175,81 +37,10 @@ impl WholeParamEmbedClass {
     }
 }
 
-/// Producer-provenance policy for an anonymous owned-string value passed
-/// directly to a borrowing call parameter.
-///
-/// This consumes the shared scoped value-flow walk, so blocks, `if` branches,
-/// and `match` arms use the same exhaustive path union as the module
-/// return-provenance authority. `EMPTY` means every reachable value path
-/// constructs or transfers exactly one caller-releasable string share. A named
-/// local is deliberately opaque here because its ordinary scope owner already
-/// carries the release. Any static literal, parameter root, mutable alias, or
-/// unmodelled leaf likewise contributes `OPAQUE` and withholds the synthetic
-/// owner. An indirect call through a typed callable is the one non-item call
-/// admitted: the compiler-owned `ClosureInvoke` ABI guarantees one releasable
-/// string share to its caller.
-struct BorrowedStringTempProducerPolicy<'a> {
-    builder: &'a Builder,
-}
-
-impl crate::return_provenance::LeafPolicy for BorrowedStringTempProducerPolicy<'_> {
-    fn classify_call(&self, callee: &HirExpr) -> crate::return_provenance::CallClass {
-        let indirect_closure_invoke = !matches!(
-            &callee.kind,
-            HirExprKind::BindingRef {
-                resolved: ResolvedRef::Item(_),
-                ..
-            }
-        ) && matches!(
-            self.builder.subst_ty(&callee.ty),
-            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
-        );
-        if indirect_closure_invoke
-            || self.builder.call_produces_fresh_owned_string(callee)
-            || self.builder.user_call_produces_owned_string_carrier(callee)
-        {
-            crate::return_provenance::CallClass::Fresh
-        } else {
-            crate::return_provenance::CallClass::Opaque
-        }
-    }
-
-    fn leaf_bits(&self, expr: &HirExpr) -> crate::return_provenance::AliasBits {
-        if matches!(
-            &expr.kind,
-            HirExprKind::Binary {
-                op: super::BinaryOp::Add,
-                ..
-            }
-        ) && matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String)
-        {
-            // String `Add` lowers to `hew_string_concat`, which allocates a
-            // fresh rc==1 buffer and only borrows its operands.
-            crate::return_provenance::AliasBits::EMPTY
-        } else {
-            crate::return_provenance::AliasBits::OPAQUE
-        }
-    }
-
-    fn materialized_leaf_bits(&self, _expr: &HirExpr) -> crate::return_provenance::AliasBits {
-        // In particular, string literals are static/interned. The other shared
-        // materialized leaves were not admitted by this temp-owner seam before
-        // the scoped walk, so keep them fail-closed too.
-        crate::return_provenance::AliasBits::OPAQUE
-    }
-
-    fn see_through_immutable_binding(&self) -> bool {
-        // A named local already participates in the ordinary scope-owner
-        // ledger. Seeing through it here would mint a second owner for the same
-        // value at the borrowing call boundary.
-        false
-    }
-}
-
 /// Return-carrier proof for one compiler-generated closure invoke shim.
 ///
-/// Unlike [`BorrowedStringTempProducerPolicy`], a captured or closure-parameter
-/// string is admissible here: the shim lowers the former through a retaining
+/// A captured or closure-parameter string is admissible here: the shim lowers
+/// the former through a retaining
 /// `ClosureEnvFieldLoad` and inserts `StringRetain` for the latter at its return
 /// edge. Calls still use the module carrier authority, so a direct opaque
 /// extern wrapper poisons the proof instead of acquiring the closure ABI's
@@ -330,6 +121,34 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
 }
 
 impl Builder {
+    pub(crate) fn publish_produced_value_place(&mut self, expr: &HirExpr, place: Place) {
+        self.published_value_places.insert(expr.site, place);
+        let borrowed_publication = self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .is_some_and(|fact| {
+                matches!(expr.kind, HirExprKind::Match { .. })
+                    && matches!(fact.ownership, ProducedValueOwnership::Borrowed)
+                    && matches!(fact.relation, HirProducedValueRelation::Join(_))
+            });
+        if !borrowed_publication {
+            return;
+        }
+        let Place::Local(local) = place else {
+            return;
+        };
+        match self.subst_ty(&expr.ty) {
+            ResolvedTy::String => {
+                self.typed_borrowed_string_publication_locals.insert(local);
+            }
+            ResolvedTy::Bytes => {
+                self.typed_borrowed_bytes_publication_locals.insert(local);
+            }
+            _ => {}
+        }
+    }
+
     /// The ownership classify context over this builder's live registries — the
     /// same three tables the drop derivations read, bundled so
     /// [`ValueOwnership::classify`] builds its answer from the one authority.
@@ -544,9 +363,17 @@ impl Builder {
             return;
         };
         let provisional = self.owned_locals[index].binding;
+        if let Some(destination) = self.binding_locals.get(&binding).copied() {
+            self.typed_produced_value_handoffs
+                .insert((source, destination));
+        }
         self.synthetic_owner_publication_sites.remove(&provisional);
-        self.typed_produced_value_owner_bindings
+        let typed_owner = self
+            .typed_produced_value_owner_bindings
             .remove(&provisional);
+        if typed_owner {
+            self.typed_produced_value_owner_bindings.insert(binding);
+        }
         if self
             .owned_locals
             .iter()
@@ -606,8 +433,37 @@ impl Builder {
         };
         let provisional = self.owned_locals.remove(index).binding;
         self.synthetic_owner_publication_sites.remove(&provisional);
-        self.typed_produced_value_owner_bindings
+        let typed_owner = self
+            .typed_produced_value_owner_bindings
             .remove(&provisional);
+        if typed_owner {
+            self.typed_produced_value_owner_bindings.insert(binding);
+        }
+    }
+
+    pub(crate) fn transfer_typed_produced_value_owner(
+        &mut self,
+        site: SiteId,
+        source: Place,
+        destination: Place,
+    ) {
+        let owners: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter(|entry| {
+                self.binding_locals.get(&entry.binding) == Some(&source)
+                    && self.synthetic_owner_publication_sites.get(&entry.binding) == Some(&site)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            })
+            .map(|entry| entry.binding)
+            .collect();
+        for binding in owners {
+            self.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+            self.typed_produced_value_handoffs
+                .insert((source, destination));
+        }
     }
 
     /// Adopt an owned result immediately after its successful local
@@ -643,7 +499,9 @@ impl Builder {
             Place::Local(local) => self.locals.get(local as usize),
             _ => None,
         };
-        if published_ty.is_some_and(|published_ty| published_ty != &expected_ty) {
+        if published_ty
+            .is_some_and(|published_ty| !published_ty.is_storage_congruent_with(&expected_ty))
+        {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "typed produced value published into non-congruent storage"
@@ -674,32 +532,99 @@ impl Builder {
                 self.transfer_identity_owner(expr.site, Some(*source), place);
                 return;
             }
-            HirProducedValueRelation::MoveOut(_) | HirProducedValueRelation::Join(_) => {
-                // Move-out ownership is transferred at the projection seam;
-                // join ownership is already published on mutually exclusive
-                // branch paths. Neither relation mints another result owner.
+            HirProducedValueRelation::Join(_) => {
+                if let HirProducedValueRelation::Join(sources) = &fact.relation {
+                    self.transfer_join_owners(expr.site, sources, place);
+                }
                 return;
+            }
+            HirProducedValueRelation::Projection(source_site) => {
+                if self
+                    .published_value_places
+                    .get(source_site)
+                    .is_some_and(|source_place| {
+                        self.owned_locals.iter().any(|entry| {
+                            entry.disposition == Disposition::ScopeExit
+                                && self.binding_locals.get(&entry.binding) == Some(source_place)
+                        })
+                    })
+                {
+                    // A projection from a freshly published aggregate is a
+                    // view into the existing owner. The parent stays
+                    // responsible for recursive teardown unless a later
+                    // structural transfer neutralizes the projected slot.
+                    return;
+                }
             }
             HirProducedValueRelation::Leaf
             | HirProducedValueRelation::Subsumes(_)
-            | HirProducedValueRelation::Projection(_) => {}
+            | HirProducedValueRelation::MoveOut(_) => {}
         }
-        let ProducedValueOwnership::Owned { acquisition } = fact.ownership else {
+        let ProducedValueOwnership::Owned { .. } = fact.ownership else {
             return;
         };
+        if ValueClass::of_ty(&expected_ty, &self.type_classes) == ValueClass::BitCopy {
+            // Generic clone bodies retain their abstract owned publication
+            // after monomorphisation. A concrete scalar clone deliberately
+            // reuses the parameter slot because the value has no release
+            // obligation and therefore cannot mint a local owner.
+            return;
+        }
+        let aggregate_payloads: Vec<&HirExpr> = match &expr.kind {
+            HirExprKind::TupleLiteral { elements } => elements.iter().collect(),
+            HirExprKind::StructInit { fields, base, .. } => fields
+                .iter()
+                .map(|(_, value)| value)
+                .chain(base.iter().map(AsRef::as_ref))
+                .collect(),
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                payload.iter().flatten().map(|(_, value)| value).collect()
+            }
+            _ => Vec::new(),
+        };
+        for payload in aggregate_payloads {
+            let Some(payload_place) = self.published_value_places.get(&payload.site).copied()
+            else {
+                continue;
+            };
+            let payload_owners: Vec<_> = self
+                .owned_locals
+                .iter()
+                .filter(|entry| {
+                    self.binding_locals.get(&entry.binding) == Some(&payload_place)
+                        && self.synthetic_owner_publication_sites.get(&entry.binding)
+                            == Some(&payload.site)
+                        && self
+                            .typed_produced_value_owner_bindings
+                            .contains(&entry.binding)
+                })
+                .map(|entry| entry.binding)
+                .collect();
+            for binding in payload_owners {
+                self.set_owned_local_consumed(binding, Some(place), DischargeSite::BindingMoved);
+                self.typed_produced_value_handoffs
+                    .insert((payload_place, place));
+            }
+        }
+        if matches!(
+            expr.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            }
+        ) {
+            // A consuming binding reference transfers the generation already
+            // registered for its binding. Its typed MoveOut fact proves the
+            // handoff to a parent/callee, but the reference does not produce a
+            // second owner over the same MIR slot.
+            return;
+        }
         // Linear values are accounted for by the binding move checker, which
         // carries the MustConsume obligation across consuming-method calls.
         // A second synthetic scope owner has no corresponding consume edge and
         // therefore turns a valid `let tx = Tx { .. }; tx.commit()` into an
         // impossible extra obligation.
         if ValueClass::of_ty(&expected_ty, &self.type_classes) == ValueClass::Linear {
-            return;
-        }
-        // A move-out is not a newly produced allocation. Its source owner is
-        // transferred by the projection/container lowering seam, which owns
-        // the move-aware drop flags and aggregate-extraction proof. Minting a
-        // provisional owner here would duplicate that ledger entry.
-        if matches!(acquisition, ProducedValueAcquisition::MoveOut) {
             return;
         }
         let Place::Local(local) = place else {
@@ -726,7 +651,7 @@ impl Builder {
             return;
         }
         let ty = expected_ty;
-        let warrant = self.owner_warrant_for_typed_produced_value(expr, fact.ownership);
+        let warrant = Self::owner_warrant_for_typed_produced_value(fact.ownership);
         // Do not reserve a synthetic binding when the typed publication cannot
         // carry a caller owner. A later specialised sink may have a narrower,
         // independently-proven admission path; an unminted placeholder here
@@ -759,14 +684,25 @@ impl Builder {
     ) {
         let released: HashSet<u32> = blocks
             .iter()
-            .flat_map(|block| &block.instructions)
-            .filter_map(|instruction| match instruction {
-                Instr::Drop {
-                    place: Place::Local(local),
-                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-                    ..
-                } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop") => Some(*local),
-                _ => None,
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, instruction)| match instruction {
+                        Instr::Drop {
+                            place: Place::Local(local),
+                            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                            ..
+                        } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
+                            && !local_is_rewritten_after_current_iteration(
+                                blocks, *local, block.id, index,
+                            ) =>
+                        {
+                            Some(*local)
+                        }
+                        _ => None,
+                    })
             })
             .collect();
         let consumed: Vec<_> = self
@@ -817,23 +753,26 @@ impl Builder {
             });
             return;
         };
-        let Some(owner) = self
+        let owners: Vec<_> = self
             .owned_locals
             .iter()
-            .position(|entry| self.binding_locals.get(&entry.binding) == Some(&receiver_place))
-        else {
+            .filter(|entry| self.binding_locals.get(&entry.binding) == Some(&receiver_place))
+            .map(|entry| (entry.binding, entry.ty.clone()))
+            .collect();
+        if owners.is_empty() {
             // Receiver identity is also used for by-value, non-owning
             // carriers (notably machine values).  Absence of a ledger owner
             // there is a structural no-op, not permission to mint one.
             return;
-        };
-        let binding = self.owned_locals[owner].binding;
-        let owner_ty = &self.owned_locals[owner].ty;
+        }
         let result_ty = match result_place {
             Place::Local(local) => self.locals.get(local as usize),
             _ => None,
         };
-        if result_ty.is_some_and(|result_ty| result_ty != owner_ty) {
+        if let Some((_, owner_ty)) = owners
+            .iter()
+            .find(|(_, owner_ty)| result_ty.is_some_and(|result_ty| result_ty != owner_ty))
+        {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "identity owner transfer into non-congruent storage".to_string(),
@@ -845,32 +784,129 @@ impl Builder {
             });
             return;
         }
-        self.binding_locals.insert(binding, result_place);
-        if self
-            .synthetic_owner_publication_sites
-            .contains_key(&binding)
-        {
-            self.synthetic_owner_publication_sites
-                .insert(binding, result_site);
+        for (binding, _) in owners {
+            self.binding_locals.insert(binding, result_place);
+            if let Some(current_scope) = self.active_scopes.last().copied() {
+                let scope = self
+                    .binding_scope
+                    .get(&binding)
+                    .copied()
+                    .filter(|existing_scope| {
+                        self.active_scopes
+                            .iter()
+                            .position(|active| active == existing_scope)
+                            .is_some_and(|existing_depth| existing_depth < self.active_scopes.len())
+                    })
+                    .unwrap_or(current_scope);
+                self.binding_scope.insert(binding, scope);
+            }
+            if self
+                .synthetic_owner_publication_sites
+                .contains_key(&binding)
+            {
+                self.synthetic_owner_publication_sites
+                    .insert(binding, result_site);
+            }
         }
     }
 
-    pub(crate) fn note_fresh_vec_clone_projection_base(
+    fn transfer_join_owners(
         &mut self,
-        place: Place,
-        ty: ResolvedTy,
-        site: SiteId,
+        result_site: SiteId,
+        source_sites: &[SiteId],
+        result_place: Place,
     ) {
-        let Place::Local(local) = place else {
-            unreachable!("the Vec clone destination is always a local");
+        let mut transferred = HashSet::new();
+        for source_site in source_sites {
+            if !self
+                .param_ownership
+                .produced_value_facts
+                .get(source_site)
+                .is_some_and(|fact| matches!(fact.ownership, ProducedValueOwnership::Owned { .. }))
+            {
+                continue;
+            }
+            let Some(source_place) = self.published_value_places.get(source_site).copied() else {
+                continue;
+            };
+            let owners: Vec<_> = self
+                .owned_locals
+                .iter()
+                .filter(|entry| {
+                    self.binding_locals.get(&entry.binding) == Some(&source_place)
+                        && entry.disposition == Disposition::ScopeExit
+                })
+                .map(|entry| entry.binding)
+                .collect();
+            for binding in owners {
+                transferred.insert(binding);
+            }
+        }
+        if transferred.is_empty() {
+            return;
+        }
+
+        // A control-flow join is one runtime generation selected from several
+        // mutually exclusive predecessors. Represent that phi as one owner
+        // declared in the join block. Keeping the predecessor bindings mapped
+        // to the shared result place makes the path-insensitive reverse map
+        // pick one arbitrary branch and either release too early or miss the
+        // other path entirely.
+        let Some(template) = self
+            .owned_locals
+            .iter()
+            .find(|entry| transferred.contains(&entry.binding))
+            .cloned()
+        else {
+            return;
         };
-        self.fresh_vec_get_clone_projection_bases
-            .push(FreshVecGetCloneProjectionBase { local, ty, site });
+        let binding =
+            BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - self.synthetic_owned_temp_bindings);
+        self.synthetic_owned_temp_bindings += 1;
+        self.push_bind_statement(
+            binding,
+            "__hew_produced_value".to_string(),
+            result_site,
+            template.ty.clone(),
+        );
+        self.binding_locals.insert(binding, result_place);
+        self.synthetic_owner_publication_sites
+            .insert(binding, result_site);
+        self.typed_produced_value_owner_bindings.insert(binding);
+        self.record_binding_scope(binding);
+        for predecessor in transferred {
+            let Some(source) = self.binding_locals.get(&predecessor).copied() else {
+                continue;
+            };
+            self.set_owned_local_consumed(
+                predecessor,
+                Some(result_place),
+                DischargeSite::BindingMoved,
+            );
+            self.typed_produced_value_handoffs
+                .insert((source, result_place));
+        }
+        self.register_owned_local(
+            binding,
+            "__hew_produced_value".to_string(),
+            template.ty.clone(),
+            Self::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                hew_types::ProducedValueAcquisition::MoveOut,
+            )),
+        );
+        if let Some(entry) = self
+            .owned_locals
+            .iter_mut()
+            .find(|entry| entry.binding == binding)
+        {
+            entry.ownership = template.ownership;
+            entry.provenance = template.provenance;
+        }
     }
 
-    /// Registers the ordinary scope-exit owner for a fresh composite cloned by
-    /// `Vec` indexing and immediately used as a record-projection base.
-    pub(crate) fn register_fresh_vec_get_clone_projection_base_owner(
+    /// Finalize the typed owner for a fresh composite cloned by `Vec` indexing
+    /// and immediately used as a record-projection base.
+    pub(crate) fn finalize_vec_clone_projection_base_owner(
         &mut self,
         object: &HirExpr,
         record_place: Place,
@@ -878,39 +914,7 @@ impl Builder {
         if !matches!(object.kind, HirExprKind::Index { .. }) {
             return;
         }
-        let Place::Local(local) = record_place else {
-            return;
-        };
-        let object_ty = self.subst_ty(&object.ty);
-        let Some(fact_index) = self
-            .fresh_vec_get_clone_projection_bases
-            .iter()
-            .position(|fact| fact.local == local && fact.ty == object_ty)
-        else {
-            return;
-        };
-        if self.parameter_locals.contains(&local)
-            || self
-                .binding_locals
-                .values()
-                .any(|place| *place == record_place)
-            || !crate::model::ty_owns_heap_mir(
-                &object_ty,
-                &self.record_field_orders,
-                &self.enum_layouts,
-            )
-        {
-            return;
-        }
-        let fact = self.fresh_vec_get_clone_projection_bases.remove(fact_index);
-        let warrant = self.owner_warrant_for_admitted_temp(object);
-        self.adopt_synthetic_owned_local(
-            SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
-            fact.site,
-            fact.local,
-            fact.ty,
-            warrant,
-        );
+        self.finalize_typed_produced_value_owner("__hew_produced_value", object.site, record_place);
     }
     /// Register a `let`-bound field projection whose result is a byte-copy
     /// interior ALIAS of the still-live owner named by `provenance` — the
@@ -950,71 +954,6 @@ impl Builder {
             disposition: Disposition::AliasOf,
         });
     }
-    /// #2429 — give a FROM-CALL enum-composite match scrutinee an owner.
-    ///
-    /// `match f() { Ok(b) => …, Err(e) => {} }` consumes the callee's
-    /// by-value `Result`/`Option` return through an anonymous MIR temp. With
-    /// no `BindingId`, the temp is invisible to `build_lifo_drops` /
-    /// `enumerate_exits`, so the arm-destructured payload was released on NO
-    /// edge — not the loop back-edge, not the return plan — and every
-    /// iteration of a `while … { match f() { … } }` read loop leaked one
-    /// payload allocation. Minting a synthetic owned binding over the temp
-    /// routes it through the PROVEN let-bound discipline end to end: the
-    /// fail-closed enum-composite sole-owner prover decides admission, the
-    /// back-edge body-scope filter releases per iteration, the return/cancel
-    /// plans cover the straight-line case, and the scope-close goto pass
-    /// covers break/continue edges.
-    ///
-    /// Registration alone never emits a drop: an escaping payload keeps
-    /// today's leak-not-double-free posture because
-    /// `derive_enum_composite_drop_allowed` still excludes the composite.
-    pub(crate) fn call_scrutinee_owned_ty(&self, scrutinee: &HirExpr) -> Option<ResolvedTy> {
-        // Direct Hew calls and `Weak.upgrade` are the audited fresh enum
-        // producers. A `BindingRef` scrutinee already owns its slot through its
-        // own binding registration, so minting another owner would double-drop.
-        // Other rvalues keep the fail-closed posture.
-        let callee = match &scrutinee.kind {
-            HirExprKind::Call { callee, .. } => Some(callee.as_ref()),
-            HirExprKind::RcIntrinsic {
-                op: hew_types::RcIntrinsicOp::WeakUpgrade,
-                ..
-            } => None,
-            _ => return None,
-        };
-        // Recv-next scrutinees already carry their own per-iteration release
-        // discipline (`Disposition::BodyEndReleased` on the Some-arm payload
-        // binder); their codegen-materialised `Option` shell owns no heap beyond
-        // that payload. Registering a second owner here would double-release
-        // it. VecIter clone-out is a `ResolvedImplCall`, and generator `.next()`
-        // is `GeneratorNext`, so the shape gate above already excludes both.
-        if callee.is_some() && Self::is_recv_next_scrutinee(scrutinee) {
-            return None;
-        }
-        // Runtime-symbol / builtin producers have per-symbol ownership
-        // contracts — an interior getter may hand back a BORROW of storage
-        // the receiver still owns, and freeing that here would be the #2384
-        // double-free class. Only a Hew callee's by-value return is
-        // unconditionally caller-owned (the callee side retracts its drop of
-        // every member handed out through the return —
-        // `derive_returned_aggregate_member_bindings`), so this caller holds
-        // the single release obligation.
-        if let Some(callee) = callee {
-            if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
-                if matches!(resolved, ResolvedRef::Builtin(_))
-                    || crate::runtime_symbols::is_known_runtime_symbol(name)
-                {
-                    return None;
-                }
-            }
-        }
-        // Exactly the value class the `EnumInPlace` scope-exit machinery
-        // owns; anything else keeps its pre-fix posture.
-        let ty = self.subst_ty(&scrutinee.ty);
-        if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
-            return None;
-        }
-        Some(ty)
-    }
     /// #2743 — the owned type of a fresh composite/string argument TEMPORARY that
     /// earns a caller-side scope-exit drop when passed to a proven-BORROW
     /// parameter, or `None` for every other arg shape.
@@ -1029,178 +968,10 @@ impl Builder {
     ///
     /// ## Why the producer proofs are sound
     ///
-    /// A string consumes the shared scoped value-flow walk with the narrow
-    /// [`BorrowedStringTempProducerPolicy`]: every reachable block tail / `if`
-    /// branch / `match` arm must be an audited transferred call or a
-    /// fresh-allocating concat. This is why an `unsafe` block wrapper cannot hide
-    /// the measured extern producer, while a mixed borrowed branch still vetoes
-    /// the mint.
-    ///
-    /// A fresh top-level composite constructor/producer (`StructInit` /
-    /// `TupleLiteral` / `MachineVariantCtor` enum ctor / an explicit
-    /// `RecordCloneCall`) allocates an aggregate that SOLELY owns itself,
-    /// PROVIDED nothing ownership-opaque is embedded in it. The synthetic owner
-    /// then flows through the SAME
-    /// `derive_{record,tuple,enum}_composite_drop_allowed` / `derive_cow_sole_owner`
-    /// prover as a `let`-bound composite, so field/element provenance (a moved-in
-    /// vs cloned field) is decided by that authority exactly as for the named
-    /// shape — registration alone never forces a drop (an escaping value is still
-    /// excluded → leak, never a double-free).
-    ///
-    /// The "provided" is load-bearing and is checked here, not assumed: the
-    /// composite's release is RECURSIVE, so a fresh container holding a foreign
-    /// handle releases that handle. Every container arm therefore asks the
-    /// authority's composite query
-    /// (`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`), which
-    /// states and enforces the rule.
-    ///
-    /// EVERYTHING ELSE fails closed to today's leak-not-double-free posture:
-    /// - a `BindingRef` already has an owner (its `let`/param) — a second owner
-    ///   over the same value double-frees;
-    /// - a projection (`g(r.field)`, `g(t.0)`, `g(xs[i])`) is an interior alias
-    ///   of an owner's storage;
-    /// - a call return (`g(f())`) may hand back a borrowed parameter alias
-    ///   (#2648) — trusted fresh ONLY when `callee_returns_fresh_owner` proves
-    ///   (via the module freshness fixpoint) that EVERY return path of the callee
-    ///   is a fresh sole owner, never a param/interior alias; an unproven or
-    ///   alias-forwarding callee stays excluded (leak, never a double-free);
-    /// - a bare string `Literal` (`h("abc")`) is a static/interned constant that
-    ///   allocates nothing and must not be freed (verified: 0 leaks unminted).
-    pub(crate) fn caller_borrowed_temp_arg_owned_ty(&self, arg: &HirExpr) -> Option<ResolvedTy> {
-        let ty = self.subst_ty(&arg.ty);
-        // Only a heap-owning value carries a drop obligation.
-        if !matches!(ty, ResolvedTy::TraitObject { .. })
-            && !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts)
-        {
-            return None;
-        }
-        // String ownership is value-flow, not top-level syntax. Ask the shared
-        // scoped provenance walk with the producer policy above so wrapper
-        // blocks and exhaustive control-flow unions neither hide a measured
-        // producer nor launder a borrowed/opaque path.
-        if matches!(ty, ResolvedTy::String) {
-            let policy = BorrowedStringTempProducerPolicy { builder: self };
-            return crate::return_provenance::return_alias_bits(arg, &policy)
-                .is_fresh()
-                .then_some(ty);
-        }
-        // `unsafe { value }` is checker-only clearance: HIR deliberately erases
-        // the unsafe marker and carries the value as a `Block`. A value-producing
-        // block's ownership comes from its tail even when preceding statements
-        // have side effects, so look through every type-preserving block tail.
-        // The producer allowlist below still classifies the TAIL itself: a block
-        // does not become fresh merely because its result type owns heap, and a
-        // binding, static literal or opaque call remains rejected.
-        let mut producer = arg;
-        while let HirExprKind::Block(block) = &producer.kind {
-            let Some(tail) = block.tail.as_deref() else {
-                break;
-            };
-            if self.subst_ty(&producer.ty) != self.subst_ty(&tail.ty) {
-                break;
-            }
-            producer = tail;
-        }
-        let is_fresh_producer = match &producer.kind {
-            // Dyn coercion heap-promotes its concrete payload into a fresh
-            // `hew_dyn_box_alloc` buffer. When that anonymous fat-pointer
-            // temporary is passed to a borrowing dyn parameter, the caller is
-            // the sole owner of the box and must mint its scope-exit drop.
-            HirExprKind::CoerceToDynTrait { .. } => true,
-            // A fresh CONTAINER. Its own allocation is fresh by construction,
-            // but that is not the whole question: the mint is over the whole
-            // TREE, because every composite release here is recursive. A
-            // container embedding an ownership-opaque foreign value
-            // (`Outer { inner: unsafe { host_record() } }`) is therefore not
-            // minted at all — see
-            // `FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`
-            // for the rule. A `RecordCloneCall` is asked the same question: the
-            // clone deep-copies the spine but RETAINS refcounted leaves, so a
-            // clone of a foreign tree still points at the host's handles.
-            HirExprKind::StructInit { .. }
-            | HirExprKind::TupleLiteral { .. }
-            | HirExprKind::MachineVariantCtor { .. }
-            | HirExprKind::RecordCloneCall { .. } => {
-                self.value_is_free_of_opaque_foreign_provenance(producer)
-            }
-            // A method-like call result of exact `dyn Trait` type crosses a
-            // heap-box ABI boundary. `classify_dyn_trait_storage` records all
-            // three HIR call forms below as `HeapBoxed`: the caller receives a
-            // fresh box and therefore owes exactly one slot-0 + box-free drop
-            // after a borrowing sink returns. This is deliberately keyed on
-            // the structural HIR form plus the exact erased result type, not a
-            // method/callee spelling: ordinary method results can still be
-            // receiver/interior aliases and remain excluded.
-            HirExprKind::CallTraitMethodStatic { .. }
-            | HirExprKind::ResolvedImplCall { .. }
-            | HirExprKind::CallDynMethod { .. }
-                if matches!(ty, ResolvedTy::TraitObject { .. }) =>
-            {
-                true
-            }
-            // A composite (record/tuple/enum) result: admit a PROVEN-fresh
-            // producer, gated by the SAME authority every other
-            // "may I drop this call result" consumer reads
-            // (`callee_returns_fresh_owner` over `FreshOwnerVerdicts`). Strings
-            // returned above after their scoped producer-provenance query.
-            HirExprKind::Call { callee, .. } => callee_returns_fresh_owner(
-                callee,
-                &self.call_scrutinee_provenance.fresh_owner_verdicts,
-            ),
-            _ => false,
-        };
-        is_fresh_producer.then_some(ty)
-    }
-    /// Return the owned type of a fresh Vec COPY-IN element temporary whose
-    /// only whole-parameter embeds are independently retained strings.
-    ///
-    /// A by-value parameter remains caller-owned. Aggregate lowering explicitly
-    /// retains a whole `string` parameter before storing it, so the anonymous
-    /// source temp owns exactly that retained share and may receive one ordinary
-    /// scope-exit drop. Other heap-owning parameter types are stored as borrowed
-    /// aliases; minting an aggregate owner for them would free the caller's
-    /// value.
-    pub(crate) fn copy_in_param_embed_temp_owned_ty(
-        &self,
-        callee: &str,
-        arg: &HirExpr,
-    ) -> Option<ResolvedTy> {
-        if !matches!(callee, "hew_vec_push_owned" | "hew_vec_set_owned") {
-            return None;
-        }
-        if !matches!(
-            arg.kind,
-            HirExprKind::StructInit { .. }
-                | HirExprKind::TupleLiteral { .. }
-                | HirExprKind::MachineVariantCtor { .. }
-        ) {
-            return None;
-        }
-        // The same composite rule as the temp-arg mint: this element temp's
-        // owner is a recursive release of the whole constructed tree, so a
-        // container embedding a foreign value earns no owner here either.
-        if !self.value_is_free_of_opaque_foreign_provenance(arg) {
-            return None;
-        }
-        let class = Self::classify_whole_param_embeds(
-            arg,
-            &self.funcupdate_param_ids,
-            &self.owned_carrier_param_ids,
-            &|ty| self.subst_ty(ty),
-            true,
-            &|ty| crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts),
-        );
-        if class != WholeParamEmbedClass::IndependentlyOwnedOnly {
-            return None;
-        }
-        let ty = self.subst_ty(&arg.ty);
-        crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts)
-            .then_some(ty)
-    }
-    /// Register the proven retain-backed Vec element source after all call
+    /// Finalize the typed owner of a Vec COPY-IN source after all call
     /// arguments have materialised. Push uses args[0]/places[1], while set uses
     /// args[1]/places[2]; the receiver and set index can never become owners.
-    pub(crate) fn register_copy_in_param_embed_temp_owner(
+    pub(crate) fn finalize_vec_copy_in_source_owner(
         &mut self,
         callee: &str,
         args: &[HirExpr],
@@ -1211,27 +982,17 @@ impl Builder {
             "hew_vec_set_owned" if args.len() == 2 => Some((&args[1], 2)),
             _ => None,
         }
-        .and_then(|(arg, place_index)| {
-            let ty = self.copy_in_param_embed_temp_owned_ty(callee, arg)?;
-            let place = arg_places.get(place_index).copied()?;
-            Some((arg, place, ty))
-        });
-        let Some((candidate_arg, Place::Local(local), ty)) = candidate else {
+        .and_then(|(arg, place_index)| Some((arg, arg_places.get(place_index).copied()?)));
+        let Some((candidate_arg, Place::Local(local))) = candidate else {
             return;
         };
-        let site = candidate_arg.site;
-        // Fresh constructors must never lower into a parameter slot. Keep the
-        // mint fail-closed if that invariant ever changes.
         if self.parameter_locals.contains(&local) {
             return;
         }
-        let warrant = self.owner_warrant_for_admitted_temp(candidate_arg);
-        self.adopt_synthetic_owned_local(
+        self.finalize_typed_produced_value_owner(
             SYNTHETIC_COPY_IN_PARAM_TEMP_NAME,
-            site,
-            local,
-            ty,
-            warrant,
+            candidate_arg.site,
+            Place::Local(local),
         );
     }
     /// Whether a direct `Call` has an audited fresh-owned-string result.
@@ -1381,206 +1142,6 @@ impl Builder {
             && (self.module_fn_names.contains(symbol)
                 || self.module_generic_fn_names.contains(symbol))
     }
-    /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
-    /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
-    /// admission token the from-call owner mint and the #2523 origin consume, or
-    /// an `Err(MirDiagnostic)` reject (ONE diagnostic, no partial MIR) for a
-    /// scrutinee whose callee may hand back a borrowed by-value parameter alias
-    /// (summary contains `PARAM`) or an un-audited heap-returning `extern`.
-    ///
-    /// # Admission behaviour
-    ///
-    /// - A resolved module-fn callee whose precise summary carries `PARAM`
-    ///   REJECTS — the PRIMARY #2648 forwarder double-free fix (`match
-    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too, except
-    ///   that a `{PARAM}`-only summary whose every argument is provably fresh is
-    ///   arg-rescued to `Admit`.
-    /// - EVERY other resolved-callee shape — a `∅` (Fresh) summary, an
-    ///   `OPAQUE`-only summary, an unknown/cross-module item, and an
-    ///   indirect/closure/fn-pointer callee — is decided by the ONE authority
-    ///   via [`callee_returns_fresh_owner`]: `Admit` when it proves the callee
-    ///   returns a fresh owner on every path, `NotApplicable` otherwise. There
-    ///   is no permissive arm. The interim `LegacyModuleCall` fail-open that
-    ///   used to serve the `∅`/`OPAQUE`-only and unknown-item cases is deleted:
-    ///   it minted a caller-side release over a heap enum a Hew wrapper had
-    ///   laundered out of an ownership-opaque extern.
-    /// - A declared heap-returning `extern` REJECTS — including a user extern
-    ///   whose NAME spoofs a runtime recv symbol (it resolves to
-    ///   `ResolvedRef::Item`, so it is keyed by id, never the name).
-    /// - Every recv/stream/`Builtin` carve-out stays `NotApplicable`.
-    pub(crate) fn classify_call_scrutinee_admission(
-        &self,
-        scrutinee: &HirExpr,
-    ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
-        use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
-        // `Weak.upgrade` always returns a fresh `Option<Rc<T>>` owner. Admit it
-        // before the general Call gate so a matched `Some` payload is released
-        // when the arm closes.
-        if matches!(
-            &scrutinee.kind,
-            HirExprKind::RcIntrinsic {
-                op: hew_types::RcIntrinsicOp::WeakUpgrade,
-                ..
-            }
-        ) {
-            let ty = self.subst_ty(&scrutinee.ty);
-            return Ok(
-                if ty_is_heap_owning_enum_composite(
-                    &ty,
-                    &self.record_field_orders,
-                    &self.enum_layouts,
-                ) {
-                    CallScrutineeAdmission::Admit
-                } else {
-                    CallScrutineeAdmission::NotApplicable
-                },
-            );
-        }
-
-        // Structural Call-gate: only a direct `Call` rvalue can otherwise mint
-        // the from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
-        // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
-        // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
-        // early `None`, before any runtime-identity resolution can be consulted.
-        let HirExprKind::Call { callee, args, .. } = &scrutinee.kind else {
-            return Ok(CallScrutineeAdmission::NotApplicable);
-        };
-        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
-            // Typed carve-outs, keyed on the compiler-minted identity (NOT the
-            // display name): a recv/stream family or any `ResolvedRef::Builtin`
-            // callee carries its own per-iteration `BodyEndReleased` release, so
-            // no synthetic owner is minted. A user extern SPOOFING one of those
-            // names resolves to `ResolvedRef::Item` → does NOT match here → falls
-            // through to the reject arms below (closes the name-forgeable bypass).
-            if is_typed_recv_callee(callee) || matches!(resolved, ResolvedRef::Builtin(_)) {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-            // Only a heap-owning-enum-composite return mints an owner; anything
-            // else is `NotApplicable`, exactly as `call_scrutinee_owned_ty`
-            // returns `None`.
-            let ty = self.subst_ty(&scrutinee.ty);
-            if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
-            {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-            let prov = &self.call_scrutinee_provenance;
-            // A declared user extern — even one whose name spoofs a runtime
-            // symbol — reaching the heap-enum ty-gate is an un-audited heap
-            // extern. A call to an extern dispatches by NAME (its call-site
-            // `ResolvedRef::Item` carries a placeholder id, not the declaration's),
-            // so extern detection keys on the name, BEFORE the runtime-symbol
-            // carve-out (closes the name-forgeable bypass). No heap extern is
-            // trusted-Fresh in the interim (the marker-backed jwt/encrypt rows
-            // land at S4b).
-            if prov.extern_names.contains(name) {
-                // OWN-0b carriage: the machine-checked per-symbol ownership
-                // fact is consultable at exactly this extern-callee position.
-                // Nothing is enforced from it yet (S1/V1 consume it); the
-                // conservative reject below stays authoritative, and an
-                // unclassified symbol is an explicit `Absent`, never a
-                // fabricated contract.
-                debug_assert!(
-                    crate::ffi_contracts::extern_ownership_contract("hew_string_drop")
-                        .contract()
-                        .is_some_and(|contract| contract.params
-                            == [crate::ffi_contracts::ExternParamOwnership::Consume]),
-                    "FFI ownership carriage table unreadable at the extern-call \
-                     lowering position"
-                );
-                return Err(Box::new(Self::call_scrutinee_reject(
-                    scrutinee,
-                    "an un-audited heap-returning `extern` may hand back an interior pointer \
-                     the caller still owns",
-                )));
-            }
-            if let ResolvedRef::Item(id) = resolved {
-                // A resolved module fn with an analysable body: consult its
-                // precise summary ONLY for the interim `PARAM`-present reject.
-                if let Some(bits) = prov.provenance.get(id) {
-                    if bits.contains(AliasBits::PARAM) {
-                        // S2b — the ParamsOnly caller arg-scan. A `{PARAM}`-only
-                        // summary means the return can alias ONLY the callee's
-                        // by-value heap parameters, so when EVERY argument is
-                        // provably fresh at this call site the returned value
-                        // derives exclusively from fresh inputs — a fresh sole
-                        // owner: ADMIT (the template/semver stdlib shape). A
-                        // mixed `PARAM|OPAQUE` summary stays an unconditional
-                        // reject — the `OPAQUE` component is never
-                        // arg-rescuable.
-                        if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
-                            return Ok(CallScrutineeAdmission::Admit);
-                        }
-                        return Err(Box::new(Self::call_scrutinee_reject(
-                            scrutinee,
-                            "the called function may return one of its by-value heap parameters \
-                             (a borrow the caller still owns), so minting a second owner over \
-                             the scrutinee would double-free",
-                        )));
-                    }
-                    // Neither `PARAM`-carrying nor rescuable by fresh arguments:
-                    // the AUTHORITY decides, exactly as at every other
-                    // "may I drop this call result" consumer. This used to be an
-                    // interim legacy fail-open mint, and that is what let a
-                    // `{OPAQUE}`-only summary through — a Hew wrapper whose
-                    // return crossed an ownership-opaque extern
-                    // (`fn wrap() -> Option<Holder> { Some(unsafe { host() }) }`)
-                    // carries no `PARAM` bit, so it fell into the permissive arm
-                    // and `match wrap()` minted a caller-side owner whose
-                    // scope-exit drop released the host's handle.
-                    //
-                    // `callee_returns_fresh_owner` applies BOTH of the
-                    // authority's row-keyed vetoes: the taint row (transitively,
-                    // through any number of Hew frames) and the direct-extern
-                    // NAME veto. A callee it cannot prove fresh mints nothing —
-                    // a leak, never a caller-side double release.
-                    return Ok(
-                        if callee_returns_fresh_owner(callee, &prov.fresh_owner_verdicts) {
-                            CallScrutineeAdmission::Admit
-                        } else {
-                            CallScrutineeAdmission::NotApplicable
-                        },
-                    );
-                }
-            }
-            // A genuine runtime-symbol callee that resolves to neither a user
-            // extern nor an analysable module fn keeps today's name-based skip.
-            if crate::runtime_symbols::is_known_runtime_symbol(name) {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-        }
-        // An unknown/missing/cross-module item, or a non-`BindingRef` (indirect /
-        // closure / fn-pointer) callee. This was the second interim fail-open —
-        // today's mint for a callee nobody analysed. It now asks the same single
-        // authority: an unresolvable callee is not a freshness proof, so it mints
-        // nothing.
-        Ok(
-            if callee_returns_fresh_owner(
-                callee,
-                &self.call_scrutinee_provenance.fresh_owner_verdicts,
-            ) {
-                CallScrutineeAdmission::Admit
-            } else {
-                CallScrutineeAdmission::NotApplicable
-            },
-        )
-    }
-    /// Build the single #2648 reject diagnostic (a clean NYI — no partial
-    /// codegen). `why` names the specific unsound shape. Boxed to keep the
-    /// preflight's `Result` `Err` variant small.
-    pub(crate) fn call_scrutinee_reject(scrutinee: &HirExpr, why: &str) -> MirDiagnostic {
-        MirDiagnostic {
-            kind: MirDiagnosticKind::NotYetImplemented {
-                construct: "call-scrutinee returning a borrowed parameter or un-audited heap \
-                            extern"
-                    .to_string(),
-                site: scrutinee.site,
-            },
-            note: format!(
-                "#2648: {why}. Bind the call result to a `let` and match on the binding, or \
-                 return a freshly-constructed value from the callee."
-            ),
-        }
-    }
     /// #2648 S2b — the caller-side argument scan for a `ParamsOnly` callee
     /// (plan Fix-design (2), pulled forward from S4b by the ratchet evidence:
     /// the interim PARAM-present reject falsely rejected genuine `ParamsOnly`
@@ -1672,42 +1233,153 @@ impl Builder {
     }
     pub(crate) fn register_from_call_scrutinee_owner(
         &mut self,
-        admission: crate::return_provenance::CallScrutineeAdmission,
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
-        use crate::return_provenance::CallScrutineeAdmission;
-        // The non-optional admission token gates the mint [F4]: `NotApplicable`
-        // mints nothing (the scrutinee's own release runs); `Admit` proceeds to
-        // the existing owner gate. A `Reject` never reaches here — the preflight
-        // returned early at the consumer.
-        match admission {
-            CallScrutineeAdmission::NotApplicable => return None,
-            CallScrutineeAdmission::Admit => {}
-        }
-        let ty = self.call_scrutinee_owned_ty(scrutinee)?;
-        // The admission token above says the CALLEE is a proven fresh owner;
-        // this asks the remaining half — whether the value that callee hands
-        // back, or any value the ledger already refused an owner for, reaches
-        // the temp. A withheld warrant means no owner at all, so the caller
-        // must see `None` rather than a bindable-but-ownerless temp.
-        // The admission gate established that this call result is a fresh
-        // caller-owned composite. Preserve that exact admission through the
-        // mint; the generic recursive temporary query is intentionally
-        // stricter for unmodelled calls and would otherwise erase the
-        // already-proven caller ownership.
-        let warrant = self.owner_warrant_for_admitted_call_scrutinee(scrutinee);
-        if warrant.withholds_mint() {
-            return None;
-        }
-        let binding = self.adopt_synthetic_owned_local(
+        self.finalize_typed_produced_value_owner(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
-            scrutinee_local,
-            ty.clone(),
-            warrant,
-        );
-        Some((binding, ty))
+            Place::Local(scrutinee_local),
+        )
+    }
+
+    /// Reject an ownership-demanding sink whose total HIR row is unresolved.
+    /// This check runs before the sink emits CFG or storage, keeping unknown
+    /// ownership out of checked MIR and codegen.
+    pub(crate) fn typed_produced_value_demand_is_resolved(
+        &mut self,
+        expr: &HirExpr,
+        construct: &'static str,
+    ) -> bool {
+        let ty = self.subst_ty(&expr.ty);
+        if matches!(
+            expr.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            }
+        ) {
+            return true;
+        }
+        if !matches!(ty, ResolvedTy::TraitObject { .. })
+            && !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts)
+        {
+            return true;
+        }
+        let ownership = self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .map_or(ProducedValueOwnership::Unknown, |fact| fact.ownership);
+        if matches!(
+            ownership,
+            ProducedValueOwnership::Owned { .. }
+                | ProducedValueOwnership::NoOwner
+                | ProducedValueOwnership::Borrowed
+                | ProducedValueOwnership::ReceiverIdentity
+        ) {
+            return true;
+        }
+        let construct = if matches!(expr.kind, HirExprKind::Call { .. }) {
+            "call-scrutinee ownership is unresolved"
+        } else {
+            construct
+        };
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: construct.to_string(),
+                site: expr.site,
+            },
+            note: format!(
+                "HIR produced-value ownership for site {} is {ownership:?}; a heap-owning value \
+                 must be resolved before this sink can transfer or release it",
+                expr.site,
+            ),
+        });
+        false
+    }
+
+    /// Complete a provisional publication generation when a structural sink
+    /// takes responsibility for its cleanup shape. The site and exact MIR
+    /// place must both match the typed publication; neither type nor display
+    /// name can select an owner.
+    pub(crate) fn finalize_typed_produced_value_owner(
+        &mut self,
+        name: &'static str,
+        site: SiteId,
+        place: Place,
+    ) -> Option<(BindingId, ResolvedTy)> {
+        self.finalize_typed_produced_value_owners(name, site, place)
+            .into_iter()
+            .next()
+    }
+
+    pub(crate) fn finalize_typed_produced_value_owners(
+        &mut self,
+        name: &'static str,
+        site: SiteId,
+        place: Place,
+    ) -> Vec<(BindingId, ResolvedTy)> {
+        let owners: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter(|entry| {
+                self.binding_locals.get(&entry.binding) == Some(&place)
+                    && self.synthetic_owner_publication_sites.get(&entry.binding) == Some(&site)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            })
+            .map(|entry| (entry.binding, entry.ty.clone()))
+            .collect();
+        for (binding, _) in &owners {
+            if let Some(entry) = self
+                .owned_locals
+                .iter_mut()
+                .find(|entry| entry.binding == *binding)
+            {
+                entry.name = name.to_string();
+            }
+            for statement in &mut self.statements {
+                if let MirStatement::Bind {
+                    binding: statement_binding,
+                    name: statement_name,
+                    ..
+                } = statement
+                {
+                    if *statement_binding == *binding {
+                        *statement_name = name.to_string();
+                    }
+                }
+            }
+            self.synthetic_owner_publication_sites.remove(binding);
+            self.typed_produced_value_owner_bindings.remove(binding);
+        }
+        owners
+    }
+
+    /// An owned projection can be represented by its parent aggregate's
+    /// scope-exit owner instead of an independent provisional leaf owner. The
+    /// relation and published source place must both agree, and the parent
+    /// owner must still be live; otherwise the borrowing sink remains
+    /// fail-closed.
+    pub(crate) fn typed_projection_has_live_parent_owner(&self, expr: &HirExpr) -> bool {
+        let Some(fact) = self.param_ownership.produced_value_facts.get(&expr.site) else {
+            return false;
+        };
+        if !matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
+            return false;
+        }
+        let HirProducedValueRelation::Projection(source_site) = fact.relation else {
+            return false;
+        };
+        let Some(source_place) = self.published_value_places.get(&source_site) else {
+            return false;
+        };
+        self.owned_locals.iter().any(|entry| {
+            entry.disposition == Disposition::ScopeExit
+                && self.binding_locals.get(&entry.binding) == Some(source_place)
+        })
     }
     pub(crate) fn register_while_let_iteration_owner(
         &mut self,
@@ -1726,35 +1398,6 @@ impl Builder {
         self.back_edge_only_iteration_owners.insert(binding);
         binding
     }
-    pub(crate) fn discarded_call_result_owned_ty(&self, expr: &HirExpr) -> Option<ResolvedTy> {
-        if let Some(ty) = self.call_scrutinee_owned_ty(expr) {
-            return Some(ty);
-        }
-        let HirExprKind::ResolvedImplCall {
-            target_symbol,
-            target_family,
-            ..
-        } = &expr.kind
-        else {
-            return None;
-        };
-        let caller_owned = matches!(
-            (target_family, target_symbol.as_str()),
-            (
-                hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Get),
-                "hew_hashmap_get_layout"
-            ) | (
-                hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Remove),
-                "hew_hashmap_remove_take_layout"
-            )
-        );
-        if !caller_owned {
-            return None;
-        }
-        let ty = self.subst_ty(&expr.ty);
-        ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
-            .then_some(ty)
-    }
     /// The discarded result of the synthetic `VecIter::next` state machine,
     /// when its `Option<T>` payload owns heap and therefore needs an immediate
     /// recursive in-place drop before the reusable result slot is forgotten.
@@ -1767,30 +1410,51 @@ impl Builder {
             .then_some(ty)
     }
     pub(crate) fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
-        let Some(ty) = self.discarded_call_result_owned_ty(expr) else {
+        let typed_ty = self.subst_ty(&expr.ty);
+        if !ty_is_heap_owning_enum_composite(
+            &typed_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        ) {
             return;
-        };
-        let Place::Local(local) = place else {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "discarded caller-owned result place shape".to_string(),
-                    site: expr.site,
-                },
-                note: format!(
-                    "a proven caller-owned discarded result must lower to Place::Local; got \
-                     {place:?}"
-                ),
-            });
-            return;
-        };
-        let warrant = self.owner_warrant_for_admitted_temp(expr);
-        self.adopt_synthetic_owned_local(
+        }
+        let Some((binding, ty)) = self.finalize_typed_produced_value_owner(
             SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
             expr.site,
-            local,
+            place,
+        ) else {
+            if self
+                .param_ownership
+                .produced_value_facts
+                .get(&expr.site)
+                .is_some_and(|fact| matches!(fact.ownership, ProducedValueOwnership::Owned { .. }))
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "owned discarded result without provisional owner".to_string(),
+                        site: expr.site,
+                    },
+                    note: "an owning HIR result must register its exact MIR generation before the discard sink"
+                        .to_string(),
+                });
+            }
+            return;
+        };
+        self.statements.push(MirStatement::Use {
+            binding,
+            name: SYNTHETIC_DISCARDED_CALL_RESULT_NAME.to_string(),
+            site: expr.site,
+            ty: ty.clone(),
+            intent: IntentKind::Consume,
+        });
+        self.push_instr(Instr::Drop {
+            place,
             ty,
-            warrant,
-        );
+            drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                crate::ownership::InPlaceReleaseKind::Enum,
+            )),
+        });
+        self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
     }
     pub(crate) fn record_iteration_owner_drop(
         &mut self,
@@ -2080,9 +1744,16 @@ impl Builder {
                 matches!(
                     entry.disposition,
                     Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                ) && !self
+                ) && (!self
                     .synthetic_owner_publication_sites
                     .contains_key(&entry.binding)
+                    || self
+                        .iteration_owner_drop_blocks
+                        .values()
+                        .any(|bindings| bindings.contains(&entry.binding))
+                    || self
+                        .synthetic_borrowed_temp_drop_bindings
+                        .contains(&entry.binding))
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
@@ -3387,14 +3058,37 @@ impl Builder {
         self.start_block(cont_bb);
     }
     pub(crate) fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
-        let HirExprKind::BindingRef {
+        if let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
             ..
         } = expr.kind
-        else {
+        {
+            self.mark_binding_moved(id);
+            return;
+        }
+        let Some(place) = self.published_value_places.get(&expr.site).copied() else {
             return;
         };
-        self.mark_binding_moved(id);
+        let owners: Vec<_> = self
+            .owned_locals
+            .iter()
+            .filter(|entry| {
+                self.binding_locals.get(&entry.binding) == Some(&place)
+                    && self.synthetic_owner_publication_sites.get(&entry.binding)
+                        == Some(&expr.site)
+                    && self
+                        .typed_produced_value_owner_bindings
+                        .contains(&entry.binding)
+            })
+            .map(|entry| entry.binding)
+            .collect();
+        for binding in owners {
+            self.set_owned_local_consumed(
+                binding,
+                Some(Place::ReturnSlot),
+                DischargeSite::BindingMoved,
+            );
+        }
     }
     pub(crate) fn mark_binding_moved(&mut self, id: BindingId) {
         // A parent overwrite can transfer an inline enum's old string payload
@@ -4750,9 +4444,10 @@ mod typed_produced_owner_tests {
 
     use super::{BindingId, Builder, Place, ResolvedTy, SiteId};
     use crate::lower::ParamOwnershipFacts;
+    use crate::{BasicBlock, DropFnSpec, Instr, Terminator};
     use hew_hir::{
         HirExpr, HirExprKind, HirLiteral, HirNodeId, HirProducedValueFact,
-        HirProducedValueProducer, IntentKind, ValueClass,
+        HirProducedValueProducer, IntentKind, ScopeId, ValueClass,
     };
     use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
 
@@ -4806,10 +4501,9 @@ mod typed_produced_owner_tests {
                 other => panic!("expected local publication, got {other:?}"),
             },
             expr.ty.clone(),
-            builder.owner_warrant_for_typed_produced_value(
-                &expr,
-                ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
-            ),
+            Builder::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh,
+            )),
         );
         assert_eq!(builder.owned_locals_ledger().len(), 1);
         assert!(builder.diagnostics.iter().any(|diagnostic| {
@@ -4819,6 +4513,266 @@ mod typed_produced_owner_tests {
                     if construct == "owned result rewrote a live provisional owner local"
             )
         }));
+    }
+
+    #[test]
+    fn typed_scalar_clone_publication_reuses_a_parameter_without_minting_an_owner() {
+        let site = SiteId(705);
+        let expr = HirExpr {
+            node: HirNodeId(site.0),
+            site,
+            ty: ResolvedTy::I64,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Integer(7)),
+            span: 0..0,
+        };
+        let mut builder = Builder::default();
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::RecordCloneCall,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        builder.param_ownership = Rc::new(facts);
+        builder.parameter_locals.insert(9);
+
+        builder.adopt_typed_produced_value_owner(&expr, Place::Local(9));
+
+        assert!(builder.owned_locals_ledger().is_empty());
+        assert!(builder.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn projection_mints_after_parent_owner_was_consumed() {
+        let parent_site = SiteId(706);
+        let projection_site = SiteId(707);
+        let parent = owned_resource(parent_site);
+        let mut projection = owned_resource(projection_site);
+        let mut facts = ParamOwnershipFacts::default();
+        for (site, relation) in [
+            (parent_site, hew_hir::HirProducedValueRelation::Leaf),
+            (
+                projection_site,
+                hew_hir::HirProducedValueRelation::Projection(parent_site),
+            ),
+        ] {
+            facts.produced_value_facts.insert(
+                site,
+                HirProducedValueFact {
+                    producer: HirProducedValueProducer::Literal,
+                    ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                    relation,
+                    receiver: None,
+                    receiver_boundary: None,
+                    arguments: Vec::new(),
+                },
+            );
+        }
+
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        let parent_place = Place::Local(9);
+        builder.adopt_typed_produced_value_owner(&parent, parent_place);
+        let parent_binding = builder.owned_locals[0].binding;
+        builder.set_owned_local_consumed(
+            parent_binding,
+            Some(Place::Local(10)),
+            super::DischargeSite::BindingMoved,
+        );
+
+        projection.ty = parent.ty;
+        builder.adopt_typed_produced_value_owner(&projection, Place::Local(11));
+
+        assert_eq!(builder.owned_locals_ledger().len(), 2);
+        assert_eq!(
+            builder.owned_locals_snapshot(),
+            vec![(
+                builder.owned_locals[1].binding,
+                "__hew_produced_value".to_string(),
+                projection.ty,
+            )]
+        );
+    }
+
+    #[test]
+    fn join_does_not_readmit_a_consumed_predecessor() {
+        let source_site = SiteId(708);
+        let result_site = SiteId(709);
+        let source = owned_resource(source_site);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            source_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        let source_place = Place::Local(12);
+        let original_transferee = Place::Local(13);
+        builder.adopt_typed_produced_value_owner(&source, source_place);
+        builder
+            .published_value_places
+            .insert(source_site, source_place);
+        let source_binding = builder.owned_locals[0].binding;
+        builder.set_owned_local_consumed(
+            source_binding,
+            Some(original_transferee),
+            super::DischargeSite::BindingMoved,
+        );
+
+        builder.transfer_join_owners(result_site, &[source_site], Place::Local(14));
+
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+        assert!(matches!(
+            builder.owned_locals[0].disposition,
+            super::Disposition::ConsumedAt {
+                transferee: Some(place),
+                site: super::DischargeSite::BindingMoved,
+            } if place == original_transferee
+        ));
+    }
+
+    #[test]
+    fn cross_block_reinitialization_keeps_inline_released_owner_live() {
+        let mut builder = Builder::default();
+        let binding = builder.adopt_synthetic_owned_local(
+            "__test_inline_release",
+            SiteId(710),
+            15,
+            ResolvedTy::String,
+            Builder::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh,
+            )),
+        );
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Drop {
+                    place: Place::Local(15),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                }],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ConstI64 {
+                    dest: Place::Local(15),
+                    value: 0,
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        builder.consume_typed_publication_owners_at_inline_release(&blocks);
+
+        assert_eq!(builder.owned_locals_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn loop_reentry_does_not_keep_inline_released_owner_live() {
+        let mut builder = Builder::default();
+        let binding = builder.adopt_synthetic_owned_local(
+            "__test_inline_release",
+            SiteId(710),
+            15,
+            ResolvedTy::String,
+            Builder::owner_warrant_for_typed_produced_value(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh,
+            )),
+        );
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Drop {
+                    place: Place::Local(15),
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                }],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ConstI64 {
+                    dest: Place::Local(15),
+                    value: 0,
+                }],
+                terminator: Terminator::Goto { target: 0 },
+            },
+        ];
+
+        assert!(
+            !crate::lower::cfg_util::local_is_rewritten_after_current_iteration(&blocks, 15, 0, 0,)
+        );
+        builder.consume_typed_publication_owners_at_inline_release(&blocks);
+
+        assert!(builder.owned_locals_snapshot().is_empty());
+    }
+
+    #[test]
+    fn identity_transfer_inside_loop_keeps_outer_binding_scope() {
+        let receiver_site = SiteId(711);
+        let receiver = owned_resource(receiver_site);
+        let outer_scope = ScopeId(20);
+        let loop_scope = ScopeId(21);
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            receiver_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            active_scopes: vec![outer_scope],
+            ..Builder::default()
+        };
+        let receiver_place = Place::Local(16);
+        builder.adopt_typed_produced_value_owner(&receiver, receiver_place);
+        builder
+            .published_value_places
+            .insert(receiver_site, receiver_place);
+        let binding = builder.owned_locals[0].binding;
+        assert_eq!(builder.binding_scope[&binding], outer_scope);
+
+        builder.active_scopes.push(loop_scope);
+        builder.loop_back_edge_blocks.insert(7, loop_scope);
+        builder.transfer_identity_owner(receiver_site, Some(receiver_site), Place::Local(17));
+
+        assert_eq!(builder.binding_scope[&binding], outer_scope);
+        assert_ne!(
+            builder.binding_scope[&binding], builder.loop_back_edge_blocks[&7],
+            "the loop back-edge must not select an outer owner for per-iteration release"
+        );
     }
 
     #[test]
@@ -4925,6 +4879,9 @@ mod typed_produced_owner_tests {
         assert_eq!(builder.owned_locals[0].binding, binding);
         assert_eq!(builder.owned_locals[0].name, "weak");
         assert_eq!(builder.binding_locals[&binding], Place::Local(10));
+        assert!(builder
+            .typed_produced_value_handoffs
+            .contains(&(source, Place::Local(10))));
         assert!(!builder.binding_locals.contains_key(&provisional));
         assert!(!builder
             .synthetic_owner_publication_sites

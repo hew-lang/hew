@@ -130,6 +130,7 @@ impl Builder {
     )]
     pub(crate) fn lower_match(
         &mut self,
+        result_site: SiteId,
         scrutinee: &HirExpr,
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
@@ -265,7 +266,66 @@ impl Builder {
         } else if has_project || project_scrutinee {
             self.lower_match_project(scrutinee, arms, result_ty)
         } else {
-            self.lower_match_enum_tag(scrutinee, arms, result_ty)
+            self.lower_match_enum_tag(result_site, scrutinee, arms, result_ty)
+        }
+    }
+
+    fn retain_typed_join_branch(
+        &mut self,
+        result_site: SiteId,
+        branch: &HirExpr,
+        value: Place,
+        result_ty: &ResolvedTy,
+    ) -> Place {
+        let retained_join = self
+            .param_ownership
+            .produced_value_facts
+            .get(&result_site)
+            .is_some_and(|fact| {
+                matches!(
+                    fact.ownership,
+                    hew_types::ProducedValueOwnership::Owned {
+                        acquisition: hew_types::ProducedValueAcquisition::Retained
+                    }
+                )
+            });
+        let borrowed_branch = self
+            .param_ownership
+            .produced_value_facts
+            .get(&branch.site)
+            .is_some_and(|fact| {
+                matches!(
+                    fact.ownership,
+                    hew_types::ProducedValueOwnership::Borrowed
+                        | hew_types::ProducedValueOwnership::ReceiverIdentity
+                )
+            });
+        if !retained_join || !borrowed_branch {
+            return value;
+        }
+        match self.subst_ty(result_ty) {
+            ResolvedTy::String => {
+                let retained = self.alloc_local(ResolvedTy::String);
+                self.push_instr(Instr::StringRetain {
+                    value,
+                    condition: crate::model::StringRetainCondition::Always,
+                });
+                self.push_instr(Instr::Move {
+                    dest: retained,
+                    src: value,
+                });
+                retained
+            }
+            ResolvedTy::Bytes => {
+                let retained = self.alloc_local(ResolvedTy::Bytes);
+                self.push_instr(Instr::BytesRetain { value });
+                self.push_instr(Instr::Move {
+                    dest: retained,
+                    src: value,
+                });
+                retained
+            }
+            _ => value,
         }
     }
 
@@ -3879,21 +3939,17 @@ impl Builder {
     )]
     fn lower_match_enum_tag(
         &mut self,
+        result_site: SiteId,
         scrutinee: &HirExpr,
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        // #2648 preflight — run BEFORE any `lower_value`/CFG allocation. A reject
-        // (forwarded borrowed parameter, un-audited heap extern) pushes exactly
-        // one diagnostic and returns with NO partial MIR: no scrutinee call, no
-        // owner mint, no `NeutralizePayloadSlot`.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "match scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
 
@@ -4087,11 +4143,8 @@ impl Builder {
         // (#2429). No-op for binding-ref scrutinees, runtime-symbol
         // producers, and the recv/iter-next shapes that carry their own
         // release discipline.
-        let call_scrutinee_owner = self.register_from_call_scrutinee_owner(
-            scrutinee_admission,
-            scrutinee,
-            scrutinee_local,
-        );
+        let call_scrutinee_owner =
+            self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
         let weak_upgrade_owner_ty = matches!(
             &scrutinee.kind,
             HirExprKind::RcIntrinsic {
@@ -4202,6 +4255,8 @@ impl Builder {
 
             let value = self.lower_value(&wildcard.body);
             if let Some(src) = value {
+                let src =
+                    self.retain_typed_join_branch(result_site, &wildcard.body, src, result_ty);
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -4774,6 +4829,7 @@ impl Builder {
             }
 
             if let Some(src) = value {
+                let src = self.retain_typed_join_branch(result_site, &arm.body, src, result_ty);
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,

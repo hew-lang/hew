@@ -117,3 +117,50 @@ fn main() {
         "aliased lifecycle annotation must not perturb runtime startup"
     );
 }
+
+#[test]
+fn down_hook_payload_reads_have_total_mir_decisions() {
+    require_codegen();
+
+    let workspace = support::tempdir();
+    let source = workspace.path().join("down_payload.hew");
+    fs::write(
+        &source,
+        r#"
+import std::link_monitor::{DownNotification, DownReason, DownTarget};
+
+actor Watcher {
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        let _monitor = note.monitor.value;
+        let _target = match note.target {
+            DownTarget::Local(slot) => slot,
+            DownTarget::Remote(_) => 0,
+        };
+        let _reason = match note.reason {
+            DownReason::Exited => 1,
+            DownReason::Crashed(_) => 2,
+            DownReason::MonitorLost => 3,
+            DownReason::LocalShutdown => 4,
+        };
+    }
+}
+
+fn main() {
+    let _watcher = spawn Watcher;
+    println("down-payload-ok");
+}
+"#,
+    )
+    .expect("write DOWN payload fixture");
+
+    let mut command = Command::new(hew_binary());
+    command.arg("run").arg(&source);
+    let output = run_bounded_command(command, "run DOWN lifecycle payload reads");
+    assert!(
+        output.status.success(),
+        "every checker-admitted DOWN payload read must reach a concrete MIR decision:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "down-payload-ok\n");
+}

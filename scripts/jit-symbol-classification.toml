@@ -1931,6 +1931,7 @@ result = "retained"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-runtime/src/vec.rs:2771-2793 returns an alias invalidated by vec mutation.
 [[ownership.contracts]]
@@ -2174,6 +2175,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 # hew-runtime/src/vec.rs:1743-1779 allocates a BitCopy layout clone.
 [[ownership.contracts]]
@@ -2418,12 +2420,29 @@ discharge-depth = "none"
 
 # string singles — hew-runtime/src/string.rs. hew_string_drop is THE universal
 # String release (free_cstring; consume). hew_char_to_string allocates a fresh
-# string; hew_string_to_bytes forwards to bytes.rs hew_bytes_from_str (fresh
-# rc=1 buffer, released via hew_bytes_drop); hew_string_compare and the
+# string; the string transformation rows below return one independently
+# releasable share; hew_string_to_bytes forwards to bytes.rs hew_bytes_from_str
+# (fresh rc=1 buffer, released via hew_bytes_drop); hew_string_compare and the
 # hew_unicode_* codepoint predicates/mappers are read-only.
 [[ownership.contracts]]
 symbol = "hew_char_to_string"
 result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_chars"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_clone"
+result = "retained"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
@@ -2444,10 +2463,74 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_string_lines"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_repeat"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_replace"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_slice"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_split"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_string_to_bytes"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_to_lowercase"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_to_uppercase"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_trim"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
@@ -2658,6 +2741,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_sink_bytes"
@@ -2666,6 +2750,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_stream"
@@ -2674,6 +2759,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_stream_bytes"
@@ -2682,6 +2768,7 @@ params = ["borrow"]
 resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pipe"
@@ -3392,6 +3479,7 @@ params = ["borrow"]
 resource-param-types = ["std.net.Connection"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_set_read_timeout"
@@ -3541,6 +3629,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_sha256_hew"
@@ -3571,6 +3660,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_deflate_decompress_hew"
@@ -3578,6 +3668,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_compress_last_error"
@@ -3593,6 +3684,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_gzip_decompress_hew"
@@ -3600,6 +3692,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_zlib_compress_hew"
@@ -3607,6 +3700,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_zlib_decompress_hew"
@@ -3614,6 +3708,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # msgpack — hew-std/src/msgpack.rs. Encoders borrow their scalar/string/bytes
 # input and return fresh bytes; to_json returns a fresh string.
@@ -3623,6 +3718,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_encode_int_hew"
@@ -3630,6 +3726,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_encode_string_hew"
@@ -3637,6 +3734,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_from_json_hew"
@@ -3644,6 +3742,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_msgpack_last_error"
@@ -3669,6 +3768,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_public_key_from_pkcs8_hew"
@@ -3676,6 +3776,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ed25519_sign_hew"
@@ -3746,9 +3847,16 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# observe C ABI — hew-runtime/src/observe.rs allocates every scrape/series
-# result through str_to_malloc, retains no pointer into it, and the normal Hew
-# string release is the balancing shallow discharge.
+# observe C ABI — read borrows its metric-name string. Scrape/series allocate
+# results through str_to_malloc, retain no pointer into them, and the normal
+# Hew string release is the balancing shallow discharge.
+[[ownership.contracts]]
+symbol = "hew_observe_read_u64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_observe_scrape"
 result = "fresh"

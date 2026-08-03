@@ -96,7 +96,7 @@ pub(crate) use self::facts::mangle_layout_key;
 #[cfg(not(test))]
 use self::cfg_util::{
     block_by_id, blocks_reachable_from, call_terminator_next, local_is_used_after,
-    local_is_written_after, shift_instr_spans_on_insert,
+    shift_instr_spans_on_insert,
 };
 #[cfg(not(test))]
 use self::composite_own::{

@@ -1,7 +1,7 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
-    hir_expr_contains_synthetic_vec_get_clone, local_is_written_after, machine_layout_ty_matches,
+    hir_expr_contains_synthetic_vec_get_clone, local_is_used_after, machine_layout_ty_matches,
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
@@ -695,7 +695,13 @@ impl Builder {
                             drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
                             ..
                         } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
-                            && !local_is_written_after(blocks, *local, block.id, index) =>
+                            && !local_is_used_after(
+                                blocks,
+                                &HashMap::new(),
+                                *local,
+                                block.id,
+                                index,
+                            ) =>
                         {
                             Some(*local)
                         }
@@ -4674,9 +4680,9 @@ mod typed_produced_owner_tests {
             BasicBlock {
                 id: 1,
                 statements: Vec::new(),
-                instructions: vec![Instr::ConstI64 {
+                instructions: vec![Instr::Move {
                     dest: Place::Local(15),
-                    value: 0,
+                    src: Place::Local(15),
                 }],
                 terminator: Terminator::Return,
             },

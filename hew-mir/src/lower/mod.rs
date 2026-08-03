@@ -4269,6 +4269,7 @@ fn prepare_owned_call_carriers(
                     })
                 });
                 let dest = builder.alloc_local(arg.ty.clone());
+                builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
                 block.instructions.push(Instr::Move {
                     dest,
                     src: arg.source,
@@ -4858,6 +4859,7 @@ fn prepare_outbound_actor_payloads(
                             }
                         }
                         let dest = builder.alloc_local(arg.ty.clone());
+                        builder.transfer_typed_produced_value_owner(arg.site, arg.source, dest);
                         prep.push(Instr::Move {
                             dest,
                             src: arg.source,

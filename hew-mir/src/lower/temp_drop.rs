@@ -164,10 +164,28 @@ fn typed_named_aggregate_handoff(
     }
     let instruction = block_by_id(blocks, block)?.instructions.get(instr_index)?;
     let destination = aggregate_handoff_destination(instruction, value)?;
-    let binding = builder
-        .binding_locals
+    let source_bindings: HashSet<BindingId> = builder
+        .typed_produced_value_handoffs
         .iter()
-        .find_map(|(binding, place)| (*place == value).then_some(*binding))?;
+        .filter(|(_, destination)| *destination == value)
+        .flat_map(|(source, _)| {
+            builder
+                .binding_locals
+                .iter()
+                .filter_map(move |(binding, place)| {
+                    (*place == *source
+                        && builder
+                            .typed_produced_value_owner_bindings
+                            .contains(binding))
+                    .then_some(*binding)
+                })
+        })
+        .collect();
+    let mut source_bindings = source_bindings.into_iter();
+    let binding = source_bindings.next()?;
+    if source_bindings.next().is_some() {
+        return None;
+    }
     if !typed_handoff_owner_reaches_site(
         blocks,
         &builder.suspend_kinds,
@@ -3757,61 +3775,17 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     allowed
 }
 
-struct CowOwnershipInputs {
-    owned_locals: Vec<(BindingId, String, ResolvedTy)>,
-    path_sensitive_consumed: HashSet<BindingId>,
-    borrowed_locals: HashSet<u32>,
-}
-
-fn cow_ownership_inputs(builder: &Builder, target: &ResolvedTy) -> CowOwnershipInputs {
-    let scope_exit_locals = builder.owned_locals_snapshot();
-    let mut owned_locals = scope_exit_locals.clone();
-    let mut path_sensitive_consumed = HashSet::new();
-    for candidate in builder.owned_locals_exit_candidates() {
-        if candidate.2 == *target
-            && !scope_exit_locals
-                .iter()
-                .any(|(binding, _, _)| *binding == candidate.0)
-            && builder
-                .typed_produced_value_owner_bindings
-                .contains(&candidate.0)
-        {
-            path_sensitive_consumed.insert(candidate.0);
-            owned_locals.push(candidate);
-        }
-    }
-    let borrowed_locals = match target {
-        ResolvedTy::String => builder
-            .borrowed_string_param_locals
-            .union(&builder.typed_borrowed_string_publication_locals)
-            .copied()
-            .collect(),
-        ResolvedTy::Bytes => builder
-            .borrowed_bytes_param_locals
-            .union(&builder.typed_borrowed_bytes_publication_locals)
-            .copied()
-            .collect(),
-        _ => HashSet::new(),
-    };
-    CowOwnershipInputs {
-        owned_locals,
-        path_sensitive_consumed,
-        borrowed_locals,
-    }
-}
-
 fn remove_consumed_cow_bindings(
     allowed: &mut HashSet<BindingId>,
-    path_sensitive_consumed: &HashSet<BindingId>,
     actor_message_flags: &HashMap<BindingId, Place>,
     dataflow_result: &dataflow::DataflowResult,
 ) {
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
-            if (matches!(state, dataflow::BindingState::MaybeConsumed(_))
-                || (matches!(state, dataflow::BindingState::Consumed(_))
-                    && !path_sensitive_consumed.contains(binding)))
-                && !actor_message_flags.contains_key(binding)
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) && !actor_message_flags.contains_key(binding)
             {
                 allowed.remove(binding);
             }
@@ -3828,11 +3802,12 @@ pub(super) fn finalize_string_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> StringDropDerivation {
-    let CowOwnershipInputs {
-        owned_locals: owned_locals_snapshot,
-        path_sensitive_consumed,
-        borrowed_locals: borrowed_string_locals,
-    } = cow_ownership_inputs(builder, &ResolvedTy::String);
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_cow_sole_owner(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -3864,12 +3839,8 @@ pub(super) fn finalize_string_ownership(
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
     ));
-    derivation
-        .allowed
-        .extend(path_sensitive_consumed.iter().copied());
     remove_consumed_cow_bindings(
         &mut derivation.allowed,
-        &path_sensitive_consumed,
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
     );
@@ -3936,7 +3907,6 @@ pub(super) fn finalize_string_ownership(
     ));
     remove_consumed_cow_bindings(
         &mut derivation.allowed,
-        &path_sensitive_consumed,
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
     );
@@ -6961,11 +6931,12 @@ pub(super) fn finalize_bytes_ownership(
     builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> BytesDropDerivation {
-    let CowOwnershipInputs {
-        owned_locals: owned_locals_snapshot,
-        path_sensitive_consumed,
-        borrowed_locals: borrowed_bytes_locals,
-    } = cow_ownership_inputs(builder, &ResolvedTy::Bytes);
+    let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_bytes_locals = builder
+        .borrowed_bytes_param_locals
+        .union(&builder.typed_borrowed_bytes_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_local_bytes_drop_allowed(
         &raw.blocks,
         &builder.suspend_kinds,
@@ -6991,12 +6962,8 @@ pub(super) fn finalize_bytes_ownership(
             })
             .map(|(binding, _, _)| *binding),
     );
-    derivation
-        .allowed
-        .extend(path_sensitive_consumed.iter().copied());
     remove_consumed_cow_bindings(
         &mut derivation.allowed,
-        &path_sensitive_consumed,
         &builder.actor_message_cow_drop_flags,
         dataflow_result,
     );
@@ -7201,6 +7168,37 @@ mod cow_sole_owner_derivation {
                 &bytes_retain_site(binding, 0),
             ),
             "a non-actor bytes overwrite/share still needs an independent retained reference"
+        );
+    }
+
+    #[test]
+    fn typed_publication_handoff_reaches_aggregate_through_transfer_local() {
+        let binding = BindingId(9);
+        let source = Place::Local(7);
+        let transfer = Place::Local(8);
+        let aggregate = Place::Local(9);
+        let blocks = [block(vec![
+            Instr::Move {
+                dest: transfer,
+                src: source,
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Payload", vec![]),
+                fields: vec![(FieldOffset(0), transfer)],
+                dest: aggregate,
+            },
+        ])];
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(binding, source);
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        builder
+            .typed_produced_value_handoffs
+            .insert((source, transfer));
+
+        assert_eq!(
+            typed_named_aggregate_handoff(&blocks, &builder, 0, 1, transfer),
+            Some((binding, aggregate)),
+            "the typed source generation stays authoritative after its transfer local"
         );
     }
 

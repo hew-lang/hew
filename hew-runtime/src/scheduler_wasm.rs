@@ -1259,6 +1259,13 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 /// `setTimeout` callbacks with a precise timestamp, or for WASI
 /// programs that advance the clock via `clock_time_get`.
 ///
+/// `now_ms` must use the same monotonic clock and epoch as the host's
+/// `hew_now_ms` import, which supplies timer deadlines at registration. A
+/// later-epoch value can advance the wheel past those deadlines and cause
+/// subsequent registrations to be clamped to the cursor and fire immediately;
+/// an earlier-epoch value can delay delivery until it reaches the stored
+/// deadlines.
+///
 /// Returns the number of actors woken; a return value > 0 indicates
 /// that there is new work in the run queue ready for [`hew_wasm_sched_tick`].
 ///

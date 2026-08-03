@@ -496,14 +496,21 @@ unsafe fn timer_wheel_schedule_handle_inner(
         crate::set_last_error("timer entry generation space exhausted");
         return HewTimerHandle::null();
     }
-    let generation = w.next_generation;
-    w.next_generation = w.next_generation.wrapping_add(1);
     let deadline_ms = match schedule {
         TimerSchedule::After(delay_ms) => w.current_ms.saturating_add(delay_ms),
         // A deadline that elapsed before registration is already due. Keep it
         // in the current slot so the next tick can collect it immediately.
         TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
     };
+    // `hew_timer_wheel_next_deadline_ms` reserves u64::MAX as its empty-wheel
+    // sentinel. Reject that deadline explicitly instead of accepting a timer
+    // that the ticker would then treat as absent forever.
+    if deadline_ms == u64::MAX {
+        crate::set_last_error("timer deadline u64::MAX is reserved");
+        return HewTimerHandle::null();
+    }
+    let generation = w.next_generation;
+    w.next_generation = w.next_generation.wrapping_add(1);
 
     let entry = Box::into_raw(Box::new(HewTimerEntry {
         deadline_ms,
@@ -1096,6 +1103,43 @@ mod tests {
             assert_eq!(timer_wheel_tick_to(tw, 1_255), 0);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
 
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn maximum_deadline_is_rejected_at_schedule_boundary() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1);
+        crate::hew_clear_error();
+
+        // SAFETY: `tw` is test-owned and `data` outlives every call below.
+        unsafe {
+            let relative = hew_timer_wheel_schedule_handle(tw, u64::MAX, test_cb, data);
+            assert!(relative.entry.is_null());
+
+            let absolute = timer_wheel_schedule_at_handle(tw, u64::MAX, test_cb, data);
+            assert!(absolute.entry.is_null());
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), -1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 0);
+
+            let error = crate::hew_last_error();
+            assert!(!error.is_null());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(error).to_str().unwrap(),
+                "timer deadline u64::MAX is reserved"
+            );
+
+            let wheel = &*tw;
+            assert_eq!(
+                wheel
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .next_generation,
+                1
+            );
             hew_timer_wheel_free(tw);
         }
     }

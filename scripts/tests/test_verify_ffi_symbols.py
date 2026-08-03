@@ -285,6 +285,28 @@ def test_malformed_string_to_bytes_retention_fails_verification() -> None:
     ), errors
 
 
+def test_transferred_result_with_resource_basis_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    transferred = (
+        'symbol = "hew_string_to_bytes"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'release-symbol = "hew_bytes_drop"\n'
+        'discharge-depth = "shallow"\n'
+        'result-retention = "transferred"\n'
+    )
+    assert source.count(transferred) == 1
+    malformed = transferred + 'result-retention-basis = "stray resource claim"\n'
+    errors = ownership_errors_for_source(source.replace(transferred, malformed))
+    assert any(
+        "ownership contract for hew_string_to_bytes result-retention-basis is "
+        "meaningful only for resource-transfer retention" in error
+        for error in errors
+    ), errors
+
+
 def test_resource_transfer_without_body_basis_fails_verification() -> None:
     source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
         encoding=verify_ffi_symbols.SOURCE_ENCODING
@@ -329,6 +351,7 @@ _TESTS = [
     test_local_pid_runtime_surface_is_jit_stable,
     test_string_to_bytes_transfer_contract_is_exact,
     test_malformed_string_to_bytes_retention_fails_verification,
+    test_transferred_result_with_resource_basis_fails_verification,
     test_resource_transfer_without_body_basis_fails_verification,
     test_unmeasured_resource_result_is_accepted_without_mint_authority,
 ]

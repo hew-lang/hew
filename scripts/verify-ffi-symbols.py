@@ -507,6 +507,11 @@ def validate_ownership_contracts(
                         f"{location} resource-transfer retention requires a non-empty "
                         "result-retention-basis"
                     )
+            elif "result-retention-basis" in contract:
+                errors.append(
+                    f"{location} result-retention-basis is meaningful only for "
+                    "resource-transfer retention"
+                )
         elif "result-retention-basis" in contract:
             errors.append(
                 f"{location} result-retention-basis is meaningless without result-retention"

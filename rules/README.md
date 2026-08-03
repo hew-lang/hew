@@ -91,6 +91,5 @@ ast-grep's native `// ast-grep-ignore` (or `// ast-grep-ignore: <rule-id>`) supp
 ## Gating status
 
 `make structural-lint` runs the complete pinned scan and the fail-closed authority
-inventory. The two historical error-rule baselines are reported as warnings until
-their findings are triaged; all other error findings fail the gate. The
-`warning`/`info`/`hint` rules remain advisory.
+inventory. Every error finding fails the gate. The `warning`/`info`/`hint` rules
+remain advisory.

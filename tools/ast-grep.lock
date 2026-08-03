@@ -2,9 +2,6 @@
 # `scripts/build-ast-grep-lang.sh --bootstrap` fetches only these exact bytes.
 AST_GREP_CARGO_PACKAGE=ast-grep
 AST_GREP_VERSION=0.45.0
-# Existing tracked findings remain visible but are an explicit warning baseline;
-# every other error-severity rule remains fail-closed.
-AST_GREP_WARNING_BASELINE="ok-question-in-lowering ty-var-constructed-post-inference"
 TREE_SITTER_CLI_CARGO_PACKAGE=tree-sitter-cli
 TREE_SITTER_CLI_VERSION=0.26.5
 TREE_SITTER_HEW_REPOSITORY=https://github.com/hew-lang/tree-sitter-hew

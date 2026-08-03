@@ -75,6 +75,28 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "unknown ownership result for {symbol}: {}",
         row.result
     );
+    // The generated table interpolates these three fields straight into
+    // `"..."` Rust string literals (`generate_ffi_ownership_table`); a `"` or
+    // `\` in an interpolated field would close the literal early or start an
+    // escape sequence, corrupting the generated source rather than failing
+    // the build cleanly. Reject them here instead.
+    for resource_type in &row.resource_param_types {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-param-types for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    if let Some(resource_type) = &row.resource_result_type {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-result-type for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    assert!(
+        !row.release_symbol.contains('"') && !row.release_symbol.contains('\\'),
+        "release-symbol for {symbol} must not contain `\"` or `\\`: {}",
+        row.release_symbol
+    );
     for param in &row.params {
         assert!(
             ["borrow", "consume", "retain"].contains(&param.as_str()),

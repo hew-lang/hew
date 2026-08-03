@@ -25,7 +25,7 @@ pub(crate) trait CommandDispatcher {
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
     fn lsp(&mut self, args: &args::LspArgs);
-    fn package(&mut self, args: &args::PackageArgs);
+    fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand);
 }
 
 pub(crate) struct MainCommandDispatcher;
@@ -111,8 +111,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_lsp(args);
     }
 
-    fn package(&mut self, args: &args::PackageArgs) {
-        crate::cmd_package(args);
+    fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand) {
+        hew_pkg::cli::dispatch(cmd);
     }
 }
 
@@ -140,7 +140,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Version) => dispatcher.version(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
-        Some(Command::Package(args)) => dispatcher.package(args),
+        Some(Command::Pkg(cmd)) => dispatcher.pkg(cmd),
         None => dispatcher.help(),
     }
 }
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn dispatch_command_routes_build_to_dispatcher() {
         let command = crate::args::Command::Build(crate::args::BuildArgs {
-            input: PathBuf::from("sample.hew"),
+            input: Some(PathBuf::from("sample.hew")),
             output: None,
             target: None,
             emit_obj: false,
@@ -369,7 +369,11 @@ mod tests {
         }
 
         fn build(&mut self, args: &crate::args::BuildArgs) {
-            self.calls.push(format!("build:{}", args.input.display()));
+            let input = args
+                .input
+                .as_deref()
+                .map_or_else(|| "<none>".to_string(), |p| p.display().to_string());
+            self.calls.push(format!("build:{input}"));
         }
 
         fn doc(&mut self, _args: &crate::args::DocArgs) {
@@ -436,8 +440,8 @@ mod tests {
             self.calls.push("lsp".to_string());
         }
 
-        fn package(&mut self, _args: &crate::args::PackageArgs) {
-            self.calls.push("package".to_string());
+        fn pkg(&mut self, _cmd: &hew_pkg::cli::PkgCommand) {
+            self.calls.push("pkg".to_string());
         }
     }
 }

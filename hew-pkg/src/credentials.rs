@@ -1,6 +1,6 @@
-//! Credentials management for the Adze registry.
+//! Credentials management for the Hew package registry.
 //!
-//! Stores API tokens in `~/.adze/credentials.toml` (mode 0600).
+//! Stores API tokens in `~/.hew/credentials.toml` (mode 0600).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ impl fmt::Display for CredentialError {
         match self {
             Self::Io(e) => write!(f, "credentials I/O error: {e}"),
             Self::Parse(msg) => write!(f, "invalid credentials file: {msg}"),
-            Self::NotLoggedIn => write!(f, "not logged in; run `adze login`"),
+            Self::NotLoggedIn => write!(f, "not logged in; run `hew login`"),
         }
     }
 }
@@ -53,10 +53,10 @@ impl From<std::io::Error> for CredentialError {
     }
 }
 
-/// Return the path to `~/.adze/credentials.toml`.
+/// Return the path to `~/.hew/credentials.toml`.
 #[must_use]
 pub fn credentials_path() -> PathBuf {
-    crate::paths::adze_home().join("credentials.toml")
+    crate::paths::hew_home().join("credentials.toml")
 }
 
 /// Load credentials from the file.

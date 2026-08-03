@@ -1,5 +1,5 @@
 [package]
-name = "adze-cli"
+name = "hew-pkg"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,8 @@ repository = "https://github.com/hew-lang/hew"
 keywords = ["hew", "package-manager"]
 categories = ["command-line-utilities"]
 
-[[bin]]
-name = "adze"
-path = "src/main.rs"
-
 [dependencies]
 clap.workspace = true
-clap_complete.workspace = true
 semver = "1"
 toml.workspace = true
 serde.workspace = true

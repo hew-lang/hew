@@ -10,8 +10,8 @@ pub fn home_dir() -> PathBuf {
         .map_or_else(|_| std::env::temp_dir(), PathBuf::from)
 }
 
-/// Return the Adze home directory (`~/.adze`).
+/// Return the Hew package-manager home directory (`~/.hew`).
 #[must_use]
-pub fn adze_home() -> PathBuf {
-    home_dir().join(".adze")
+pub fn hew_home() -> PathBuf {
+    home_dir().join(".hew")
 }

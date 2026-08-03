@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use adze_cli::client::{ApiError, RegistryClient};
-use adze_cli::index::IndexEntry;
+use hew_pkg::client::{ApiError, RegistryClient};
+use hew_pkg::index::IndexEntry;
 
 // ── Mock registry server ────────────────────────────────────────────────────
 
@@ -453,7 +453,7 @@ fn sample_entry(name: &str, vers: &str) -> IndexEntry {
         cksum: "sha256:abc123".to_string(),
         sig: "ed25519:def456".to_string(),
         key_fp: "SHA256:xyz".to_string(),
-        yanked: adze_cli::index::YankStatus::Bool(false),
+        yanked: hew_pkg::index::YankStatus::Bool(false),
         yanked_reason: None,
         tombstoned_at: None,
         edition: None,
@@ -846,7 +846,7 @@ fn package_entries_preserve_all_fields() {
     let mock = MockRegistry::start();
 
     let mut entry = sample_entry("alice::router", "1.0.0");
-    entry.deps.push(adze_cli::index::IndexDep {
+    entry.deps.push(hew_pkg::index::IndexDep {
         name: "std::net::http".to_string(),
         req: "^2.0".to_string(),
         features: vec!["tls".to_string()],
@@ -888,7 +888,7 @@ fn get_package_with_yanked_versions() {
 
     let normal = sample_entry("pkg", "1.0.0");
     let mut yanked = sample_entry("pkg", "2.0.0");
-    yanked.yanked = adze_cli::index::YankStatus::Bool(true);
+    yanked.yanked = hew_pkg::index::YankStatus::Bool(true);
     yanked.yanked_reason = Some("CVE-2026-0001".to_string());
 
     mock.seed_package("pkg", &[normal, yanked]);

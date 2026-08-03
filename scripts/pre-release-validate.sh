@@ -297,12 +297,11 @@ validate_linux() {
         # This is the exact build that the release CI does. libhew.a ships
         # from the non-LTO release-lib profile (external Rust staticlibs
         # cannot dedupe libstd against a fat-LTO archive).
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p hew-lsp -p hew-observe --release 2>&1
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --profile release-lib 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
         "${release_dir}/hew" --version
-        "${release_dir}/adze" --version
         "${release_dir}/hew-lsp" --version
         "${release_dir}/hew-observe" --version
         test -f "${release_lib_dir}/libhew.a"
@@ -357,7 +356,7 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp "${release_dir}/hew" "${release_dir}/adze" "${release_dir}/hew-lsp" \
+        cp "${release_dir}/hew" "${release_dir}/hew-lsp" \
             "${release_dir}/hew-observe" "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
         verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
@@ -479,13 +478,12 @@ validate_macos() {
             export PATH=\"\$LLVM_PREFIX/bin:\$PATH\"
             \"\$LLVM_PREFIX/bin/llvm-config\" --version
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/adze\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
             scripts/test-release-lib-link.sh \
@@ -574,7 +572,7 @@ validate_linux_aarch64() {
             export CC=clang-22
             export CXX=clang++-22
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
@@ -582,7 +580,6 @@ validate_linux_aarch64() {
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/adze\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
             test -f \"\$release_lib_dir/libhew.a\"
@@ -658,13 +655,12 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/adze\" --version
             \"\$release_dir/hew-lsp\" --version
             \"\$release_dir/hew-observe\" --version
             scripts/test-release-lib-link.sh \

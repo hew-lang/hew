@@ -1,4 +1,4 @@
-//! HTTP client for the Adze package registry API.
+//! HTTP client for the Hew package registry API.
 //!
 //! Communicates with the Cloudflare Workers API for publishing, yanking,
 //! searching, namespace management, and key registration.
@@ -30,7 +30,7 @@ impl fmt::Display for ApiError {
             Self::Http(msg) => write!(f, "HTTP error: {msg}"),
             Self::Server { status, message } => write!(f, "registry error ({status}): {message}"),
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
-            Self::NotAuthenticated => write!(f, "not authenticated; run `adze login`"),
+            Self::NotAuthenticated => write!(f, "not authenticated; run `hew login`"),
         }
     }
 }
@@ -155,7 +155,7 @@ pub struct PublishMetadata {
 
 // ── Client ──────────────────────────────────────────────────────────────────
 
-/// An Adze registry API client.
+/// A Hew registry API client.
 #[derive(Debug)]
 pub struct RegistryClient {
     api_url: String,
@@ -170,11 +170,11 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// Create a client for the official Hew registry using compiled-in defaults.
     ///
-    /// Loads `~/.adze/config.toml` to check for a `fallback-api` override.
+    /// Loads `~/.hew/config.toml` to check for a `fallback-api` override.
     #[must_use]
     pub fn new() -> Self {
         let cfg = config::load_config().unwrap_or_else(|error| {
-            eprintln!("adze: {error}");
+            eprintln!("hew: {error}");
             std::process::exit(1);
         });
         Self::new_with_config(&cfg)
@@ -182,7 +182,7 @@ impl RegistryClient {
 
     /// Create a client using the provided config.
     #[must_use]
-    pub fn new_with_config(cfg: &config::AdzeConfig) -> Self {
+    pub fn new_with_config(cfg: &config::PkgConfig) -> Self {
         let endpoints = config::discover_registry();
 
         // Config fallback-api overrides the compiled-in default.
@@ -771,14 +771,14 @@ mod tests {
 
     #[test]
     fn client_default_url() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         assert_eq!(client.api_url, config::DEFAULT_REGISTRY_API);
         assert!(client.token.is_none());
     }
 
     #[test]
     fn client_with_token() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default())
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default())
             .with_token("tok123".to_string());
         assert_eq!(client.token.as_deref(), Some("tok123"));
     }
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn publish_requires_token() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         let req = PublishRequest {
             metadata: PublishMetadata {
                 name: "test".to_string(),
@@ -819,21 +819,21 @@ mod tests {
 
     #[test]
     fn yank_requires_token() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         let result = client.yank("test", "0.1.0", true, Some("reason"));
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }
 
     #[test]
     fn register_namespace_requires_token() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         let result = client.register_namespace("myprefix");
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }
 
     #[test]
     fn register_key_requires_token() {
-        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
+        let client = RegistryClient::new_with_config(&config::PkgConfig::default());
         let result = client.register_key("base64key");
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }
@@ -912,7 +912,7 @@ mod tests {
     #[test]
     fn extract_url_path_https() {
         assert_eq!(
-            extract_url_path("https://pkg.adze.sh/packages/alice/router/0.1.0.tar.gz"),
+            extract_url_path("https://cdn.hewpkg.com/packages/alice/router/0.1.0.tar.gz"),
             "/packages/alice/router/0.1.0.tar.gz"
         );
     }

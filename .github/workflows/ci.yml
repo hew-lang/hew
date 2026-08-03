@@ -100,7 +100,7 @@ jobs:
               - 'hew-codegen-rs/**'
               - 'hew-compile/**'
               - 'hew-cli/**'
-              - 'adze-cli/**'
+              - 'hew-pkg/**'
               - 'hew-capability-gen/**'
               - 'std/net/**'
               - '.cargo/**'
@@ -736,7 +736,7 @@ jobs:
 
       - name: Run package-manager consumer oracle
         if: env.RUN_CODE_PATH == 'true'
-        # Publishes a local package, installs it with `hew package install`,
+        # Publishes a local package, installs it with `hew install`,
         # and asserts lock/materialization state plus exact `hew run` stdout
         # under an isolated HOME.
         run: make test-package-install
@@ -862,7 +862,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
+        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
 
       - name: Build Hew runtime library for PDB e2e
         if: env.RUN_CODE_PATH == 'true'

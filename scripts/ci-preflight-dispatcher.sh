@@ -241,12 +241,12 @@ is_compiler_pipeline_path() {
 is_cli_path() {
     case "$1" in
         # Direct CLI crates.
-        hew-cli/*|adze-cli/*)
+        hew-cli/*|hew-pkg/*)
             return 0
             ;;
         # CLI pipeline support crates: compile pipeline, C ABI helpers,
         # and code generators.  Changes here are covered by
-        # cargo nextest run -p hew-cli -p adze-cli because hew-cli links
+        # cargo nextest run -p hew-cli -p hew-pkg because hew-cli links
         # the full pipeline including hew-runtime (which links hew-cabi)
         # and hew-compile.
         hew-compile/*|hew-cabi/*|hew-capability-gen/*)
@@ -746,7 +746,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         # test-compiler-pipeline IS the consumer-corpus gate: its nextest
-        # invocation includes -p hew-cli -p adze-cli under the ci profile, so
+        # invocation includes -p hew-cli -p hew-pkg under the ci profile, so
         # every hew-cli integration suite — the compiled leak/drop oracles,
         # await_e2e, eval_e2e, and the rest of the e2e corpus — runs for any
         # HIR/MIR/codegen diff.  scripts/tests/test_ci_preflight_dispatcher.py

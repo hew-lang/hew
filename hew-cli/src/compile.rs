@@ -30,7 +30,7 @@ pub struct CompileOptions {
     pub no_typecheck: bool,
     pub werror: bool,
     pub target: Option<String>,
-    /// Override the package search directory (default: `.adze/packages/`).
+    /// Override the package search directory (default: `.hew/packages/`).
     pub pkg_path: Option<PathBuf>,
     /// Anchor an in-memory compile to a specific project directory so that
     /// manifest-aware import resolution matches `compile_file` behaviour.
@@ -360,7 +360,7 @@ mod tests {
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("mylib::utils"));
-        assert!(errs[0].contains("adze add"));
+        assert!(errs[0].contains("hew add"));
     }
 
     #[test]

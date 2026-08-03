@@ -34,7 +34,6 @@ check() {
 
 package() {
   install -Dm755 "$builddir/bin/hew"          "$pkgdir/usr/bin/hew"
-  install -Dm755 "$builddir/bin/adze"         "$pkgdir/usr/bin/adze"
   install -Dm755 "$builddir/bin/hew-lsp"      "$pkgdir/usr/bin/hew-lsp"
   install -Dm755 "$builddir/bin/hew-observe"  "$pkgdir/usr/bin/hew-observe"
 
@@ -55,15 +54,6 @@ package() {
   [ -f "$builddir/completions/hew.fish" ] && \
     install -Dm644 "$builddir/completions/hew.fish" \
       "$pkgdir/usr/share/fish/vendor_completions.d/hew.fish"
-  [ -f "$builddir/completions/adze.bash" ] && \
-    install -Dm644 "$builddir/completions/adze.bash" \
-      "$pkgdir/usr/share/bash-completion/completions/adze"
-  [ -f "$builddir/completions/adze.zsh" ] && \
-    install -Dm644 "$builddir/completions/adze.zsh" \
-      "$pkgdir/usr/share/zsh/site-functions/_adze"
-  [ -f "$builddir/completions/adze.fish" ] && \
-    install -Dm644 "$builddir/completions/adze.fish" \
-      "$pkgdir/usr/share/fish/vendor_completions.d/adze.fish"
 
   install -Dm644 "$builddir/LICENSE-MIT" \
     "$pkgdir/usr/share/licenses/hew/LICENSE-MIT"

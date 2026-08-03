@@ -1,9 +1,9 @@
-//! `adze` package-manager command surface, callable both as the standalone
-//! `adze` binary (`run`) and in-process from `hew package` (`run_from_args`).
+//! Package-manager command surface, flattened into the `hew` CLI as native
+//! top-level subcommands (`hew add`, `hew install`, `hew publish`, …).
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Subcommand;
 
 use crate::package_name::{
     invalid_message as invalid_package_name_message, is_valid as is_valid_package_name,
@@ -13,28 +13,14 @@ use crate::{
     resolver, signing, tarball,
 };
 
-/// adze — the Hew package manager
-#[derive(Debug, Parser)]
-#[command(name = "adze", version, about)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
+/// Package-manager subcommands, flattened into the `hew` CLI's top-level
+/// command enum so `hew add`, `hew install`, … parse (and complete) natively.
 #[derive(Debug, Subcommand)]
-enum Command {
-    /// Create a manifest-first Hew project (`hew.toml` + scaffold source + `.gitignore`)
-    Init {
-        /// Project name (defaults to directory name)
-        name: Option<String>,
-        /// Create a library project
-        #[arg(long)]
-        lib: bool,
-        /// Create an actor project
-        #[arg(long)]
-        actor: bool,
-    },
+pub enum PkgCommand {
     /// Add a dependency to hew.toml
+    // `version` here is the dependency requirement; suppress the auto
+    // `--version` flag that `propagate_version` on the `hew` CLI would add.
+    #[command(disable_version_flag = true)]
     Add {
         /// Package name
         package: String,
@@ -45,7 +31,7 @@ enum Command {
         #[arg(long, short = 'r')]
         registry: Option<String>,
     },
-    /// Install dependencies into .adze/packages/
+    /// Install dependencies into .hew/packages/
     Install {
         /// Require an up-to-date lock file
         #[arg(long)]
@@ -54,8 +40,6 @@ enum Command {
         #[arg(long, short = 'r')]
         registry: Option<String>,
     },
-    /// Build this package's [native] FFI library and stage it under .adze/native/
-    Build,
     /// Publish this package to the registry
     Publish {
         /// Use a named registry from config
@@ -101,8 +85,6 @@ enum Command {
         /// Package name
         package: String,
     },
-    /// Validate manifest
-    Check,
     /// Show outdated dependencies
     Outdated,
     /// Log in to the registry via GitHub
@@ -120,6 +102,9 @@ enum Command {
         action: NamespaceAction,
     },
     /// Yank a published version
+    // The positional `version` is the version to yank; suppress the auto
+    // `--version` flag that `propagate_version` on the `hew` CLI would add.
+    #[command(disable_version_flag = true)]
     Yank {
         /// Version to yank
         version: String,
@@ -130,8 +115,6 @@ enum Command {
         #[arg(long)]
         undo: bool,
     },
-    /// Show the registry's public signing key
-    RegistryKey,
     /// Deprecate a package
     Deprecate {
         /// Package to deprecate (defaults to current project)
@@ -151,11 +134,6 @@ enum Command {
         #[command(subcommand)]
         action: IndexAction,
     },
-    /// Generate shell completion scripts
-    Completions {
-        /// Shell to generate completions for.
-        shell: ShellChoice,
-    },
 }
 
 fn init_follow_up_hint(template: manifest::ManifestTemplate) -> String {
@@ -168,20 +146,14 @@ fn init_follow_up_hint(template: manifest::ManifestTemplate) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ShellChoice {
-    Bash,
-    Zsh,
-    Fish,
-    #[value(name = "powershell")]
-    PowerShell,
-}
-
 #[derive(Debug, Subcommand)]
-enum IndexAction {
+pub enum IndexAction {
     /// Sync the local package index from the registry
     Sync,
     /// Resolve a package version from the local index
+    // `--version` here is the requirement to resolve; suppress the auto
+    // `--version` flag that `propagate_version` on the `hew` CLI would add.
+    #[command(disable_version_flag = true)]
     Resolve {
         /// Package name
         package: String,
@@ -197,7 +169,7 @@ enum IndexAction {
 }
 
 #[derive(Debug, Subcommand)]
-enum KeyAction {
+pub enum KeyAction {
     /// Generate a new Ed25519 signing keypair
     Generate,
     /// List registered signing keys
@@ -207,10 +179,12 @@ enum KeyAction {
         /// Key fingerprint (e.g. SHA256:...)
         fingerprint: String,
     },
+    /// Show the registry's public signing key
+    Registry,
 }
 
 #[derive(Debug, Subcommand)]
-enum NamespaceAction {
+pub enum NamespaceAction {
     /// Register a custom namespace prefix
     Register {
         /// Namespace prefix to claim
@@ -223,95 +197,63 @@ enum NamespaceAction {
     },
 }
 
-/// Entry point for the standalone `adze` binary.
-pub fn run() {
-    dispatch(Cli::parse());
-}
-
-/// Entry point for in-process invocation (e.g. `hew package <args>`),
-/// parsing from an explicit argument vector instead of `std::env::args`.
-pub fn run_from_args<I, T>(args: I)
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString> + Clone,
-{
-    dispatch(Cli::parse_from(args));
-}
-
-fn dispatch(cli: Cli) {
-    // Handle commands that don't need config/registry.
-    if let Command::Completions { shell } = &cli.command {
-        cmd_completions(*shell);
-        return;
-    }
-
+/// Execute a package-manager subcommand dispatched from the `hew` CLI.
+pub fn dispatch(cmd: &PkgCommand) {
     let cfg = load_config_or_exit();
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
 
-    match cli.command {
-        Command::Init { name, lib, actor } => {
-            let template = if lib {
-                manifest::ManifestTemplate::Lib
-            } else if actor {
-                manifest::ManifestTemplate::Actor
-            } else {
-                manifest::ManifestTemplate::Bin
-            };
-            cmd_init(name.as_deref(), template, &cfg);
-        }
-        Command::Add {
+    match cmd {
+        PkgCommand::Add {
             package,
             version,
             registry: reg,
-        } => cmd_add(&package, &version, reg.as_deref()),
-        Command::Install {
+        } => cmd_add(package, version, reg.as_deref()),
+        PkgCommand::Install {
             locked,
             registry: reg,
-        } => cmd_install(locked, &registry, reg.as_deref()),
-        Command::Build => cmd_build(),
-        Command::Publish { registry: reg } => cmd_publish(&registry, reg.as_deref()),
-        Command::List => cmd_list(&registry),
-        Command::Search {
+        } => cmd_install(*locked, &registry, reg.as_deref()),
+        PkgCommand::Publish { registry: reg } => cmd_publish(&registry, reg.as_deref()),
+        PkgCommand::List => cmd_list(&registry),
+        PkgCommand::Search {
             query,
             category,
             page,
             per_page,
             registry: reg,
         } => cmd_search(
-            &query,
+            query,
             category.as_deref(),
-            page,
-            per_page,
+            *page,
+            *per_page,
             &registry,
             reg.as_deref(),
         ),
-        Command::Info {
+        PkgCommand::Info {
             package,
             registry: reg,
-        } => cmd_info(&package, &registry, reg.as_deref()),
-        Command::Tree => cmd_tree(&registry),
-        Command::Update { package } => cmd_update(package.as_deref(), &registry),
-        Command::Remove { package } => cmd_remove(&package),
-        Command::Check => cmd_check(&registry),
-        Command::Outdated => cmd_outdated(&registry),
-        Command::Login => cmd_login(),
-        Command::Logout => cmd_logout(),
-        Command::RegistryKey => cmd_registry_key(),
-        Command::Key { action } => match action {
+        } => cmd_info(package, &registry, reg.as_deref()),
+        PkgCommand::Tree => cmd_tree(&registry),
+        PkgCommand::Update { package } => cmd_update(package.as_deref(), &registry),
+        PkgCommand::Remove { package } => cmd_remove(package),
+        PkgCommand::Outdated => cmd_outdated(&registry),
+        PkgCommand::Login => cmd_login(),
+        PkgCommand::Logout => cmd_logout(),
+        PkgCommand::Key { action } => match action {
             KeyAction::Generate => cmd_key_generate(),
             KeyAction::List => cmd_key_list(),
-            KeyAction::Info { fingerprint } => cmd_key_info(&fingerprint),
+            KeyAction::Info { fingerprint } => cmd_key_info(fingerprint),
+            KeyAction::Registry => cmd_registry_key(),
         },
-        Command::Namespace { action } => match action {
-            NamespaceAction::Register { prefix } => cmd_namespace_register(&prefix),
-            NamespaceAction::Info { prefix } => cmd_namespace_info(&prefix),
+        PkgCommand::Namespace { action } => match action {
+            NamespaceAction::Register { prefix } => cmd_namespace_register(prefix),
+            NamespaceAction::Info { prefix } => cmd_namespace_info(prefix),
         },
-        Command::Yank {
+        PkgCommand::Yank {
             version,
             reason,
             undo,
-        } => cmd_yank(&version, reason.as_deref(), undo),
-        Command::Deprecate {
+        } => cmd_yank(version, reason.as_deref(), *undo),
+        PkgCommand::Deprecate {
             package,
             message,
             successor,
@@ -320,31 +262,39 @@ fn dispatch(cli: Cli) {
             package.as_deref(),
             message.as_deref(),
             successor.as_deref(),
-            undo,
+            *undo,
         ),
-        Command::Index { action } => match action {
+        PkgCommand::Index { action } => match action {
             IndexAction::Sync => cmd_index_sync(),
             IndexAction::Resolve { package, version } => {
-                cmd_index_resolve(&package, &version);
+                cmd_index_resolve(package, version);
             }
-            IndexAction::List { package } => cmd_index_list(&package),
+            IndexAction::List { package } => cmd_index_list(package),
         },
-        Command::Completions { .. } => unreachable!("handled above"),
     }
 }
 
-fn cmd_completions(shell: ShellChoice) {
-    use clap::CommandFactory;
-    use clap_complete::{generate, Shell};
+/// Validate the current project's manifest — `hew check` with no input file.
+pub fn run_manifest_check() {
+    let cfg = load_config_or_exit();
+    let registry = registry::Registry::with_root(config::registry_path(&cfg));
+    cmd_check(&registry);
+}
 
-    let mut cmd = Cli::command();
-    let s = match shell {
-        ShellChoice::Bash => Shell::Bash,
-        ShellChoice::Zsh => Shell::Zsh,
-        ShellChoice::Fish => Shell::Fish,
-        ShellChoice::PowerShell => Shell::PowerShell,
-    };
-    generate(s, &mut cmd, "adze", &mut std::io::stdout());
+/// Build and stage the current package's `[native]` FFI library — `hew build`
+/// with no input file.
+pub fn run_native_build() {
+    cmd_build();
+}
+
+/// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
+/// The package name is the (canonicalized) directory name.
+///
+/// Never destructive: errors if `hew.toml` already exists, skips any scaffold
+/// source file that already exists, and merges (never replaces) `.gitignore`.
+pub fn run_init(dir: &Path, template: manifest::ManifestTemplate) {
+    let cfg = load_config_or_exit();
+    cmd_init(dir, template, &cfg);
 }
 
 /// Build a [`RegistryClient`] for the given named registry (or default).
@@ -353,8 +303,8 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
         Some(name) => {
             let cfg = load_config_or_exit();
             let remote = config::get_named_registry(&cfg, name).unwrap_or_else(|| {
-                eprintln!("adze: unknown registry '{name}'");
-                eprintln!("Configure it in ~/.adze/config.toml under [registries.{name}]");
+                eprintln!("hew: unknown registry '{name}'");
+                eprintln!("Configure it in ~/.hew/config.toml under [registries.{name}]");
                 std::process::exit(1);
             });
             let mut c = client::RegistryClient::with_url(remote.api);
@@ -368,27 +318,26 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     }
 }
 
-fn load_config_or_exit() -> config::AdzeConfig {
+fn load_config_or_exit() -> config::PkgConfig {
     config::load_config().unwrap_or_else(|error| {
-        eprintln!("adze: {error}");
+        eprintln!("hew: {error}");
         std::process::exit(1);
     })
 }
 
-fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &config::AdzeConfig) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let name = name.map_or_else(
-        || {
-            cwd.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("myproject")
-                .to_string()
-        },
-        str::to_string,
-    );
-    let manifest_path = cwd.join("hew.toml");
+fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgConfig) {
+    let name = dir
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(Path::file_name)
+        .or_else(|| dir.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("myproject")
+        .to_string();
+    let manifest_path = dir.join("hew.toml");
     if manifest_path.exists() {
-        eprintln!("adze init: hew.toml already exists");
+        eprintln!("hew init: hew.toml already exists");
         std::process::exit(1);
     }
     match manifest::write_manifest_with_template(&manifest_path, &name, template) {
@@ -408,16 +357,16 @@ fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &conf
                 }
                 if changed {
                     if let Err(e) = manifest::save_manifest(&manifest_path, &m) {
-                        eprintln!("adze init: warning: could not apply defaults: {e}");
+                        eprintln!("hew init: warning: could not apply defaults: {e}");
                     }
                 }
             }
 
-            // Write template source file.
-            write_template_source(&cwd, &name, template);
+            // Write template source file (skip-if-exists).
+            write_template_source(dir, &name, template);
 
-            // Write .gitignore with target/ and .adze/.
-            write_init_gitignore(&cwd);
+            // Write .gitignore with target/ and .hew/ (merged, never replaced).
+            write_init_gitignore(dir);
             let source = template.scaffold_source();
             let follow_up = init_follow_up_hint(template);
 
@@ -425,7 +374,7 @@ fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &conf
             match manifest::parse_manifest(&manifest_path) {
                 Ok(m) => println!("Created hew.toml: {}", m.summary()),
                 Err(e) => {
-                    eprintln!("adze init: warning: created manifest may be invalid: {e}");
+                    eprintln!("hew init: warning: created manifest may be invalid: {e}");
                     println!("Created hew.toml for project `{name}`");
                 }
             }
@@ -433,13 +382,13 @@ fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &conf
             println!("{follow_up}");
         }
         Err(e) => {
-            eprintln!("adze init: {e}");
+            eprintln!("hew init: {e}");
             std::process::exit(1);
         }
     }
 }
 
-/// Write the template source file for `adze init`.
+/// Write the template source file for `hew init`.
 fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTemplate) {
     let (filename, content) = match template {
         manifest::ManifestTemplate::Lib => (
@@ -467,35 +416,49 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
     }
 }
 
-/// Write a `.gitignore` with `target/` and `.adze/` entries.
+/// Write a `.gitignore` with `target/` and `.hew/` entries.
 fn write_init_gitignore(dir: &Path) {
-    ensure_gitignore_entry(dir, ".adze/");
+    ensure_gitignore_entry(dir, ".hew/");
     ensure_gitignore_entry(dir, "target/");
 }
 
 /// Append `entry` to `.gitignore` if not already present.
+///
+/// Never destructive: a `.gitignore` that exists but cannot be read as UTF-8
+/// (or fails to read for any reason other than being absent) is left
+/// untouched rather than overwritten. Only a genuinely missing file is
+/// created from scratch.
 fn ensure_gitignore_entry(dir: &Path, entry: &str) {
     let path = dir.join(".gitignore");
-    if let Ok(contents) = std::fs::read_to_string(&path) {
-        if contents.lines().any(|l| l.trim() == entry) {
-            return;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            if contents.lines().any(|l| l.trim() == entry) {
+                return;
+            }
+            let updated = if contents.ends_with('\n') {
+                format!("{contents}{entry}\n")
+            } else if contents.is_empty() {
+                format!("{entry}\n")
+            } else {
+                format!("{contents}\n{entry}\n")
+            };
+            let _ = std::fs::write(&path, updated);
         }
-        let updated = if contents.ends_with('\n') {
-            format!("{contents}{entry}\n")
-        } else if contents.is_empty() {
-            format!("{entry}\n")
-        } else {
-            format!("{contents}\n{entry}\n")
-        };
-        let _ = std::fs::write(&path, updated);
-    } else {
-        let _ = std::fs::write(&path, format!("{entry}\n"));
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::write(&path, format!("{entry}\n"));
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not update {}: {e} (leaving the file unchanged)",
+                path.display()
+            );
+        }
     }
 }
 
 fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
     if !is_valid_package_name(pkg) {
-        eprintln!("adze add: {}", invalid_package_name_message(pkg));
+        eprintln!("hew add: {}", invalid_package_name_message(pkg));
         std::process::exit(1);
     }
 
@@ -506,14 +469,14 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze add: no hew.toml found in current directory");
-        eprintln!("Run `adze init` to create one.");
+        eprintln!("hew add: no hew.toml found in current directory");
+        eprintln!("Run `hew init` to create one.");
         std::process::exit(1);
     }
     match manifest::add_dependency(&manifest_path, pkg, version, registry_name) {
         Ok(()) => println!("Added {pkg}@{version} to hew.toml"),
         Err(e) => {
-            eprintln!("adze add: {e}");
+            eprintln!("hew add: {e}");
             std::process::exit(1);
         }
     }
@@ -527,45 +490,42 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze install: no hew.toml found in current directory");
+        eprintln!("hew install: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze install: {e}");
+            eprintln!("hew install: {e}");
             std::process::exit(1);
         }
     };
 
-    let lock_path = cwd.join("adze.lock");
+    let lock_path = cwd.join("hew.lock");
 
     if locked {
         // --locked: read existing lock and validate against manifest.
         let lf = match lockfile::read_lockfile(&lock_path) {
             Ok(lf) => lf,
             Err(lockfile::LockError::Missing) => {
-                eprintln!("adze install: --locked requires an adze.lock file, but none was found");
+                eprintln!("hew install: --locked requires an hew.lock file, but none was found");
                 std::process::exit(1);
             }
             Err(e) => {
-                eprintln!("adze install: {e}");
+                eprintln!("hew install: {e}");
                 std::process::exit(1);
             }
         };
         if lockfile::is_lock_stale(&lf, &m) {
             let err = lockfile::LockError::Stale;
-            eprintln!("adze install: {err}");
-            eprintln!("Run `adze install` without --locked to update it.");
+            eprintln!("hew install: {err}");
+            eprintln!("Run `hew install` without --locked to update it.");
             std::process::exit(1);
         }
         // Verify checksums of locked packages.
         for entry in &lf.packages {
             if !is_valid_package_name(&entry.name) {
-                eprintln!(
-                    "adze install: {}",
-                    invalid_package_name_message(&entry.name)
-                );
+                eprintln!("hew install: {}", invalid_package_name_message(&entry.name));
                 std::process::exit(1);
             }
             if let Some(expected) = &entry.checksum {
@@ -574,7 +534,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
                     match checksum::compute_dir_checksum(&pkg_dir) {
                         Ok(actual) if actual != *expected => {
                             eprintln!(
-                                "adze install: checksum mismatch for {}@{}",
+                                "hew install: checksum mismatch for {}@{}",
                                 entry.name, entry.version
                             );
                             eprintln!("  expected: {expected}");
@@ -596,11 +556,11 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
     let local_packages = project_packages_path(&cwd);
     if let Err(e) = std::fs::create_dir_all(&local_packages) {
-        eprintln!("adze install: cannot create .adze/packages/: {e}");
+        eprintln!("hew install: cannot create .hew/packages/: {e}");
         std::process::exit(1);
     }
 
-    ensure_gitignore_entry(&cwd, ".adze/");
+    ensure_gitignore_entry(&cwd, ".hew/");
 
     if m.dependencies.is_empty() {
         // Write an empty lockfile for consistency.
@@ -608,7 +568,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
             packages: Vec::new(),
         };
         if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-            eprintln!("adze install: cannot write adze.lock: {e}");
+            eprintln!("hew install: cannot write hew.lock: {e}");
         }
         println!("Nothing to install.");
         return;
@@ -621,12 +581,12 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
             Ok(resolved) => break resolved,
             Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
                 if !fetch_missing_packages(&failures, registry, registry_name) {
-                    eprintln!("adze install: could not resolve the dependency graph");
+                    eprintln!("hew install: could not resolve the dependency graph");
                     std::process::exit(1);
                 }
             }
             Err(e) => {
-                eprintln!("adze install: {e}");
+                eprintln!("hew install: {e}");
                 std::process::exit(1);
             }
         }
@@ -637,13 +597,13 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
     for (name, package) in &resolved {
         if !is_valid_package_name(name) {
-            eprintln!("adze install: {}", invalid_package_name_message(name));
+            eprintln!("hew install: {}", invalid_package_name_message(name));
             std::process::exit(1);
         }
         let version = &package.version;
         let target = registry.package_dir(name, version);
         if !registry.is_installed(name, version) {
-            eprintln!("warning: {name}@{version} not found in global registry (~/.adze/packages/)");
+            eprintln!("warning: {name}@{version} not found in global registry (~/.hew/packages/)");
         }
 
         // Compute checksum if the package directory exists.
@@ -672,20 +632,20 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         let link = match local_link_path(&local_packages, name) {
             Ok(link) => link,
             Err(e) => {
-                eprintln!("adze install: {e}");
+                eprintln!("hew install: {e}");
                 std::process::exit(1);
             }
         };
         if let Some(parent) = link.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("adze install: cannot create {}: {e}", parent.display());
+                eprintln!("hew install: cannot create {}: {e}", parent.display());
                 std::process::exit(1);
             }
         }
         match replace_local_package_materialization(&link, &target) {
             Ok(materialization) => println!("  {} {name}@{version}", materialization.verb()),
             Err(e) => {
-                eprintln!("adze install: cannot materialize project package for {name}: {e}");
+                eprintln!("hew install: cannot materialize project package for {name}: {e}");
                 std::process::exit(1);
             }
         }
@@ -696,10 +656,10 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         packages: lock_packages,
     };
     if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-        eprintln!("adze install: cannot write adze.lock: {e}");
+        eprintln!("hew install: cannot write hew.lock: {e}");
         std::process::exit(1);
     }
-    println!("Wrote adze.lock");
+    println!("Wrote hew.lock");
 }
 
 /// Fetch missing packages from the remote registry.
@@ -916,13 +876,13 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze publish: no hew.toml found in current directory");
+        eprintln!("hew publish: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze publish: {e}");
+            eprintln!("hew publish: {e}");
             std::process::exit(1);
         }
     };
@@ -930,7 +890,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     // Validate required fields for publishing.
     let missing = manifest::validate_for_publish(&m);
     if !missing.is_empty() {
-        eprintln!("adze publish: missing required fields:");
+        eprintln!("hew publish: missing required fields:");
         for field in &missing {
             eprintln!("  - {field}");
         }
@@ -940,7 +900,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     // Validate package name format.
     if !is_valid_package_name(&m.package.name) {
         eprintln!(
-            "adze publish: invalid package name `{}`: only alphanumeric, `_`, and `::` (or `/`) allowed",
+            "hew publish: invalid package name `{}`: only alphanumeric, `_`, and `::` (or `/`) allowed",
             m.package.name
         );
         std::process::exit(1);
@@ -949,7 +909,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     // Validate version is semver.
     if semver::Version::parse(&m.package.version).is_err() {
         eprintln!(
-            "adze publish: invalid version `{}`: must be valid semver (e.g. 1.0.0)",
+            "hew publish: invalid version `{}`: must be valid semver (e.g. 1.0.0)",
             m.package.version
         );
         std::process::exit(1);
@@ -960,12 +920,12 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     let keypair = match signing::load_keypair(&key_dir) {
         Ok(kp) => kp,
         Err(signing::SignError::NoKey) => {
-            eprintln!("adze publish: no signing key found");
-            eprintln!("Run `adze key generate` to create one.");
+            eprintln!("hew publish: no signing key found");
+            eprintln!("Run `hew key generate` to create one.");
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("adze publish: {e}");
+            eprintln!("hew publish: {e}");
             std::process::exit(1);
         }
     };
@@ -976,7 +936,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     let pack_result = match tarball::pack(&cwd, exclude, include) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("adze publish: {e}");
+            eprintln!("hew publish: {e}");
             std::process::exit(1);
         }
     };
@@ -1066,7 +1026,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
                 return;
             }
             Err(e) => {
-                eprintln!("adze publish: remote publish failed: {e}");
+                eprintln!("hew publish: remote publish failed: {e}");
                 eprintln!("Falling back to local publish.");
             }
         }
@@ -1075,7 +1035,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     // Fall back to local publish.
     let dest = registry.package_dir(&m.package.name, &m.package.version);
     if let Err(e) = copy_dir(&cwd, &dest) {
-        eprintln!("adze publish: {e}");
+        eprintln!("hew publish: {e}");
         std::process::exit(1);
     }
 
@@ -1169,11 +1129,11 @@ fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<
         let entries = match api_client.get_package(package) {
             Ok(entries) if !entries.is_empty() => entries,
             Ok(_) => {
-                eprintln!("adze info: package `{package}` not found in registry `{registry_name}`");
+                eprintln!("hew info: package `{package}` not found in registry `{registry_name}`");
                 std::process::exit(1);
             }
             Err(e) => {
-                eprintln!("adze info: {e}");
+                eprintln!("hew info: {e}");
                 std::process::exit(1);
             }
         };
@@ -1184,7 +1144,7 @@ fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<
                 .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
             left_version.cmp(&right_version)
         }) else {
-            eprintln!("adze info: package `{package}` not found in registry `{registry_name}`");
+            eprintln!("hew info: package `{package}` not found in registry `{registry_name}`");
             std::process::exit(1);
         };
         println!("{}@{}", latest.name, latest.vers);
@@ -1203,7 +1163,7 @@ fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<
     let versions: Vec<_> = packages.iter().filter(|p| p.name == package).collect();
 
     if versions.is_empty() {
-        eprintln!("adze info: package `{package}` not found in registry");
+        eprintln!("hew info: package `{package}` not found in registry");
         std::process::exit(1);
     }
 
@@ -1263,13 +1223,13 @@ fn cmd_tree(registry: &registry::Registry) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze tree: no hew.toml found in current directory");
+        eprintln!("hew tree: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze tree: {e}");
+            eprintln!("hew tree: {e}");
             std::process::exit(1);
         }
     };
@@ -1292,7 +1252,7 @@ fn cmd_tree(registry: &registry::Registry) {
             Ok(resolved) => resolved,
             Err(resolver::ResolveError::NoMatchingVersion { .. }) => ver_req.to_string(),
             Err(e) => {
-                eprintln!("adze tree: dependency {name}@{ver_req}: {e}");
+                eprintln!("hew tree: dependency {name}@{ver_req}: {e}");
                 std::process::exit(1);
             }
         };
@@ -1322,13 +1282,13 @@ fn cmd_update(package: Option<&str>, registry: &registry::Registry) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze update: no hew.toml found in current directory");
+        eprintln!("hew update: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let mut m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze update: {e}");
+            eprintln!("hew update: {e}");
             std::process::exit(1);
         }
     };
@@ -1338,7 +1298,7 @@ fn cmd_update(package: Option<&str>, registry: &registry::Registry) {
 
     let deps_to_update: Vec<String> = if let Some(pkg) = package {
         if !m.dependencies.contains_key(pkg) {
-            eprintln!("adze update: `{pkg}` is not a dependency");
+            eprintln!("hew update: `{pkg}` is not a dependency");
             std::process::exit(1);
         }
         vec![pkg.to_string()]
@@ -1367,7 +1327,7 @@ fn cmd_update(package: Option<&str>, registry: &registry::Registry) {
         println!("All dependencies are up to date.");
     } else {
         if let Err(e) = manifest::save_manifest(&manifest_path, &m) {
-            eprintln!("adze update: {e}");
+            eprintln!("hew update: {e}");
             std::process::exit(1);
         }
         for (name, old, new) in &updated {
@@ -1380,7 +1340,7 @@ fn cmd_remove(package: &str) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze remove: no hew.toml found in current directory");
+        eprintln!("hew remove: no hew.toml found in current directory");
         std::process::exit(1);
     }
 
@@ -1403,18 +1363,18 @@ fn cmd_remove(package: &str) {
             println!("Removed {package} from hew.toml");
         }
         Ok(false) => {
-            eprintln!("adze remove: `{package}` is not a dependency");
+            eprintln!("hew remove: `{package}` is not a dependency");
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("adze remove: {e}");
+            eprintln!("hew remove: {e}");
             std::process::exit(1);
         }
     }
 }
 
-/// `adze build` — build this package's `[native]` FFI library and stage it under
-/// `.adze/native/` so the compiler can link it.
+/// `hew build` — build this package's `[native]` FFI library and stage it under
+/// `.hew/native/` so the compiler can link it.
 fn cmd_build() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let artifact = match native::build_native(&cwd) {
@@ -1424,11 +1384,11 @@ fn cmd_build() {
         }
         Ok(Some(artifact)) => artifact,
         Err(e) => {
-            eprintln!("adze build: {e}");
+            eprintln!("hew build: {e}");
             std::process::exit(1);
         }
     };
-    let dest_dir = cwd.join(".adze").join("native");
+    let dest_dir = cwd.join(".hew").join("native");
     match native::stage_native(&artifact, &dest_dir) {
         Ok(staged) => {
             println!("Built native lib `{}`", artifact.lib);
@@ -1436,7 +1396,7 @@ fn cmd_build() {
             println!("  staged:   {}", staged.display());
         }
         Err(e) => {
-            eprintln!("adze build: {e}");
+            eprintln!("hew build: {e}");
             std::process::exit(1);
         }
     }
@@ -1446,13 +1406,13 @@ fn cmd_check(registry: &registry::Registry) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze check: no hew.toml found in current directory");
+        eprintln!("hew check: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze check: {e}");
+            eprintln!("hew check: {e}");
             std::process::exit(1);
         }
     };
@@ -1495,13 +1455,13 @@ fn cmd_outdated(registry: &registry::Registry) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze outdated: no hew.toml found in current directory");
+        eprintln!("hew outdated: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze outdated: {e}");
+            eprintln!("hew outdated: {e}");
             std::process::exit(1);
         }
     };
@@ -1539,7 +1499,7 @@ fn cmd_login() {
     let device = match api_client.login_device() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("adze login: {e}");
+            eprintln!("hew login: {e}");
             std::process::exit(1);
         }
     };
@@ -1557,7 +1517,7 @@ fn cmd_login() {
     loop {
         std::thread::sleep(interval);
         if std::time::Instant::now() > deadline {
-            eprintln!("adze login: authorization timed out");
+            eprintln!("hew login: authorization timed out");
             std::process::exit(1);
         }
 
@@ -1572,7 +1532,7 @@ fn cmd_login() {
                             github_user: resp.github_user.clone(),
                         },
                     ) {
-                        eprintln!("adze login: {e}");
+                        eprintln!("hew login: {e}");
                         std::process::exit(1);
                     }
                     let user = resp.github_user.as_deref().unwrap_or("unknown");
@@ -1581,14 +1541,14 @@ fn cmd_login() {
                 }
                 if resp.error.as_deref() != Some("authorization_pending") {
                     eprintln!(
-                        "adze login: {}",
+                        "hew login: {}",
                         resp.error.unwrap_or_else(|| "unknown error".to_string())
                     );
                     std::process::exit(1);
                 }
             }
             Err(e) => {
-                eprintln!("adze login: {e}");
+                eprintln!("hew login: {e}");
                 std::process::exit(1);
             }
         }
@@ -1599,7 +1559,7 @@ fn cmd_logout() {
     let cred_path = credentials::credentials_path();
     if cred_path.exists() {
         if let Err(e) = std::fs::remove_file(&cred_path) {
-            eprintln!("adze logout: {e}");
+            eprintln!("hew logout: {e}");
             std::process::exit(1);
         }
         println!("Logged out.");
@@ -1614,7 +1574,7 @@ fn cmd_key_generate() {
 
     if secret_path.exists() {
         eprintln!(
-            "adze key generate: key already exists at {}",
+            "hew key generate: key already exists at {}",
             secret_path.display()
         );
         eprintln!("Remove it first if you want to regenerate.");
@@ -1623,7 +1583,7 @@ fn cmd_key_generate() {
 
     let keypair = signing::KeyPair::generate();
     if let Err(e) = signing::save_keypair(&key_dir, &keypair) {
-        eprintln!("adze key generate: {e}");
+        eprintln!("hew key generate: {e}");
         std::process::exit(1);
     }
 
@@ -1641,7 +1601,7 @@ fn cmd_key_generate() {
             Err(e) => eprintln!("warning: could not register key with registry: {e}"),
         }
     } else {
-        println!("Run `adze login` and re-run to register this key with the registry.");
+        println!("Run `hew login` and re-run to register this key with the registry.");
     }
 }
 
@@ -1651,7 +1611,7 @@ fn cmd_key_list() {
 
     if !pub_path.exists() {
         println!("No signing keys found.");
-        println!("Run `adze key generate` to create one.");
+        println!("Run `hew key generate` to create one.");
         return;
     }
 
@@ -1663,7 +1623,7 @@ fn cmd_key_list() {
             println!("  Public key:  {}", kp.public_key_base64());
         }
         Err(e) => {
-            eprintln!("adze key list: {e}");
+            eprintln!("hew key list: {e}");
             std::process::exit(1);
         }
     }
@@ -1679,7 +1639,7 @@ fn cmd_registry_key() {
             println!("  Public key: {}", key.public_key);
         }
         Err(e) => {
-            eprintln!("adze registry-key: {e}");
+            eprintln!("hew key registry: {e}");
             std::process::exit(1);
         }
     }
@@ -1697,7 +1657,7 @@ fn cmd_key_info(fingerprint: &str) {
             println!("  GitHub ID:    {}", key.github_id);
         }
         Err(e) => {
-            eprintln!("adze key info: {e}");
+            eprintln!("hew key info: {e}");
             std::process::exit(1);
         }
     }
@@ -1712,7 +1672,7 @@ fn cmd_namespace_info(prefix: &str) {
             println!("  Source: {}", info.source);
         }
         Err(e) => {
-            eprintln!("adze namespace info: {e}");
+            eprintln!("hew namespace info: {e}");
             std::process::exit(1);
         }
     }
@@ -1721,8 +1681,8 @@ fn cmd_namespace_info(prefix: &str) {
 fn cmd_namespace_register(prefix: &str) {
     let cred_path = credentials::credentials_path();
     let Ok(token) = credentials::get_token(&cred_path) else {
-        eprintln!("adze namespace register: not logged in");
-        eprintln!("Run `adze login` first.");
+        eprintln!("hew namespace register: not logged in");
+        eprintln!("Run `hew login` first.");
         std::process::exit(1);
     };
 
@@ -1730,7 +1690,7 @@ fn cmd_namespace_register(prefix: &str) {
     match api_client.register_namespace(prefix) {
         Ok(()) => println!("Registered namespace `{prefix}`"),
         Err(e) => {
-            eprintln!("adze namespace register: {e}");
+            eprintln!("hew namespace register: {e}");
             std::process::exit(1);
         }
     }
@@ -1740,20 +1700,20 @@ fn cmd_yank(version: &str, reason: Option<&str>, undo: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");
     if !manifest_path.exists() {
-        eprintln!("adze yank: no hew.toml found in current directory");
+        eprintln!("hew yank: no hew.toml found in current directory");
         std::process::exit(1);
     }
     let m = match manifest::parse_manifest(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("adze yank: {e}");
+            eprintln!("hew yank: {e}");
             std::process::exit(1);
         }
     };
 
     let cred_path = credentials::credentials_path();
     let Ok(token) = credentials::get_token(&cred_path) else {
-        eprintln!("adze yank: not logged in");
+        eprintln!("hew yank: not logged in");
         std::process::exit(1);
     };
 
@@ -1768,7 +1728,7 @@ fn cmd_yank(version: &str, reason: Option<&str>, undo: bool) {
             }
         }
         Err(e) => {
-            eprintln!("adze yank: {e}");
+            eprintln!("hew yank: {e}");
             std::process::exit(1);
         }
     }
@@ -1786,13 +1746,13 @@ fn cmd_deprecate(
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let manifest_path = cwd.join("hew.toml");
         if !manifest_path.exists() {
-            eprintln!("adze deprecate: no hew.toml found and no package specified");
+            eprintln!("hew deprecate: no hew.toml found and no package specified");
             std::process::exit(1);
         }
         match manifest::parse_manifest(&manifest_path) {
             Ok(m) => m.package.name,
             Err(e) => {
-                eprintln!("adze deprecate: {e}");
+                eprintln!("hew deprecate: {e}");
                 std::process::exit(1);
             }
         }
@@ -1800,7 +1760,7 @@ fn cmd_deprecate(
 
     let cred_path = credentials::credentials_path();
     let Ok(token) = credentials::get_token(&cred_path) else {
-        eprintln!("adze deprecate: not logged in");
+        eprintln!("hew deprecate: not logged in");
         std::process::exit(1);
     };
 
@@ -1811,7 +1771,7 @@ fn cmd_deprecate(
         match api_client.deprecate(&name, None, None) {
             Ok(()) => println!("Undid deprecation of {name}"),
             Err(e) => {
-                eprintln!("adze deprecate: {e}");
+                eprintln!("hew deprecate: {e}");
                 std::process::exit(1);
             }
         }
@@ -1825,7 +1785,7 @@ fn cmd_deprecate(
                 println!();
             }
             Err(e) => {
-                eprintln!("adze deprecate: {e}");
+                eprintln!("hew deprecate: {e}");
                 std::process::exit(1);
             }
         }
@@ -1848,13 +1808,13 @@ fn cmd_index_sync() {
             Ok(s) if s.success() => eprintln!("Index updated."),
             Ok(s) => {
                 eprintln!(
-                    "adze index sync: git pull failed (exit {})",
+                    "hew index sync: git pull failed (exit {})",
                     s.code().unwrap_or(-1)
                 );
                 std::process::exit(1);
             }
             Err(e) => {
-                eprintln!("adze index sync: {e}");
+                eprintln!("hew index sync: {e}");
                 std::process::exit(1);
             }
         }
@@ -1876,20 +1836,20 @@ fn cmd_index_sync() {
             Ok(s) if s.success() => eprintln!("Index cloned to {}", index_dir.display()),
             Ok(s) => {
                 eprintln!(
-                    "adze index sync: git clone failed (exit {})",
+                    "hew index sync: git clone failed (exit {})",
                     s.code().unwrap_or(-1)
                 );
                 std::process::exit(1);
             }
             Err(e) => {
-                eprintln!("adze index sync: {e}");
+                eprintln!("hew index sync: {e}");
                 std::process::exit(1);
             }
         }
     }
 
     if let Err(e) = index::validate_index_root(&index_dir) {
-        eprintln!("adze index sync: {e}");
+        eprintln!("hew index sync: {e}");
         std::process::exit(1);
     }
 }
@@ -1897,8 +1857,8 @@ fn cmd_index_sync() {
 fn cmd_index_resolve(package: &str, version_req: &str) {
     let index_dir = config::local_index_path();
     if !index_dir.exists() {
-        eprintln!("adze index resolve: local index not found");
-        eprintln!("Run `adze index sync` first.");
+        eprintln!("hew index resolve: local index not found");
+        eprintln!("Run `hew index sync` first.");
         std::process::exit(1);
     }
 
@@ -1918,7 +1878,7 @@ fn cmd_index_resolve(package: &str, version_req: &str) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("adze index resolve: {e}");
+            eprintln!("hew index resolve: {e}");
             std::process::exit(1);
         }
     }
@@ -1927,8 +1887,8 @@ fn cmd_index_resolve(package: &str, version_req: &str) {
 fn cmd_index_list(package: &str) {
     let index_dir = config::local_index_path();
     if !index_dir.exists() {
-        eprintln!("adze index list: local index not found");
-        eprintln!("Run `adze index sync` first.");
+        eprintln!("hew index list: local index not found");
+        eprintln!("Run `hew index sync` first.");
         std::process::exit(1);
     }
 
@@ -1970,7 +1930,7 @@ fn cmd_index_list(package: &str) {
             }
         }
         Err(e) => {
-            eprintln!("adze index list: {e}");
+            eprintln!("hew index list: {e}");
             std::process::exit(1);
         }
     }
@@ -1979,7 +1939,7 @@ fn cmd_index_list(package: &str) {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn project_packages_path(cwd: &Path) -> PathBuf {
-    cwd.join(".adze").join("packages")
+    cwd.join(".hew").join("packages")
 }
 
 fn local_link_path(base: &Path, package_name: &str) -> Result<PathBuf, String> {
@@ -2124,7 +2084,7 @@ fn find_latest_version(
         .map(|v| v.to_string())
 }
 
-/// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.adze`.
+/// Recursively copy `src` to `dst`, skipping `.git`, `target`, and `.hew`.
 ///
 /// # Errors
 ///
@@ -2156,46 +2116,57 @@ mod tests {
     #[test]
     fn ensure_gitignore_entry_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(contents.contains(".adze/"));
+        assert!(contents.contains(".hew/"));
     }
 
     #[test]
     fn ensure_gitignore_entry_no_duplicate() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents.matches(".adze/").count(), 1);
+        assert_eq!(contents.matches(".hew/").count(), 1);
     }
 
     #[test]
     fn ensure_gitignore_entry_appends_to_existing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(contents.contains("target/"));
-        assert!(contents.contains(".adze/"));
+        assert!(contents.contains(".hew/"));
     }
 
     #[test]
     fn ensure_gitignore_entry_appends_after_missing_trailing_newline() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents, "target/\n.adze/\n");
+        assert_eq!(contents, "target/\n.hew/\n");
     }
 
     #[test]
     fn ensure_gitignore_entry_matches_trimmed_existing_line() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".gitignore"), ".adze/   \n").unwrap();
-        ensure_gitignore_entry(dir.path(), ".adze/");
+        std::fs::write(dir.path().join(".gitignore"), ".hew/   \n").unwrap();
+        ensure_gitignore_entry(dir.path(), ".hew/");
         let contents = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(contents.matches(".adze/").count(), 1);
+        assert_eq!(contents.matches(".hew/").count(), 1);
+    }
+
+    #[test]
+    fn ensure_gitignore_entry_leaves_non_utf8_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gitignore");
+        let original_bytes: &[u8] = b"target/\n\xff\xfe invalid utf8 \xc0\xc0\n";
+        std::fs::write(&path, original_bytes).unwrap();
+        ensure_gitignore_entry(dir.path(), ".hew/");
+        let bytes_after = std::fs::read(&path).unwrap();
+        assert_eq!(bytes_after, original_bytes);
     }
 
     #[test]
@@ -2241,7 +2212,7 @@ mod tests {
         std::fs::write(src.path().join("x.hew"), "pub fn answer() -> i64 { 2 }").unwrap();
 
         let project = tempfile::tempdir().unwrap();
-        let link = project.path().join(".adze").join("packages").join("x");
+        let link = project.path().join(".hew").join("packages").join("x");
         std::fs::create_dir_all(&link).unwrap();
         std::fs::write(link.join("stale.hew"), "old").unwrap();
 
@@ -2512,7 +2483,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2545,7 +2516,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2592,7 +2563,7 @@ mod tests {
 
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("target/"));
-        assert!(gi.contains(".adze/"));
+        assert!(gi.contains(".hew/"));
     }
 
     #[test]
@@ -2627,7 +2598,7 @@ mod tests {
         write_init_gitignore(dir.path());
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("*.o"), "should keep existing entries");
-        assert!(gi.contains(".adze/"), "should add .adze/");
+        assert!(gi.contains(".hew/"), "should add .hew/");
         assert!(gi.contains("target/"), "should add target/");
     }
 
@@ -2643,7 +2614,7 @@ mod tests {
         // Simulate installed package symlink directory.
         let pkg_dir = dir
             .path()
-            .join(".adze")
+            .join(".hew")
             .join("packages")
             .join("std")
             .join("net")

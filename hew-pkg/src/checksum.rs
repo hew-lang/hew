@@ -6,7 +6,7 @@ use std::path::Path;
 /// Compute a deterministic SHA-256 checksum of a package directory.
 ///
 /// Walks all files sorted by relative path, hashing each file's relative path
-/// and contents. Directories named `.git`, `target`, and `.adze` are skipped.
+/// and contents. Directories named `.git`, `target`, and `.hew` are skipped.
 ///
 /// Returns a string in `"sha256:{hex}"` format.
 ///

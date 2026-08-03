@@ -7,8 +7,8 @@
 //! `DW_TAG_member`). Each assertion here would have failed on that bug.
 //!
 //! Deterministic: parses `dwarfdump`/`llvm-dwarfdump` text, asserts exact
-//! structural facts (distinct lexically-scoped shadowed DIEs; union members
-//! with named fields; payload-union size+offset == enclosing enum size; a
+//! structural facts (distinct lexically-scoped shadowed DIEs; discriminated
+//! enum variants with named fields; payload size+offset == enclosing enum size; a
 //! struct member's exact bit offset). No debugger launch — those tools are
 //! present on both macOS (`dwarfdump`) and Linux CI (`llvm-dwarfdump`). When
 //! neither is found the test is a no-op skip (it cannot run, it must not
@@ -172,6 +172,42 @@ fn parse_byte_size(line: &str) -> Option<u64> {
     }
 }
 
+fn member_offset_of(dump: &str, name: &str) -> Option<u64> {
+    let needle = format!("(\"{name}\")");
+    let lines: Vec<&str> = dump.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.contains("DW_TAG_member") {
+            continue;
+        }
+        let mut found_name = false;
+        for next in lines
+            .iter()
+            .take((index + 10).min(lines.len()))
+            .skip(index + 1)
+        {
+            if next.contains("DW_TAG_") {
+                break;
+            }
+            if next.contains("DW_AT_name") && next.contains(&needle) {
+                found_name = true;
+            }
+            if found_name && next.contains("DW_AT_data_member_location") {
+                return parse_parenthesized_u64(next);
+            }
+        }
+    }
+    None
+}
+
+fn parse_parenthesized_u64(line: &str) -> Option<u64> {
+    let inside = line.split('(').nth(1)?.trim_end_matches(')').trim();
+    if let Some(hex) = inside.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        inside.parse().ok()
+    }
+}
+
 /// Count `DW_TAG_variable` DIEs whose `DW_AT_name` is exactly `name`.
 fn count_named_variables(dump: &str, name: &str) -> usize {
     let needle = format!("(\"{name}\")");
@@ -217,44 +253,44 @@ fn emitted_object_scopes_shadowed_locals_in_distinct_lexical_blocks() {
 }
 
 #[test]
-fn emitted_object_enum_payload_union_has_named_variant_members() {
+fn emitted_object_enum_uses_discriminated_variant_part() {
     let obj = emit_object("union");
     let Some(dump) = dwarf_dump(&obj) else {
         eprintln!("skip: no llvm-dwarfdump/dwarfdump on host");
         return;
     };
-    // The payload union is no longer member-less: it carries per-variant struct
-    // members whose fields gdb can read. Assert the union, the `Packet` member,
-    // and the `code` field name are all present.
+    // The enum carries a real variant part tied to the `tag` member. Each branch
+    // has its discriminant value and the payload fields remain readable.
     assert!(
-        dump.contains("Status::Payload"),
-        "expected the Status::Payload union DIE;\n{dump}"
+        dump.contains("DW_TAG_variant_part") && dump.contains("DW_AT_discr"),
+        "expected a DW_TAG_variant_part referencing the enum tag;\n{dump}"
     );
     assert!(
-        dump.contains("(\"Packet\")") && dump.contains("(\"code\")"),
-        "expected the payload union to expose `Packet` with a readable `code` \
-         field (the empty-union bug);\n{dump}"
+        dump.contains("DW_TAG_variant")
+            && dump.contains("DW_AT_discr_value")
+            && dump.contains("(\"Packet\")")
+            && dump.contains("(\"code\")"),
+        "expected discriminant 1 to expose the Packet payload and `code` field;\n{dump}"
     );
 }
 
 #[test]
-fn emitted_object_payload_union_size_fits_inside_enclosing_enum() {
+fn emitted_object_active_variant_payload_fits_inside_enclosing_enum() {
     let obj = emit_object("size");
     let Some(dump) = dwarf_dump(&obj) else {
         eprintln!("skip: no llvm-dwarfdump/dwarfdump on host");
         return;
     };
-    // The payload sits at offset 8 (after the tag + padding). The union's own
-    // byte_size MUST be `enum_size - 8` so the payload type does not extend
-    // past the object. The pre-fix bug subtracted only the tag bits, making the
-    // union one byte too large.
+    // The Packet payload sits at offset 8 (after the tag + padding). Its type
+    // size plus that offset must fit exactly within Status.
     let enum_size = byte_size_of(&dump, "Status").expect("Status size");
-    let payload_size = byte_size_of(&dump, "Status::Payload").expect("Status::Payload size");
+    let payload_size = byte_size_of(&dump, "Packet").expect("Packet size");
+    let payload_offset = member_offset_of(&dump, "Packet").expect("Packet member offset");
     assert_eq!(
-        payload_size + 8,
+        payload_size + payload_offset,
         enum_size,
-        "payload-union size ({payload_size:#x}) + offset 0x8 must equal the \
-         enclosing Status size ({enum_size:#x}); the payload must not extend \
+        "Packet size ({payload_size:#x}) + offset {payload_offset:#x} must equal \
+         the enclosing Status size ({enum_size:#x}); the payload must not extend \
          past the object\n{dump}"
     );
 }

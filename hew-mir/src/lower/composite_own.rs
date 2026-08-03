@@ -4994,7 +4994,7 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
     }
 }
 mod returned_member_flow;
-use returned_member_flow::retained_string_values_before;
+use returned_member_flow::retained_owner_values_before;
 
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
@@ -5002,12 +5002,11 @@ use returned_member_flow::retained_string_values_before;
 ///
 /// A composite return — `(a, b)` / `R { f: a, g: b }`, reached directly, by
 /// name, or through any control-flow tail — byte-copies each constituent into
-/// the returned aggregate struct with no retain (the M-COW spine emits no
-/// retain on share), then moves the whole aggregate to the `ReturnSlot`. The
-/// caller now owns those members; if the callee also dropped them at scope exit
-/// it would `close` / free a buffer the caller still holds (the Finding-1 hard
-/// double-free: an unguarded `Box::from_raw` twice — see the codegen
-/// Stream/Sink drop arm).
+/// the returned aggregate struct, then moves the whole aggregate to the
+/// `ReturnSlot`. Without a retain, the caller receives the member binding's
+/// owner and the callee must relinquish it. An explicit retain instead mints
+/// the caller's owner, so the member binding keeps its original exit
+/// discharge.
 ///
 /// The previous revision excluded these members by walking the SYNTACTIC return
 /// expression (`mark_returned_binding_moved`): it matched only `BindingRef` /
@@ -5144,7 +5143,7 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
                     Instr::TupleConstruct { elements, dest }
                         if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                     {
-                        let retained = retained_string_values_before(block, instr_index);
+                        let retained = retained_owner_values_before(block, instr_index);
                         for elem in elements {
                             if !retained.contains(elem) {
                                 changed |= add_member(elem, &mut flows_to_return);
@@ -5156,7 +5155,7 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
                     Instr::RecordInit { fields, dest, .. }
                         if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                     {
-                        let retained = retained_string_values_before(block, instr_index);
+                        let retained = retained_owner_values_before(block, instr_index);
                         for (_offset, field) in fields {
                             if !retained.contains(field) {
                                 changed |= add_member(field, &mut flows_to_return);
@@ -5297,7 +5296,7 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 Instr::TupleConstruct { elements, dest }
                     if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                 {
-                    let retained = retained_string_values_before(block, instr_index);
+                    let retained = retained_owner_values_before(block, instr_index);
                     for elem in elements {
                         if !retained.contains(elem) {
                             record(elem, block.id, &mut transfer_blocks);
@@ -5307,7 +5306,7 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 Instr::RecordInit { fields, dest, .. }
                     if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                 {
-                    let retained = retained_string_values_before(block, instr_index);
+                    let retained = retained_owner_values_before(block, instr_index);
                     for (_offset, field) in fields {
                         if !retained.contains(field) {
                             record(field, block.id, &mut transfer_blocks);

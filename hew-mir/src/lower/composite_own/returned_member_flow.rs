@@ -1,6 +1,6 @@
 use super::{BasicBlock, HashSet, Instr, Place, StringRetainCondition};
 
-pub(super) fn retained_string_values_before(
+pub(super) fn retained_owner_values_before(
     block: &BasicBlock,
     instr_index: usize,
 ) -> HashSet<Place> {
@@ -14,10 +14,12 @@ pub(super) fn retained_string_values_before(
             )
         })
         .filter_map(|instr| match instr {
-            // Only `Always` duplicates the ownership of `value` itself.
-            // Aggregate/state ingress retains string leaves, not ownership of
-            // an enclosing affine handle such as `Sink<string>`.
-            Instr::StringRetain {
+            // A bytes retain and an unconditional string retain duplicate
+            // ownership of the value itself. Aggregate/state string ingress
+            // retains leaves, not an enclosing affine handle such as
+            // `Sink<string>`.
+            Instr::BytesRetain { value }
+            | Instr::StringRetain {
                 value,
                 condition: StringRetainCondition::Always,
             } => Some(*value),

@@ -48,6 +48,28 @@ fn enum_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -
         .collect()
 }
 
+fn inline_enum_drops(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    drop_fn: Some(hew_mir::DropFnSpec::InPlace(
+                        hew_mir::InPlaceReleaseKind::Enum
+                    )),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
     p.elaborated_mir
         .iter()
@@ -278,10 +300,11 @@ fn scalar_control() {
             1,
             "{fn_name} must expose exactly one synthetic owner in raw MIR"
         );
-        assert_eq!(
-            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
-            1,
-            "{fn_name} must release the discarded owned Option exactly once"
+        assert_eq!(inline_enum_drops(&p, fn_name), 1);
+        assert!(
+            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
+            "{fn_name} transfers its publication owner into the immediate discard, so no \
+             second scope-exit release may remain"
         );
     }
 

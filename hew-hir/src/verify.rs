@@ -118,12 +118,80 @@ fn resolved_runtime_call_ownership(family: RuntimeCallFamily) -> ProducedValueOw
     }
 }
 
+fn call_argument_is_proven_owned(
+    site: SiteId,
+    verifier: &Verifier,
+    facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
+    visiting: &mut HashSet<SiteId>,
+) -> bool {
+    use ProducedValueOwnership as Ownership;
+
+    if !visiting.insert(site) {
+        return false;
+    }
+    let result = facts.get(&site).is_some_and(|fact| match fact.ownership {
+        Ownership::Owned { .. } | Ownership::NoOwner => true,
+        Ownership::Borrowed if fact.producer == crate::node::HirProducedValueProducer::Literal => {
+            true
+        }
+        Ownership::Borrowed | Ownership::ReceiverIdentity
+            if fact.producer == crate::node::HirProducedValueProducer::BindingRef =>
+        {
+            verifier
+                .binding_reference_targets
+                .get(&site)
+                .is_some_and(|binding| {
+                    verifier
+                        .binding_reference_sites
+                        .get(binding)
+                        .is_some_and(|references| references.len() == 1)
+                        && verifier
+                            .binding_definitions
+                            .get(binding)
+                            .is_some_and(|definitions| {
+                                definitions.len() == 1
+                                    && call_argument_is_proven_owned(
+                                        definitions[0],
+                                        verifier,
+                                        facts,
+                                        visiting,
+                                    )
+                            })
+                })
+        }
+        Ownership::Borrowed | Ownership::ReceiverIdentity | Ownership::Unknown => false,
+    });
+    visiting.remove(&site);
+    result
+}
+
 fn finalize_resolved_produced_value_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
 ) {
-    use ProducedValueOwnership as Ownership;
+    seed_resolved_produced_value_facts(verifier, facts);
+    let limit = verifier
+        .function_return_sites
+        .len()
+        .saturating_add(verifier.user_call_targets.len())
+        .saturating_add(verifier.machine_variant_payloads.len())
+        .saturating_add(1);
+    for _ in 0..limit {
+        propagate_produced_value_relations(facts);
+        let variants_changed = resolve_machine_variant_facts(verifier, facts);
+        let calls_changed = resolve_user_call_facts(verifier, facts);
+        if !variants_changed && !calls_changed {
+            break;
+        }
+    }
+    propagate_produced_value_relations(facts);
+}
 
+fn seed_resolved_produced_value_facts(
+    verifier: &Verifier,
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) {
+    use ProducedValueOwnership as Ownership;
     for fact in facts.values_mut() {
         if matches!(fact.ownership, Ownership::Unknown) {
             fact.ownership = resolved_producer_ownership(fact.producer);
@@ -166,52 +234,126 @@ fn finalize_resolved_produced_value_facts(
         }
         fact.ownership = resolved_runtime_call_ownership(*family);
     }
+}
 
-    let limit = verifier
+fn resolve_machine_variant_facts(
+    verifier: &Verifier,
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) -> bool {
+    use ProducedValueOwnership as Ownership;
+
+    let mut changed = false;
+    for (site, payloads) in &verifier.machine_variant_payloads {
+        let Some(fact) = facts.get(site) else {
+            continue;
+        };
+        if !matches!(fact.ownership, Ownership::Unknown) {
+            continue;
+        }
+        let mut owns_payload = false;
+        let mut borrows_payload = false;
+        let mut resolved = true;
+        for payload in payloads {
+            match facts.get(payload).map(|payload| payload.ownership) {
+                Some(Ownership::Owned { .. }) => owns_payload = true,
+                Some(Ownership::NoOwner) => {}
+                Some(Ownership::Borrowed)
+                    if verifier.observed_producers.get(payload)
+                        == Some(&crate::node::HirProducedValueProducer::Literal) =>
+                {
+                    owns_payload = true;
+                }
+                Some(Ownership::Borrowed | Ownership::ReceiverIdentity) => {
+                    borrows_payload = true;
+                }
+                Some(Ownership::Unknown) | None => resolved = false,
+            }
+        }
+        if !resolved {
+            continue;
+        }
+        let ownership = if borrows_payload {
+            Ownership::Borrowed
+        } else if owns_payload || !payloads.is_empty() {
+            Ownership::owned(ProducedValueAcquisition::Fresh)
+        } else {
+            Ownership::NoOwner
+        };
+        if let Some(fact) = facts.get_mut(site) {
+            fact.ownership = ownership;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn function_return_ownership_summaries(
+    verifier: &Verifier,
+    facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
+) -> HashMap<DefId, ProducedValueOwnership> {
+    verifier
         .function_return_sites
-        .len()
-        .saturating_add(verifier.user_call_targets.len())
-        .saturating_add(1);
-    for _ in 0..limit {
-        propagate_produced_value_relations(facts);
-        let summaries: HashMap<DefId, Ownership> = verifier
-            .function_return_sites
-            .iter()
-            .map(|(declaration, sites)| {
-                let mut ownership = sites
-                    .iter()
-                    .filter_map(|site| facts.get(site))
-                    .map(|fact| fact.ownership);
-                let summary = ownership.next().map_or(Ownership::Unknown, |first| {
+        .iter()
+        .map(|(declaration, sites)| {
+            let mut ownership = sites
+                .iter()
+                .filter_map(|site| facts.get(site))
+                .map(|fact| fact.ownership);
+            let summary = ownership
+                .next()
+                .map_or(ProducedValueOwnership::Unknown, |first| {
                     if ownership.all(|next| next == first) {
                         first
                     } else {
-                        Ownership::Unknown
+                        ProducedValueOwnership::Unknown
                     }
                 });
-                (declaration.clone(), summary)
-            })
-            .collect();
-        let mut changed = false;
-        for (site, target) in &verifier.user_call_targets {
-            let Some(summary) = summaries.get(target).copied() else {
-                continue;
-            };
-            let Some(fact) = facts.get_mut(site) else {
-                continue;
-            };
-            if matches!(fact.ownership, Ownership::Unknown)
-                && !matches!(summary, Ownership::Unknown)
-            {
-                fact.ownership = summary;
-                changed = true;
+            (declaration.clone(), summary)
+        })
+        .collect()
+}
+
+fn resolve_user_call_facts(
+    verifier: &Verifier,
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) -> bool {
+    use ProducedValueOwnership as Ownership;
+
+    let summaries = function_return_ownership_summaries(verifier, facts);
+    let mut changed = false;
+    for (site, target) in &verifier.user_call_targets {
+        let Some(summary) = summaries.get(target).copied() else {
+            continue;
+        };
+        let summary = if matches!(summary, Ownership::Borrowed) {
+            let arguments = verifier.user_call_arguments.get(site);
+            if arguments.is_some_and(|arguments| {
+                !arguments.is_empty()
+                    && arguments.iter().all(|argument| {
+                        call_argument_is_proven_owned(
+                            *argument,
+                            verifier,
+                            facts,
+                            &mut HashSet::new(),
+                        )
+                    })
+            }) {
+                Ownership::owned(ProducedValueAcquisition::Fresh)
+            } else {
+                summary
             }
-        }
-        if !changed {
-            break;
+        } else {
+            summary
+        };
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if matches!(fact.ownership, Ownership::Unknown) && !matches!(summary, Ownership::Unknown) {
+            fact.ownership = summary;
+            changed = true;
         }
     }
-    propagate_produced_value_relations(facts);
+    changed
 }
 
 fn propagate_produced_value_relations(
@@ -273,8 +415,14 @@ struct Verifier {
     current_function: Option<DefId>,
     function_return_sites: HashMap<DefId, Vec<SiteId>>,
     user_call_targets: HashMap<SiteId, DefId>,
+    user_call_arguments: HashMap<SiteId, Vec<SiteId>>,
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
+    machine_variant_payloads: HashMap<SiteId, Vec<SiteId>>,
+    binding_definitions: HashMap<BindingId, Vec<SiteId>>,
+    binding_reference_sites: HashMap<BindingId, Vec<SiteId>>,
+    binding_reference_targets: HashMap<SiteId, BindingId>,
+    nested_callable_depth: usize,
 }
 
 impl Verifier {
@@ -732,20 +880,40 @@ impl Verifier {
                 HirStmtKind::Let(binding, value) => {
                     self.binding(binding.id, binding.span.clone());
                     if let Some(value) = value {
+                        if self.nested_callable_depth == 0 {
+                            self.binding_definitions
+                                .entry(binding.id)
+                                .or_default()
+                                .push(value.site);
+                        }
                         self.expr(value);
                     }
                 }
                 HirStmtKind::Assign { target, value } => {
+                    if self.nested_callable_depth == 0 {
+                        if let HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Binding(binding),
+                            ..
+                        } = &target.kind
+                        {
+                            self.binding_definitions
+                                .entry(*binding)
+                                .or_default()
+                                .push(value.site);
+                        }
+                    }
                     self.expr(target);
                     self.expr(value);
                 }
                 HirStmtKind::Expr(expr) => self.expr(expr),
                 HirStmtKind::Return(Some(expr)) => {
-                    if let Some(function) = self.current_function.clone() {
-                        self.function_return_sites
-                            .entry(function)
-                            .or_default()
-                            .push(expr.site);
+                    if self.nested_callable_depth == 0 {
+                        if let Some(function) = self.current_function.clone() {
+                            self.function_return_sites
+                                .entry(function)
+                                .or_default()
+                                .push(expr.site);
+                        }
                     }
                     self.expr(expr);
                 }
@@ -883,6 +1051,13 @@ impl Verifier {
                 }
             }
             HirExprKind::BindingRef { resolved, name } => {
+                if let ResolvedRef::Binding(binding) = resolved {
+                    self.binding_reference_sites
+                        .entry(*binding)
+                        .or_default()
+                        .push(expr.site);
+                    self.binding_reference_targets.insert(expr.site, *binding);
+                }
                 if *resolved == ResolvedRef::Unresolved {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::UnresolvedSymbol { name: name.clone() },
@@ -1063,6 +1238,8 @@ impl Verifier {
                 if let hew_types::CallTarget::User(declaration) = target {
                     self.user_call_targets
                         .insert(expr.site, declaration.clone());
+                    self.user_call_arguments
+                        .insert(expr.site, args.iter().map(|arg| arg.site).collect());
                 }
                 if let hew_types::CallTarget::Runtime(family) = target {
                     self.runtime_call_targets.insert(expr.site, *family);
@@ -1263,7 +1440,9 @@ impl Verifier {
                 // captured binding id was declared somewhere in the
                 // HIR (catches a resolver bug that records a freed
                 // binding id).
+                self.nested_callable_depth += 1;
                 self.expr(body);
+                self.nested_callable_depth -= 1;
                 for capture in captures {
                     if !self.bindings.contains(&capture.binding) {
                         self.diagnostics.push(self.diagnostic(
@@ -1293,7 +1472,9 @@ impl Verifier {
                 for param in params {
                     self.binding(param.id, param.span.clone());
                 }
+                self.nested_callable_depth += 1;
                 self.expr(body);
+                self.nested_callable_depth -= 1;
                 let mut seen = std::collections::HashSet::new();
                 for capture in captures {
                     if !self.bindings.contains(&capture.binding) {
@@ -1396,7 +1577,9 @@ impl Verifier {
                         ));
                     }
                 }
+                self.nested_callable_depth += 1;
                 self.block(body);
+                self.nested_callable_depth -= 1;
             }
             HirExprKind::Yield { value, yield_ty } => {
                 if expr.ty != ResolvedTy::Unit {
@@ -1476,6 +1659,14 @@ impl Verifier {
             }
             HirExprKind::SubsumedValue { source, .. } => self.expr(source),
             HirExprKind::MachineVariantCtor { payload, .. } => {
+                self.machine_variant_payloads.insert(
+                    expr.site,
+                    payload
+                        .iter()
+                        .flatten()
+                        .map(|(_, value)| value.site)
+                        .collect(),
+                );
                 if let Some(fields) = payload {
                     for (_, val) in fields {
                         self.expr(val);

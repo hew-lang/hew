@@ -174,6 +174,20 @@ fn assert_no_nyi(pl: &IrPipeline) {
     );
 }
 
+#[test]
+fn borrowed_projection_from_owned_index_uses_the_parent_owner() {
+    let pl = pipeline_with_tc(
+        r"
+        fn borrow_len(value: string) -> i64 { value.len() }
+
+        fn projected(values: Vec<(string, string)>) -> i64 {
+            borrow_len(values[0].0)
+        }
+        ",
+    );
+    assert_no_nyi(&pl);
+}
+
 // ---------------------------------------------------------------------------
 // Canary 1 — BOUND Vec<string> getter: `let y = xs[i]; y.len()` → one drop.
 // ---------------------------------------------------------------------------

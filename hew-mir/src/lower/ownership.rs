@@ -1344,6 +1344,30 @@ impl Builder {
         }
         owners
     }
+
+    /// An owned projection can be represented by its parent aggregate's
+    /// scope-exit owner instead of an independent provisional leaf owner. The
+    /// relation and published source place must both agree, and the parent
+    /// owner must still be live; otherwise the borrowing sink remains
+    /// fail-closed.
+    pub(crate) fn typed_projection_has_live_parent_owner(&self, expr: &HirExpr) -> bool {
+        let Some(fact) = self.param_ownership.produced_value_facts.get(&expr.site) else {
+            return false;
+        };
+        if !matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
+            return false;
+        }
+        let HirProducedValueRelation::Projection(source_site) = fact.relation else {
+            return false;
+        };
+        let Some(source_place) = self.published_value_places.get(&source_site) else {
+            return false;
+        };
+        self.owned_locals.iter().any(|entry| {
+            entry.disposition == Disposition::ScopeExit
+                && self.binding_locals.get(&entry.binding) == Some(source_place)
+        })
+    }
     pub(crate) fn register_while_let_iteration_owner(
         &mut self,
         scrutinee: &HirExpr,

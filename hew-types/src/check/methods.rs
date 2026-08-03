@@ -7149,6 +7149,21 @@ impl Checker {
             }) => Some(descriptor.family()),
             _ => None,
         };
+        let display_method = self.lang_items.display_method_identity();
+        let is_display_fmt = display_method.as_ref().is_some_and(|(_, display_method)| {
+            let target = dyn_call.map(|call| &call.target).or(match rewrite {
+                Some(MethodCallRewrite::StaticTraitDispatch { target, .. }) => Some(target),
+                _ => None,
+            });
+            target.is_some_and(|target| {
+                matches!(
+                    target,
+                    CallTarget::DynamicVtable { method, .. }
+                        | CallTarget::StaticTraitMethod { method, .. }
+                        if method == display_method
+                )
+            })
+        });
 
         let result_ownership = if non_owning {
             Ownership::NoOwner
@@ -7168,6 +7183,8 @@ impl Checker {
         ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
         {
             Ownership::ReceiverIdentity
+        } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
+            Ownership::owned(Acquisition::Fresh)
         } else if matches!(
             actor_call,
             Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))

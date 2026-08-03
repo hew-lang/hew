@@ -7228,9 +7228,10 @@ impl Checker {
                     | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
                     | MethodCallRewrite::WireCodec { .. },
                 ) => Ownership::owned(Acquisition::Fresh),
-                Some(MethodCallRewrite::RecordCloneInplace { .. }) => {
-                    Ownership::owned(Acquisition::Clone)
-                }
+                Some(
+                    MethodCallRewrite::BuiltinVecIterNext { .. }
+                    | MethodCallRewrite::RecordCloneInplace { .. },
+                ) => Ownership::owned(Acquisition::Clone),
                 Some(
                     MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
                 ) => Ownership::owned(Acquisition::Delivery),

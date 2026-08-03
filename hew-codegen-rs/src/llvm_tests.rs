@@ -9821,6 +9821,63 @@ fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
 }
 
 #[test]
+fn helper_crash_cleanup_aggregate_owner_arms_after_final_payload_store() {
+    let owner = Place::Local(0);
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: Place::EnumTag(0),
+                src: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+                src: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 1,
+                },
+                src: Place::Local(3),
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 0, owner
+    ));
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 1, owner
+    ));
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &block, 2, owner
+    ));
+
+    let payload_free = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::EnumTag(0),
+            src: Place::Local(1),
+        }],
+        terminator: Terminator::Return,
+    };
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &payload_free,
+        0,
+        owner
+    ));
+}
+
+#[test]
 fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
     use hew_mir::{
         DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv, SelectArm, SelectArmKind,

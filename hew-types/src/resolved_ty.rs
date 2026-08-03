@@ -18,7 +18,7 @@ use std::fmt;
 
 use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
-use crate::NominalId;
+use crate::{DefId, NominalId};
 
 /// A concrete use of a declared nominal type.
 ///
@@ -28,6 +28,35 @@ use crate::NominalId;
 pub struct NominalInstance {
     pub nominal: NominalId,
     pub args: Vec<ResolvedTy>,
+}
+
+/// Allocate the direct-body identity for a trait default materialized in one
+/// concrete impl. The trait method identity remains the dispatch key; this
+/// identity names the selected body for the exact receiver instance.
+#[must_use]
+pub fn default_impl_method_declaration(
+    declaring_trait: &DefId,
+    receiver: &NominalInstance,
+    method: &str,
+) -> DefId {
+    let nominal = receiver.nominal.full_path();
+    let rendered_receiver = if receiver.args.is_empty() {
+        nominal.to_string()
+    } else {
+        format!(
+            "{nominal}<{}>",
+            receiver
+                .args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    DefId::new(format!(
+        "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
+        declaring_trait.full_path(),
+    ))
 }
 
 /// A fully-resolved, concrete type that has crossed the checker output

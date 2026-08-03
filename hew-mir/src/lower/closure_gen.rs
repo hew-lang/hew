@@ -4,10 +4,10 @@ use super::{
     finalize_bytes_ownership, finalize_string_ownership, terminator_is_suspend_carrier,
     ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, CheckedMirFunction,
     ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, DropKind, ElabDrop,
-    FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture,
-    LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
-    SuspendKind, Terminator, ThirFunction, ValueClass,
+    FieldOffset, HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind,
+    LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
+    StreamProducerPumpCtx, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
@@ -669,11 +669,21 @@ impl Builder {
         });
 
         let mut blocks = builder.finalize_blocks(Terminator::Return);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
         apply_nested_fresh_string_temp_drops(
             &mut blocks,
             &mut builder.suspend_kinds,
             &builder.locals,
-            &builder.binding_locals,
+            &nested_temp_binding_locals,
             &builder
                 .call_scrutinee_provenance
                 .owned_string_return_carrier_symbols,
@@ -686,9 +696,10 @@ impl Builder {
             &mut blocks,
             &builder.suspend_kinds,
             &builder.locals,
-            &builder.binding_locals,
+            &nested_temp_binding_locals,
             &mut builder.instr_spans,
         );
+        builder.consume_typed_publication_owners_at_inline_release(&blocks);
         let thir_statements: Vec<MirStatement> = blocks
             .iter()
             .flat_map(|b| b.statements.iter().cloned())
@@ -750,8 +761,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -934,8 +945,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -1479,8 +1490,9 @@ impl Builder {
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         let string_derivation =
-            finalize_string_ownership(&mut raw, &body_builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
+            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        let bytes_derivation =
+            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
@@ -2229,6 +2241,16 @@ impl Builder {
         // this represents the generator completing (returns `return_ty` which
         // S5 maps to `None` on the Iterator impl side).
         let mut blocks = body_builder.finalize_blocks(Terminator::Return);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = body_builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !body_builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
 
         // W5.011 P3 — release nested fresh-`string` temporaries (f-string
         // interpolation's `to_string_*`/`string_concat` chain, `(a + b).len()`,
@@ -2248,7 +2270,7 @@ impl Builder {
             &mut blocks,
             &mut body_builder.suspend_kinds,
             &body_builder.locals,
-            &body_builder.binding_locals,
+            &nested_temp_binding_locals,
             &body_builder
                 .call_scrutinee_provenance
                 .owned_string_return_carrier_symbols,
@@ -2263,9 +2285,10 @@ impl Builder {
             &mut blocks,
             &body_builder.suspend_kinds,
             &body_builder.locals,
-            &body_builder.binding_locals,
+            &nested_temp_binding_locals,
             &mut body_builder.instr_spans,
         );
+        body_builder.consume_typed_publication_owners_at_inline_release(&blocks);
 
         // Cross-suspend state is owned by LLVM's CoroSplit. The generator body
         // lowers to an `llvm.coro.*` switched-resume coroutine; CoroSplit
@@ -2364,8 +2387,9 @@ impl Builder {
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         let string_derivation =
-            finalize_string_ownership(&mut raw, &body_builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
+            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        let bytes_derivation =
+            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {

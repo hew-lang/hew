@@ -347,22 +347,14 @@ impl Checker {
                 }
                 // A shipped stdlib file can be checked directly as the graph
                 // root (`hew check std/string.hew`). Its root module has no
-                // dotted identity, so recover only the closed set of
-                // compiler-lowered stdlib extern owners from the canonical
+                // dotted identity, so recover its owner from the canonical
                 // source path. A user root cannot obtain this authority.
                 if directly_checked_stdlib {
-                    for declaration in crate::runtime_call::canonical_std_io_extern_signatures() {
-                        if module.source_paths.iter().any(|source| {
-                            crate::module_registry::is_canonical_stdlib_module_source(
-                                source,
-                                declaration.module,
-                            )
-                        }) {
-                            self.canonical_std_module_sources
-                                .insert(declaration.module.to_string());
-                            self.canonical_std_root_sources
-                                .insert(declaration.module.to_string());
-                        }
+                    for owner in module.source_paths.iter().filter_map(|source| {
+                        crate::module_registry::canonical_stdlib_module_for_source(source)
+                    }) {
+                        self.canonical_std_module_sources.insert(owner.clone());
+                        self.canonical_std_root_sources.insert(owner);
                     }
                 }
             }
@@ -969,6 +961,10 @@ impl Checker {
                             && contract.discharge_depth != ReleaseDischargeDepth::None
                             && !contract.release_symbol.is_empty()
                     });
+                let trusted_compiled_stdlib = pending
+                    .extern_declaring_module
+                    .as_ref()
+                    .is_some_and(|module| self.canonical_std_module_sources.contains(module));
                 let lifecycle_matches = contract.is_some_and(|contract| match &resolved_result {
                     Ty::String => {
                         contract.resource_result_type.is_none()
@@ -980,16 +976,21 @@ impl Checker {
                             && contract.release_symbol == "hew_bytes_drop"
                             && contract.discharge_depth == ReleaseDischargeDepth::Shallow
                     }
-                    Ty::Named { name, .. } => opaque_resource_candidates
-                        .candidates
-                        .get(name.as_str())
-                        .filter(|candidate| candidate.producer_symbols.contains(symbol))
-                        .is_some_and(|candidate| {
-                            pending
-                                .extern_declaring_module
-                                .as_ref()
-                                .is_some_and(|module| candidate.producer_modules.contains(module))
-                        }),
+                    Ty::Named { name, .. } => {
+                        contract
+                            .resource_result_type
+                            .map_or(trusted_compiled_stdlib, |_| {
+                                opaque_resource_candidates
+                                    .candidates
+                                    .get(name.as_str())
+                                    .filter(|candidate| candidate.producer_symbols.contains(symbol))
+                                    .is_some_and(|candidate| {
+                                        pending.extern_declaring_module.as_ref().is_some_and(
+                                            |module| candidate.producer_modules.contains(module),
+                                        )
+                                    })
+                            })
+                    }
                     _ => false,
                 });
                 let owned =

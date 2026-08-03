@@ -318,10 +318,6 @@ const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result"
 /// once at caller scope exit. Gated on the target param being BORROW (a CONSUME
 /// target's temporary is the callee's obligation — no caller drop).
 const SYNTHETIC_TEMP_ARG_NAME: &str = "__hew_temp_arg";
-/// Name for the owner of a fresh composite cloned from a `Vec` solely to read
-/// one of its fields. The clone result has no source binding, so this owner
-/// carries it through the ordinary scope-exit drop machinery.
-const SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME: &str = "__hew_vec_get_clone_projection_base";
 /// Name for the owner minted over a fresh Vec COPY-IN element temporary when
 /// every whole by-value parameter embedded in it is a retained string share.
 /// The binding owns the temporary's retained share only; the parameter remains
@@ -613,6 +609,10 @@ struct Builder {
     /// carrier.  Post-CFG inline releases consume only this subset; legacy
     /// sink owners keep their existing release protocol.
     typed_produced_value_owner_bindings: HashSet<BindingId>,
+    /// Exact MIR moves that transfer a typed publication generation into a
+    /// named binding. String/bytes ownership finalization uses this evidence to
+    /// avoid retaining the moved value as though the source stayed live.
+    typed_produced_value_handoffs: HashSet<(Place, Place)>,
     /// Exact successful expression publication places, keyed by HIR `SiteId`.
     /// This is identity-only metadata used for receiver-owner transfer; it
     /// neither schedules nor owns cleanup.
@@ -624,9 +624,6 @@ struct Builder {
     /// This is not a cleanup registry: it contains only the currently-lowered
     /// expression `SiteId` and is removed immediately after lowering.
     suppress_typed_produced_owner_sites: HashSet<SiteId>,
-    /// Fresh composite clone results emitted by `lower_vec_index`. A direct
-    /// record projection consumes its matching local once and mints the owner.
-    pub(crate) fresh_vec_get_clone_projection_bases: Vec<FreshVecGetCloneProjectionBase>,
     /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
     /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
     /// its heap fields — i.e. consuming it leaves no live alias, so the
@@ -1687,13 +1684,6 @@ struct Builder {
     /// host-width guards — a fail-open hole). Defaults to `Bits64` (every native
     /// target); the host-defaulting `lower_hir_module` wrapper keeps the default.
     pub(crate) pointer_width: PointerWidth,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FreshVecGetCloneProjectionBase {
-    pub(crate) local: u32,
-    pub(crate) ty: ResolvedTy,
-    pub(crate) site: SiteId,
 }
 
 #[must_use]
@@ -5546,8 +5536,8 @@ pub(crate) fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
-    let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-    let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+    let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+    let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads

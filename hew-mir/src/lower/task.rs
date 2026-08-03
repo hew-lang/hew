@@ -384,7 +384,7 @@ impl Builder {
             instr_spans: ::std::collections::BTreeMap::new(),
             source_origin: SourceOrigin::Unknown,
         };
-        let builder = Builder {
+        let mut builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
             ..self.child_builder_tables()
@@ -398,8 +398,8 @@ impl Builder {
             .iter()
             .filter_map(check_to_diagnostic)
             .collect();
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: adapter_symbol.to_string(),
@@ -979,8 +979,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),

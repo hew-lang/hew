@@ -26,8 +26,7 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_types::runtime_call::ConsumeVerdict;
 use hew_types::{
     short_name, BuiltinType, ChildKind, ChildSlot, ExecutionContextReader, NumericMethodFamily,
-    NumericMethodOp, NumericSignedness, ProducedValueAcquisition, ProducedValueOwnership,
-    ResolvedTy,
+    NumericMethodOp, NumericSignedness, ProducedValueOwnership, ResolvedTy,
 };
 
 use crate::dataflow;
@@ -642,19 +641,18 @@ struct Builder {
     /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
     /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
     pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
-    /// Module-global call-scrutinee return-provenance context (#2648) for the
-    /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
-    /// each module-fn `ItemId` to its precise three-state return provenance, the
-    /// declared-extern id set, and the audited extern contract table. `Rc` so
-    /// child builders share it cheaply; the empty default classifies every callee
-    /// as an unknown item, which the fresh-owner authority then declines — no
-    /// mint, never a wrongly-Fresh admit. See
+    /// Module-global return-provenance context (#2648) for alias and foreign-
+    /// value safety checks that are not represented by produced-value facts.
+    /// Maps each module-fn `ItemId` to its precise three-state return provenance,
+    /// the declared-extern id set, and the audited extern contract table. `Rc` so
+    /// child builders share it cheaply; the empty default classifies every
+    /// callee as unknown and therefore grants no legacy safety warrant. See
     /// `crate::return_provenance::CallScrutineeProvenance`.
     ///
-    /// Its `fresh_owner_verdicts` field is the ONE place a builder holds the
-    /// TABLE-AWARE fresh-owner authority — the object every ownership consumer
-    /// asks "does this call hand back a fresh owner I may drop, move, or
-    /// consume". It is the coarse interprocedural freshness fixpoint
+    /// Its `fresh_owner_verdicts` field is retained for foreign-provenance,
+    /// destructive-update, and alias-safety consumers. Produced-value owner
+    /// publication does not consult it; HIR's typed fact is authoritative for
+    /// that path. The verdict is the coarse interprocedural freshness fixpoint
     /// (`compute_fn_returns_fresh_owner`) CONJOINED with the opaque-extern
     /// laundering veto and the direct-extern name veto. The builder deliberately
     /// keeps NO second copy: one holder, one authority. The COARSE map is never

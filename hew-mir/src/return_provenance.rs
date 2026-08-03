@@ -1,12 +1,13 @@
-//! Call-scrutinee return provenance (#2648) — the sound, precise authority for
-//! *what a called function's by-value return may alias*.
+//! Return provenance (#2648) — analysis of what a called function's by-value
+//! return may alias.
 //!
 //! # Why this module exists
 //!
-//! The match/while-let/let-else/if-let/discarded call-scrutinee owner mint
-//! (`call_scrutinee_owned_ty`, #2429) and #2523's projected-payload move-out
-//! neutralize both rest on one premise: *a `Call` scrutinee's by-value return is
-//! a fresh sole owner*. That premise is FALSE for an identity-forwarding callee
+//! Legacy call-scrutinee owner minting and projected-payload neutralization once
+//! rested on one premise: *a `Call` scrutinee's by-value return is a fresh sole
+//! owner*. Those paths now consume HIR's typed produced-value fact instead. This
+//! analysis remains for foreign-provenance and alias-safety consumers that are
+//! outside produced-value owner publication. The old premise is FALSE for an identity-forwarding callee
 //! (`fn passthru(x: Box) -> Box { x }`) — by-value heap params are `Read`
 //! borrows (`by-value-heap-params-are-borrows`), so the return aliases storage
 //! the caller still owns; minting a second owner over it double-frees (#2648).
@@ -17,16 +18,6 @@
 //! distinguishes an arg-rescuable forward (`ParamsOnly`, `{PARAM}`) from a
 //! never-rescuable alias (`Opaque`, `⊇{OPAQUE}` — a capture, a global, an
 //! interior borrow, an indirect callee), which a boolean cannot.
-//!
-//! # Status: UNWIRED (S1)
-//!
-//! Every item here is analysis machinery with NO behaviour change: the sole
-//! live edge is [`return_value_may_alias_borrow`] delegating to
-//! [`return_alias_bits`] under [`CoarsePolicy`], whose output is byte-identical
-//! to the pre-refactor boolean walk (proven by the `coarse_verdict_differential`
-//! frozen-reference test). The Precise driver, the interprocedural mutation
-//! summary, the preflight classifier, and the extern contract table are all
-//! authored here but consumed by no lowering path until S2+.
 //!
 //! # The one-authority discipline (`vec-element-width-symmetric-abi`)
 //!
@@ -3125,37 +3116,6 @@ pub fn is_typed_recv_callee(callee: &HirExpr) -> bool {
     )
 }
 
-/// True when `scrutinee` is a `Call` — the ONLY kind the from-call owner mint
-/// (`call_scrutinee_owned_ty`) engages on. A non-`Call` scrutinee (a `Block`/`If`
-/// synthetic `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place) is
-/// structurally `NotApplicable` — it can never reach the from-call owner mint, so
-/// its own release discipline runs unchanged. This is the `let HirExprKind::Call
-/// { .. } = &scrutinee.kind else { return None }` gate the preflight reproduces
-/// FIRST, before any runtime-identity or three-way `Call` resolution.
-#[must_use]
-pub fn scrutinee_is_call_kind(scrutinee: &HirExpr) -> bool {
-    matches!(&scrutinee.kind, HirExprKind::Call { .. })
-}
-
-/// The admission verdict a call/method/aggregate scrutinee consumer acts on
-/// (#2648 preflight). Pure-analysis shape; the wiring site (S2) maps `Admit` onto
-/// the `ProjectedPayloadOrigin` the #2523 classifier + the #2429 owner mint
-/// consume, and a reject onto a `MirDiagnostic` returned as `Err`.
-///
-/// `Reject` is NOT a variant here: the preflight returns `Result<_, MirDiagnostic>`
-/// at the wiring site, so a reject is `Err` (one diagnostic, early return, no
-/// partial MIR). This enum is the `Ok(..)` payload.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CallScrutineeAdmission {
-    /// Not a from-call owner shape (a non-`Call` scrutinee, a typed-recv/iter-next
-    /// carve-out, a builtin callee) → behave as today's `None`: no owner minted,
-    /// no reject, the scrutinee's own release discipline runs unchanged.
-    NotApplicable,
-    /// A `Fresh` (or `ParamsOnly`-with-all-fresh-args) scrutinee → mint the #2429
-    /// owner and classify #2523's move-out as `EphemeralTemp`.
-    Admit,
-}
-
 // ---------------------------------------------------------------------------
 // Total HIR reachability visitor + intra-procedural alias partition [F2-Rev6]
 // ---------------------------------------------------------------------------
@@ -5767,49 +5727,6 @@ pub(crate) mod tests {
             "a heap-return extern has no trusted-root marker in the interim → OPAQUE"
         );
         assert_eq!(table.len(), 1, "only the scalar extern is a row");
-    }
-
-    // -- Preflight structural carve-out --
-
-    #[test]
-    fn only_call_scrutinees_engage_the_owner_mint() {
-        let module = lower_source(
-            r#"
-            fn producer() -> Result<string, string> { Ok("x") }
-            fn use_call(r: Result<string, string>) -> i64 {
-                match producer() { Ok(_) => 1, Err(_) => 0 }
-            }
-            "#,
-        );
-        // Find the `match producer()` scrutinee inside `use_call` and confirm it
-        // is a Call kind; a bare-place / block scrutinee would not be.
-        let mut saw_call_scrutinee = false;
-        for item in &module.items {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "use_call" {
-                    for stmt in &f.body.statements {
-                        collect_call_scrutinee(stmt, &mut saw_call_scrutinee);
-                    }
-                    if let Some(tail) = &f.body.tail {
-                        if let hew_hir::HirExprKind::Match { scrutinee, .. } = &tail.kind {
-                            saw_call_scrutinee |= scrutinee_is_call_kind(scrutinee);
-                        }
-                    }
-                }
-            }
-        }
-        assert!(
-            saw_call_scrutinee,
-            "the `match producer()` scrutinee must be recognised as a Call kind"
-        );
-    }
-
-    fn collect_call_scrutinee(stmt: &hew_hir::HirStmt, out: &mut bool) {
-        if let hew_hir::HirStmtKind::Expr(e) = &stmt.kind {
-            if let hew_hir::HirExprKind::Match { scrutinee, .. } = &e.kind {
-                *out |= scrutinee_is_call_kind(scrutinee);
-            }
-        }
     }
 
     // -- Interprocedural may-mutate-heap-param summary [F2] --

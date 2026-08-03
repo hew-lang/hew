@@ -71,6 +71,24 @@ fn extern_signature_description(
     )
 }
 
+fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
+    fn erase_builtin_presentation(ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named { name, args, .. } => Ty::Named {
+                name: name.clone(),
+                args: args.iter().map(erase_builtin_presentation).collect(),
+                builtin: None,
+            },
+            _ => ty.map_children_pub(&erase_builtin_presentation),
+        }
+    }
+
+    // The owner-qualified nominal name is the source contract identity. The
+    // builtin marker is checker metadata and can legitimately differ when one
+    // module spells that nominal through an import qualifier.
+    erase_builtin_presentation(&checker.canonicalize_nominal_identity(ty))
+}
+
 impl super::lints::NodeVisitor for ExplicitReturnFinder {
     fn visit_stmt(&mut self, stmt: &Stmt, _span: &Span) {
         self.saw_return |= matches!(stmt, Stmt::Return(_));
@@ -9175,8 +9193,21 @@ impl Checker {
                         return None;
                     }
                     let established = self.fn_sigs.get(&existing.signature_key)?;
-                    let disagrees = established.params != sig.params
-                        || established.return_type != sig.return_type
+                    let established_params = established
+                        .params
+                        .iter()
+                        .map(|ty| extern_contract_type_identity(self, ty))
+                        .collect::<Vec<_>>();
+                    let candidate_params = sig
+                        .params
+                        .iter()
+                        .map(|ty| extern_contract_type_identity(self, ty))
+                        .collect::<Vec<_>>();
+                    let established_return =
+                        extern_contract_type_identity(self, &established.return_type);
+                    let candidate_return = extern_contract_type_identity(self, &sig.return_type);
+                    let disagrees = established_params != candidate_params
+                        || established_return != candidate_return
                         || existing.consuming_params != consuming_params
                         || existing.is_variadic != f.is_variadic;
                     disagrees.then(|| {

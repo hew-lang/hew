@@ -7151,8 +7151,14 @@ impl Checker {
         let resolved_call = self.resolved_calls.get(&key);
         let actor_call = self.actor_method_dispatch.get(&key);
         let machine_call = self.machine_method_dispatch.get(&key);
-        let is_suspending_io_delivery =
-            self.conn_await_reads.contains_key(&key) || self.listener_await_accepts.contains(&key);
+        let suspending_receiver = self
+            .suspending_io_receiver_nominals
+            .get(&key)
+            .map(String::as_str);
+        let is_suspending_io_delivery = (self.conn_await_reads.contains_key(&key)
+            && suspending_receiver == Some(STD_NET_CONNECTION))
+            || (self.listener_await_accepts.contains(&key)
+                && suspending_receiver == Some(STD_NET_LISTENER));
         let runtime_family = match rewrite {
             Some(MethodCallRewrite::RewriteToFunction {
                 descriptor: Some(descriptor),
@@ -7760,10 +7766,11 @@ impl Checker {
                 && name == "std.net.Connection"
                 && matches!(method, "read" | "read_string");
             if is_conn_await_read {
-                self.conn_await_reads.insert(
-                    SpanKey::in_module(span, self.current_module_idx),
-                    method == "read_string",
-                );
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.conn_await_reads
+                    .insert(key.clone(), method == "read_string");
+                self.suspending_io_receiver_nominals
+                    .insert(key, name.clone());
             } else {
                 // NEW-2: `await listener.accept()` is the non-blocking suspending
                 // accept (the listener-readiness sibling of `await conn.read()`).
@@ -7774,8 +7781,10 @@ impl Checker {
                 let is_listener_await_accept =
                     self.inside_await_expr && name == "std.net.Listener" && method == "accept";
                 if is_listener_await_accept {
-                    self.listener_await_accepts
-                        .insert(SpanKey::in_module(span, self.current_module_idx));
+                    let key = SpanKey::in_module(span, self.current_module_idx);
+                    self.listener_await_accepts.insert(key.clone());
+                    self.suspending_io_receiver_nominals
+                        .insert(key, name.clone());
                 } else {
                     // The blocking-call warning is correct for a bare (non-awaited)
                     // `conn.read()`; suppress it when the read is the non-blocking
@@ -10456,6 +10465,10 @@ mod tests {
         let read_span = 10..20;
         let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
         checker.conn_await_reads.insert(read_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            read_key.clone(),
+            crate::stdlib::STD_NET_CONNECTION.to_string(),
+        );
         checker.record_resolved_method_call_ownership(
             &receiver,
             "read_string",
@@ -10474,6 +10487,10 @@ mod tests {
         let accept_span = 30..40;
         let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
         checker.listener_await_accepts.insert(accept_key.clone());
+        checker.suspending_io_receiver_nominals.insert(
+            accept_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
         checker.record_resolved_method_call_ownership(
             &receiver,
             "accept",
@@ -10495,6 +10512,26 @@ mod tests {
             Ownership::owned(Acquisition::Delivery)
         );
         assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let spoofed_span = 50..60;
+        let spoofed_key = SpanKey::in_module(&spoofed_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(spoofed_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            spoofed_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &spoofed_span,
+            &Ty::String,
+        );
+        let spoofed = checker
+            .resolved_method_call_ownership
+            .get(&spoofed_key)
+            .expect("spoofed suspending read ownership");
+        assert_eq!(spoofed.fact.ownership, Ownership::Unknown);
     }
 
     #[test]

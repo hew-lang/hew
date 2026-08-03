@@ -2534,6 +2534,10 @@ pub struct Checker {
     /// `await listener.accept()` suspending-accept sites. Mirrors
     /// [`TypeCheckOutput::listener_await_accepts`].
     pub(super) listener_await_accepts: HashSet<SpanKey>,
+    /// Exact receiver nominal proven when a suspending network method is
+    /// admitted. Ownership publication requires this witness in addition to
+    /// the public lowering side-table membership.
+    pub(super) suspending_io_receiver_nominals: HashMap<SpanKey, String>,
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
@@ -3428,6 +3432,7 @@ impl Checker {
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
+            suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),

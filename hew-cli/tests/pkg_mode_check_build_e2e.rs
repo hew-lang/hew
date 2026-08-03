@@ -178,3 +178,32 @@ fn build_no_input_rejects_compile_only_target_flag() {
         describe_output(&output),
     );
 }
+
+/// `--opt-level` lives directly on `BuildArgs`, not `CommonBuildArgs`, so it
+/// is not covered by `CommonBuildArgs::any_set()`. Before the fix, no-input
+/// `hew build --opt-level 2` silently ignored the flag and ran the ordinary
+/// package-mode native build instead of being rejected like every other
+/// compile-only flag.
+#[test]
+fn build_no_input_rejects_compile_only_opt_level_flag() {
+    let dir = support::tempdir();
+    fs::write(dir.path().join("hew.toml"), VALID_MANIFEST).expect("write hew.toml");
+
+    let output = Command::new(hew_binary())
+        .args(["build", "--opt-level", "2"])
+        .current_dir(dir.path())
+        .output()
+        .expect("invoke hew build");
+
+    assert!(
+        !output.status.success(),
+        "hew build --opt-level 2 with no input should be rejected, not silently ignored\n{}",
+        describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("require an input .hew file"),
+        "rejection should explain that the flag needs an input file:\n{}",
+        describe_output(&output),
+    );
+}

@@ -4,8 +4,7 @@
 # Builds all project artifacts into build/ with a predictable layout:
 #
 #   build/
-#     bin/hew              — compiler driver (Rust)
-#     bin/adze             — package manager (Rust)
+#     bin/hew              — compiler driver + package manager (Rust)
 #     bin/hew-observe      — TUI actor observer (Rust)
 #     bin/hew-lsp          — language server (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
@@ -22,7 +21,6 @@
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
 #   make hew          — alias for hew-native (a driver-only build cannot link)
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
-#   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
 #   make observe-functional-test — HTTP-backed functional observe harness
 #   make mqtt-broker-e2e       — real MQTT broker publish/delivery oracle
@@ -59,7 +57,7 @@
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
-#   make test-package-install — Adze install -> Hew import consumer proof
+#   make test-package-install — hew install -> Hew import consumer proof
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-stdlib-execution-proofs — verify every README-indexed public stdlib module has an executed API proof
@@ -75,7 +73,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -213,7 +211,7 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew-native adze observe runtime stdlib wasm-runtime assemble
+all: hew-native observe runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -236,10 +234,6 @@ hew: hew-native
 # Windows hosts use the same build graph as Linux/macOS.
 hew-native: libhew-debug
 	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
-
-# Build the adze package manager (debug)
-adze:
-	cargo build -p adze-cli $(CARGO_TARGET_FLAG)
 
 # Build the TUI actor observer (debug).
 # hew-observe is a sibling binary: `hew observe` delegates to it when it is
@@ -571,7 +565,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew-native adze observe runtime stdlib wasm-runtime
+assemble: | hew-native observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -579,8 +573,6 @@ assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew"                "$(BUILD_DIR)/bin/hew"
-	@# Package manager
-	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/adze"               "$(BUILD_DIR)/bin/adze"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)
@@ -632,7 +624,6 @@ endif
 release:
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
-	$(RELEASE_ENV) cargo build -p adze-cli --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-lsp --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-observe --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
@@ -674,7 +665,6 @@ endif
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew"              "$(BUILD_DIR)/bin/hew"
-	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/adze"             "$(BUILD_DIR)/bin/adze"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-lsp"          "$(BUILD_DIR)/bin/hew-lsp"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-observe"      "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
@@ -743,7 +733,7 @@ test-types:
 	cargo nextest run --profile ci -p hew-types -p hew-parser -p hew-lexer
 
 test-cli:
-	cargo nextest run --profile ci -p hew-cli -p adze-cli
+	cargo nextest run --profile ci -p hew-cli -p hew-pkg
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -793,7 +783,7 @@ test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-mir \
 		-p hew-codegen-rs \
 		-p hew-cli \
-		-p adze-cli
+		-p hew-pkg
 	$(MAKE) test-opaque-resource-lifecycle-matrix
 
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
@@ -819,8 +809,8 @@ test-pkg-import: hew-native runtime $(LIBHEW_READY)
 # Package-manager consumer oracle: publish-like local setup, `hew package
 # install`, lock/materialization assertions, `hew check`, and exact `hew run`
 # stdout under an isolated HOME.
-test-package-install: hew-native adze runtime $(LIBHEW_READY)
-	HEW_BIN="$(DEBUG_DIR)/hew" ADZE_BIN="$(DEBUG_DIR)/adze" bash tests/package-install/run.sh
+test-package-install: hew-native runtime $(LIBHEW_READY)
+	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
 # oracle for internal retyping work. `checked-mir-verify` re-dumps every
@@ -1447,8 +1437,6 @@ endef
 define require_release_artifacts
 	@test -x "$(RELEASE_DIR)/hew" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -x "$(RELEASE_DIR)/adze" \
-		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
 	@test -x "$(RELEASE_DIR)/hew-lsp" \
 		|| { echo "Error: release hew-lsp not built. Run 'make release' first."; exit 1; }
 	@test -x "$(RELEASE_DIR)/hew-observe" \
@@ -1468,7 +1456,6 @@ install:
 	install -d "$(DESTDIR)$(PREFIX)/std"
 	install -d "$(DESTDIR)$(PREFIX)/completions"
 	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
-	install -m 755 "$(RELEASE_DIR)/adze"               "$(DESTDIR)$(PREFIX)/bin/adze"
 	install -m 755 "$(RELEASE_DIR)/hew-lsp"            "$(DESTDIR)$(PREFIX)/bin/hew-lsp"
 	install -m 755 "$(RELEASE_DIR)/hew-observe"        "$(DESTDIR)$(PREFIX)/bin/hew-observe"
 	install -m 644 "$(RELEASE_LIB_DIR)/libhew.a"       "$(DESTDIR)$(PREFIX)/lib/libhew.a"
@@ -1498,11 +1485,7 @@ install:
 	@set -e; for shell in bash zsh fish; do \
 		"$(RELEASE_DIR)/hew" completions "$$shell" \
 			> "$(DESTDIR)$(PREFIX)/completions/hew.$$shell"; \
-		"$(RELEASE_DIR)/adze" completions "$$shell" \
-			> "$(DESTDIR)$(PREFIX)/completions/adze.$$shell"; \
-		chmod 644 \
-			"$(DESTDIR)$(PREFIX)/completions/hew.$$shell" \
-			"$(DESTDIR)$(PREFIX)/completions/adze.$$shell"; \
+		chmod 644 "$(DESTDIR)$(PREFIX)/completions/hew.$$shell"; \
 	done
 	@echo "==> Installed to $(DESTDIR)$(PREFIX)"
 	@echo "    Add $(PREFIX)/bin to your PATH:"

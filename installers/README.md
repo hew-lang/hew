@@ -1,6 +1,6 @@
 # Hew Installers
 
-Installation options for [Hew](https://hew.sh) and [Adze](https://hew.sh/adze).
+Installation options for [Hew](https://hew.sh).
 
 ## Quick Install (Linux / macOS)
 
@@ -48,7 +48,7 @@ docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew -o /work/out
 # Run a Hew program directly
 docker run --rm -v $(pwd):/work r.hew.sh/hew run /work/main.hew
 
-# Interactive shell with hew and adze available
+# Interactive shell with hew available
 docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
 ```
 

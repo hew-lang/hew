@@ -374,7 +374,7 @@ try {
         }
 
         # Copy binaries
-        foreach ($bin in @("hew", "adze", "hew-lsp", "hew-observe")) {
+        foreach ($bin in @("hew", "hew-lsp", "hew-observe")) {
             # On Windows, binaries have .exe extension
             foreach ($ext in @(".exe", "")) {
                 $src = Join-Path $innerDir.FullName "bin/${bin}${ext}"
@@ -399,16 +399,12 @@ try {
 
         # Generate shell completions from installed binaries
         $hewBin = Join-Path $InstallDir "bin/hew.exe"
-        $adzeBin = Join-Path $InstallDir "bin/adze.exe"
         if (-not (Test-Path $hewBin)) { $hewBin = Join-Path $InstallDir "bin/hew" }
-        if (-not (Test-Path $adzeBin)) { $adzeBin = Join-Path $InstallDir "bin/adze" }
         $compDir = Join-Path $InstallDir "completions"
         foreach ($sh in @("bash", "zsh", "fish")) {
             try { & $hewBin  completions $sh | Out-File -Encoding utf8NoBOM (Join-Path $compDir "hew.$sh")  } catch {}
-            try { & $adzeBin completions $sh | Out-File -Encoding utf8NoBOM (Join-Path $compDir "adze.$sh") } catch {}
         }
         try { & $hewBin  completions powershell | Out-File -Encoding UTF8 (Join-Path $compDir "hew.ps1")  } catch {}
-        try { & $adzeBin completions powershell | Out-File -Encoding UTF8 (Join-Path $compDir "adze.ps1") } catch {}
 
         # Copy license and doc files
         foreach ($f in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
@@ -476,15 +472,11 @@ if ($pathUpdated) {
     Write-Host ""
     Write-Host "  Restart your terminal, then run " -NoNewline
     Write-Host "hew version" -ForegroundColor Cyan -NoNewline
-    Write-Host " and " -NoNewline
-    Write-Host "adze --version" -ForegroundColor Cyan -NoNewline
     Write-Host " to verify."
 }
 else {
     Write-Host "  Run " -NoNewline
     Write-Host "hew version" -ForegroundColor Cyan -NoNewline
-    Write-Host " and " -NoNewline
-    Write-Host "adze --version" -ForegroundColor Cyan -NoNewline
     Write-Host " to verify the installation."
 }
 
@@ -494,5 +486,4 @@ Write-Host '$PROFILE' -ForegroundColor Cyan -NoNewline
 Write-Host ":"
 Write-Host ""
 Write-Host "    . `"$(Join-Path $InstallDir 'completions\hew.ps1')`"" -ForegroundColor DarkGray
-Write-Host "    . `"$(Join-Path $InstallDir 'completions\adze.ps1')`"" -ForegroundColor DarkGray
 Write-Host ""

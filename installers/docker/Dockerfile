@@ -39,7 +39,6 @@ RUN apk add --no-cache \
       ca-certificates
 
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 

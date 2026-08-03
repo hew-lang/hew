@@ -5,7 +5,6 @@
 #
 # Artifacts per platform:
 #   bin/hew           — compiler driver (Rust + LLVM via inkwell)
-#   bin/adze          — package manager
 #   bin/hew-lsp       — Language Server Protocol server
 #   bin/hew-observe   — actor observer TUI
 #   lib/libhew.a      — combined runtime + stdlib static library
@@ -258,8 +257,8 @@ jobs:
 
       # ── Rust builds ─────────────────────────────────────────────────────
 
-      - name: Build hew, adze, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build hew, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         # The shipped archive builds under the non-LTO release-lib profile:
@@ -316,7 +315,6 @@ jobs:
 
           # Binaries
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
-          cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-observe"      "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
@@ -337,7 +335,6 @@ jobs:
           # Generate shell completions from built binaries
           for shell in bash zsh fish; do
             "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
           done
 
           # Licenses and docs
@@ -389,7 +386,6 @@ jobs:
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
-          Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-observe.exe"        "${ArchiveName}/bin/"
 
@@ -420,7 +416,6 @@ jobs:
           }
           foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
             Write-Completion "${ArchiveName}/bin/hew.exe" $shell "${ArchiveName}/completions/hew.${shell}"
-            Write-Completion "${ArchiveName}/bin/adze.exe" $shell "${ArchiveName}/completions/adze.${shell}"
           }
 
           # Licenses and docs
@@ -490,13 +485,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-lsp hew-observe; do
+          for bin in hew hew-lsp hew-observe; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-lsp hew-observe; do
+          for bin in hew hew-lsp hew-observe; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -693,8 +688,8 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
-      - name: Build hew, adze, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build hew, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         # Non-LTO release-lib profile: the shipped archive must keep verbatim
@@ -717,7 +712,6 @@ jobs:
         run: |
           ldd --version 2>&1 | sed -n "1p"
           "target/${{ matrix.rust_target }}/release/hew" --version
-          "target/${{ matrix.rust_target }}/release/adze" --version
           "target/${{ matrix.rust_target }}/release/hew-lsp" --version
           "target/${{ matrix.rust_target }}/release/hew-observe" --version
           test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
@@ -738,7 +732,6 @@ jobs:
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
 
           cp "${RELEASE_DIR}/hew" "${ARCHIVE_NAME}/bin/"
-          cp "${RELEASE_DIR}/adze" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/hew-lsp" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/hew-observe" "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
@@ -753,12 +746,11 @@ jobs:
 
           for shell in bash zsh fish; do
             "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
           done
 
           cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
-          for b in hew adze hew-lsp hew-observe; do
+          for b in hew hew-lsp hew-observe; do
             strip "${ARCHIVE_NAME}/bin/${b}"
           done
 
@@ -851,7 +843,7 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
@@ -869,7 +861,6 @@ jobs:
 
             # Binaries
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
@@ -884,7 +875,6 @@ jobs:
             # Generate shell completions from built binaries
             for shell in bash zsh fish; do
               "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
             done
 
             # Licenses and docs
@@ -893,7 +883,7 @@ jobs:
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
             # existing files must still fail the job.
-            for b in hew adze hew-lsp hew-observe; do
+            for b in hew hew-lsp hew-observe; do
               bin="${ARCHIVE_NAME}/bin/${b}"
               if [ -f "${bin}" ]; then
                 strip "${bin}"
@@ -977,7 +967,7 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
@@ -995,7 +985,6 @@ jobs:
 
             # Binaries
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
@@ -1010,7 +999,6 @@ jobs:
             # Generate shell completions from built binaries
             for shell in bash zsh fish; do
               "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
             done
 
             # Licenses and docs
@@ -1019,7 +1007,7 @@ jobs:
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
             # existing files must still fail the job.
-            for b in hew adze hew-lsp hew-observe; do
+            for b in hew hew-lsp hew-observe; do
               bin="${ARCHIVE_NAME}/bin/${b}"
               if [ -f "${bin}" ]; then
                 strip "${bin}"

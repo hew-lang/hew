@@ -186,7 +186,7 @@ OBJ_ARGS=()
 for b in "${BINS[@]:1}"; do OBJ_ARGS+=(-object "$b"); done
 
 # Report only the runtime/stdlib source (drop the compiler crates, deps, std).
-IGNORE='(/\.cargo/|/rustc/|/usr/|registry|/tests/|hew-cli/|hew-types/|hew-hir/|hew-mir/|hew-codegen-rs/|hew-parser/|hew-lexer/|hew-compile/|hew-analysis/|hew-lsp/|hew-observe/|hew-wasm|hew-sandbox|adze-cli/|xtask/|hew-testutil/|hew-runtime-testkit/|hew-capability-gen/)'
+IGNORE='(/\.cargo/|/rustc/|/usr/|registry|/tests/|hew-cli/|hew-types/|hew-hir/|hew-mir/|hew-codegen-rs/|hew-parser/|hew-lexer/|hew-compile/|hew-analysis/|hew-lsp/|hew-observe/|hew-wasm|hew-sandbox|hew-pkg/|xtask/|hew-testutil/|hew-runtime-testkit/|hew-capability-gen/)'
 
 "$LLVM_COV" report "${BINS[0]}" "${OBJ_ARGS[@]}" \
   -instr-profile="$PROFDATA" \

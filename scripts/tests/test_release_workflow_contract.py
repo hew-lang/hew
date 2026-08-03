@@ -902,9 +902,9 @@ def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
         )
     ]
 
-    for package in ("hew-cli", "adze-cli", "hew-lsp", "hew-observe"):
+    for package in ("hew-cli", "hew-lsp", "hew-observe"):
         assert f"cargo build -p {package} --release" in release
-    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+    for binary in ("hew", "hew-lsp", "hew-observe"):
         name = re.escape(binary)
         assert re.search(
             rf'^\s*@ln -sfn "\$\(LINK_UP2\)\$\(RELEASE_DIR\)/{name}"\s+'
@@ -929,7 +929,7 @@ def test_windows_completion_packaging_fails_closed() -> None:
     assert "$Completion = & $Executable completions $Shell" in package
     assert "if ($LASTEXITCODE -ne 0) {" in package
     assert "produced empty output" in package
-    for executable in ("hew.exe", "adze.exe"):
+    for executable in ("hew.exe",):
         assert (
             f'Write-Completion "${{ArchiveName}}/bin/{executable}" $shell '
             f'"${{ArchiveName}}/completions/{executable.removesuffix(".exe")}.${{shell}}"'
@@ -972,7 +972,7 @@ def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
             f"TARGET_TRIPLE={target_triple}",
         )
 
-        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        for binary in ("hew", "hew-lsp", "hew-observe"):
             source = release_dir / binary
             assert f'"{source}"' in assembly
             assert f'"{source}"' in install
@@ -994,8 +994,7 @@ def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
 
 def _write_install_artifacts(target_dir: Path) -> None:
     binaries = tuple(
-        target_dir / "release" / name
-        for name in ("hew", "adze", "hew-lsp", "hew-observe")
+        target_dir / "release" / name for name in ("hew", "hew-lsp", "hew-observe")
     )
     for binary in binaries:
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -1050,7 +1049,7 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
         )
         assert installed.returncode == 0, installed.stdout + installed.stderr
 
-        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        for binary in ("hew", "hew-lsp", "hew-observe"):
             path = install_root / "bin" / binary
             assert path.is_file()
             assert os.access(path, os.X_OK)
@@ -1061,9 +1060,6 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
             "hew.bash",
             "hew.zsh",
             "hew.fish",
-            "adze.bash",
-            "adze.zsh",
-            "adze.fish",
         ):
             path = install_root / "completions" / completion
             tool, shell = completion.split(".")
@@ -1185,7 +1181,7 @@ else:
         "#!/usr/bin/env bash\\n"
         'if [[ "${1:-}" == "completions" ]]; then printf "mock completion\\\\n"; fi\\n'
     )
-    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+    for binary in ("hew", "hew-lsp", "hew-observe"):
         path = out / binary
         path.write_text(program)
         path.chmod(0o755)
@@ -1278,7 +1274,7 @@ def test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive() -> No
 
             calls = cargo_log.read_text().splitlines()
             assert calls == [
-                "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release",
+                "cargo build -p hew-cli -p hew-lsp -p hew-observe --release",
                 "cargo build -p hew-lib --profile release-lib",
             ]
 
@@ -1286,7 +1282,7 @@ def test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive() -> No
             package_root = "hew-v0.6.0-rc1-linux-x86_64"
             with tarfile.open(archive) as package:
                 names = set(package.getnames())
-                for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+                for binary in ("hew", "hew-lsp", "hew-observe"):
                     assert f"{package_root}/bin/{binary}" in names
                 member = package.extractfile(f"{package_root}/lib/libhew.a")
                 assert member is not None

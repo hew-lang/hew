@@ -31,7 +31,6 @@ trees and first-class async/await.
 
 This package provides:
   - hew          the compiler driver
-  - adze         the package manager
   - hew-lsp      the language server
   - hew-observe  the actor observer TUI
   - libhew.a     the combined runtime + stdlib static library
@@ -41,7 +40,6 @@ This package provides:
 
 %install
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
-install -Dm755 bin/adze         %{buildroot}%{_bindir}/adze
 install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
 install -Dm755 bin/hew-observe  %{buildroot}%{_bindir}/hew-observe
 
@@ -63,17 +61,8 @@ fi
 [ -f completions/hew.fish ] && \
   install -Dm644 completions/hew.fish \
     %{buildroot}%{_datadir}/fish/vendor_completions.d/hew.fish
-[ -f completions/adze.bash ] && \
-  install -Dm644 completions/adze.bash \
-    %{buildroot}%{_datadir}/bash-completion/completions/adze
-[ -f completions/adze.zsh ] && \
-  install -Dm644 completions/adze.zsh \
-    %{buildroot}%{_datadir}/zsh/site-functions/_adze
-[ -f completions/adze.fish ] && \
-  install -Dm644 completions/adze.fish \
-    %{buildroot}%{_datadir}/fish/vendor_completions.d/adze.fish
 
-# Generate dynamic completion filelist (adze completions may be absent)
+# Generate dynamic completion filelist
 {
   find %{buildroot}%{_datadir}/bash-completion -type f 2>/dev/null
   find %{buildroot}%{_datadir}/zsh -type f 2>/dev/null
@@ -88,7 +77,6 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %files -f %{_builddir}/completions.lst
 %license LICENSE-MIT LICENSE-APACHE NOTICE
 %{_bindir}/hew
-%{_bindir}/adze
 %{_bindir}/hew-lsp
 %{_bindir}/hew-observe
 %{_libdir}/hew/

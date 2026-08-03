@@ -377,7 +377,7 @@ def relevant_lock_packages(crates: list[str]) -> list[dict[str, object]]:
     """Return only Cargo.lock packages that can feed hew-lib.
 
     Cargo.lock is workspace-wide.  Hashing it byte-for-byte makes a lock-only
-    edit to (say) adze invalidate libhew even when Cargo correctly reports
+    edit to (say) hew-pkg invalidate libhew even when Cargo correctly reports
     `hew-lib` up to date.  Start with the non-dev dependencies declared by the
     local hew-lib closure and then follow the lockfile graph.  This does not
     need a Git revision and remains project-relative.

@@ -54,7 +54,6 @@ COPY . .
 # On Alpine musl, +crt-static is the default — binaries are fully static.
 RUN cargo build --release \
     -p hew-cli \
-    -p adze-cli \
     -p hew-lsp \
     -p hew-observe \
     -p hew-lib
@@ -76,7 +75,6 @@ RUN adduser -D -u 1000 hew
 
 # Binaries
 COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
-COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
 COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
 COPY --from=rust-builder /src/target/release/hew-observe /usr/local/bin/hew-observe
 

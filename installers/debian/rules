@@ -43,7 +43,6 @@ override_dh_auto_install:
 	install -d $(DESTDIR)/usr/share/doc/hew
 
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew          $(DESTDIR)/usr/bin/hew
-	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/adze         $(DESTDIR)/usr/bin/adze
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-lsp      $(DESTDIR)/usr/bin/hew-lsp 2>/dev/null || true
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-observe  $(DESTDIR)/usr/bin/hew-observe 2>/dev/null || true
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew.a \
@@ -55,12 +54,6 @@ override_dh_auto_install:
 	   $(DESTDIR)/usr/share/zsh/site-functions/_hew 2>/dev/null || true
 	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.fish \
 	   $(DESTDIR)/usr/share/fish/vendor_completions.d/hew.fish 2>/dev/null || true
-	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.bash \
-	   $(DESTDIR)/usr/share/bash-completion/completions/adze 2>/dev/null || true
-	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.zsh \
-	   $(DESTDIR)/usr/share/zsh/site-functions/_adze 2>/dev/null || true
-	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.fish \
-	   $(DESTDIR)/usr/share/fish/vendor_completions.d/adze.fish 2>/dev/null || true
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-MIT \
 	              $(DESTDIR)/usr/share/doc/hew/LICENSE-MIT
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-APACHE \

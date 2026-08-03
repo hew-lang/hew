@@ -98,7 +98,7 @@ if ([string]::IsNullOrWhiteSpace($env:CARGO_BUILD_JOBS)) {
 # actual output location.  Capturing these messages from THIS build also makes a
 # stale executable/archive elsewhere on disk unusable as release evidence.
 $ReleaseBuildMessages = @(
-    & cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --message-format=json
+    & cargo build -p hew-cli -p hew-lsp -p hew-observe --release --message-format=json
 )
 Assert-NativeSuccess 'cargo build release binaries'
 
@@ -166,7 +166,6 @@ function Resolve-UniqueCargoArtifact(
 $ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages 'release binary build'
 $ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages 'release-lib build'
 $Hew = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew.exe' 'release binary build' -Executable
-$Adze = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'adze.exe' 'release binary build' -Executable
 $HewLsp = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-lsp.exe' 'release binary build' -Executable
 $HewObserve = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-observe.exe' 'release binary build' -Executable
 $ReleaseLib = Resolve-UniqueCargoArtifact $ReleaseLibArtifacts 'hew.lib' 'release-lib build'
@@ -183,9 +182,6 @@ Assert-NativeSuccess 'release library consumer proof'
 
 & $Hew --version
 Assert-NativeSuccess 'hew.exe --version'
-
-& $Adze --version
-Assert-NativeSuccess 'adze.exe --version'
 
 & $HewLsp --version
 Assert-NativeSuccess 'hew-lsp.exe --version'

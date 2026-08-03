@@ -288,7 +288,7 @@ jobs:
       - name: Build Rust crates
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
+        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
 
       - name: Run Rust workspace tests
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols

@@ -171,8 +171,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
-          gh attestation verify $asset --repo "hew-lang/llvm-toolchain"
+          $toolchainRepo = "hew-lang/llvm-toolchain"
+          $asset         = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          gh attestation verify $asset --repo $toolchainRepo
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
             exit 1

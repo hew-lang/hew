@@ -71,7 +71,15 @@ runs:
             # (defines malloc/free/calloc -> duplicate symbols against ucrt at
             # lld-link time) and omits xml2s.lib. Use hew-lang/llvm-toolchain's
             # LLVM build, published under the llvm-22.1.0-windows-msvc-v1 release.
-            asset="hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+            # Override `version` to the pinned toolchain identifier (independent
+            # of inputs.version, which only tracks the Linux/macOS upstream
+            # version): the cache key and install_root are derived from
+            # `version` below, and inputs.version bumping without this override
+            # would leave both mislabelled and, since the Windows sha256 is the
+            # constant "companion" sentinel, could serve a stale cached archive
+            # under a v2/v3/... repackage that keeps the same inputs.version.
+            version="22.1.0-windows-msvc-v1"
+            asset="hew-llvm-${version}.tar.gz"
             # The prebuild workflow tars from C:\ with root llvm-22/ .
             subdir="llvm-22"
             ;;

@@ -18,7 +18,7 @@ This policy covers:
 
 - The Hew compiler (`hew`, `hew-codegen-rs`)
 - The Hew runtime (`libhew_runtime`)
-- The package manager (`adze`)
+- The package manager (the `hew` package subcommands, crate `hew-pkg`)
 - The standard library (`std/`)
 - The package registry infrastructure
 

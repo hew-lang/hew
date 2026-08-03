@@ -176,20 +176,22 @@ struct Registration {
 unsafe impl Send for Registration {}
 
 impl Drop for Registration {
-    /// SINGLE AUTHORITY for releasing the reactor's read-slot ref. A resume-mode
-    /// registration owns one ref on its `read_slot` (taken in
-    /// `reactor_await_read`). Whenever a `Registration` is dropped — removed from
-    /// the registry by `unregister_fd`, scrubbed by `evict_actor_state` on the
-    /// abandon edge, cleared by `reactor_shutdown`, or consumed by the
-    /// `apply_add` poller-register-failure path — that ref is released here
-    /// exactly once. Deposit/wake sites must NOT free the slot themselves; they
-    /// drop the registration and let this impl release the ref. Active-mode
-    /// (`AutoSend`) registrations carry no slot, so the drop is a no-op for them.
+    /// SINGLE AUTHORITY for releasing everything a registration owns. A
+    /// resume/accept registration releases its reactor-held read-slot ref. An
+    /// active-mode registration releases the consumed connection's transport
+    /// table entry and socket fd. Every teardown path drops the registration:
+    /// readiness EOF/error, actor eviction, reactor shutdown, queued-add scrub,
+    /// explicit detach, and poller-registration failure.
     fn drop(&mut self) {
-        if let RegMode::Resume { read_slot } | RegMode::Accept { read_slot } = self.mode {
-            // SAFETY: the registration held one live ref on `read_slot`; this
-            // releases it. The slot box is freed when its last ref drops.
-            unsafe { crate::read_slot::hew_read_slot_free(read_slot) };
+        match &self.mode {
+            RegMode::AutoSend { .. } => {
+                crate::transport::tcp_close_reactor_owned_conn(self.conn);
+            }
+            RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => {
+                // SAFETY: the registration held one live ref on `read_slot`; this
+                // releases it. The slot box is freed when its last ref drops.
+                unsafe { crate::read_slot::hew_read_slot_free(*read_slot) };
+            }
         }
     }
 }
@@ -2233,6 +2235,68 @@ mod tests {
         // SAFETY: fds is a valid 2-element array.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         (fds[0], fds[1])
+    }
+
+    #[cfg(unix)]
+    fn open_fd_count() -> usize {
+        let dir = if std::path::Path::new("/proc/self/fd").exists() {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        std::fs::read_dir(dir).map_or(0, std::iter::Iterator::count)
+    }
+
+    /// Active-mode attach consumes each connection into its registration. When
+    /// the handler is dropped, the reactor teardown must release both ownership
+    /// ledgers: no registration and no transport-table entry may survive, and
+    /// the process fd count must return to its baseline after peers are dropped.
+    #[cfg(unix)]
+    #[test]
+    fn active_mode_teardown_releases_all_consumed_connections() {
+        const CONNECTIONS: usize = 128;
+        const ACTOR_KEY: usize = 0xAC71_0EED;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+        let fds_before = open_fd_count();
+
+        let mut handles = Vec::with_capacity(CONNECTIONS);
+        let mut peers = Vec::with_capacity(CONNECTIONS);
+        for _ in 0..CONNECTIONS {
+            let (conn, peer) = crate::transport::tcp_socketpair_conn_for_test();
+            let fd = crate::transport::tcp_conn_raw_fd(conn).expect("connection fd");
+            inject_registration_for_test(fd, conn, dead_actor_ref(), ACTOR_KEY);
+            handles.push(conn);
+            peers.push(peer);
+        }
+        assert_eq!(registration_count_for_test(), CONNECTIONS);
+        assert!(handles
+            .iter()
+            .all(|handle| crate::transport::tcp_streams_has_handle_for_test(*handle)));
+
+        reactor_detach_actor(ACTOR_KEY);
+        drop(peers);
+
+        assert_eq!(
+            registration_count_for_test(),
+            0,
+            "handler teardown must leave no active-mode registrations"
+        );
+        for handle in handles {
+            assert!(
+                !crate::transport::tcp_streams_has_handle_for_test(handle),
+                "consumed connection {handle} survived in the transport table"
+            );
+        }
+        let fds_after = open_fd_count();
+        assert!(
+            fds_after <= fds_before,
+            "active-mode teardown leaked fds: before={fds_before} after={fds_after}"
+        );
+        reset_reactor();
     }
 
     // 4b oracle (unit form): a readiness event for an actor that has stopped

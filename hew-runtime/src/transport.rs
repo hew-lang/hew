@@ -1112,6 +1112,33 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
     });
 }
 
+/// Close a connection whose user-facing handle has no remaining owner.
+///
+/// This is the transport-table half of connection teardown: remove the stored
+/// stream, shut down the socket, and let the `TcpStream` drop close its fd. It
+/// deliberately does not detach from the reactor; callers use it only after no
+/// reactor registration exists (or while that registration is itself being
+/// destroyed).
+fn tcp_close_unowned_conn(handle: c_int) -> bool {
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Release the connection owned by an active-mode reactor registration.
+///
+/// `Connection.attach` transfers the handle to the reactor. Dropping the
+/// registration is therefore the terminal close authority for the transport
+/// table entry and its socket fd.
+pub(crate) fn tcp_close_reactor_owned_conn(handle: c_int) {
+    let _ = tcp_close_unowned_conn(handle);
+}
+
 /// Close a freshly-accepted connection handle that has no Hew-side owner
 /// (NEW-2 accept/abandon race). When `handle_ready_accept` accepts a connection
 /// but the suspended handler was abandoned/cancelled before the deposit lands,
@@ -1124,11 +1151,7 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
 /// accepted fd was never registered with the reactor (the reactor polls the
 /// listener, not this new conn), so no detach is required.
 pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
-    TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
-    });
+    let _ = tcp_close_unowned_conn(handle);
 }
 
 /// Test-only: create a connected loopback TCP socketpair, register the server
@@ -3493,14 +3516,7 @@ pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
     // reactor); kept for symmetry with `hew_tcp_close` and robustness if the
     // call graph ever changes.
     crate::reactor::reactor_detach_conn(handle);
-    TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-            true
-        } else {
-            false
-        }
-    })
+    tcp_close_unowned_conn(handle)
 }
 
 /// Close either a TCP connection handle or listener handle.

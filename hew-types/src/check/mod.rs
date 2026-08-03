@@ -942,22 +942,47 @@ impl Checker {
             if non_owning {
                 fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
             } else if let Some(symbol) = pending.extern_symbol.as_deref() {
-                use crate::ffi_contracts::ExternResultOwnership;
+                use crate::ffi_contracts::{
+                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+                };
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
-                let owned = match &resolved_result {
+                let contract = crate::ffi_contracts::extern_ownership_contract(symbol)
+                    .contract()
+                    .filter(|contract| contract.params.len() == pending.extern_param_count)
+                    .filter(|contract| {
+                        contract.result_retention == ExternResultRetention::Transferred
+                            && contract.discharge_depth != ReleaseDischargeDepth::None
+                            && !contract.release_symbol.is_empty()
+                    });
+                let lifecycle_matches = contract.is_some_and(|contract| match &resolved_result {
+                    Ty::String => {
+                        contract.resource_result_type.is_none()
+                            && contract.release_symbol == "hew_string_drop"
+                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                    }
+                    Ty::Bytes => {
+                        contract.resource_result_type.is_none()
+                            && contract.release_symbol == "hew_bytes_drop"
+                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                    }
                     Ty::Named { name, .. } => opaque_resource_candidates
                         .candidates
                         .get(name.as_str())
                         .filter(|candidate| candidate.producer_symbols.contains(symbol))
-                        .filter(|candidate| {
+                        .is_some_and(|candidate| {
                             pending
                                 .extern_declaring_module
                                 .as_ref()
                                 .is_some_and(|module| candidate.producer_modules.contains(module))
-                        })
-                        .map(|candidate| match candidate.result_ownership {
+                        }),
+                    _ => false,
+                });
+                let owned =
+                    contract
+                        .filter(|_| lifecycle_matches)
+                        .map(|contract| match contract.result {
                             ExternResultOwnership::Fresh => Ownership::owned(Acquisition::Fresh),
                             ExternResultOwnership::Retained => {
                                 Ownership::owned(Acquisition::Retained)
@@ -965,9 +990,7 @@ impl Checker {
                             ExternResultOwnership::Borrowed | ExternResultOwnership::None => {
                                 Ownership::Unknown
                             }
-                        }),
-                    _ => None,
-                };
+                        });
                 fact.ownership = owned.unwrap_or(Ownership::Unknown);
             }
             produced_value_ownership.insert(key, fact);

@@ -150,6 +150,10 @@ fn call_argument_is_proven_owned(
                             .get(binding)
                             .is_some_and(|definitions| {
                                 definitions.len() == 1
+                                    && facts.get(&definitions[0]).is_some_and(|definition| {
+                                        definition.producer
+                                            != crate::node::HirProducedValueProducer::BindingRef
+                                    })
                                     && call_argument_is_proven_owned(
                                         definitions[0],
                                         verifier,
@@ -321,9 +325,17 @@ fn resolve_user_call_facts(
 
     let summaries = function_return_ownership_summaries(verifier, facts);
     let mut changed = false;
-    for (site, target) in &verifier.user_call_targets {
-        let Some(summary) = summaries.get(target).copied() else {
+    for (site, targets) in &verifier.user_call_targets {
+        let mut target_summaries = targets
+            .iter()
+            .filter_map(|target| summaries.get(target).copied());
+        let Some(first) = target_summaries.next() else {
             continue;
+        };
+        let summary = if target_summaries.all(|next| next == first) {
+            first
+        } else {
+            Ownership::Unknown
         };
         let summary = if matches!(summary, Ownership::Borrowed) {
             let arguments = verifier.user_call_arguments.get(site);
@@ -414,7 +426,7 @@ struct Verifier {
     site_parents: HashMap<SiteId, Option<SiteId>>,
     current_function: Option<DefId>,
     function_return_sites: HashMap<DefId, Vec<SiteId>>,
-    user_call_targets: HashMap<SiteId, DefId>,
+    user_call_targets: HashMap<SiteId, Vec<DefId>>,
     user_call_arguments: HashMap<SiteId, Vec<SiteId>>,
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
@@ -423,6 +435,7 @@ struct Verifier {
     binding_reference_sites: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_targets: HashMap<SiteId, BindingId>,
     nested_callable_depth: usize,
+    trait_method_implementations: HashMap<DefId, Vec<DefId>>,
 }
 
 impl Verifier {
@@ -433,6 +446,25 @@ impl Verifier {
     fn module(&mut self, module: &HirModule) {
         self.produced_value_facts
             .clone_from(&module.produced_value_facts);
+        for item in &module.items {
+            let HirItem::Impl(implementation) = item else {
+                continue;
+            };
+            for (trait_method, implementation_method) in implementation
+                .method_trait_method_ids
+                .iter()
+                .zip(&implementation.method_ids)
+            {
+                if let (Some(trait_method), Some(implementation_method)) =
+                    (trait_method, implementation_method)
+                {
+                    self.trait_method_implementations
+                        .entry(trait_method.clone())
+                        .or_default()
+                        .push(implementation_method.clone());
+                }
+            }
+        }
         for item in &module.items {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
@@ -872,6 +904,36 @@ impl Verifier {
         }
     }
 
+    fn record_user_call_target(
+        &mut self,
+        site: SiteId,
+        target: &hew_types::CallTarget,
+        arguments: impl IntoIterator<Item = SiteId>,
+    ) {
+        let targets = match target {
+            hew_types::CallTarget::User(declaration)
+            | hew_types::CallTarget::ImplMethod(declaration) => vec![declaration.clone()],
+            hew_types::CallTarget::DynamicVtable { method, .. }
+            | hew_types::CallTarget::StaticTraitMethod { method, .. } => self
+                .trait_method_implementations
+                .get(method)
+                .cloned()
+                .unwrap_or_default(),
+            hew_types::CallTarget::Extern { .. }
+            | hew_types::CallTarget::Runtime(_)
+            | hew_types::CallTarget::Builtin { .. }
+            | hew_types::CallTarget::RuntimeCollection(_)
+            | hew_types::CallTarget::IndirectFunctionValue
+            | hew_types::CallTarget::Unsupported { .. } => Vec::new(),
+        };
+        if targets.is_empty() {
+            return;
+        }
+        self.user_call_targets.insert(site, targets);
+        self.user_call_arguments
+            .insert(site, arguments.into_iter().collect());
+    }
+
     fn block(&mut self, block: &HirBlock) {
         self.node(block.node, 0..0);
         for stmt in &block.statements {
@@ -1235,11 +1297,15 @@ impl Verifier {
                 args,
             } => {
                 self.executable_call_target(target, expr);
-                if let hew_types::CallTarget::User(declaration) = target {
-                    self.user_call_targets
-                        .insert(expr.site, declaration.clone());
-                    self.user_call_arguments
-                        .insert(expr.site, args.iter().map(|arg| arg.site).collect());
+                if matches!(
+                    target,
+                    hew_types::CallTarget::User(_) | hew_types::CallTarget::ImplMethod(_)
+                ) {
+                    self.record_user_call_target(
+                        expr.site,
+                        target,
+                        args.iter().map(|arg| arg.site),
+                    );
                 }
                 if let hew_types::CallTarget::Runtime(family) = target {
                     self.runtime_call_targets.insert(expr.site, *family);
@@ -1299,6 +1365,11 @@ impl Verifier {
                 ..
             } => {
                 self.executable_call_target(target, expr);
+                self.record_user_call_target(
+                    expr.site,
+                    target,
+                    std::iter::once(receiver.site).chain(args.iter().map(|arg| arg.site)),
+                );
                 if let HirExprKind::ResolvedImplCall { target_family, .. } = &expr.kind {
                     self.resolved_collection_calls
                         .insert(expr.site, *target_family);
@@ -1315,6 +1386,11 @@ impl Verifier {
                 ..
             } => {
                 self.executable_call_target(call_target, expr);
+                self.record_user_call_target(
+                    expr.site,
+                    call_target,
+                    std::iter::once(receiver.site).chain(args.iter().map(|arg| arg.site)),
+                );
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);
@@ -1770,9 +1846,22 @@ impl Verifier {
                     self.block(eb);
                 }
             }
-            HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
+            HirExprKind::Break { value, .. } => {
                 if let Some(value) = value {
                     self.expr(value);
+                }
+            }
+            HirExprKind::Return { value } => {
+                if let Some(value) = value {
+                    self.expr(value);
+                    if self.nested_callable_depth == 0 {
+                        if let Some(function) = &self.current_function {
+                            self.function_return_sites
+                                .entry(function.clone())
+                                .or_default()
+                                .push(value.site);
+                        }
+                    }
                 }
             }
             HirExprKind::Unsupported(reason) => {

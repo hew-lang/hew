@@ -6408,6 +6408,11 @@ struct LowerCtx {
     produced_value_source_sites: HashMap<SpanKey, Vec<SiteId>>,
     /// Site-keyed rows awaiting receiver-span resolution at module finish.
     produced_value_fact_sites: HashMap<SiteId, HirProducedValueFact>,
+    /// Facts for compiler-generated expression roots that have no checker span
+    /// identity of their own. Kept disjoint from source-keyed facts until the
+    /// occurrence graph has resolved so a wrapper can never consume its
+    /// authored child's row merely because both share a source span.
+    generated_produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
     /// The checker key for each pending site fact.  This is retained until all
     /// expressions have lowered, at which point every dependency edge can be
     /// translated to its exact `SiteId` without relying on traversal order.
@@ -6913,6 +6918,7 @@ struct LowerCtx {
 
 struct PendingProducedValueCarrier {
     facts: HashMap<SiteId, HirProducedValueFact>,
+    generated_facts: HashMap<SiteId, HirProducedValueFact>,
     fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
     source_sites: HashMap<SpanKey, Vec<SiteId>>,
     ownership: HashMap<SpanKey, ProducedValueFact>,
@@ -7143,6 +7149,21 @@ impl PendingProducedValueCarrier {
                 ));
             }
         }
+        for (site, fact) in self.generated_facts {
+            if self.facts.insert(site, fact).is_some() {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "generated produced value identity".to_string(),
+                        reason: format!("generated HIR site {site} collides with a source fact"),
+                    },
+                    0..0,
+                    "generated and authored produced-value facts must occupy disjoint sites",
+                ));
+                if let Some(fact) = self.facts.get_mut(&site) {
+                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
+                }
+            }
+        }
         self.facts
     }
 }
@@ -7230,6 +7251,7 @@ impl LowerCtx {
             produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
             produced_value_source_sites: HashMap::new(),
             produced_value_fact_sites: HashMap::new(),
+            generated_produced_value_facts: HashMap::new(),
             produced_value_fact_keys: HashMap::new(),
             suppress_produced_value_recording_depth: 0,
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
@@ -16114,7 +16136,12 @@ impl LowerCtx {
             lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
             lowered.ty = normalized_ty;
         }
-        self.record_produced_value_fact(&expr.1, &lowered);
+        if !self
+            .generated_produced_value_facts
+            .contains_key(&lowered.site)
+        {
+            self.record_produced_value_fact(&expr.1, &lowered);
+        }
         lowered
     }
 
@@ -16136,10 +16163,35 @@ impl LowerCtx {
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
         if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.wrap_tail_ok(lowered, &expr.1)
+            self.record_produced_value_fact(&expr.1, &lowered);
+            let wrapped = self.wrap_tail_ok(lowered, &expr.1);
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::Unknown,
+            );
+            wrapped
         } else {
             lowered
         }
+    }
+
+    fn record_generated_produced_value_fact(
+        &mut self,
+        lowered: &HirExpr,
+        ownership: hew_types::ProducedValueOwnership,
+    ) {
+        let previous = self.generated_produced_value_facts.insert(
+            lowered.site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::classify(&lowered.kind),
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        assert!(previous.is_none(), "generated HIR site published twice");
     }
 
     /// Publish a synthetic expression root that deliberately has no checker
@@ -16324,6 +16376,7 @@ impl LowerCtx {
     fn take_pending_produced_value_carrier(&mut self) -> PendingProducedValueCarrier {
         PendingProducedValueCarrier {
             facts: std::mem::take(&mut self.produced_value_fact_sites),
+            generated_facts: std::mem::take(&mut self.generated_produced_value_facts),
             fact_keys: std::mem::take(&mut self.produced_value_fact_keys),
             source_sites: std::mem::take(&mut self.produced_value_source_sites),
             ownership: std::mem::take(&mut self.produced_value_ownership),
@@ -18433,7 +18486,8 @@ impl LowerCtx {
                     return inner;
                 }
             };
-            return HirExpr {
+            self.record_produced_value_fact(&span, &inner);
+            let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
@@ -18448,6 +18502,13 @@ impl LowerCtx {
                 },
                 span,
             };
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::Fresh,
+                ),
+            );
+            return wrapped;
         }
         inner
     }
@@ -23972,6 +24033,8 @@ impl LowerCtx {
             self.produced_value_source_sites
                 .retain(|_, sites| !sites.is_empty());
             self.produced_value_fact_sites
+                .retain(|site, _| !discarded.contains(site));
+            self.generated_produced_value_facts
                 .retain(|site, _| !discarded.contains(site));
             self.produced_value_fact_keys
                 .retain(|site, _| !discarded.contains(site));
@@ -34883,6 +34946,7 @@ fn main() {}
         };
         let carrier = PendingProducedValueCarrier {
             facts: HashMap::new(),
+            generated_facts: HashMap::new(),
             fact_keys: HashMap::new(),
             source_sites: HashMap::from([(key.clone(), vec![SiteId(41), SiteId(42)])]),
             ownership: HashMap::new(),

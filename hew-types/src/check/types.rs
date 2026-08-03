@@ -1473,6 +1473,7 @@ pub(super) struct PendingDirectCallOwnership {
     pub(super) fact: ProducedValueFact,
     pub(super) extern_symbol: Option<String>,
     pub(super) extern_declaring_module: Option<String>,
+    pub(super) extern_param_count: usize,
     pub(super) resolved_result_ty: Ty,
 }
 

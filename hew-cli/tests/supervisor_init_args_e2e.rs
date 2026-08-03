@@ -716,7 +716,7 @@ fn main() {
 /// `supervisor_stop` on a supervisor with an arg-initialized stateful child
 /// must tear down cleanly. Regression pin for the state-drop double free:
 /// the synthesized `__hew_state_drop_<Actor>` callback freed the state
-/// wrapper itself, but every runtime consumer (`free_actor_resources_with_options`,
+/// wrapper itself, but every runtime consumer (`free_actor_resources`,
 /// `InternalChildSpec::drop`) frees the wrapper AFTER invoking the callback —
 /// the stop path crashed with SIGTRAP (`pointer being freed was not
 /// allocated`) after printing correct output.

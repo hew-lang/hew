@@ -77,6 +77,57 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
     }
 }
 
+fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_types::TypeError) {
+    let (Some(source), Some(filename)) =
+        (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
+    else {
+        let level = match error.severity {
+            hew_types::error::Severity::Warning => "warning",
+            hew_types::error::Severity::Error => "error",
+        };
+        crate::diagnostic::emit_plain_diagnostic_line(&format!("{level}: {}", error.message));
+        return;
+    };
+    let notes = error
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(index, (span, message, _))| {
+            let (note_source, note_filename) = diagnostic
+                .note_sources
+                .get(index)
+                .and_then(Option::as_ref)
+                .map_or((source, filename), |(source, filename)| {
+                    (source.as_str(), filename.as_str())
+                });
+            crate::diagnostic::DiagnosticNote {
+                source: note_source,
+                filename: note_filename,
+                span,
+                message,
+            }
+        })
+        .collect::<Vec<_>>();
+    match error.severity {
+        hew_types::error::Severity::Warning => crate::diagnostic::render_warning(
+            source,
+            filename,
+            &error.span,
+            &error.message,
+            &notes,
+            &error.suggestions,
+        ),
+        hew_types::error::Severity::Error => crate::diagnostic::render_diagnostic(
+            source,
+            filename,
+            &error.span,
+            &error.message,
+            &notes,
+            &error.suggestions,
+        ),
+    }
+}
+
 pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
     if crate::diagnostic_json::json_output_active() {
         push_frontend_diagnostics_json(diagnostics);
@@ -122,41 +173,7 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                 }
             }
             FrontendDiagnosticKind::Type(error) => {
-                if let (Some(source), Some(filename)) =
-                    (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
-                {
-                    match error.severity {
-                        hew_types::error::Severity::Warning => {
-                            crate::diagnostic::render_warning_with_raw_notes(
-                                source,
-                                filename,
-                                &error.span,
-                                &error.message,
-                                &error.notes,
-                                &error.suggestions,
-                            );
-                        }
-                        hew_types::error::Severity::Error => {
-                            crate::diagnostic::render_diagnostic_with_raw_notes(
-                                source,
-                                filename,
-                                &error.span,
-                                &error.message,
-                                &error.notes,
-                                &error.suggestions,
-                            );
-                        }
-                    }
-                } else {
-                    let level = match error.severity {
-                        hew_types::error::Severity::Warning => "warning",
-                        hew_types::error::Severity::Error => "error",
-                    };
-                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
-                        "{level}: {}",
-                        error.message
-                    ));
-                }
+                render_frontend_type_diagnostic(diagnostic, error);
             }
             FrontendDiagnosticKind::Hir(error) => {
                 crate::diagnostic::render_hir_diagnostic(

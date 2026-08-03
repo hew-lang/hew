@@ -4573,6 +4573,7 @@ impl Checker {
                 span.clone(),
                 "by-value function parameters are borrowed; the caller retains ownership"
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec![format!(
                 "use `{name}.clone()` to materialize an owned replacement"
@@ -4805,7 +4806,7 @@ impl Checker {
             kind: TypeErrorKind::BorrowedParamReturn,
             span: span.clone(),
             message,
-            notes: vec![(span.clone(), note)],
+            notes: vec![(span.clone(), note, self.current_module.clone())],
             suggestions: vec![suggestion],
             source_module: self.current_module.clone(),
         });
@@ -5434,6 +5435,7 @@ impl Checker {
                 "handle-bearing structs are dropped field-by-field; returning the raw handle \
                  bypasses that ownership proof"
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec![
                 "use a dedicated consume/release API instead of returning the raw handle field"

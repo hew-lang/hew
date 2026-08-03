@@ -785,7 +785,7 @@ fn duplex_use_after_move_includes_consumed_here_note() {
     assert!(
         uam.notes
             .iter()
-            .any(|(_, msg)| msg.contains("consumed here")),
+            .any(|(_, msg, _)| msg.contains("consumed here")),
         "UseAfterMove on Duplex should include a 'consumed here' note; got notes: {:#?}",
         uam.notes
     );

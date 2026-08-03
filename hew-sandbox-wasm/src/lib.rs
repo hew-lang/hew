@@ -177,6 +177,8 @@ pub struct DiagnosticNote {
     pub start_offset: usize,
     pub end_offset: usize,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,13 +468,14 @@ fn type_error_to_diagnostic(err: &hew_types::error::TypeError) -> Diagnostic {
         notes: err
             .notes
             .iter()
-            .map(|(span, message)| {
+            .map(|(span, message, source_module)| {
                 let note_span = DiagnosticSpan::from_span(span);
                 DiagnosticNote {
                     span: note_span.clone(),
                     start_offset: note_span.start,
                     end_offset: note_span.end,
                     message: message.clone(),
+                    source_module: source_module.clone(),
                 }
             })
             .collect(),

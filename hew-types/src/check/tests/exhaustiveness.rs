@@ -406,13 +406,13 @@ fn typecheck_or_pattern_asymmetric_bindings_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("left branch binds `x`")),
+            .any(|(_, note, _)| note.contains("left branch binds `x`")),
         "expected left-branch binding note, got: {err:?}"
     );
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("right branch binds no names")),
+            .any(|(_, note, _)| note.contains("right branch binds no names")),
         "expected right-branch binding note, got: {err:?}"
     );
 }
@@ -448,13 +448,13 @@ fn typecheck_or_pattern_incompatible_binding_types_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("left branch binds `x` as `i64`")),
+            .any(|(_, note, _)| note.contains("left branch binds `x` as `i64`")),
         "expected left-branch type note, got: {err:?}"
     );
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("right branch binds `x` as `string`")),
+            .any(|(_, note, _)| note.contains("right branch binds `x` as `string`")),
         "expected right-branch type note, got: {err:?}"
     );
 }
@@ -483,13 +483,13 @@ fn typecheck_or_pattern_uppercase_binders_inconsistent_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("left branch binds `FOO`")),
+            .any(|(_, note, _)| note.contains("left branch binds `FOO`")),
         "expected left-branch binding note for `FOO`, got: {err:?}"
     );
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("right branch binds `BAR`")),
+            .any(|(_, note, _)| note.contains("right branch binds `BAR`")),
         "expected right-branch binding note for `BAR`, got: {err:?}"
     );
 }
@@ -567,13 +567,13 @@ fn typecheck_or_pattern_constructor_vs_binder_inconsistent_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("left branch binds no names")),
+            .any(|(_, note, _)| note.contains("left branch binds no names")),
         "expected left-branch 'binds no names' note for unit variant `Red`, got: {err:?}"
     );
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("right branch binds `x`")),
+            .any(|(_, note, _)| note.contains("right branch binds `x`")),
         "expected right-branch binding note for `x`, got: {err:?}"
     );
 }

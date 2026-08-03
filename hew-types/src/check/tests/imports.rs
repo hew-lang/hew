@@ -1864,7 +1864,7 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
     assert_eq!(
-        error.notes.first().map(|(span, _)| span.clone()),
+        error.notes.first().map(|(span, _, _)| span.clone()),
         Some(0..5),
         "duplicate pub name should point back to the first merged definition"
     );

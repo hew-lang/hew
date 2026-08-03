@@ -3357,7 +3357,12 @@ pub unsafe extern "C" fn hew_tcp_attach(
 ) -> c_int {
     // SAFETY: caller guarantees `actor_ref` is valid for this call; the reactor
     // takes a by-value snapshot before returning.
-    unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) }
+    let status =
+        unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) };
+    if status < 0 {
+        let _ = tcp_close_unowned_conn(conn);
+    }
+    status
 }
 
 /// Attach a TCP connection to a *local* actor, identified by its raw
@@ -3392,6 +3397,7 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
 ) -> c_int {
     if actor.is_null() {
         set_last_error("hew_tcp_attach_local: null actor pointer");
+        let _ = tcp_close_unowned_conn(conn);
         return -1;
     }
     // SAFETY: `actor` is non-null (checked above) and the caller guarantees it
@@ -3400,9 +3406,13 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
     // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; `reactor_attach`
     // takes a by-value snapshot before returning, so the address is only needed
     // for the duration of this call.
-    unsafe {
+    let status = unsafe {
         crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
+    };
+    if status < 0 {
+        let _ = tcp_close_unowned_conn(conn);
     }
+    status
 }
 
 /// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1).

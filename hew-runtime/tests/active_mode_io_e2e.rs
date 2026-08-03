@@ -211,13 +211,17 @@ fn scenario_attach_refuses_eviction_mailbox() {
         };
         let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
         assert!(!actor.is_null(), "spawn DropOld actor");
-        let actor_ref = unsafe { hew_actor_ref_local(actor) };
-        let rc = unsafe { hew_tcp_attach(server_conn, &raw const actor_ref, 1001, 1002) };
+        let rc = unsafe { hew_tcp_attach_local(server_conn, actor, 1001, 1002) };
         assert_eq!(
             rc, -1,
             "attach must refuse a bounded DropOld mailbox (leak-prone eviction)"
         );
         let _ = unsafe { hew_actor_free(actor) };
+        assert_eq!(
+            hew_runtime::transport::hew_tcp_close(server_conn),
+            -1,
+            "a refused consuming attach must already have closed its connection"
+        );
         server_conn
     };
     let _ = drop_old_conn;
@@ -249,6 +253,11 @@ fn scenario_attach_refuses_eviction_mailbox() {
             "attach must refuse a bounded Coalesce mailbox (leak-prone replace/eviction)"
         );
         let _ = unsafe { hew_actor_free(actor) };
+        assert_eq!(
+            hew_runtime::transport::hew_tcp_close(server_conn),
+            -1,
+            "a refused consuming attach must already have closed its connection"
+        );
     }
 
     // Control: a bounded DropNew (overflow == 1) mailbox never evicts a queued

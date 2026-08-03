@@ -2726,6 +2726,22 @@ pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
         BuiltinLinkage::StringCloneShim { .. } => Some(ProducedValueOwnership::owned(
             ProducedValueAcquisition::Clone,
         )),
+        BuiltinLinkage::RuntimeFfiShim { symbol } => {
+            let contract =
+                hew_types::ffi_contracts::extern_ownership_contract(symbol).contract()?;
+            match contract.result {
+                hew_types::ffi_contracts::ExternResultOwnership::Fresh => Some(
+                    ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                ),
+                hew_types::ffi_contracts::ExternResultOwnership::Retained => Some(
+                    ProducedValueOwnership::owned(ProducedValueAcquisition::Retained),
+                ),
+                hew_types::ffi_contracts::ExternResultOwnership::Borrowed => {
+                    Some(ProducedValueOwnership::Borrowed)
+                }
+                hew_types::ffi_contracts::ExternResultOwnership::None => None,
+            }
+        }
         _ => None,
     }
 }
@@ -2855,6 +2871,15 @@ mod tests {
                 ProducedValueAcquisition::Clone
             ))
         );
+        for endpoint in ["split_str", "lines_str", "replace_str"] {
+            assert_eq!(
+                result_ownership(endpoint),
+                Some(ProducedValueOwnership::owned(
+                    ProducedValueAcquisition::Fresh
+                )),
+                "{endpoint} must publish its audited FFI result"
+            );
+        }
         assert_eq!(result_ownership("println_i64"), None);
         assert_eq!(result_ownership("missing"), None);
     }

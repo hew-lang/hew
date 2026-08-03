@@ -2431,6 +2431,14 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
+symbol = "hew_string_chars"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_string_clone"
 result = "retained"
 params = ["borrow"]
@@ -2451,6 +2459,14 @@ result = "none"
 params = ["consume"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_lines"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_string_repeat"
@@ -2474,6 +2490,14 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_string_split"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "deep"
 result-retention = "transferred"
 
 [[ownership.contracts]]

@@ -31986,13 +31986,10 @@ fn member_di_size_bits(
     0
 }
 
-/// Emit the degraded-but-faithful enum DIE (Risk E): a `DW_TAG_structure_type`
-/// named after the enum with a `tag` member typed by a
-/// `DW_TAG_enumeration_type` (variant names as enumerators, so gdb prints the
-/// active variant name) and a `payload` member typed by a `DW_TAG_union_type`
-/// of per-variant struct DIEs (so gdb can read a variant's payload fields). The
-/// true auto-discriminated `DW_TAG_variant_part` is out of scope (inkwell lacks
-/// `create_variant_part`); this is the faithful-as-inkwell-allows view.
+/// Emit an enum as a `DW_TAG_structure_type` containing its discriminant member
+/// and a `DW_TAG_variant_part`. Each variant member carries its discriminant
+/// value and payload type, allowing DWARF consumers to select only the active
+/// payload automatically.
 #[expect(
     clippy::too_many_arguments,
     reason = "debug-type resolution threads the same explicit borrows as resolve_di_type"
@@ -32011,7 +32008,7 @@ fn resolve_enum_di_type<'ctx>(
 
     let enum_name = short_name(&enum_layout.name);
     // An indirect enum's local holds a `ptr` to the heap struct; represent it
-    // as a pointer to the (degraded) enum struct DIE.
+    // as a pointer to the enum struct DIE.
     let cache_key = format!("enum:{}", enum_layout.name);
     if let Some(t) = dctx.di_type_cache.borrow().get(&cache_key).copied() {
         let result = if enum_layout.is_indirect {
@@ -32068,12 +32065,10 @@ fn resolve_enum_di_type<'ctx>(
     // Recursion guard (Risk C): a recursive enum (`indirect enum List { Cons {
     // tail: List }; Nil }`) would re-enter this function while resolving the
     // `tail: List` payload field, with no cache entry yet → infinite recursion
-    // → stack overflow. Insert a placeholder struct DIE (tag member only) under
-    // the cache key BEFORE the payload loop, so the recursive field resolves to
-    // a pointer-to-placeholder and terminates. The full struct (with the
-    // payload union) overwrites the placeholder at the end; recursive references
-    // legitimately point at the tag-only placeholder, which gdb resolves by
-    // name — the standard forward-declared-composite pattern.
+    // → stack overflow. Insert the outer struct DIE with only its tag member
+    // BEFORE the payload loop, so the recursive field resolves to that same
+    // node and terminates. The variant part is appended in place after every
+    // payload type is resolved.
     let tag_offset_for_placeholder = target_data
         .offset_of_element(&outer_struct, 0)
         .map(|b| b * 8)
@@ -32113,14 +32108,18 @@ fn resolve_enum_di_type<'ctx>(
         .borrow_mut()
         .insert(cache_key.clone(), placeholder);
 
-    // Payload: a `DW_TAG_union_type` of per-variant struct DIEs. A variant with
-    // no payload contributes nothing; a variant whose payload can't be resolved
-    // is skipped (the variant name still prints via the tag).
-    let mut payload_variants: Vec<DIType<'ctx>> = Vec::new();
-    for variant in &enum_layout.variants {
-        if variant.field_tys.is_empty() {
-            continue;
-        }
+    let payload_offset_bits = target_data
+        .offset_of_element(&outer_struct, 1)
+        .map(|bytes| bytes * 8)
+        .unwrap_or(tag_bits.max(8));
+
+    // Variant members: every branch is represented, including payload-free
+    // variants. A variant whose payload type cannot be resolved is omitted
+    // rather than emitting a malformed DIE; the tag enumeration still preserves
+    // its name.
+    let mut variant_members: Vec<inkwell::llvm_sys::prelude::LLVMMetadataRef> =
+        Vec::with_capacity(enum_layout.variants.len());
+    for (variant_index, variant) in enum_layout.variants.iter().enumerate() {
         let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(variant.field_tys.len());
         let mut ok = true;
         // The variant's own LLVM struct, for member offsets.
@@ -32177,6 +32176,7 @@ fn resolve_enum_di_type<'ctx>(
             continue;
         }
         let variant_size_bits = target_data.get_bit_size(&variant_struct);
+        let variant_align_bits = target_data.get_abi_alignment(&variant_struct) * 8;
         let variant_struct_di = dctx
             .di_builder
             .create_struct_type(
@@ -32185,7 +32185,7 @@ fn resolve_enum_di_type<'ctx>(
                 dctx.file,
                 0,
                 variant_size_bits,
-                0,
+                variant_align_bits,
                 DIFlags::PUBLIC,
                 None,
                 &members,
@@ -32194,131 +32194,55 @@ fn resolve_enum_di_type<'ctx>(
                 short_name(&variant.name),
             )
             .as_type();
-        // A `DW_TAG_union_type`'s children must be `DW_TAG_member`s — LLVM's
-        // DWARF emitter drops any union element that is a bare composite type
-        // (the empty-union bug the live-debugger check caught). Wrap the variant
-        // struct in a member named after the variant, at union offset 0 (every
-        // union member overlays the same payload bytes), so gdb can read
-        // `status.payload.Packet.code`.
-        let variant_member = dctx
-            .di_builder
-            .create_member_type(
-                dctx.compile_unit.as_debug_info_scope(),
-                short_name(&variant.name),
-                dctx.file,
-                0,
-                variant_size_bits,
-                0,
-                0,
-                DIFlags::PUBLIC,
-                variant_struct_di,
+        let discriminant = ctx
+            .custom_width_int_type(
+                std::num::NonZeroU32::new(enum_layout.tag_width.max(8))
+                    .expect("enum tag width is non-zero"),
             )
-            .as_type();
-        payload_variants.push(variant_member);
+            .expect("LLVM accepts the enum tag integer width")
+            .const_int(u64::try_from(variant_index).unwrap_or(u64::MAX), false);
+        let variant_member = create_di_variant_member_type(
+            dctx.di_builder,
+            dctx.compile_unit.as_debug_info_scope(),
+            short_name(&variant.name),
+            dctx.file,
+            variant_size_bits,
+            variant_align_bits,
+            payload_offset_bits,
+            discriminant,
+            variant_struct_di,
+        );
+        variant_members.push(variant_member);
     }
 
-    // The outer struct: member 0 = tag (the enumeration), member 1 = payload
-    // (the union), with offsets from the LLVM `{ tag, payload }` struct.
-    let tag_offset_bits = target_data
-        .offset_of_element(&outer_struct, 0)
-        .map(|b| b * 8)
-        .unwrap_or(0);
-    // Payload byte-offset within the enclosing enum struct (after the tag +
-    // its alignment padding). The payload union's own size is the bytes from
-    // this offset to the end of the enum — `struct_size - payload_offset` — NOT
-    // `struct_size - tag_bits`, which ignored the tag→payload padding and made
-    // the union one byte larger than the space it occupies (extending past the
-    // object). Falls back to the tag-width subtraction only if the offset query
-    // fails (a 1-element struct with no payload field, which carries no union).
-    let payload_offset_bits = target_data
-        .offset_of_element(&outer_struct, 1)
-        .map(|b| b * 8)
-        .unwrap_or(tag_bits.max(8));
-
-    let payload_di = if payload_variants.is_empty() {
-        None
-    } else {
-        let payload_bits = struct_size_bits.saturating_sub(payload_offset_bits);
-        Some(
-            dctx.di_builder
-                .create_union_type(
-                    dctx.compile_unit.as_debug_info_scope(),
-                    &format!("{enum_name}::Payload"),
-                    dctx.file,
-                    0,
-                    payload_bits,
-                    0,
-                    DIFlags::PUBLIC,
-                    &payload_variants,
-                    0,
-                    &format!("{enum_name}::Payload"),
-                )
-                .as_type(),
-        )
-    };
-    let tag_member = dctx
-        .di_builder
-        .create_member_type(
-            dctx.compile_unit.as_debug_info_scope(),
-            "tag",
-            dctx.file,
-            0,
-            tag_bits.max(8),
-            0,
-            tag_offset_bits,
-            DIFlags::PUBLIC,
-            tag_di,
-        )
-        .as_type();
-    let mut struct_members = vec![tag_member];
-    if let Some(payload_di) = payload_di {
-        // Reuse the payload offset computed for the union's byte-size above.
-        let payload_member = dctx
-            .di_builder
-            .create_member_type(
-                dctx.compile_unit.as_debug_info_scope(),
-                "payload",
-                dctx.file,
-                0,
-                0,
-                0,
-                payload_offset_bits,
-                DIFlags::PUBLIC,
-                payload_di,
-            )
-            .as_type();
-        struct_members.push(payload_member);
-    }
-    let enum_struct = dctx
-        .di_builder
-        .create_struct_type(
-            dctx.compile_unit.as_debug_info_scope(),
-            enum_name,
-            dctx.file,
-            0,
-            struct_size_bits,
-            struct_align_bits,
-            DIFlags::PUBLIC,
-            None,
-            &struct_members,
-            0,
-            None,
-            enum_name,
-        )
-        .as_type();
-    dctx.di_type_cache
-        .borrow_mut()
-        .insert(cache_key, enum_struct);
+    // The variant part references the exact tag member already installed on
+    // the recursive outer type through DW_AT_discr.
+    let variant_part = create_di_variant_part(
+        dctx.di_builder,
+        dctx.compile_unit.as_debug_info_scope(),
+        enum_name,
+        dctx.file,
+        struct_size_bits,
+        struct_align_bits,
+        placeholder_tag_member,
+        &variant_members,
+    );
+    append_di_variant_part(
+        dctx.di_builder,
+        placeholder,
+        placeholder_tag_member,
+        variant_part,
+    );
 
     if enum_layout.is_indirect {
         let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
         Some(
             dctx.di_builder
-                .create_pointer_type(enum_name, enum_struct, ptr_bits, 0, AddressSpace::default())
+                .create_pointer_type(enum_name, placeholder, ptr_bits, 0, AddressSpace::default())
                 .as_type(),
         )
     } else {
-        Some(enum_struct)
+        Some(placeholder)
     }
 }
 
@@ -32330,6 +32254,141 @@ fn enum_debug_outer_struct<'ctx>(
     enum_owner: &str,
 ) -> Option<StructType<'ctx>> {
     record_layouts.get(enum_owner).copied()
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the raw LLVM DIBuilder call mirrors its native signature"
+)]
+fn create_di_variant_member_type<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    scope: inkwell::debug_info::DIScope<'ctx>,
+    name: &str,
+    file: DIFile<'ctx>,
+    size_in_bits: u64,
+    align_in_bits: u32,
+    offset_in_bits: u64,
+    discriminant: IntValue<'ctx>,
+    ty: inkwell::debug_info::DIType<'ctx>,
+) -> inkwell::llvm_sys::prelude::LLVMMetadataRef {
+    use inkwell::values::AsValueRef;
+
+    unsafe extern "C" {
+        fn hewLLVMDIBuilderCreateVariantMemberType(
+            builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
+            scope: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            name: *const std::ffi::c_char,
+            name_len: usize,
+            file: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            line_number: u32,
+            size_in_bits: u64,
+            align_in_bits: u32,
+            offset_in_bits: u64,
+            discriminant: inkwell::llvm_sys::prelude::LLVMValueRef,
+            flags: inkwell::llvm_sys::debuginfo::LLVMDIFlags,
+            ty: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+        ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
+    }
+
+    // SAFETY: all wrappers belong to the same live LLVM context and DIBuilder.
+    // The C++ shim forwards directly to LLVM 22's DIBuilder method; StringRef
+    // borrows `name` only for the duration of the call.
+    unsafe {
+        hewLLVMDIBuilderCreateVariantMemberType(
+            di_builder.as_mut_ptr(),
+            scope.as_mut_ptr(),
+            name.as_ptr().cast(),
+            name.len(),
+            file.as_mut_ptr(),
+            0,
+            size_in_bits,
+            align_in_bits,
+            offset_in_bits,
+            discriminant.as_value_ref(),
+            DIFlags::PUBLIC,
+            ty.as_mut_ptr(),
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the raw LLVM DIBuilder call mirrors its native signature"
+)]
+fn create_di_variant_part<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    scope: inkwell::debug_info::DIScope<'ctx>,
+    name: &str,
+    file: DIFile<'ctx>,
+    size_in_bits: u64,
+    align_in_bits: u32,
+    discriminator: inkwell::debug_info::DIType<'ctx>,
+    elements: &[inkwell::llvm_sys::prelude::LLVMMetadataRef],
+) -> inkwell::llvm_sys::prelude::LLVMMetadataRef {
+    unsafe extern "C" {
+        fn hewLLVMDIBuilderCreateVariantPart(
+            builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
+            scope: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            name: *const std::ffi::c_char,
+            name_len: usize,
+            file: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            line_number: u32,
+            size_in_bits: u64,
+            align_in_bits: u32,
+            flags: inkwell::llvm_sys::debuginfo::LLVMDIFlags,
+            discriminator: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            elements: *mut inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            element_count: u32,
+        ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
+    }
+
+    let element_count = u32::try_from(elements.len()).unwrap_or(u32::MAX);
+    // SAFETY: every metadata node belongs to `di_builder`'s context. LLVM copies
+    // the pointer slice into an MDTuple during the call.
+    unsafe {
+        hewLLVMDIBuilderCreateVariantPart(
+            di_builder.as_mut_ptr(),
+            scope.as_mut_ptr(),
+            name.as_ptr().cast(),
+            name.len(),
+            file.as_mut_ptr(),
+            0,
+            size_in_bits,
+            align_in_bits,
+            DIFlags::PUBLIC,
+            discriminator.as_mut_ptr(),
+            elements.as_ptr().cast_mut(),
+            element_count,
+        )
+    }
+}
+
+fn append_di_variant_part<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    composite: inkwell::debug_info::DIType<'ctx>,
+    discriminator: inkwell::debug_info::DIType<'ctx>,
+    variant_part: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+) {
+    unsafe extern "C" {
+        fn hewLLVMDICompositeTypeAppendVariantPart(
+            builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
+            composite: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            existing_member: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            variant_part: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+        );
+    }
+
+    // SAFETY: `composite` is the live outer enum DICompositeType and
+    // `discriminator` is its existing child. The replacement only appends the
+    // newly-created variant part, satisfying LLVM's replaceElements invariant.
+    unsafe {
+        hewLLVMDICompositeTypeAppendVariantPart(
+            di_builder.as_mut_ptr(),
+            composite.as_mut_ptr(),
+            discriminator.as_mut_ptr(),
+            variant_part,
+        );
+    }
 }
 
 /// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`
@@ -32669,8 +32728,7 @@ fn lower_function<'ctx>(
     // read the pre-store slot value at the `println` breakpoint. `optnone`
     // restores the faithful one-store-per-assignment shape real `-O0` frontends
     // (clang/rustc) rely on for trustworthy locals. Skipped for coroutines: a
-    // `presplitcoroutine` MUST run `CoroSplit`, which `optnone` would block — and
-    // suspend-carrying bodies are excluded from `-g` debug info anyway.
+    // `presplitcoroutine` MUST run `CoroSplit`, which `optnone` would block.
     if debug.is_some() && !is_coroutine_function(func) {
         apply_optnone_for_debug(ctx, llvm_fn);
     }
@@ -32732,24 +32790,27 @@ fn lower_function<'ctx>(
     let has_suspend = coro_facts.is_coroutine;
 
     // DWARF subprogram + function-entry location for `hew build -g` (W0.060).
-    // Emitted only for plain (non-suspend) `fn`s whose span falls within the
-    // compiled source file. FAIL-CLOSED on two fronts: a function with no span
+    // Emitted only for functions whose span falls within the compiled source
+    // file. FAIL-CLOSED on two fronts: a function with no span
     // gets NO debug info (a location-free function is legal at -O0) rather than
     // a fabricated line 0; and a span that lies outside this file — e.g. a
     // monomorphised stdlib function pulled into the module carries a byte
     // offset into the *stdlib* source, not the user's file — is skipped rather
-    // than mapped to a wrong line in `dbg.hew`. Suspend-carrying coroutine
-    // bodies are skipped too — their `DISubprogram` must survive `CoroSplit`,
-    // a later stage — so emitting one now would risk verifier/codegen breakage.
+    // than mapped to a wrong line in `dbg.hew`.
+    //
+    // Coroutine functions deliberately carry the same source-level
+    // `DISubprogram` here. LLVM's CoroSplit clones the subprogram and remaps
+    // instruction locations onto its `.resume` / `.destroy` outlines; retaining
+    // the original scope is the shape LLVM's coroutine debug-info support
+    // expects. The post-pass verifier in `run_module_pipeline` fails closed if
+    // LLVM ever cannot preserve that mapping for a coroutine shape.
     //
     // `fn_subprogram` is captured for the body walk below: Stage 2 sets a
     // per-instruction `DILocation` scoped to this subprogram so gdb steps the
     // body line-by-line.
     let mut fn_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>> = None;
     let entry_debug_loc = match (debug, func.span) {
-        (Some(dctx), Some((start, _end)))
-            if !has_suspend && dctx.line_index.contains(start as usize) =>
-        {
+        (Some(dctx), Some((start, _end))) if dctx.line_index.contains(start as usize) => {
             let line = dctx.line_index.line(start as usize);
             let column = dctx.line_index.column(start as usize);
             // Stage 5: a real `DISubroutineType` — element 0 is the return type

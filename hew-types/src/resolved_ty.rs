@@ -468,6 +468,84 @@ impl ResolvedTy {
         matches!((fixed_width(self), fixed_width(target)), (Some(from), Some(to)) if from <= to)
     }
 
+    /// Whether two resolved types denote the same ownership-bearing storage.
+    /// Exact equality remains authoritative for user and opaque nominals. A
+    /// compiler builtin may retain different presentation names across source
+    /// boundaries, so its discriminator and recursively congruent arguments
+    /// provide the stable identity in that case.
+    #[must_use]
+    pub fn is_storage_congruent_with(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        match (self, other) {
+            (
+                Self::Named {
+                    args: left_args,
+                    builtin: Some(left_builtin),
+                    is_opaque: false,
+                    ..
+                },
+                Self::Named {
+                    args: right_args,
+                    builtin: Some(right_builtin),
+                    is_opaque: false,
+                    ..
+                },
+            ) => {
+                left_builtin == right_builtin
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+            }
+            (Self::Tuple(left), Self::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+            }
+            (Self::Array(left, left_size), Self::Array(right, right_size)) => {
+                left_size == right_size && left.is_storage_congruent_with(right)
+            }
+            (Self::Slice(left), Self::Slice(right))
+            | (Self::Task(left), Self::Task(right))
+            | (Self::Borrow { pointee: left }, Self::Borrow { pointee: right }) => {
+                left.is_storage_congruent_with(right)
+            }
+            (
+                Self::Pointer {
+                    is_mutable: left_mutable,
+                    pointee: left,
+                },
+                Self::Pointer {
+                    is_mutable: right_mutable,
+                    pointee: right,
+                },
+            ) => left_mutable == right_mutable && left.is_storage_congruent_with(right),
+            (
+                Self::Function {
+                    params: left_params,
+                    ret: left_ret,
+                },
+                Self::Function {
+                    params: right_params,
+                    ret: right_ret,
+                },
+            ) => {
+                left_params.len() == right_params.len()
+                    && left_params
+                        .iter()
+                        .zip(right_params)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+                    && left_ret.is_storage_congruent_with(right_ret)
+            }
+            _ => false,
+        }
+    }
+
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].
     ///
     /// This is the **single authorised conversion** from `Ty` to
@@ -1071,6 +1149,38 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_congruence_uses_nested_builtin_identity() {
+        let short = ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![ResolvedTy::named_builtin(
+                "Sender",
+                crate::BuiltinType::Sender,
+                vec![ResolvedTy::I64],
+            )],
+        );
+        let qualified = ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![ResolvedTy::named_builtin(
+                "std.channel.Sender",
+                crate::BuiltinType::Sender,
+                vec![ResolvedTy::I64],
+            )],
+        );
+        assert!(short.is_storage_congruent_with(&qualified));
+
+        let foreign = ResolvedTy::named_user("user.channel.Sender", vec![ResolvedTy::I64]);
+        assert!(!short.is_storage_congruent_with(&ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![foreign],
+        )));
+        assert!(!ResolvedTy::named_user("left.Token", Vec::new())
+            .is_storage_congruent_with(&ResolvedTy::named_user("right.Token", Vec::new())));
+    }
 
     #[test]
     fn concrete_type_param_mangling_preserves_probe_encoding() {

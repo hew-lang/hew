@@ -33,7 +33,28 @@ use crate::channel_common::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
-static ACTIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static ACTIVE_HANDLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HANDLE_COUNT_UNDERFLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn record_handle_open() {
+    ACTIVE_HANDLES.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn record_handle_close() {
+    ACTIVE_HANDLES.with(|count| {
+        let current = count.get();
+        if current == 0 {
+            HANDLE_COUNT_UNDERFLOWED.set(true);
+        }
+        // This runs from Drop, including while unwinding. Record an underflow
+        // for the explicit test oracle below instead of risking a double panic.
+        count.set(current.saturating_sub(1));
+    });
+}
 
 // ── Core queue ──────────────────────────────────────────────────────────
 
@@ -114,7 +135,7 @@ pub struct HewWasmChannelPair {
 impl HewWasmChannelSender {
     fn new(inner: WasmChannelSender) -> Self {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_add(1, Ordering::Relaxed);
+        record_handle_open();
         Self { inner }
     }
 }
@@ -122,7 +143,7 @@ impl HewWasmChannelSender {
 impl HewWasmChannelReceiver {
     fn new(inner: WasmChannelReceiver) -> Self {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_add(1, Ordering::Relaxed);
+        record_handle_open();
         Self { inner }
     }
 }
@@ -130,14 +151,14 @@ impl HewWasmChannelReceiver {
 impl Drop for HewWasmChannelSender {
     fn drop(&mut self) {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_sub(1, Ordering::Relaxed);
+        record_handle_close();
     }
 }
 
 impl Drop for HewWasmChannelReceiver {
     fn drop(&mut self) {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_sub(1, Ordering::Relaxed);
+        record_handle_close();
     }
 }
 
@@ -494,7 +515,11 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewWasmChanne
 
 #[cfg(test)]
 fn active_handle_count() -> usize {
-    ACTIVE_HANDLES.load(Ordering::Relaxed)
+    assert!(
+        !HANDLE_COUNT_UNDERFLOWED.get(),
+        "wasm channel test handle count underflow"
+    );
+    ACTIVE_HANDLES.get()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -773,6 +798,30 @@ mod tests {
             hew_channel_pair_free(pair);
         }
         assert_eq!(active_handle_count(), 0);
+    }
+
+    #[test]
+    fn abi_handle_accounting_is_test_thread_local() {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let pair = hew_channel_new(2);
+            assert_eq!(active_handle_count(), 2);
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            // SAFETY: the worker exclusively owns its unextracted pair.
+            unsafe { hew_channel_pair_free(pair) };
+            assert_eq!(active_handle_count(), 0);
+        });
+
+        ready_rx.recv().unwrap();
+        assert_eq!(
+            active_handle_count(),
+            0,
+            "another test thread's live handles must not contaminate this oracle"
+        );
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

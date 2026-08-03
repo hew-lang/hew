@@ -472,16 +472,15 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
     unsafe { hew_timer_wheel_schedule_handle(tw, delay_ms, cb, data).entry }
 }
 
-/// Schedule a timer and return the identity-bearing handle needed to cancel it.
-///
-/// # Safety
-///
-/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].  `cb`
-/// and `data` must remain valid until the timer fires or is cancelled.
-#[no_mangle]
-pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
+#[derive(Clone, Copy)]
+enum TimerSchedule {
+    After(u64),
+    At(u64),
+}
+
+unsafe fn timer_wheel_schedule_handle_inner(
     tw: *mut HewTimerWheel,
-    delay_ms: u64,
+    schedule: TimerSchedule,
     cb: HewTimerCb,
     data: *mut c_void,
 ) -> HewTimerHandle {
@@ -497,11 +496,24 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
         crate::set_last_error("timer entry generation space exhausted");
         return HewTimerHandle::null();
     }
+    let deadline_ms = match schedule {
+        TimerSchedule::After(delay_ms) => w.current_ms.saturating_add(delay_ms),
+        // A deadline that elapsed before registration is already due. Keep it
+        // in the current slot so the next tick can collect it immediately.
+        TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
+    };
+    // `hew_timer_wheel_next_deadline_ms` reserves u64::MAX as its empty-wheel
+    // sentinel. Reject that deadline explicitly instead of accepting a timer
+    // that the ticker would then treat as absent forever.
+    if deadline_ms == u64::MAX {
+        crate::set_last_error("timer deadline u64::MAX is reserved");
+        return HewTimerHandle::null();
+    }
     let generation = w.next_generation;
     w.next_generation = w.next_generation.wrapping_add(1);
 
     let entry = Box::into_raw(Box::new(HewTimerEntry {
-        deadline_ms: w.current_ms + delay_ms,
+        deadline_ms,
         generation,
         cb: Some(cb),
         data,
@@ -516,6 +528,47 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
     drop(w);
     notify_ticker();
     handle
+}
+
+/// Schedule a timer and return the identity-bearing handle needed to cancel it.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].  `cb`
+/// and `data` must remain valid until the timer fires or is cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
+    tw: *mut HewTimerWheel,
+    delay_ms: u64,
+    cb: HewTimerCb,
+    data: *mut c_void,
+) -> HewTimerHandle {
+    // SAFETY: upheld by this function's caller.
+    unsafe { timer_wheel_schedule_handle_inner(tw, TimerSchedule::After(delay_ms), cb, data) }
+}
+
+/// Schedule a timer at an absolute monotonic deadline.
+///
+/// A deadline already behind the wheel cursor is treated as immediately due
+/// and fires on the next tick. This is the scheduling form used by cooperative
+/// WASM callers, whose wheel cursor advances only when the host drives it.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`]. `cb` and
+/// `data` must remain valid until the timer fires or is cancelled.
+#[allow(
+    dead_code,
+    reason = "used by wasm32 scheduler modules and their native-host tests"
+)]
+pub(crate) unsafe fn timer_wheel_schedule_at_handle(
+    tw: *mut HewTimerWheel,
+    deadline_ms: u64,
+    cb: HewTimerCb,
+    data: *mut c_void,
+) -> HewTimerHandle {
+    // SAFETY: upheld by this function's caller.
+    unsafe { timer_wheel_schedule_handle_inner(tw, TimerSchedule::At(deadline_ms), cb, data) }
 }
 
 /// Mark a timer entry as cancelled.
@@ -594,6 +647,17 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Absolute registrations can already be due when inserted. They are
+        // placed in the current slot and must be observable without requiring
+        // the cursor to wrap through that slot again.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "masked to L0_SIZE which fits in usize"
+        )]
+        let current_slot = (w.current_ms / L0_MS) as usize & (L0_SIZE - 1);
+        let current_ms = w.current_ms;
+        collect_expired_entries(&raw mut w.l0[current_slot], current_ms, &mut expired);
 
         while w.current_ms < now {
             w.current_ms += 1;
@@ -761,17 +825,13 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
 ///
 /// Unlike [`hew_timer_wheel_next_deadline_ms`], which returns the delay
 /// *relative* to the wheel's `current_ms`, this returns the absolute fire time
-/// an entry was scheduled at. Timer-wheel tests must drive
-/// `hew_wasm_timer_tick` with this absolute value: the wheel fires an entry
-/// only once its `current_ms` reaches the entry's absolute `deadline_ms`, and
-/// on native (where the wasm virtual-clock seam is inert) that value is
-/// `current_ms_at_creation + delay`, which drifts from any freshly re-derived
-/// `now + delay`.
+/// stored on the earliest entry.
 ///
 /// # Safety
 ///
 /// `tw` must be null or a valid pointer returned by [`hew_timer_wheel_new`].
 #[cfg(test)]
+#[allow(dead_code, reason = "used by wasm32-only shutdown tests")]
 pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel) -> Option<u64> {
     if tw.is_null() {
         return None;
@@ -806,6 +866,40 @@ pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel
     } else {
         Some(earliest)
     }
+}
+
+/// Test-only: move the wheel cursor forward by `delta_ms` without changing any
+/// entries. This models a wheel cursor that was advanced independently of a
+/// caller's separately sampled monotonic deadline.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`]. The wheel
+/// must not be accessed concurrently.
+#[cfg(test)]
+pub(crate) unsafe fn timer_wheel_advance_cursor_for_test(tw: *mut HewTimerWheel, delta_ms: u64) {
+    // SAFETY: caller guarantees `tw` is valid and exclusively accessed.
+    let wheel = unsafe { &*tw };
+    let mut w = wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    w.current_ms = w.current_ms.saturating_add(delta_ms);
+}
+
+/// Read the current wheel cursor without advancing it.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].
+pub(crate) unsafe fn timer_wheel_cursor_ms(tw: *mut HewTimerWheel) -> u64 {
+    // SAFETY: caller guarantees `tw` is valid.
+    let wheel = unsafe { &*tw };
+    wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .current_ms
 }
 
 // ---------------------------------------------------------------------------
@@ -972,6 +1066,83 @@ mod tests {
     }
 
     // ── insert_entry: level placement ─────────────────────────────────
+
+    #[test]
+    fn past_due_absolute_deadline_fires_once_on_next_tick() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1_000);
+
+        // SAFETY: `tw` is test-owned and `data` outlives every tick below.
+        unsafe {
+            let handle = timer_wheel_schedule_at_handle(tw, 900, test_cb, data);
+            assert!(!handle.entry.is_null());
+
+            assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+            assert_eq!(timer_wheel_tick_to(tw, 1_002), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn zero_delay_fires_on_next_tick_without_l0_wrap() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1_000);
+
+        // SAFETY: `tw` is test-owned and `data` outlives every tick below.
+        unsafe {
+            let handle = hew_timer_wheel_schedule_handle(tw, 0, test_cb, data);
+            assert!(!handle.entry.is_null());
+
+            assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+            assert_eq!(timer_wheel_tick_to(tw, 1_255), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn maximum_deadline_is_rejected_at_schedule_boundary() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1);
+        crate::hew_clear_error();
+
+        // SAFETY: `tw` is test-owned and `data` outlives every call below.
+        unsafe {
+            let relative = hew_timer_wheel_schedule_handle(tw, u64::MAX, test_cb, data);
+            assert!(relative.entry.is_null());
+
+            let absolute = timer_wheel_schedule_at_handle(tw, u64::MAX, test_cb, data);
+            assert!(absolute.entry.is_null());
+            assert_eq!(hew_timer_wheel_next_deadline_ms(tw), -1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 0);
+
+            let error = crate::hew_last_error();
+            assert!(!error.is_null());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(error).to_str().unwrap(),
+                "timer deadline u64::MAX is reserved"
+            );
+
+            let wheel = &*tw;
+            assert_eq!(
+                wheel
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .next_generation,
+                1
+            );
+            hew_timer_wheel_free(tw);
+        }
+    }
 
     #[test]
     fn insert_zero_delta_lands_in_l0() {

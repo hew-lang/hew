@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
@@ -19,8 +19,8 @@ use crate::lifetime::PoisonSafe;
 use crate::actor::{hew_actor_send, HewActor};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms,
-    hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, hew_timer_wheel_tick, HewTimerHandle,
-    HewTimerWheel,
+    hew_timer_wheel_remove, hew_timer_wheel_tick, timer_wheel_cursor_ms,
+    timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
 };
 
 // ---------------------------------------------------------------------------
@@ -357,6 +357,8 @@ struct PeriodicCtx {
     actor: *mut HewActor,
     msg_type: i32,
     interval_ms: u64,
+    /// Absolute deadline for the next cadence slot.
+    next_fire_ms: AtomicU64,
     wheel: *mut HewTimerWheel,
     /// Set true to stop the timer. Once observed by the callback (under the
     /// `pending` lock at re-arm, or at the Dekker cancelled-check) the timer
@@ -418,6 +420,10 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
         return;
     }
 
+    // Fire one message for this due cadence slot. Re-arming preserves the
+    // absolute phase while dropping any other slots missed during a cursor
+    // stall, so the ticker cannot spin through overdue intervals.
+    //
     // Send a zero-payload message to the actor's dispatch function.
     // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
     // on our in_flight guard and won't free the actor until we clear it.
@@ -439,13 +445,24 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
         unregister_timer(ctx.actor, ctx_addr);
         return;
     }
+    let mut next_fire_ms = ctx
+        .next_fire_ms
+        .load(Ordering::SeqCst)
+        .saturating_add(ctx.interval_ms);
+    // SAFETY: ctx owns a live wheel for the lifetime of the periodic timer.
+    let cursor_ms = unsafe { timer_wheel_cursor_ms(ctx.wheel) };
+    if next_fire_ms < cursor_ms {
+        let skipped_slots = cursor_ms.saturating_sub(next_fire_ms) / ctx.interval_ms + 1;
+        next_fire_ms = next_fire_ms.saturating_add(ctx.interval_ms.saturating_mul(skipped_slots));
+    }
+    ctx.next_fire_ms.store(next_fire_ms, Ordering::SeqCst);
+
     // Hand a fresh strong reference to the wheel for the next one-shot.
     let next = Arc::into_raw(Arc::clone(&ctx)).cast::<c_void>().cast_mut();
     // SAFETY: wheel is valid; `next` stays valid until the entry fires or is
     // removed (both reclaim it exactly once).
-    let handle = unsafe {
-        hew_timer_wheel_schedule_handle(ctx.wheel, ctx.interval_ms, periodic_timer_cb, next)
-    };
+    let handle =
+        unsafe { timer_wheel_schedule_at_handle(ctx.wheel, next_fire_ms, periodic_timer_cb, next) };
     if handle.entry.is_null() {
         // Scheduling failed: reclaim the reference we just leaked into `next`
         // so the ctx is not leaked, and stop the timer.
@@ -466,9 +483,11 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
 
 /// Schedule a periodic self-send to an actor.
 ///
-/// Every `interval_ms` milliseconds, sends a zero-payload message with type
-/// `msg_type` to the actor's dispatch function. The timer repeats until the
-/// actor is freed or the handle is cancelled.
+/// On an absolute cadence every `interval_ms` milliseconds, sends a
+/// zero-payload message with type `msg_type` to the actor's dispatch function.
+/// A late timer fires once and drops any cadence slots missed while the wheel
+/// cursor was stalled. The timer repeats until the actor is freed or the
+/// handle is cancelled.
 ///
 /// Returns a handle (opaque pointer) that can be passed to
 /// [`hew_actor_cancel_periodic`] to stop the timer.
@@ -491,10 +510,38 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
         return ptr::null_mut();
     }
 
+    // SAFETY: `actor` and `tw` were validated above; hew_now_ms has no
+    // preconditions on native targets.
+    unsafe {
+        schedule_periodic_on_wheel(
+            actor,
+            msg_type,
+            interval_ms,
+            tw,
+            crate::io_time::hew_now_ms(),
+        )
+    }
+}
+
+/// Schedule one native periodic timer on a specific wheel and clock sample.
+///
+/// # Safety
+///
+/// `actor` and `tw` must be valid and `interval_ms` must be non-zero.
+unsafe fn schedule_periodic_on_wheel(
+    actor: *mut HewActor,
+    msg_type: i32,
+    interval_ms: u64,
+    tw: *mut HewTimerWheel,
+    now_ms: u64,
+) -> *mut c_void {
+    let next_fire_ms = now_ms.saturating_add(interval_ms);
+
     let ctx = Arc::new(PeriodicCtx {
         actor,
         msg_type,
         interval_ms,
+        next_fire_ms: AtomicU64::new(next_fire_ms),
         wheel: tw,
         cancelled: AtomicBool::new(false),
         in_flight: AtomicBool::new(false),
@@ -513,7 +560,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     // SAFETY: tw is valid; `data` stays valid until the entry fires or is
     // removed (both reclaim the reference exactly once).
     let wheel_handle =
-        unsafe { hew_timer_wheel_schedule_handle(tw, interval_ms, periodic_timer_cb, data) };
+        unsafe { timer_wheel_schedule_at_handle(tw, next_fire_ms, periodic_timer_cb, data) };
     if wheel_handle.entry.is_null() {
         // Scheduling failed: reclaim the wheel reference and the registry
         // reference so nothing leaks, and report failure.
@@ -672,7 +719,7 @@ mod tests {
     use crate::internal::types::HewActorState;
     use crate::timer_wheel::hew_timer_wheel_schedule;
     use std::ffi::CStr;
-    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64};
+    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32};
     use std::time::{Duration, Instant};
 
     // TICKER_TEST_MUTEX is declared at module level (pub(crate)) so that
@@ -731,6 +778,92 @@ mod tests {
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn late_fire_skips_missed_slots_at_anchored_cadence() {
+        let mut actor = create_test_actor(50_050);
+        actor
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::SeqCst);
+        let actor_ptr = &raw mut actor;
+
+        // SAFETY: the test owns this wheel for its complete lifetime.
+        let wheel = unsafe { hew_timer_wheel_new() };
+        assert!(!wheel.is_null());
+        // SAFETY: `wheel` is live and test-owned.
+        let now = unsafe { crate::timer_wheel::timer_wheel_cursor_ms(wheel) };
+        // SAFETY: actor and wheel remain live until the timer is cancelled.
+        let handle = unsafe { schedule_periodic_on_wheel(actor_ptr, 7, 10, wheel, now) };
+        assert!(!handle.is_null());
+
+        // SAFETY: the registry keeps this context live through cancellation.
+        let next_fire = unsafe { &(*handle.cast::<PeriodicCtx>()).next_fire_ms };
+        let first_fire = next_fire.load(Ordering::SeqCst);
+        let late_tick = first_fire.saturating_add(25);
+
+        // A late tick fires once and skips missed slots without drifting from
+        // the original cadence phase.
+        // SAFETY: wheel and callback payload remain live throughout.
+        unsafe {
+            assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 1);
+            assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 30);
+            assert_eq!(crate::timer_wheel::timer_wheel_tick_to(wheel, late_tick), 0);
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, first_fire + 30),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), first_fire + 40);
+            hew_actor_cancel_periodic(handle);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let mut actor = create_test_actor(50_051);
+        actor
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::SeqCst);
+        let actor_ptr = &raw mut actor;
+
+        // SAFETY: the test owns this wheel for its complete lifetime.
+        let wheel = unsafe { hew_timer_wheel_new() };
+        assert!(!wheel.is_null());
+        // Move the initially fresh cursor before modelling the stall; otherwise
+        // a zero-based cursor can make the stall setup a no-op.
+        // SAFETY: wheel is live and exclusively owned by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 1) };
+        // SAFETY: wheel is live and test-owned.
+        let now = unsafe { crate::timer_wheel::timer_wheel_cursor_ms(wheel) };
+        // SAFETY: actor and wheel remain live until the timer is cancelled.
+        let handle = unsafe { schedule_periodic_on_wheel(actor_ptr, 7, 1, wheel, now) };
+        assert!(!handle.is_null());
+
+        // SAFETY: the registry keeps this context live through cancellation.
+        let next_fire = unsafe { &(*handle.cast::<PeriodicCtx>()).next_fire_ms };
+        let first_fire = next_fire.load(Ordering::SeqCst);
+        let stalled_cursor = first_fire + 5_000;
+
+        // SAFETY: wheel and callback payload remain live throughout.
+        unsafe {
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), stalled_cursor + 1);
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor),
+                0
+            );
+            assert_eq!(
+                crate::timer_wheel::timer_wheel_tick_to(wheel, stalled_cursor + 1),
+                1
+            );
+            assert_eq!(next_fire.load(Ordering::SeqCst), stalled_cursor + 2);
+            hew_actor_cancel_periodic(handle);
+            hew_timer_wheel_free(wheel);
         }
     }
 
@@ -934,6 +1067,7 @@ mod tests {
             actor: actor_ptr,
             msg_type: 0,
             interval_ms: 100,
+            next_fire_ms: AtomicU64::new(100),
             wheel: ptr::null_mut(),
             cancelled: AtomicBool::new(false),
             in_flight: AtomicBool::new(false),
@@ -946,6 +1080,7 @@ mod tests {
             actor: actor_ptr,
             msg_type: 1,
             interval_ms: 200,
+            next_fire_ms: AtomicU64::new(200),
             wheel: ptr::null_mut(),
             cancelled: AtomicBool::new(false),
             in_flight: AtomicBool::new(false),

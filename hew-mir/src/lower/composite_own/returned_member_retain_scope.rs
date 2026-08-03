@@ -86,3 +86,37 @@ fn whole_string_retain_keeps_the_callee_owner() {
          must keep and drop its original owner"
     );
 }
+
+#[test]
+fn whole_bytes_retain_keeps_the_callee_owner() {
+    let member = BindingId(1);
+    let block = BasicBlock {
+        id: 0,
+        statements: Vec::new(),
+        instructions: vec![
+            Instr::BytesRetain {
+                value: Place::Local(0),
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Pair", vec![]),
+                fields: vec![(FieldOffset(0), Place::Local(0))],
+                dest: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(1),
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+    let members = derive_returned_aggregate_member_bindings(
+        &[block],
+        &[(member, "member".to_string(), ResolvedTy::Bytes)],
+        &HashMap::from([(member, Place::Local(0))]),
+    );
+    assert!(
+        !members.contains(&member),
+        "a bytes retain mints the returned record owner, so the callee must \
+         keep and drop its original owner"
+    );
+}

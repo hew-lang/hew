@@ -20,7 +20,7 @@
 #                     round-trip but references undefined helpers (e.g. `empty()`)
 #                     because it is not intended to compile standalone.
 #   requires-package-resolver — File imports a `hew::` package that must be
-#                     resolved by `adze install` first; `hew check` alone
+#                     resolved by `hew install` first; `hew check` alone
 #                     cannot resolve the dependency. Covered by test-pkg-import.
 #   repro-wip       — Reproduction case tracking a specific open bug; compiles
 #                     partially but fails on a known issue being fixed.
@@ -200,8 +200,8 @@ tests/corpus/v05-value-model/19_actor_scope.hew
 # ── tests/pkg-import/ ────────────────────────────────────────────────────────
 #
 # All files in tests/pkg-import/ (non-reject) fail standalone `hew check`
-# because they import `hew::` packages that require `adze install` to resolve
-# into .adze/packages/ first. These are covered by make test-pkg-import which
+# because they import `hew::` packages that require `hew install` to resolve
+# into .hew/packages/ first. These are covered by make test-pkg-import which
 # runs the full package-import oracle with the resolver active.
 
 # requires-package-resolver: import alias tests

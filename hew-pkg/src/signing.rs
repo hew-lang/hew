@@ -1,7 +1,7 @@
 //! Ed25519 signing key management for package publishing.
 //!
 //! Supports generating hew-managed keypairs and computing fingerprints.
-//! Keys are stored in `~/.adze/keys/`.
+//! Keys are stored in `~/.hew/keys/`.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -157,10 +157,10 @@ pub fn verify(
 
 // ── Key storage ─────────────────────────────────────────────────────────────
 
-/// Return the default key directory (`~/.adze/keys/`).
+/// Return the default key directory (`~/.hew/keys/`).
 #[must_use]
 pub fn default_key_dir() -> PathBuf {
-    crate::paths::adze_home().join("keys")
+    crate::paths::hew_home().join("keys")
 }
 
 /// Save a keypair to the key directory.

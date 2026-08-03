@@ -236,7 +236,7 @@ pub struct CommonBuildArgs {
     /// Skip type-checking phase.
     #[arg(long)]
     pub no_typecheck: bool,
-    /// Override package search directory (default: .adze/packages/).
+    /// Override package search directory (default: .hew/packages/).
     #[arg(long, value_name = "DIR")]
     pub pkg_path: Option<PathBuf>,
     /// Override project directory for manifest and package resolution.

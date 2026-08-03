@@ -1,6 +1,6 @@
-//! Semver version resolution for Adze dependencies.
+//! Semver version resolution for Hew package dependencies.
 //!
-//! Provides version requirement parsing with Adze-specific rules and resolution
+//! Provides version requirement parsing with package-manager-specific rules and resolution
 //! of manifest dependencies against the installed package registry.
 
 // The `ManifestRead` variant embeds `manifest::ManifestError` (~136 bytes).
@@ -146,7 +146,7 @@ impl std::error::Error for ResolveError {
 
 /// A parsed semver version requirement.
 ///
-/// Wraps [`semver::VersionReq`] with Adze-specific parsing rules:
+/// Wraps [`semver::VersionReq`] with package-manager-specific parsing rules:
 /// - `"*"` matches any version
 /// - Bare versions like `"1.0"` or `"1.0.0"` are treated as **exact** matches
 /// - Prefixed versions (`"^1.0"`, `"~1.0"`, `">=1.0"`) use standard semver semantics
@@ -724,7 +724,7 @@ pub fn resolve_version_from_entries_with_requirements(
 /// Resolve every dependency in `manifest` to exact installed versions,
 /// traversing the full transitive dependency graph.
 ///
-/// Resolution is greedy: for each package, Adze picks the highest locally
+/// Resolution is greedy: for each package, the resolver picks the highest locally
 /// installed version compatible with every requirement currently imposed on that
 /// package. Feature requests are unified across the graph.
 ///

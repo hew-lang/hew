@@ -1,4 +1,4 @@
-//! Local package registry (`~/.adze/packages/`).
+//! Local package registry (`~/.hew/packages/`).
 
 use std::path::{Path, PathBuf};
 
@@ -13,13 +13,13 @@ pub struct InstalledPackage {
     pub path: PathBuf,
 }
 
-/// The global Adze package registry (`~/.adze/packages/`).
+/// The global Hew package registry (`~/.hew/packages/`).
 ///
 /// Package layout on disk:
 /// ```text
-/// ~/.adze/packages/{seg1}/{seg2}/{…}/{version}/hew.toml
+/// ~/.hew/packages/{seg1}/{seg2}/{…}/{version}/hew.toml
 /// ```
-/// e.g. `~/.adze/packages/std/net/http/1.0.0/hew.toml`
+/// e.g. `~/.hew/packages/std/net/http/1.0.0/hew.toml`
 /// corresponds to the package `std::net::http` at version `1.0.0`.
 #[derive(Debug)]
 pub struct Registry {
@@ -27,13 +27,13 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Open the registry rooted at the default location (`$HOME/.adze/packages/`).
+    /// Open the registry rooted at the default location (`$HOME/.hew/packages/`).
     ///
     /// Falls back to `%USERPROFILE%` (Windows) then the system temp directory.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            root: crate::paths::adze_home().join("packages"),
+            root: crate::paths::hew_home().join("packages"),
         }
     }
 

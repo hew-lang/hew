@@ -18,8 +18,8 @@ use crate::node::{
     HirModule, HirProducedValueRelation, HirProducedValueSourceAnchor, HirStmtKind,
 };
 use hew_types::{
-    BuiltinType, DefId, HashMapMethod, HashSetMethod, MethodTargetFamily, ProducedValueAcquisition,
-    ProducedValueOwnership, RcIntrinsicOp, ResolvedTy, RuntimeCallFamily, VecMethod,
+    BuiltinType, DefId, MethodTargetFamily, ProducedValueAcquisition, ProducedValueOwnership,
+    RcIntrinsicOp, ResolvedTy, RuntimeCallFamily,
 };
 
 #[must_use]
@@ -246,25 +246,7 @@ fn seed_resolved_produced_value_facts(
         if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
-        fact.ownership = match family {
-            MethodTargetFamily::HashMap(HashMapMethod::Remove)
-            | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
-                Ownership::owned(ProducedValueAcquisition::MoveOut)
-            }
-            MethodTargetFamily::HashMap(
-                HashMapMethod::Clone
-                | HashMapMethod::Get
-                | HashMapMethod::Keys
-                | HashMapMethod::Values,
-            )
-            | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
-            | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
-                Ownership::owned(ProducedValueAcquisition::Clone)
-            }
-            MethodTargetFamily::HashMap(_)
-            | MethodTargetFamily::HashSet(_)
-            | MethodTargetFamily::Vec(_) => Ownership::Unknown,
-        };
+        fact.ownership = family.result_ownership();
     }
     for (site, family) in &verifier.runtime_call_targets {
         let Some(fact) = facts.get_mut(site) else {

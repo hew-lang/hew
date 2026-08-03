@@ -575,5 +575,8 @@ pub fn run_coro_passes(llvm_mod: &LlvmModule<'_>, machine: &TargetMachine) -> Co
             machine,
             options,
         )
-        .map_err(|e| CodegenError::Llvm(format!("coro pass pipeline failed: {e}")))
+        .map_err(|e| CodegenError::Llvm(format!("coro pass pipeline failed: {e}")))?;
+    llvm_mod.verify().map_err(|e| {
+        CodegenError::LlvmVerify(format!("module rejected after coroutine lowering: {e}"))
+    })
 }

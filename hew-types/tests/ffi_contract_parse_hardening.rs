@@ -27,7 +27,8 @@ params = []
 resource-result-type = "example.io.Socket"
 release-symbol = "example_socket_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "synthetic constructor returns one close token"
 "#;
 
 const VALID_SYNTHETIC_BYTES: &str = r#"
@@ -98,11 +99,25 @@ fn resource_result_with_mismatched_release_nominal_fails_closed() {
 }
 
 #[test]
-#[should_panic(expected = "requires transferred result retention")]
-fn resource_result_without_retention_proof_fails_closed() {
-    let _ = parse_ownership_contracts(
-        &VALID_SYNTHETIC_RESOURCE.replace("result-retention = \"transferred\"\n", ""),
+fn resource_result_without_retention_proof_stays_unmeasured() {
+    let rows = parse_ownership_contracts(
+        &VALID_SYNTHETIC_RESOURCE
+            .replace("result-retention = \"resource-transfer\"\n", "")
+            .replace(
+                "result-retention-basis = \"synthetic constructor returns one close token\"\n",
+                "",
+            ),
     );
+    assert!(rows["example_socket_open"].result_retention.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "requires a non-empty basis")]
+fn resource_transfer_without_body_basis_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "result-retention-basis = \"synthetic constructor returns one close token\"\n",
+        "",
+    ));
 }
 
 #[test]

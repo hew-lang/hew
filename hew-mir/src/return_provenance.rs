@@ -1996,7 +1996,9 @@ fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) 
 ///     exclusive `transferred` result has no surviving alias. A retained
 ///     `shared-refcount` result may have the same address as another live
 ///     owner, but one caller release is independently balanced by the callee's
-///     retain. This is a strictly different question from C1: `fresh` says the
+///     retain. An opaque `resource-transfer` instead proves that the returned
+///     token is the only caller-controlled authority for the named close.
+///     This is a strictly different question from C1: `fresh` says the
 ///     allocation is new, not that the callee stopped referring to it. A
 ///     callee that allocates AND keeps an uncounted pointer — to free it later,
 ///     to overwrite it on the next call, or to hand the same address back again
@@ -2042,7 +2044,9 @@ fn extern_result_is_measured_transfer(
                 // admit either an exclusive handoff or an independently
                 // balanced refcount share.
                 ReturnRelease::One(planned) => {
-                    contract.result_retention.authorizes_caller_release()
+                    contract
+                        .result_retention
+                        .authorizes_direct_allocation_release()
                         && contract.discharge_depth
                             == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
                         && contract.release_symbol == planned
@@ -2057,7 +2061,7 @@ fn extern_result_is_measured_transfer(
                 // select an unrelated close ritual.
                 ReturnRelease::Unresolved => {
                     contract.result_retention
-                        == crate::ffi_contracts::ExternResultRetention::Transferred
+                        == crate::ffi_contracts::ExternResultRetention::ResourceTransfer
                         && resource_opaque_return_releases_through(
                             &decl.return_ty,
                             module,
@@ -6658,7 +6662,7 @@ mod measured_extern_result_transfer {
                 release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
                 result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
-                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                result_retention: crate::ffi_contracts::ExternResultRetention::ResourceTransfer,
                 producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
                     .into_iter()
@@ -6771,7 +6775,7 @@ fn main() {}
                 release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
                 result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
-                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                result_retention: crate::ffi_contracts::ExternResultRetention::ResourceTransfer,
                 producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
                     .into_iter()

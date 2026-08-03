@@ -716,7 +716,7 @@ fn synthetic_resource_contracts(
                 result: ExternResultOwnership::Fresh,
                 release_symbol,
                 discharge_depth: ReleaseDischargeDepth::Shallow,
-                result_retention: ExternResultRetention::Transferred,
+                result_retention: ExternResultRetention::ResourceTransfer,
             },
         )
     }));
@@ -1045,7 +1045,7 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
                 result: ExternResultOwnership::Fresh,
                 release_symbol: "example_socket_close",
                 discharge_depth: ReleaseDischargeDepth::Shallow,
-                result_retention: ExternResultRetention::Transferred,
+                result_retention: ExternResultRetention::ResourceTransfer,
             },
         ),
     ];
@@ -1105,7 +1105,7 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
                 result: ExternResultOwnership::Fresh,
                 release_symbol,
                 discharge_depth: ReleaseDischargeDepth::Shallow,
-                result_retention: ExternResultRetention::Transferred,
+                result_retention: ExternResultRetention::ResourceTransfer,
             },
         )
     };

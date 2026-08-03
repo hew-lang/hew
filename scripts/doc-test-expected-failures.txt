@@ -58,10 +58,6 @@
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
-guide-0082   3488817387   # STDLIB-OWNERSHIP-IMBALANCE: endpoint parser result; lift: the stdlib ownership-rebalance fix landing on this integration branch (a dedicated lane is being dispatched for it — the fences come OUT of the expected-failures file when it lands)
-guide-0152   519919606    # STDLIB-OWNERSHIP-IMBALANCE: template render result; lift: the stdlib ownership-rebalance fix landing on this integration branch (a dedicated lane is being dispatched for it — the fences come OUT of the expected-failures file when it lands)
-guide-0154   2464738241   # STDLIB-OWNERSHIP-IMBALANCE: scanner call result; lift: the stdlib ownership-rebalance fix landing on this integration branch (a dedicated lane is being dispatched for it — the fences come OUT of the expected-failures file when it lands)
-guide-0161   2324030670   # STDLIB-OWNERSHIP-IMBALANCE: TLS read result; lift: the stdlib ownership-rebalance fix landing on this integration branch (a dedicated lane is being dispatched for it — the fences come OUT of the expected-failures file when it lands)
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────
 

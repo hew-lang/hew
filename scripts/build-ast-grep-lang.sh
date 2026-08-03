@@ -105,10 +105,14 @@ tar -xzf "$GRAMMAR_ARCHIVE" --strip-components=1 -C "$GRAMMAR_DIR"
 [[ -f "$GRAMMAR_DIALECT_PATCH" ]] || {
     echo "error: pinned Hew grammar dialect patch is absent" >&2; exit 1;
 }
-# The upstream locked grammar predates named `consume value: T` parameters and
-# authority attributes on extern declarations. Apply the small reviewed source
-# dialect and regenerate with the separately pinned tree-sitter CLI; compiling
-# an opaque pre-generated parser would make the accepted dialect unauditable.
+# The upstream locked grammar spells the parameter ownership modifier as
+# `var` XOR `consume`, but hew-parser reads `consume` and then `var`
+# independently, so `consume var items: Vec<i64>` is accepted source that the
+# upstream rule rejects. A mis-parse here is not a loud failure: the region
+# becomes an ERROR node and silently disappears from every structural authority
+# rule. Apply the small reviewed source dialect and regenerate with the
+# separately pinned tree-sitter CLI; compiling an opaque pre-generated parser
+# would make the accepted dialect unauditable.
 patch --batch --forward -d "$GRAMMAR_DIR" -p1 < "$GRAMMAR_DIALECT_PATCH" >/dev/null
 (cd "$GRAMMAR_DIR" && "$TREE_SITTER" generate)
 grep -q "#define LANGUAGE_VERSION $TREE_SITTER_HEW_LANGUAGE_ABI" "$GRAMMAR_DIR/src/parser.c" || {

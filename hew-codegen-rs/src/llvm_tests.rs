@@ -563,6 +563,67 @@ fn non_windows_debug_build_omits_codeview_module_flag() {
 }
 
 #[test]
+fn debug_subroutine_keeps_unresolved_parameter_slot_order() {
+    let source = "fn handler(pid: LocalPid<Source>, value: i64) -> i64 { value }\n";
+    let actor_ty = ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![ResolvedTy::Named {
+            name: "Source".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }],
+        builtin: Some(BuiltinType::LocalPid),
+        is_opaque: false,
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    let handler = &mut pipeline.raw_mir[0];
+    handler.source_origin = SourceOrigin::RootUnit;
+    handler.name = "handler".to_string();
+    handler.params = vec![actor_ty.clone(), ResolvedTy::I64];
+    handler.locals = vec![actor_ty, ResolvedTy::I64];
+    handler.local_names = vec![Some("pid".to_string()), Some("value".to_string())];
+    handler.local_scopes = vec![None, None];
+    handler.local_decl_bytes = vec![Some(11), Some(34)];
+    handler.span = Some((
+        0,
+        u32::try_from(source.len()).expect("source length fits u32"),
+    ));
+    handler.blocks[0].instructions = vec![Instr::Move {
+        dest: Place::ReturnSlot,
+        src: Place::Local(1),
+    }];
+
+    let ctx = Context::create();
+    let debug = DebugInput {
+        source_path: Path::new("handler.hew"),
+        source_text: source,
+    };
+    let module = build_module_for_target(&ctx, &pipeline, "handler_param_slots", None, Some(debug))
+        .expect("handler debug module");
+    let ir = module.print_to_string().to_string();
+    let signature_tuple = ir
+        .lines()
+        .find(|line| {
+            line.contains(" = !{")
+                && line
+                    .split_once(" = !{")
+                    .and_then(|(_, fields)| fields.split_once('}'))
+                    .is_some_and(|(fields, _)| {
+                        let slots: Vec<_> = fields.split(", ").collect();
+                        slots.len() == 3 && slots.get(1) == Some(&"null")
+                    })
+        })
+        .unwrap_or_else(|| {
+            panic!("expected return + unresolved LocalPid + i64 slots without repacking; IR:\n{ir}")
+        });
+    assert!(
+        signature_tuple.contains(", null, "),
+        "the unresolved first parameter must retain its unspecified slot: {signature_tuple}"
+    );
+}
+
+#[test]
 fn debug_recursive_enum_relocated_composite_replaces_cache_identity() {
     let ctx = Context::create();
     let module = ctx.create_module("recursive_enum_di_cache");

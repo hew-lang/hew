@@ -323,6 +323,7 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
     let fixture = build_debug_fixture("await-locals", AWAIT_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
+    // Hardware breakpoints avoid patching coroutine code while runtime threads execute it.
     let cmd = if dbg == "lldb" {
         let mut command = Command::new("lldb");
         command.args([

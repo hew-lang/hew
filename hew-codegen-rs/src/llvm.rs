@@ -31847,7 +31847,7 @@ fn resolve_di_type<'ctx>(
             mangle_with_shortened_args(name, args)
         };
 
-        // An enum (in the enum-layout map) — emit the degraded tagged-union DIE.
+        // An enum (in the enum-layout map) — emit its discriminated variant DIE.
         if let Some(enum_layout) = enum_layouts.iter().find(|e| e.name == key) {
             return resolve_enum_di_type(
                 ctx,
@@ -32048,7 +32048,7 @@ fn resolve_enum_di_type<'ctx>(
         .create_basic_type("u32", tag_bits.max(8), DW_ATE_UNSIGNED, DIFlags::PUBLIC)
         .expect("DWARF base type for the enum tag is infallible")
         .as_type();
-    let _tag_di = dctx
+    let tag_di = dctx
         .di_builder
         .create_enumeration_type(
             dctx.compile_unit.as_debug_info_scope(),
@@ -32084,7 +32084,7 @@ fn resolve_enum_di_type<'ctx>(
             enum_layout.tag_width.max(8),
             tag_offset_for_placeholder,
             DIFlags::ARTIFICIAL,
-            tag_underlying,
+            tag_di,
         )
         .as_type();
     let placeholder = dctx
@@ -32400,6 +32400,16 @@ fn set_di_composite_type_variant_part<'ctx>(
         return None;
     }
 
+    di_type_from_metadata(metadata)
+}
+
+fn di_type_from_metadata<'ctx>(
+    metadata: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    if metadata.is_null() {
+        return None;
+    }
+
     // Inkwell 0.9 exposes no constructor for a DIType returned by a raw LLVM
     // extension. Its wrapper is exactly an LLVMMetadataRef plus PhantomData;
     // this bridge is confined to the pinned inkwell 0.9 FFI seam.
@@ -32409,6 +32419,46 @@ fn set_di_composite_type_variant_part<'ctx>(
             inkwell::debug_info::DIType<'ctx>,
         >(metadata)
     })
+}
+
+fn create_di_subroutine_type_with_slots<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    file: DIFile<'ctx>,
+    return_type: Option<inkwell::debug_info::DIType<'ctx>>,
+    parameter_types: &[Option<inkwell::debug_info::DIType<'ctx>>],
+) -> inkwell::debug_info::DISubroutineType<'ctx> {
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderCreateSubroutineType;
+
+    let mut slots = Vec::with_capacity(parameter_types.len() + 1);
+    slots.push(return_type.map_or(std::ptr::null_mut(), |ty| ty.as_mut_ptr()));
+    slots.extend(
+        parameter_types
+            .iter()
+            .map(|ty| ty.map_or(std::ptr::null_mut(), |ty| ty.as_mut_ptr())),
+    );
+    let slot_count = u32::try_from(slots.len()).expect("debug signature slot count fits u32");
+    // SAFETY: every non-null metadata node belongs to `di_builder`'s context;
+    // null entries are LLVM's standard unspecified-parameter placeholders.
+    let metadata = unsafe {
+        LLVMDIBuilderCreateSubroutineType(
+            di_builder.as_mut_ptr(),
+            file.as_mut_ptr(),
+            slots.as_mut_ptr(),
+            slot_count,
+            DIFlags::PUBLIC,
+        )
+    };
+    assert!(!metadata.is_null(), "LLVM creates a subroutine type");
+
+    // Inkwell 0.9 does not expose a constructor for a raw DISubroutineType.
+    // Its wrapper shares the same pointer-plus-PhantomData representation as
+    // DIType; keep this conversion confined to the pinned raw FFI seam.
+    unsafe {
+        std::mem::transmute::<
+            inkwell::llvm_sys::prelude::LLVMMetadataRef,
+            inkwell::debug_info::DISubroutineType<'ctx>,
+        >(metadata)
+    }
 }
 
 fn set_cached_di_composite_type_variant_part<'ctx>(
@@ -32847,9 +32897,9 @@ fn lower_function<'ctx>(
             let column = dctx.line_index.column(start as usize);
             // Stage 5: a real `DISubroutineType` — element 0 is the return type
             // (`None` for unit/never, so gdb shows `void`), followed by each
-            // parameter's type. Unresolvable types fall back to `None` for that
-            // slot rather than failing the whole subprogram (the subprogram +
-            // its variable DIEs are still useful with a partial signature).
+            // parameter's type. Unresolvable parameters retain their ordinal
+            // with LLVM's standard unspecified slot rather than shifting every
+            // later argument left in the debugger-visible signature.
             let return_di = match &func.return_ty {
                 ResolvedTy::Unit | ResolvedTy::Never => None,
                 ret => resolve_di_type(
@@ -32863,10 +32913,10 @@ fn lower_function<'ctx>(
                     record_field_names,
                 ),
             };
-            let param_dis: Vec<inkwell::debug_info::DIType<'ctx>> = func
+            let param_dis: Vec<Option<inkwell::debug_info::DIType<'ctx>>> = func
                 .params
                 .iter()
-                .filter_map(|p| {
+                .map(|p| {
                     resolve_di_type(
                         ctx,
                         dctx,
@@ -32879,11 +32929,11 @@ fn lower_function<'ctx>(
                     )
                 })
                 .collect();
-            let subroutine_ty = dctx.di_builder.create_subroutine_type(
+            let subroutine_ty = create_di_subroutine_type_with_slots(
+                dctx.di_builder,
                 dctx.file,
                 return_di,
                 &param_dis,
-                DIFlags::PUBLIC,
             );
             let subprogram = dctx.di_builder.create_function(
                 dctx.compile_unit.as_debug_info_scope(),
@@ -34384,10 +34434,12 @@ fn build_module_for_target<'ctx>(
                 .unwrap_or_else(|| ".".to_string());
             let (di_builder, compile_unit) = llvm_mod.create_debug_info_builder(
                 /* allow_unresolved */ true,
-                // Hew's algebraic enums use the same DW_TAG_variant_part shape
-                // as Rust. LLDB only enables that active-variant renderer for a
-                // Rust-language compile unit; DW_LANG_C leaves the valid DIEs
-                // present but displays the value as an empty struct.
+                // WHY: Hew's algebraic enums use Rust's DW_TAG_variant_part
+                // shape, and LLDB only enables its active-variant renderer for
+                // a Rust-language compile unit.
+                // WHEN-OBSOLETE: once DW_LANG_Hew exists and LLDB recognizes it.
+                // WHAT-REAL-SOLUTION: upstream DW_LANG_Hew plus a Hew-aware LLDB
+                // formatter, then switch this compile unit to that language.
                 DWARFSourceLanguage::Rust,
                 &file_name,
                 &directory,

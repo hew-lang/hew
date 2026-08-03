@@ -7453,7 +7453,7 @@ impl Checker {
             } else {
                 Ownership::Borrowed
             }),
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+            Expr::FieldAccess { object, .. } => {
                 if no_owner {
                     ProducedValueFact::result(Ownership::NoOwner)
                 } else {
@@ -7467,6 +7467,28 @@ impl Checker {
                                 Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
                             });
                     ProducedValueFact::result(ownership)
+                }
+            }
+            Expr::Index { object, .. } => {
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if self
+                    .expr_types
+                    .get(&SpanKey::in_module(&object.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Named {
+                                builtin: Some(BuiltinType::Vec),
+                                ..
+                            }
+                        )
+                    })
+                {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Clone))
+                } else {
+                    ProducedValueFact::result(Ownership::Unknown)
                 }
             }
             Expr::Literal(Literal::String(_)) => ProducedValueFact::result(Ownership::Borrowed),
@@ -7483,7 +7505,9 @@ impl Checker {
             | Expr::MachineEmit { .. }
             | Expr::Return(_)
             | Expr::Binary { .. }
-            | Expr::AwaitRestart(_) => ProducedValueFact::result(if no_owner {
+            | Expr::AwaitRestart(_)
+            | Expr::Tuple(_)
+            | Expr::StructInit { .. } => ProducedValueFact::result(if no_owner {
                 Ownership::NoOwner
             } else {
                 Ownership::Unknown
@@ -7493,11 +7517,9 @@ impl Checker {
             } else {
                 Ownership::owned(Acquisition::Clone)
             }),
-            Expr::Tuple(_)
-            | Expr::Array(_)
+            Expr::Array(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
-            | Expr::StructInit { .. }
             | Expr::Lambda { .. }
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
@@ -7666,7 +7688,7 @@ impl Checker {
             fact.receiver_span = None;
         }
         let dependency = match expr {
-            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+            Expr::FieldAccess { object, .. } => {
                 let child = SpanKey::in_module(&object.1, self.current_module_idx);
                 self.expr_types
                     .contains_key(&child)

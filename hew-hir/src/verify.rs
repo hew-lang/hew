@@ -178,13 +178,13 @@ fn finalize_resolved_produced_value_facts(
         .function_return_sites
         .len()
         .saturating_add(verifier.user_call_targets.len())
-        .saturating_add(verifier.machine_variant_payloads.len())
+        .saturating_add(verifier.aggregate_payloads.len())
         .saturating_add(1);
     for _ in 0..limit {
         propagate_produced_value_relations(facts);
-        let variants_changed = resolve_machine_variant_facts(verifier, facts);
+        let aggregates_changed = resolve_aggregate_facts(verifier, facts);
         let calls_changed = resolve_user_call_facts(verifier, facts);
-        if !variants_changed && !calls_changed {
+        if !aggregates_changed && !calls_changed {
             break;
         }
     }
@@ -206,7 +206,11 @@ fn seed_resolved_produced_value_facts(
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        if !matches!(fact.ownership, Ownership::Unknown) {
+        // A collection index/get desugaring has stronger typed identity than
+        // the authored projection syntax. Preserve Copy results, but replace a
+        // provisional borrowed/unknown projection with the exact clone/move-out
+        // result contract selected by the checker.
+        if matches!(fact.ownership, Ownership::NoOwner) {
             continue;
         }
         fact.ownership = match family {
@@ -240,14 +244,14 @@ fn seed_resolved_produced_value_facts(
     }
 }
 
-fn resolve_machine_variant_facts(
+fn resolve_aggregate_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
 ) -> bool {
     use ProducedValueOwnership as Ownership;
 
     let mut changed = false;
-    for (site, payloads) in &verifier.machine_variant_payloads {
+    for (site, payloads) in &verifier.aggregate_payloads {
         let Some(fact) = facts.get(site) else {
             continue;
         };
@@ -256,6 +260,7 @@ fn resolve_machine_variant_facts(
         }
         let mut owns_payload = false;
         let mut borrows_payload = false;
+        let mut unknown_payloads = 0usize;
         let mut resolved = true;
         for payload in payloads {
             match facts.get(payload).map(|payload| payload.ownership) {
@@ -267,11 +272,28 @@ fn resolve_machine_variant_facts(
                 {
                     owns_payload = true;
                 }
+                Some(Ownership::Borrowed | Ownership::ReceiverIdentity)
+                    if verifier.aggregate_transfer_payloads.contains(payload) =>
+                {
+                    owns_payload = true;
+                }
                 Some(Ownership::Borrowed | Ownership::ReceiverIdentity) => {
                     borrows_payload = true;
                 }
-                Some(Ownership::Unknown) | None => resolved = false,
+                Some(Ownership::Unknown) | None => {
+                    unknown_payloads += 1;
+                    resolved = false;
+                }
             }
+        }
+        if !resolved
+            && verifier.resource_record_constructors.contains(site)
+            && unknown_payloads > 0
+            && !owns_payload
+            && !borrows_payload
+        {
+            resolved = true;
+            owns_payload = true;
         }
         if !resolved {
             continue;
@@ -430,7 +452,10 @@ struct Verifier {
     user_call_arguments: HashMap<SiteId, Vec<SiteId>>,
     resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
     runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
-    machine_variant_payloads: HashMap<SiteId, Vec<SiteId>>,
+    aggregate_payloads: HashMap<SiteId, Vec<SiteId>>,
+    aggregate_transfer_payloads: HashSet<SiteId>,
+    resource_record_constructors: HashSet<SiteId>,
+    resource_record_types: HashSet<DefId>,
     binding_definitions: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_sites: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_targets: HashMap<SiteId, BindingId>,
@@ -446,6 +471,12 @@ impl Verifier {
     fn module(&mut self, module: &HirModule) {
         self.produced_value_facts
             .clone_from(&module.produced_value_facts);
+        self.resource_record_types = module
+            .type_classes
+            .lifecycle_registry()
+            .resource_records()
+            .map(|lifecycle| lifecycle.resource_declaration.clone())
+            .collect();
         for item in &module.items {
             let HirItem::Impl(implementation) = item else {
                 continue;
@@ -1287,6 +1318,16 @@ impl Verifier {
                         ));
                     }
                 }
+                self.aggregate_payloads.insert(
+                    expr.site,
+                    elements.iter().map(|element| element.site).collect(),
+                );
+                self.aggregate_transfer_payloads.extend(
+                    elements
+                        .iter()
+                        .filter(|element| matches!(element.intent, crate::IntentKind::Consume))
+                        .map(|element| element.site),
+                );
                 for elem in elements {
                     self.expr(elem);
                 }
@@ -1430,6 +1471,28 @@ impl Verifier {
                 }
             }
             HirExprKind::StructInit { fields, base, .. } => {
+                let payloads: Vec<_> = fields
+                    .iter()
+                    .map(|(_, field)| field)
+                    .chain(base.iter().map(AsRef::as_ref))
+                    .collect();
+                self.aggregate_payloads.insert(
+                    expr.site,
+                    payloads.iter().map(|payload| payload.site).collect(),
+                );
+                self.aggregate_transfer_payloads.extend(
+                    payloads
+                        .iter()
+                        .filter(|payload| matches!(payload.intent, crate::IntentKind::Consume))
+                        .map(|payload| payload.site),
+                );
+                if matches!(
+                    &expr.ty,
+                    ResolvedTy::Named { name, .. }
+                        if self.resource_record_types.contains(&DefId::new(name))
+                ) {
+                    self.resource_record_constructors.insert(expr.site);
+                }
                 for (_, field) in fields {
                     self.expr(field);
                 }
@@ -1735,7 +1798,7 @@ impl Verifier {
             }
             HirExprKind::SubsumedValue { source, .. } => self.expr(source),
             HirExprKind::MachineVariantCtor { payload, .. } => {
-                self.machine_variant_payloads.insert(
+                self.aggregate_payloads.insert(
                     expr.site,
                     payload
                         .iter()
@@ -1744,6 +1807,12 @@ impl Verifier {
                         .collect(),
                 );
                 if let Some(fields) = payload {
+                    self.aggregate_transfer_payloads.extend(
+                        fields
+                            .iter()
+                            .filter(|(_, value)| matches!(value.intent, crate::IntentKind::Consume))
+                            .map(|(_, value)| value.site),
+                    );
                     for (_, val) in fields {
                         self.expr(val);
                     }

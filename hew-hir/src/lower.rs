@@ -4659,11 +4659,20 @@ pub fn lower_program_with_mono_cap(
                                 symbol_owner,
                                 &method.name,
                             );
-                            if let Some(declaration) = output
+                            if let Some(declaration) = ctx
                                 .impl_method_declaration_ids
                                 .get(&emitted_symbol)
-                                .or_else(|| output.impl_method_declaration_ids.get(&source_symbol))
+                                .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
                                 .cloned()
+                                .or_else(|| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
                             {
                                 ctx.impl_method_declaration_ids
                                     .insert(emitted_symbol, declaration);

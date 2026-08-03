@@ -2368,8 +2368,11 @@ mod tests {
             );
         }
         let fds_after = open_fd_count();
-        assert!(
-            fds_after <= fds_before,
+        // This count oracle exercises only the ordinary detach path. The
+        // forced fd-reuse probe below covers the concurrent close/unregister
+        // ordering race.
+        assert_eq!(
+            fds_after, fds_before,
             "active-mode teardown leaked fds: before={fds_before} after={fds_after}"
         );
         reset_reactor();

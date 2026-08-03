@@ -7223,25 +7223,7 @@ impl Checker {
         {
             Ownership::owned(Acquisition::Delivery)
         } else if let Some(call) = resolved_call {
-            match call.method_target.family {
-                MethodTargetFamily::HashMap(HashMapMethod::Remove)
-                | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
-                    Ownership::owned(Acquisition::MoveOut)
-                }
-                MethodTargetFamily::HashMap(
-                    HashMapMethod::Clone
-                    | HashMapMethod::Get
-                    | HashMapMethod::Keys
-                    | HashMapMethod::Values,
-                )
-                | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
-                | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
-                    Ownership::owned(Acquisition::Clone)
-                }
-                MethodTargetFamily::HashMap(_)
-                | MethodTargetFamily::HashSet(_)
-                | MethodTargetFamily::Vec(_) => Ownership::Unknown,
-            }
+            call.method_target.family.result_ownership()
         } else {
             match rewrite {
                 Some(

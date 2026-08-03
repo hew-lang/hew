@@ -48,6 +48,7 @@
 //! `resolved_call_registry_lookup` round-trip test demonstrates the
 //! shape is genuinely serialisable.
 
+use crate::runtime_call::{ProducedValueAcquisition, ProducedValueOwnership};
 use crate::traits::MarkerTrait;
 use crate::{DefId, RuntimeCallFamily};
 use serde::{Deserialize, Serialize};
@@ -309,6 +310,32 @@ pub enum MethodTargetFamily {
     HashSet(HashSetMethod),
     /// Vec method dispatch. Arity invariant: 1 type-arg (T).
     Vec(VecMethod),
+}
+
+impl MethodTargetFamily {
+    /// Return the checker-authoritative ownership contract for this collection
+    /// result. HIR closure consumes this same table after attaching the exact
+    /// typed family to a provisional call fact.
+    #[must_use]
+    pub const fn result_ownership(self) -> ProducedValueOwnership {
+        match self {
+            Self::HashMap(HashMapMethod::Remove)
+            | Self::Vec(VecMethod::Pop | VecMethod::Remove) => {
+                ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
+            }
+            Self::HashMap(
+                HashMapMethod::Clone
+                | HashMapMethod::Get
+                | HashMapMethod::Keys
+                | HashMapMethod::Values,
+            )
+            | Self::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
+            | Self::Vec(VecMethod::Clone | VecMethod::Get) => {
+                ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
+            }
+            Self::HashMap(_) | Self::HashSet(_) | Self::Vec(_) => ProducedValueOwnership::Unknown,
+        }
+    }
 }
 
 /// `HashMap` dispatch methods. Mirrors the methods registered for the
@@ -760,6 +787,26 @@ mod tests {
 
     fn always_true(_: MarkerTrait, _: &TyPattern) -> bool {
         true
+    }
+
+    #[test]
+    fn collection_result_ownership_classifies_typed_families() {
+        assert_eq!(
+            MethodTargetFamily::HashMap(HashMapMethod::Remove).result_ownership(),
+            ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
+        );
+        assert_eq!(
+            MethodTargetFamily::HashSet(HashSetMethod::ToVec).result_ownership(),
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
+        );
+        assert_eq!(
+            MethodTargetFamily::Vec(VecMethod::Get).result_ownership(),
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone)
+        );
+        assert_eq!(
+            MethodTargetFamily::Vec(VecMethod::Push).result_ownership(),
+            ProducedValueOwnership::Unknown
+        );
     }
 
     #[test]

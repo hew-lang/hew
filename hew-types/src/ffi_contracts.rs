@@ -487,11 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn string_vec_producers_carry_deep_transfer_contracts() {
-        for (symbol, params) in [
-            ("hew_string_chars", 1),
-            ("hew_string_lines", 1),
-            ("hew_string_split", 2),
+    fn string_vec_producers_carry_truthful_transfer_contracts() {
+        for (symbol, params, discharge_depth) in [
+            ("hew_string_chars", 1, ReleaseDischargeDepth::Shallow),
+            ("hew_string_lines", 1, ReleaseDischargeDepth::Deep),
+            ("hew_string_split", 2, ReleaseDischargeDepth::Deep),
         ] {
             let contract = extern_ownership_contract(symbol)
                 .contract()
@@ -506,11 +506,7 @@ mod tests {
             );
             assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
             assert_eq!(contract.release_symbol, "hew_vec_free", "{symbol}");
-            assert_eq!(
-                contract.discharge_depth,
-                ReleaseDischargeDepth::Deep,
-                "{symbol}"
-            );
+            assert_eq!(contract.discharge_depth, discharge_depth, "{symbol}");
             assert_eq!(
                 contract.result_retention,
                 ExternResultRetention::Transferred,

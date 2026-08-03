@@ -2435,7 +2435,7 @@ symbol = "hew_string_chars"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free"
-discharge-depth = "deep"
+discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]

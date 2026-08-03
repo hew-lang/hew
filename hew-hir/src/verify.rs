@@ -89,11 +89,13 @@ pub fn complete_produced_value_facts(
 }
 
 /// Close the checker-authored graph after HIR has attached exact declaration
-/// and collection-family identities to every executable call. Generic method
-/// bodies can remain abstract while checking, and a direct user call cannot
-/// know its callee's result disposition until every body is available. This
-/// fixed point fills only those `Unknown` leaves; it never revises a concrete
-/// checker verdict or reconstructs authority from a symbol spelling.
+/// and call-family identities to every executable call. Generic method bodies
+/// can remain abstract while checking, and a direct user call cannot know its
+/// callee's result disposition until every body is available. Resolution may
+/// refine provisional `Unknown` or `Borrowed` call facts when exact typed
+/// identity supplies a stronger result contract; it preserves every other
+/// concrete checker verdict and never reconstructs authority from a symbol
+/// spelling.
 fn resolved_producer_ownership(
     producer: crate::node::HirProducedValueProducer,
 ) -> ProducedValueOwnership {
@@ -238,11 +240,10 @@ fn seed_resolved_produced_value_facts(
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        // A collection index/get desugaring has stronger typed identity than
-        // the authored projection syntax. Preserve Copy results, but replace a
-        // provisional borrowed/unknown projection with the exact clone/move-out
-        // result contract selected by the checker.
-        if matches!(fact.ownership, Ownership::NoOwner) {
+        // Exact collection identity can refine a provisional projection fact.
+        // Preserve scalar and concrete ownership verdicts; only an unresolved
+        // or provisionally borrowed result accepts the typed method contract.
+        if !matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
         fact.ownership = match family {

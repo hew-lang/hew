@@ -7100,10 +7100,19 @@ impl Checker {
                 ..
             })
         );
-        if runtime_rewrite_consumes_receiver {
+        let builtin_option_result_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        );
+        if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {
-                // The exact runtime ABI transfer overrides a surface Copy
+                // The typed consumption decision overrides a surface Copy
                 // derivation. In particular, LambdaActorHandle is represented
                 // by an empty stdlib nominal, but release still consumes its
                 // sole runtime handle and any later receiver use is invalid.
@@ -7187,6 +7196,16 @@ impl Checker {
             Ownership::ReceiverIdentity
         } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
             Ownership::owned(Acquisition::Fresh)
+        } else if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            Ownership::owned(Acquisition::MoveOut)
         } else if matches!(
             actor_call,
             Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
@@ -7285,7 +7304,14 @@ impl Checker {
                 _ => None,
             }
         };
-        let arguments = if let Some(family) = runtime_family {
+        let arguments = if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            vec![Boundary::Transfer; args.len()]
+        } else if let Some(family) = runtime_family {
             args.iter()
                 .enumerate()
                 .map(|(source_index, _)| {

@@ -26594,6 +26594,10 @@ impl LowerCtx {
                 // failure arm never produces a value of `ret_ty`.
                 let panic_msg_expr =
                     self.build_string_literal_expr(panic_msg.to_string(), span.clone());
+                self.record_generated_produced_value_fact(
+                    &panic_msg_expr,
+                    hew_types::ProducedValueOwnership::Borrowed,
+                );
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 vec![

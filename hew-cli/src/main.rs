@@ -1036,6 +1036,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             || a.target.is_some()
             || a.emit_obj
             || a.debug
+            || a.opt_level != "0"
             || !a.link_libs.is_empty()
             || a.common.any_set()
         {

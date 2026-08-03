@@ -2,6 +2,7 @@ use super::{
     base_local, instr_source_places, terminator_source_places, BTreeMap, BasicBlock, HashMap,
     HashSet, SuspendKind, Terminator,
 };
+use crate::dataflow::instr_reads_writes;
 
 pub(super) fn local_is_used_after(
     blocks: &[BasicBlock],
@@ -40,6 +41,53 @@ pub(super) fn local_is_used_after(
         }) || terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
             .into_iter()
             .any(|place| base_local(place) == Some(source_local))
+    })
+}
+
+pub(super) fn local_is_written_after(
+    blocks: &[BasicBlock],
+    source_local: u32,
+    write_block: u32,
+    write_index: usize,
+) -> bool {
+    let mut reachable = HashSet::new();
+    let mut frontier = blocks
+        .iter()
+        .find(|block| block.id == write_block)
+        .map(BasicBlock::successors)
+        .unwrap_or_default();
+    while let Some(block_id) = frontier.pop() {
+        if !reachable.insert(block_id) {
+            continue;
+        }
+        if let Some(block) = blocks.iter().find(|block| block.id == block_id) {
+            frontier.extend(block.successors());
+        }
+    }
+
+    let writes_local = |instructions: &[super::Instr]| {
+        instructions.iter().any(|instruction| {
+            instr_reads_writes(instruction)
+                .1
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+        })
+    };
+    blocks.iter().any(|block| {
+        if block.id == write_block {
+            let after = block
+                .instructions
+                .get(write_index.saturating_add(1)..)
+                .is_some_and(&writes_local);
+            let next_iteration = reachable.contains(&write_block)
+                && block
+                    .instructions
+                    .get(..write_index.saturating_add(1))
+                    .is_some_and(&writes_local);
+            after || next_iteration
+        } else {
+            reachable.contains(&block.id) && writes_local(&block.instructions)
+        }
     })
 }
 /// The `next` continuation of a `Terminator::Call`, else `None`. The only

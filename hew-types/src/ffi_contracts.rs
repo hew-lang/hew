@@ -263,6 +263,10 @@ mod tests {
             extern_param_ownership("hew_tcp_close", 0),
             Some(ExternParamOwnership::Consume)
         );
+        assert_eq!(
+            extern_param_ownership("hew_observe_read_u64", 0),
+            Some(ExternParamOwnership::Borrow)
+        );
         assert_eq!(extern_param_ownership("hew_tcp_unclassified", 0), None);
         assert!(extern_resource_param_is_audited_borrow(
             "hew_tcp_read",

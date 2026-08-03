@@ -18,15 +18,9 @@
 //   99 -> control flow never reached the producer (main fallback)
 import std::net::{Listener};
 
-extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
-}
-
 fn main() {
     let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
+    let port = listener.local_port() as i32;
     // Producer side: connect, then accept the peer but never read from it.
     let conn = net.connect(f"127.0.0.1:{port}");
     let peer = listener.accept();
@@ -38,8 +32,6 @@ fn main() {
         Err(_) => false,
     };
     if !small_ok {
-        // Keep the peer alive until exit so the fd is not reclaimed mid-test.
-        let _ = peer.close();
         exit(3);
     }
     // Build a 16 MiB payload — comfortably larger than the autotuned send +

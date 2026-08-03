@@ -2071,6 +2071,46 @@ fn item_is_duplicated_in_preferred_module(
     })
 }
 
+/// Whether a directory module absorbed an item from a distinct child module.
+///
+/// A directory import may contain both its same-leaf root file (`http.hew` for
+/// `std.net.http`) and child files such as `http_client.hew`. The root-file
+/// declarations retain the directory module's identity; only declarations
+/// duplicated by a preferred module with a different leaf belong to a child
+/// owner and must be skipped during directory-module function emission.
+fn item_is_duplicated_in_distinct_leaf_module(
+    program: &Program,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    current_module: &hew_parser::module::ModuleId,
+    item: &Item,
+    item_span: &Span,
+) -> bool {
+    if preferred_modules.contains(current_module) {
+        return false;
+    }
+    let Some(module_graph) = &program.module_graph else {
+        return false;
+    };
+    let current_leaf = current_module.path.last();
+    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+        module_graph.modules.get(module_id).is_some_and(|module| {
+            module
+                .items
+                .iter()
+                .any(|(candidate, candidate_span)| candidate == item && candidate_span == item_span)
+        })
+    };
+    if preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+    {
+        return false;
+    }
+    preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
+}
+
 fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
     match item {
         Item::TypeDecl(decl) => decl.name == type_name,
@@ -2549,9 +2589,18 @@ pub fn lower_program_with_mono_cap(
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
-                for (item, _) in &module.items {
+                for (item, item_span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                item_span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{module_full_path}.{}",
                                 func.name
@@ -4209,6 +4258,15 @@ pub fn lower_program_with_mono_cap(
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{source_module}.{}",
                                 func.name
@@ -4226,6 +4284,15 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
                             let qualified = crate::mangle_dotted_name(&format!(
                                 "{source_module}.{}",
                                 func.name
@@ -10715,7 +10782,10 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
-        if !matches!(target, CallTarget::User(_) | CallTarget::Runtime(_)) {
+        if !matches!(
+            target,
+            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+        ) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: c_symbol.to_string(),
@@ -10733,7 +10803,9 @@ impl LowerCtx {
         }
         let symbol = crate::mangle_dotted_name(c_symbol);
         let selected_declaration = match &target {
-            CallTarget::User(declaration) => Some(declaration),
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                Some(declaration)
+            }
             CallTarget::Runtime(_) => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
@@ -10849,6 +10921,22 @@ impl LowerCtx {
                 HirExprKind::Unsupported(
                     "ordinary call has poisoned monomorphisation arguments".to_string(),
                 ),
+                ResolvedTy::Unit,
+            );
+        }
+        let source_name = Self::ordinary_call_presentation_name(function);
+        if source_name == "LambdaActorHandle::new" {
+            self.discard_rejected_call_child_facts(span);
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CallableUnsupportedInMir {
+                    name: source_name.clone(),
+                },
+                span.clone(),
+                "`LambdaActorHandle::new` is not a public constructor; use \
+                 `actor |params| { body }` to create a lambda actor",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("diagnosed: unsupported call to `{source_name}`")),
                 ResolvedTy::Unit,
             );
         }
@@ -11108,6 +11196,10 @@ impl LowerCtx {
     fn ordinary_call_presentation_name(function: &Spanned<Expr>) -> String {
         match &function.0 {
             Expr::Identifier(name) => name.clone(),
+            Expr::FieldAccess { object, field } => match &object.0 {
+                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                _ => "<call expression>".to_string(),
+            },
             _ => "<call expression>".to_string(),
         }
     }
@@ -11147,6 +11239,32 @@ impl LowerCtx {
             "checker admitted a call without an executable target",
         ));
         false
+    }
+
+    /// Remove checker-fact occurrences for children of a call rejected before
+    /// those children become HIR nodes. The call root itself remains live as an
+    /// `Unsupported` expression and retains its own fact for finalization.
+    fn discard_rejected_call_child_facts(&mut self, span: &Span) {
+        let call_key = self.mk_key(span);
+        let discarded: HashSet<SiteId> = self
+            .produced_value_fact_keys
+            .iter()
+            .filter_map(|(site, (key, _))| {
+                (key != &call_key && key.start >= call_key.start && key.end <= call_key.end)
+                    .then_some(*site)
+            })
+            .collect();
+        for sites in self.produced_value_source_sites.values_mut() {
+            sites.retain(|site| !discarded.contains(site));
+        }
+        self.produced_value_source_sites
+            .retain(|_, sites| !sites.is_empty());
+        self.produced_value_fact_sites
+            .retain(|site, _| !discarded.contains(site));
+        self.generated_produced_value_facts
+            .retain(|site, _| !discarded.contains(site));
+        self.produced_value_fact_keys
+            .retain(|site, _| !discarded.contains(site));
     }
 
     /// Return the checker-owned target for a compiler-synthesised call to an
@@ -17269,6 +17387,7 @@ impl LowerCtx {
                         }
                         _ => (inner, &inner.1),
                     };
+                let has_block_wrapper = !std::ptr::eq(effective_inner_expr, inner.as_ref());
                 if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&self.mk_key(effective_inner_span))
@@ -17332,8 +17451,8 @@ impl LowerCtx {
                     let HirExpr {
                         node: anchor_node,
                         site: anchor_site,
-                        ty: anchor_ty,
-                        value_class: anchor_value_class,
+                        ty: _,
+                        value_class: _,
                         intent: anchor_intent,
                         kind: ask_kind,
                         span: anchor_span,
@@ -17347,6 +17466,28 @@ impl LowerCtx {
                         source_anchor: None,
                     } = ask_kind
                     {
+                        let method_anchor = HirProducedValueSourceAnchor {
+                            node: anchor_node,
+                            site: anchor_site,
+                            ty: result_ty.clone(),
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            intent: anchor_intent,
+                            producer: HirProducedValueProducer::ActorAsk,
+                            span: anchor_span,
+                            source: None,
+                        };
+                        let source_anchor = if has_block_wrapper {
+                            let mut block_anchor = self.produced_value_source_anchor(
+                                &inner.1,
+                                result_ty.clone(),
+                                intent,
+                                HirProducedValueProducer::Block,
+                            );
+                            block_anchor.source = Some(Box::new(method_anchor));
+                            block_anchor
+                        } else {
+                            method_anchor
+                        };
                         return HirExpr {
                             node: self.ids.node(),
                             site,
@@ -17359,16 +17500,7 @@ impl LowerCtx {
                                 args,
                                 reply_ty,
                                 deadline_ns,
-                                source_anchor: Some(HirProducedValueSourceAnchor {
-                                    node: anchor_node,
-                                    site: anchor_site,
-                                    ty: anchor_ty,
-                                    value_class: anchor_value_class,
-                                    intent: anchor_intent,
-                                    producer: HirProducedValueProducer::ActorAsk,
-                                    span: anchor_span,
-                                    source: None,
-                                }),
+                                source_anchor: Some(source_anchor),
                             },
                             span: span.clone(),
                         };
@@ -21489,12 +21621,12 @@ impl LowerCtx {
                     .is_some_and(|module| module.starts_with("std."))
                 {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
                 if self.resolves_to_opaque_handle(&qualified, name) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
                 }
@@ -21541,7 +21673,7 @@ impl LowerCtx {
         let canonical = self.canonical_current_module_record_name(name);
         if canonical != name {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
             if self.resolves_to_opaque_handle(&canonical, type_name) {
                 return ResolvedTy::named_opaque(canonical, args);
@@ -21616,7 +21748,7 @@ impl LowerCtx {
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+            Self::resolved_source_builtin_ty(name, builtin, args)
         } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
@@ -21688,11 +21820,7 @@ impl LowerCtx {
             let qualified = format!("{module_owner}.{name}");
             if self.source_type_identities.contains(&qualified) {
                 if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                    return Some(ResolvedTy::named_builtin(
-                        builtin.canonical_name(),
-                        builtin,
-                        args,
-                    ));
+                    return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
                 }
                 return Some(if self.resolves_to_opaque_handle(&qualified, name) {
                     ResolvedTy::named_opaque(qualified, args)
@@ -21839,7 +21967,7 @@ impl LowerCtx {
             let canonical = self.canonical_current_module_record_name(&name);
             if canonical.contains('.') {
                 if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    return Self::resolved_source_builtin_ty(&canonical, builtin, args);
                 }
             }
             if self.resolves_to_opaque_handle(&canonical, &name) {
@@ -21872,12 +22000,12 @@ impl LowerCtx {
                     .is_some_and(|module| module.starts_with("std."))
                 {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
                 if self.resolves_to_opaque_handle(&qualified, &name) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
                 }
@@ -21906,6 +22034,24 @@ impl LowerCtx {
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
         if let Some(builtin) = builtin {
+            // Checker-authored runtime signatures may retain the bare
+            // presentation name for a source-owned lifecycle carrier. When
+            // this scope has an exact import binding, restore that declaration
+            // identity before the builtin early-return below. The binding is
+            // checker-published from canonical source provenance, so a user
+            // same-leaf type cannot acquire lifecycle authority here.
+            if !name.contains('.')
+                && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
+            {
+                if let Some(imported) = self
+                    .import_type_name_aliases
+                    .get(&(self.current_module_name.clone(), name.clone()))
+                {
+                    if self.qualified_source_builtin(imported) == Some(builtin) {
+                        return Self::resolved_source_builtin_ty(imported, builtin, args);
+                    }
+                }
+            }
             if !name.contains('.') {
                 // Preserve the checker-authored presentation identity. Runtime
                 // classification is carried exclusively by `builtin`; a
@@ -21918,7 +22064,7 @@ impl LowerCtx {
                 };
             }
             if self.qualified_source_builtin(&name) == Some(builtin) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&name, builtin, args);
             }
             return ResolvedTy::named_user(name, args);
         }
@@ -21958,13 +22104,13 @@ impl LowerCtx {
         // grant a user package a std carrier merely from its spelling.
         if canonical.contains('.') {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
         }
         if canonical == name {
             if name.contains('.') {
                 if let Some(builtin) = self.qualified_source_builtin(&name) {
-                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    return Self::resolved_source_builtin_ty(&name, builtin, args);
                 }
             }
             // The checker-authored builtin discriminator is authoritative.
@@ -21981,7 +22127,7 @@ impl LowerCtx {
                 is_opaque,
             }
         } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
-            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+            Self::resolved_source_builtin_ty(&canonical, builtin, args)
         } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
             ResolvedTy::named_opaque(canonical, args)
         } else {
@@ -22200,6 +22346,26 @@ impl LowerCtx {
             return Some(builtin);
         }
         None
+    }
+
+    /// Retain the exact declaration identity for source-owned lifecycle
+    /// carriers while also attaching their runtime representation class.
+    /// Ordinary compiler carriers continue to use the catalog's canonical
+    /// presentation name. A lifecycle record needs both facts: its qualified
+    /// source name selects the nominal layout, while `builtin` selects the ABI.
+    fn resolved_source_builtin_ty(
+        source_name: &str,
+        builtin: BuiltinType,
+        args: Vec<ResolvedTy>,
+    ) -> ResolvedTy {
+        let name = if source_name.contains('.')
+            && hew_types::lookup_source_owned_lifecycle_type(source_name) == Some(builtin)
+        {
+            source_name
+        } else {
+            builtin.canonical_name()
+        };
+        ResolvedTy::named_builtin(name, builtin, args)
     }
 
     /// Project a checker-owned implementation declaration onto the one HIR
@@ -23970,7 +24136,8 @@ impl LowerCtx {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "for-over-Vec desugars directly to existing Loop/Match HIR nodes"
+        clippy::if_not_else,
+        reason = "the desugar keeps diagnostic recovery before the executable iterator branch"
     )]
     fn lower_for_iter_desugar(
         &mut self,
@@ -24083,17 +24250,51 @@ impl LowerCtx {
                 // the prelude in outer-to-inner (original execution) order — until
                 // the tail is no longer a `Block`, so an arbitrarily block-wrapped
                 // literal source bottoms out at the same bare-`BindingRef` shape a
-                // named binding takes.
+                // named binding takes. Keep each consumed Block site as a
+                // transparent `SubsumedValue` wrapper: checker facts and their
+                // nested identity edges remain attached to live HIR expressions,
+                // while MIR evaluates only the surviving tail.
                 let elem_ty = args[0].clone();
+                let mut consumed_blocks = Vec::new();
                 while let HirExprKind::Block(block) = lowered_iterable.kind {
                     let Some(tail) = block.tail else {
                         lowered_iterable.kind = HirExprKind::Block(block);
                         break;
                     };
                     source_prelude.extend(block.statements);
+                    consumed_blocks.push((
+                        lowered_iterable.site,
+                        lowered_iterable.span,
+                        lowered_iterable.intent,
+                    ));
                     lowered_iterable = *tail;
                 }
                 lowered_iterable.intent = IntentKind::Capture;
+                let synthetic_array_tail = matches!(
+                    &lowered_iterable.kind,
+                    HirExprKind::BindingRef { name, .. }
+                        if name.starts_with("__hew_array_") || name.starts_with("__hew_repeat_")
+                ) && !self
+                    .produced_value_fact_sites
+                    .contains_key(&lowered_iterable.site);
+                if synthetic_array_tail {
+                    let (array_site, _, _) = consumed_blocks
+                        .pop()
+                        .expect("array desugar tail must retain its synthetic block site");
+                    lowered_iterable.site = array_site;
+                    if let Some(fact) = self.produced_value_fact_sites.get_mut(&array_site) {
+                        fact.producer = HirProducedValueProducer::BindingRef;
+                    }
+                }
+                for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
+                    lowered_iterable = self.subsumed_value(
+                        site,
+                        &block_span,
+                        block_intent,
+                        lowered_iterable,
+                        HirProducedValueProducer::Block,
+                    );
+                }
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
@@ -24334,7 +24535,7 @@ impl LowerCtx {
         self.push_scope();
         let block_scope = self.ids.scope();
         let iter_name = format!("__hew_for_iter_{}", self.ids.binding().0);
-        let iter_binding = self.bind(iter_name.clone(), iter_ty, true, iterable.1.clone());
+        let iter_binding = self.bind(iter_name.clone(), iter_ty.clone(), true, iterable.1.clone());
         let iter_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(iter_binding.clone(), Some(iter_init)),
@@ -24351,34 +24552,105 @@ impl LowerCtx {
             ForIterNextCall::VarSelf(target) => {
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
-                let target_label = match target {
-                    HirVarSelfMethodTarget::Direct => "direct impl method".to_string(),
+                let (call_target, target_label) = match &target {
+                    HirVarSelfMethodTarget::Direct => {
+                        let symbol = match &iter_ty {
+                            ResolvedTy::Named {
+                                builtin:
+                                    Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
+                                ..
+                            } => crate::node::HirImplBlock::method_symbol(
+                                injected_builtin_impl_symbol_owner(builtin.canonical_name()),
+                                "next",
+                            ),
+                            ResolvedTy::Named { name, .. } => {
+                                crate::node::HirImplBlock::method_symbol(name, "next")
+                            }
+                            _ => String::new(),
+                        };
+                        (self.registered_symbol_target(&symbol), symbol)
+                    }
                     HirVarSelfMethodTarget::StaticTrait {
                         declaring_trait,
                         method_name,
                         ..
-                    } => format!("{declaring_trait}::{method_name}"),
+                    } => {
+                        let label = format!("{declaring_trait}::{method_name}");
+                        let call_target = self
+                            .trait_method_identity(declaring_trait, method_name)
+                            .map_or_else(
+                                || CallTarget::Unsupported {
+                                    reason: format!(
+                                        "synthetic static-trait call `{label}` has no checker-owned target"
+                                    ),
+                                },
+                                |(trait_id, method_id)| {
+                                    CallTarget::static_trait(trait_id, method_id)
+                                },
+                            );
+                        (call_target, label)
+                    }
                 };
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: target_label,
-                        reason: "synthetic iterator var-self call has no checker target"
-                            .to_string(),
-                    },
-                    iterable.1.clone(),
-                    "the iterator desugar requires a checker-published executable target",
-                ));
-                // A legacy `HirVarSelfMethodTarget` string is not an executable
-                // authority. Do not carry it into MIR beside an Unsupported
-                // target: error recovery ends here instead.
-                self.make_expr(
-                    HirExprKind::Unsupported(
-                        "synthetic iterator var-self call has no checker target".to_string(),
-                    ),
-                    option_ty,
-                    IntentKind::Read,
-                    iterable.1.clone(),
-                )
+                if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
+                    self.make_expr(
+                        HirExprKind::Unsupported(
+                            "synthetic iterator var-self call has no checker target".to_string(),
+                        ),
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    )
+                } else {
+                    let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+                    let lowered_receiver =
+                        self.lower_synthetic_operand(&next_receiver, IntentKind::Consume);
+                    if matches!(target, HirVarSelfMethodTarget::Direct) {
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            &iter_ty,
+                            &iterable.1,
+                            lowered_receiver.site,
+                        );
+                    }
+                    let builtin_cursor = matches!(
+                        iter_ty,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::VecIter | BuiltinType::HashMapIter),
+                            ..
+                        }
+                    );
+                    let next = self.make_expr(
+                        HirExprKind::VarSelfMethodCall {
+                            receiver: Box::new(lowered_receiver),
+                            call_target,
+                            target,
+                            args: Vec::new(),
+                            ret_ty: option_ty.clone(),
+                            receiver_ty: iter_ty,
+                        },
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    );
+                    // This call root is compiler-generated and therefore has
+                    // no authored checker span. Keep its fact in the disjoint
+                    // generated-site domain. The closed builtin cursors clone
+                    // or move an independently owned element into the returned
+                    // Option; user/static iterators remain provisional until
+                    // the declaration-keyed verifier resolves their return
+                    // summary.
+                    let ownership = if next.value_class == ValueClass::BitCopy {
+                        hew_types::ProducedValueOwnership::NoOwner
+                    } else if builtin_cursor {
+                        hew_types::ProducedValueOwnership::owned(
+                            hew_types::ProducedValueAcquisition::Fresh,
+                        )
+                    } else {
+                        hew_types::ProducedValueOwnership::Unknown
+                    };
+                    self.record_generated_produced_value_fact(&next, ownership);
+                    next
+                }
             }
             ForIterNextCall::ChannelRecv => {
                 // Borrow the receiver binding (Read) so the loop binding remains
@@ -33964,10 +34236,15 @@ fn main() {}
             ("std.stream.Sink", BuiltinType::Sink),
             ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
         ] {
+            let expected_name = if builtin == BuiltinType::MonitorRef {
+                qualified
+            } else {
+                builtin.canonical_name()
+            };
             assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
-                ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
-                "an exact canonical std carrier `{qualified}` must retain builtin identity"
+                ResolvedTy::named_builtin(expected_name, builtin, Vec::new()),
+                "an exact canonical std carrier `{qualified}` must retain declaration and builtin identity"
             );
         }
 
@@ -34189,11 +34466,7 @@ fn main() {}
         );
         assert_eq!(
             ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
-            ResolvedTy::named_builtin(
-                BuiltinType::CrashInfo.canonical_name(),
-                BuiltinType::CrashInfo,
-                Vec::new(),
-            ),
+            ResolvedTy::named_builtin("std.failure.CrashInfo", BuiltinType::CrashInfo, Vec::new(),),
             "an imported std lifecycle payload must not be stolen by the global record registry"
         );
     }

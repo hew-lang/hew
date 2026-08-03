@@ -1387,9 +1387,13 @@ impl Checker {
         // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
         self.register_builtin_error_prelude_bindings();
+        // Crash-hook signatures are an import-free language surface in both
+        // inline and on-disk programs. Register only their `CrashInfo` and
+        // `CrashAction` declarations before module-graph discovery;
+        // `CrashNotification` remains source-import-only for `#[on(exit)]`.
+        self.register_builtin_failure_surface();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
-            self.register_builtin_failure_surface();
             self.register_builtin_monitor_ref_surface();
         }
     }
@@ -1706,14 +1710,31 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            let items: Vec<_> = parsed
+                .program
+                .items
+                .into_iter()
+                .filter(|(item, _)| {
+                    matches!(
+                        item,
+                        Item::TypeDecl(decl)
+                            if matches!(decl.name.as_str(), "CrashInfo" | "CrashAction")
+                    )
+                })
+                .collect();
             self.register_stdlib_hew_items(
                 "failure",
                 "std.failure",
                 &items,
                 StdlibBarePublication::Prelude,
             );
-            self.record_canonical_lifecycle_prelude_authority("std.failure");
+            for source_name in ["CrashInfo", "CrashAction"] {
+                self.canonical_lifecycle_import_authority.insert((
+                    None,
+                    source_name.to_string(),
+                    format!("std.failure.{source_name}"),
+                ));
+            }
         }
     }
 
@@ -2504,6 +2525,7 @@ impl Checker {
     pub(super) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
+        let preferred_modules = collision_preferred_package_module_ids(program, &HashSet::new());
         // Member re-resolution is a secondary fix-up pass (it overwrites the
         // member types computed during `collect_types` once imports are
         // visible) and runs with `type_decls_registered` already true. Suppress
@@ -2528,7 +2550,16 @@ impl Checker {
                 let saved_local_type_defs = self.local_type_defs.clone();
                 let saved_source_type_defs = self.source_type_defs.clone();
                 self.seed_member_reresolution_scope(&module.items);
-                for (item, _) in &module.items {
+                for (item, item_span) in &module.items {
+                    if member_item_is_absorbed_from_distinct_child(
+                        program,
+                        &preferred_modules,
+                        mod_id,
+                        item,
+                        item_span,
+                    ) {
+                        continue;
+                    }
                     self.reresolve_item_member_types(item);
                 }
                 self.local_type_defs = saved_local_type_defs;
@@ -6972,6 +7003,23 @@ impl Checker {
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
         let declaration_id = self.impl_method_declaration_id(type_name, method, trait_bound);
+        // Preserve the exact trait declaration selected while this impl's
+        // source scope is active. A bare module import can make a trait
+        // unambiguous without publishing it as an ordinary named import; HIR
+        // still needs the checker-owned identity for static dispatch and must
+        // not reconstruct it from the trait's leaf spelling.
+        if let Some(bound) = trait_bound {
+            if let Some(ids) = self.trait_method_call_target_ids(&bound.name, &method.name) {
+                self.trait_method_ids_by_binding.insert(
+                    (
+                        self.current_module.clone(),
+                        bound.name.clone(),
+                        method.name.clone(),
+                    ),
+                    ids,
+                );
+            }
+        }
         // Push impl-level bounds onto the resolver's stack so the method
         // signature can reference `T::Bar` where `T` is an impl type param
         // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
@@ -9920,10 +9968,18 @@ impl Checker {
                     }
                     let event_name = format!("{}Event", md.name);
                     self.register_machine_decl(md, span);
+                    let machine_def = self.type_defs.get(&md.name).cloned();
+                    let event_def = self.type_defs.get(&event_name).cloned();
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(event_name.clone());
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
+                    if let Some(machine_def) = machine_def.as_ref() {
+                        self.register_full_type_alias(module_full_path, &md.name, machine_def);
+                    }
+                    if let Some(event_def) = event_def.as_ref() {
+                        self.register_full_type_alias(module_full_path, &event_name, event_def);
+                    }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
                     // Bare publication of the machine and its companion event
@@ -10997,8 +11053,16 @@ impl Checker {
                     // Qualified authority is always published for the machine
                     // and its companion event enum.
                     self.register_machine_decl(md, span);
+                    let machine_def = self.type_defs.get(&md.name).cloned();
+                    let event_def = self.type_defs.get(&event_name).cloned();
                     self.register_qualified_type_alias(module_short, &md.name);
                     self.register_qualified_type_alias(module_short, &event_name);
+                    if let Some(machine_def) = machine_def.as_ref() {
+                        self.register_full_type_alias(module_full_path, &md.name, machine_def);
+                    }
+                    if let Some(event_def) = event_def.as_ref() {
+                        self.register_full_type_alias(module_full_path, &event_name, event_def);
+                    }
                     self.record_module_type_export(module_short, &md.name);
                     self.record_module_type_export(module_short, &event_name);
                     // Bare publication of the machine and its event enum is
@@ -11822,6 +11886,46 @@ fn collision_preferred_package_module_ids(
         }
     }
     preferred
+}
+
+/// Whether an aggregate directory module is replaying a member-bearing item
+/// owned by a distinct child source module.
+///
+/// Item equality alone is insufficient because two modules can author the
+/// same declaration shape independently. Match the source span as well, and
+/// let a same-leaf preferred module retain ownership of the directory's root
+/// file before considering distinct children.
+fn member_item_is_absorbed_from_distinct_child(
+    program: &Program,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    current_module: &hew_parser::module::ModuleId,
+    item: &Item,
+    item_span: &Span,
+) -> bool {
+    if preferred_modules.contains(current_module) {
+        return false;
+    }
+    let Some(module_graph) = program.module_graph.as_ref() else {
+        return false;
+    };
+    let current_leaf = current_module.path.last();
+    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+        module_graph.modules.get(module_id).is_some_and(|module| {
+            module
+                .items
+                .iter()
+                .any(|(candidate, candidate_span)| candidate == item && candidate_span == item_span)
+        })
+    };
+    if preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+    {
+        return false;
+    }
+    preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
 }
 
 /// Whether `type_name` is declared by 2+ distinct non-root modules (package or,

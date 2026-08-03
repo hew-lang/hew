@@ -6123,10 +6123,14 @@ pub(super) fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr>
     ) {
         return None;
     }
-    fields
+    let mut source = fields
         .iter()
         .find(|(field, _)| field == "vec")
-        .map(|(_, src)| src)
+        .map(|(_, src)| src)?;
+    while let HirExprKind::SubsumedValue { source: inner, .. } = &source.kind {
+        source = inner;
+    }
+    Some(source)
 }
 /// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the
 /// cursor the SOLE owner of the `Vec` handle in its `vec` field, so the cursor

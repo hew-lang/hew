@@ -22,7 +22,7 @@ pub type Counter {
 
 impl Iterator for Counter {
     type Item = i64;
-    fn next(it: Counter) -> Option<i64> {
+    fn next(var it: Counter) -> Option<i64> {
         if it.n >= it.limit {
             None
         } else {
@@ -41,7 +41,7 @@ where
     I: Iterator<Item = A>,
 {
     type Item = B;
-    fn next(it: Map<I, A, B>) -> Option<B> {
+    fn next(var it: Map<I, A, B>) -> Option<B> {
         panic("Map::next deferred pending Q004 checker fix");
         None
     }
@@ -57,7 +57,7 @@ where
     I: Iterator<Item = A>,
 {
     type Item = A;
-    fn next(it: Filter<I, A>) -> Option<A> {
+    fn next(var it: Filter<I, A>) -> Option<A> {
         panic("Filter::next deferred pending Q004 checker fix");
         None
     }
@@ -73,7 +73,7 @@ where
     I: Iterator<Item = A>,
 {
     type Item = A;
-    fn next(it: Take<I>) -> Option<A> {
+    fn next(var it: Take<I>) -> Option<A> {
         panic("Take::next deferred pending Q004 checker fix");
         None
     }
@@ -89,7 +89,7 @@ where
     I: Iterator<Item = A>,
 {
     type Item = A;
-    fn next(it: Skip<I>) -> Option<A> {
+    fn next(var it: Skip<I>) -> Option<A> {
         panic("Skip::next deferred pending Q004 checker fix");
         None
     }

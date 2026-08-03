@@ -3026,6 +3026,21 @@ fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Bytes)
 }
 
+/// True for the compiler-owned Vec iterator carrier whose return transfer and
+/// caller-side drop are implemented explicitly in MIR. `VecIter<T>` is an
+/// inline `{ vec, idx }` struct at the LLVM boundary, but it is not an
+/// arbitrary generic record: the callee suppresses the escaped cursor drop and
+/// the caller assumes the cursor's buffer-owner obligation.
+fn is_owned_vec_iter_return(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::VecIter),
+            ..
+        }
+    )
+}
+
 /// True when a function return type is a heap-owning **record** composite whose
 /// per-field drop the existing spine emits (`DropKind::RecordInPlace` +
 /// `__hew_record_drop_inplace_<R>`). The caller's record binding assumes the
@@ -22097,6 +22112,19 @@ fn collect_helper_crash_cleanup_descriptors(
             {
                 supported_producers.extend(terminator_writes);
             }
+            Terminator::Call {
+                authority:
+                    hew_mir::CallAuthority::Compiler(
+                        hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                        | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
+                    ),
+                ..
+            } => {
+                // Both compiler intercepts complete an owned Option in-place,
+                // converge their Some/None edges, and arm crash cleanup only
+                // after the tag and optional payload are fully initialized.
+                supported_producers.extend(terminator_writes);
+            }
             Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
                 supported_producers.extend(terminator_writes);
             }
@@ -28549,7 +28577,15 @@ fn call_bypasses_crash_cleanup_common_tail(
                 | RtFamily::MathIntrinsic(_)
         )
     );
-    let compiler_intercept = matches!(authority, hew_mir::CallAuthority::Compiler(_));
+    let compiler_intercept = matches!(
+        authority,
+        hew_mir::CallAuthority::Compiler(kind)
+            if !matches!(
+                kind,
+                hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                    | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout
+            )
+    );
     let collection_intercept = builtin.is_some_and(|family| {
         use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as F};
 
@@ -33567,6 +33603,9 @@ fn lower_function<'ctx>(
     // restores parity with `string`, which lowers to a flat `ptr` and is already
     // admitted because it never reaches the `StructType` arm. (`std::fs` import
     // was blocked solely because `fs.read_bytes -> bytes` was force-codegen'd.)
+    // `VecIter<T>` is likewise admitted through its dedicated cursor-transfer
+    // spine: MIR suppresses the callee's escaped cursor drop and registers the
+    // caller's returned cursor as the unique owner of its cloned Vec buffer.
     //
     // W5.021 — heap-owning TUPLE and RECORD composite returns are now admitted:
     // the MIR elaborator move-checks each owned member's single owner across the
@@ -33596,6 +33635,7 @@ fn lower_function<'ctx>(
         && resolved_ty_contains_heap_leaf(&fn_ctx, &func.return_ty, &mut HashSet::new())
         && !crate::layout::is_inline_enum_composite_shape(&func.return_ty, fn_ctx.enum_layouts)
         && !is_single_heap_owning_leaf_return(&func.return_ty)
+        && !is_owned_vec_iter_return(&func.return_ty)
         && !crate::layout::is_tuple_composite_shape(&func.return_ty)
         && !is_heap_owning_record_composite_return(&func.return_ty, fn_ctx.record_layouts)
     {

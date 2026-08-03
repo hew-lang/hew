@@ -597,8 +597,9 @@ impl Checker {
                 );
                 continue;
             }
+            let bound_display = crate::short_name(bound);
             let msg = format!(
-                "type `{}` does not implement trait `{bound}` required by `{param_name}`",
+                "type `{}` does not implement trait `{bound_display}` required by `{param_name}`",
                 resolved_arg.user_facing()
             );
             let suggestions = self.diagnose_bound_failure_suggestions(resolved_arg, bound);
@@ -956,11 +957,12 @@ impl Checker {
         let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
             return vec![];
         };
+        let trait_display = crate::short_name(&trait_name);
 
         // E1 guard: associated types require an explicit impl alias scope.
         if !trait_info.associated_types.is_empty() {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (it declares associated types)"
             )];
         }
@@ -971,7 +973,7 @@ impl Checker {
             .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
         {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (it has generic methods)"
             )];
         }
@@ -980,7 +982,7 @@ impl Checker {
         let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())
         else {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (a super-trait declares associated types or generic methods)"
             )];
         };
@@ -988,8 +990,8 @@ impl Checker {
         // A trait with no required methods (all defaults or empty) still needs an explicit impl.
         if required.is_empty() {
             return vec![format!(
-                "trait `{trait_name}` has no required methods — add an explicit \
-                 `impl {trait_name} for {type_name}` declaration"
+                "trait `{trait_display}` has no required methods — add an explicit \
+                 `impl {trait_display} for {type_name}` declaration"
             )];
         }
 
@@ -1016,7 +1018,7 @@ impl Checker {
             if trait_sig.params.len() != type_sig.params.len() {
                 return vec![format!(
                     "`{type_name}::{method_name}` has {} parameter(s) but trait \
-                     `{trait_name}` requires {} — arity mismatch",
+                     `{trait_display}` requires {} — arity mismatch",
                     type_sig.params.len(),
                     trait_sig.params.len(),
                 )];
@@ -1028,7 +1030,7 @@ impl Checker {
                 .substitute_named_param("Self", &concrete_ty);
             if expected_ret != type_sig.return_type {
                 return vec![format!(
-                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_name}` \
+                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_display}` \
                      requires `{}` — return-type mismatch",
                     type_sig.return_type.user_facing(),
                     expected_ret.user_facing(),
@@ -1046,7 +1048,7 @@ impl Checker {
                 if expected != *type_param {
                     return vec![format!(
                         "`{type_name}::{method_name}` parameter {} has type `{}` but \
-                         trait `{trait_name}` requires `{}` — type mismatch",
+                         trait `{trait_display}` requires `{}` — type mismatch",
                         i + 1,
                         type_param.user_facing(),
                         expected.user_facing(),
@@ -1058,7 +1060,7 @@ impl Checker {
         if !missing.is_empty() {
             let list = missing.join(", ");
             return vec![format!(
-                "`{type_name}` is missing method(s) required by trait `{trait_name}`: {list}"
+                "`{type_name}` is missing method(s) required by trait `{trait_display}`: {list}"
             )];
         }
 

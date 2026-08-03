@@ -677,6 +677,8 @@ pub enum TypeErrorKind {
     ReturnTypeMismatch,
     /// Value used after it was moved to an actor
     UseAfterMove,
+    /// A linear value was used after its unique consume operation.
+    UseAfterConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// Actor types form a reference cycle via `LocalPid` fields
@@ -1347,6 +1349,7 @@ impl TypeErrorKind {
             Self::MutabilityError => "MutabilityError",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
+            Self::UseAfterConsume => "UseAfterConsume",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",

@@ -1240,10 +1240,22 @@ impl Checker {
             let ty = binding.ty.clone();
             let def_span = binding.def_span.clone();
             if is_moved {
+                let is_linear = matches!(
+                    &ty,
+                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                );
                 let mut err = TypeError::new(
-                    TypeErrorKind::UseAfterMove,
+                    if is_linear {
+                        TypeErrorKind::UseAfterConsume
+                    } else {
+                        TypeErrorKind::UseAfterMove
+                    },
                     span.clone(),
-                    format!("use of moved value `{name}`"),
+                    if is_linear {
+                        format!("UseAfterConsume: use of consumed linear value `{name}`")
+                    } else {
+                        format!("use of moved value `{name}`")
+                    },
                 );
                 if let Some(ref source_module) = self.current_module {
                     err = err.with_source_module(source_module.clone());
@@ -1262,6 +1274,12 @@ impl Checker {
                          use a single consuming call per binding",
                         ty.user_facing()
                     ));
+                } else if is_linear {
+                    err = err.with_suggestion(
+                        "a `#[linear]` binding has exactly one ownership path; invoke its \
+                         consuming method only once"
+                            .to_string(),
+                    );
                 } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
                     // The value's type has a clone path, so the canonical fix is
                     // to duplicate it before the consuming use and pass the copy.
@@ -2328,6 +2346,16 @@ impl Checker {
                 self.task_scope_depth += 1;
                 self.check_block(block, None);
                 self.task_scope_depth -= 1;
+                Ty::Unit
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                // A deadline clause is unit-valued, but both of its children are
+                // still ordinary checked source. In particular, direct calls in
+                // the body must publish their canonical targets for HIR lowering;
+                // treating this node as the concurrency fallback's default Unit
+                // silently skipped the entire body.
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+                self.check_block(body, None);
                 Ty::Unit
             }
             Expr::UnsafeBlock(block) => {
@@ -6669,12 +6697,18 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let td = if is_bare_constructor {
-            self.module_local_type_def(unqualified)
+        let module_local_name = if is_bare_constructor {
+            self.current_module_identity().and_then(|owner| {
+                let qualified = format!("{owner}.{unqualified}");
+                self.type_defs.contains_key(&qualified).then_some(qualified)
+            })
         } else {
             None
-        }
-        .or_else(|| self.lookup_type_def(name));
+        };
+        let td = module_local_name
+            .as_deref()
+            .and_then(|qualified| self.lookup_type_def(qualified))
+            .or_else(|| self.lookup_type_def(name));
         if let Some(td) = td {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
@@ -6831,10 +6865,11 @@ impl Checker {
             // The helper short-circuits cleanly for bound-free names and
             // enforces the TypeDef-owned bound map for every generic nominal
             // whose arguments were inferred from the fields above.
-            self.enforce_type_def_instantiation_bounds(name, &type_args, span);
+            let result_name = module_local_name.as_deref().unwrap_or(name);
+            self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
             Ty::Named {
                 builtin: None,
-                name: name.to_string(),
+                name: result_name.to_string(),
                 args: type_args,
             }
         } else if let Some((enum_name, variant_fields, enum_type_params)) =

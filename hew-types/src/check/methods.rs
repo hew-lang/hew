@@ -2607,17 +2607,6 @@ impl Checker {
         td.methods.get(method).cloned()
     }
 
-    /// Resolve a module-local type definition through its authoritative
-    /// qualified key (`{current_short}.{type_name}`).
-    ///
-    /// This avoids the bare-name last-write-wins entry when a sibling module
-    /// declares the same record/type name.
-    pub(super) fn module_local_type_def(&self, type_name: &str) -> Option<TypeDef> {
-        let owner = self.current_module_identity()?;
-        let qualified = format!("{owner}.{type_name}");
-        self.type_defs.get(&qualified).cloned()
-    }
-
     pub(super) fn lookup_named_method_sig(
         &self,
         type_name: &str,
@@ -7639,6 +7628,27 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, param_ty);
                     }
+                }
+                let impl_key = format!("{name}::{method}");
+                if let Some(declaration) = self.impl_method_declaration_ids.get(&impl_key).cloned()
+                {
+                    let target = CallTarget::ImplMethod(declaration);
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                            target: target.clone(),
+                            c_symbol: impl_key.clone(),
+                            elem_ty: None,
+                        },
+                    );
+                    self.record_direct_call_target(span, target);
+                    self.record_resolved_direct_call_ownership(
+                        &impl_key,
+                        &sig,
+                        args,
+                        &sig.return_type,
+                        span,
+                    );
                 }
                 // Wire codec static deserialize methods on a `#[wire]` struct or
                 // enum. `decode` is the binary CBOR path

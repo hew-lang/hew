@@ -7142,6 +7142,8 @@ impl Checker {
         let resolved_call = self.resolved_calls.get(&key);
         let actor_call = self.actor_method_dispatch.get(&key);
         let machine_call = self.machine_method_dispatch.get(&key);
+        let is_suspending_io_delivery =
+            self.conn_await_reads.contains_key(&key) || self.listener_await_accepts.contains(&key);
         let runtime_family = match rewrite {
             Some(MethodCallRewrite::RewriteToFunction {
                 descriptor: Some(descriptor),
@@ -7198,7 +7200,8 @@ impl Checker {
                     | crate::runtime_call::RuntimeCallFamily::DuplexRecv
                     | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
             )
-        ) {
+        ) || is_suspending_io_delivery
+        {
             Ownership::owned(Acquisition::Delivery)
         } else if let Some(call) = resolved_call {
             match call.method_target.family {
@@ -7354,7 +7357,8 @@ impl Checker {
             || dyn_call.is_some()
             || resolved_call.is_some()
             || actor_call.is_some()
-            || machine_call.is_some();
+            || machine_call.is_some()
+            || is_suspending_io_delivery;
         let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
             Some(Boundary::Transfer)
         } else if !recognized {
@@ -10430,6 +10434,60 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn suspending_io_method_results_publish_delivery_ownership() {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let receiver = (Expr::Identifier("io".to_string()), 1..3);
+
+        let read_span = 10..20;
+        let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(read_key.clone(), true);
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &read_span,
+            &Ty::String,
+        );
+
+        let read = checker
+            .resolved_method_call_ownership
+            .get(&read_key)
+            .expect("suspending read ownership");
+        assert_eq!(read.fact.ownership, Ownership::owned(Acquisition::Delivery));
+        assert_eq!(read.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let accept_span = 30..40;
+        let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
+        checker.listener_await_accepts.insert(accept_key.clone());
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "accept",
+            &[],
+            &accept_span,
+            &Ty::Named {
+                name: crate::stdlib::STD_NET_CONNECTION.to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+        );
+
+        let accept = checker
+            .resolved_method_call_ownership
+            .get(&accept_key)
+            .expect("suspending accept ownership");
+        assert_eq!(
+            accept.fact.ownership,
+            Ownership::owned(Acquisition::Delivery)
+        );
+        assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
+    }
 
     #[test]
     fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {

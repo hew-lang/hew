@@ -469,6 +469,21 @@ fn function_return_ownership_summaries(
         .collect()
 }
 
+/// Compatibility closure for direct user calls whose checker-authored call
+/// fact is still `Unknown` after HIR attaches exact declaration targets.
+///
+/// WHY: the checker now computes total post-resolution ownership, but HIR does
+/// not yet carry those callee-resolved facts to every cloned or synthetic call
+/// occurrence. This shim joins the already-published callee return facts and,
+/// for a borrowed forwarder, requires every actual argument to be proven owned.
+///
+/// WHEN OBSOLETE: remove this closure once lowering projects the checker's total
+/// post-resolution result fact onto every HIR call occurrence.
+///
+/// WHAT REPLACES IT: the checker must publish the final call-site ownership
+/// keyed by stable resolved call identity, and HIR must carry that verdict
+/// unchanged. Until then this shim may fill only `Unknown`; it must never
+/// reinterpret a concrete checker verdict.
 fn resolve_user_call_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
@@ -507,28 +522,17 @@ fn resolve_user_call_facts(
         };
         let summary = if matches!(summary, Ownership::Borrowed) {
             let arguments = verifier.user_call_arguments.get(site);
-            let resolved_string_arguments = verifier.site_types.get(site)
-                == Some(&ResolvedTy::String)
-                && arguments.is_some_and(|arguments| {
-                    arguments.iter().all(|argument| {
-                        facts
-                            .get(argument)
-                            .is_some_and(|fact| !matches!(fact.ownership, Ownership::Unknown))
+            if arguments.is_some_and(|arguments| {
+                !arguments.is_empty()
+                    && arguments.iter().all(|argument| {
+                        call_argument_is_proven_owned(
+                            *argument,
+                            verifier,
+                            facts,
+                            &mut HashSet::new(),
+                        )
                     })
-                });
-            if resolved_string_arguments
-                || arguments.is_some_and(|arguments| {
-                    !arguments.is_empty()
-                        && arguments.iter().all(|argument| {
-                            call_argument_is_proven_owned(
-                                *argument,
-                                verifier,
-                                facts,
-                                &mut HashSet::new(),
-                            )
-                        })
-                })
-            {
+            }) {
                 Ownership::owned(ProducedValueAcquisition::Retained)
             } else {
                 summary
@@ -539,9 +543,7 @@ fn resolve_user_call_facts(
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        if matches!(fact.ownership, Ownership::Unknown | Ownership::Borrowed)
-            && !matches!(summary, Ownership::Unknown)
-        {
+        if matches!(fact.ownership, Ownership::Unknown) && !matches!(summary, Ownership::Unknown) {
             fact.ownership = summary;
             changed = true;
         }
@@ -2335,10 +2337,11 @@ mod tests {
         sync::Arc,
     };
 
-    use super::{typed_trait_call_result_ownership, verify_hir};
+    use super::{resolve_user_call_facts, typed_trait_call_result_ownership, verify_hir, Verifier};
     use crate::ids::IdGen;
     use crate::node::{
         HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
+        HirProducedValueFact, HirProducedValueProducer, HirProducedValueRelation,
         HirVarSelfMethodTarget,
     };
     use crate::{IntentKind, TypeClassTable, ValueClass};
@@ -2445,6 +2448,65 @@ mod tests {
             ),
         ] {
             assert_eq!(typed_trait_call_result_ownership(&target), None);
+        }
+    }
+
+    #[test]
+    fn user_call_closure_never_overwrites_concrete_checker_verdicts() {
+        let mut ids = IdGen::default();
+        let return_site = ids.site();
+        let argument_site = ids.site();
+        let call_site = ids.site();
+        let target = hew_types::DefId::new("forward");
+        let mut verifier = Verifier::default();
+        verifier
+            .function_return_sites
+            .insert(target.clone(), vec![return_site]);
+        verifier.user_call_targets.insert(call_site, vec![target]);
+        verifier
+            .user_call_arguments
+            .insert(call_site, vec![argument_site]);
+
+        let fact = |producer, ownership| HirProducedValueFact {
+            producer,
+            ownership,
+            relation: HirProducedValueRelation::Leaf,
+            receiver: None,
+            receiver_boundary: None,
+            arguments: Vec::new(),
+        };
+        let mut facts = HashMap::from([
+            (
+                return_site,
+                fact(
+                    HirProducedValueProducer::BindingRef,
+                    ProducedValueOwnership::Borrowed,
+                ),
+            ),
+            (
+                argument_site,
+                fact(
+                    HirProducedValueProducer::Call,
+                    ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                ),
+            ),
+        ]);
+
+        for ownership in [
+            ProducedValueOwnership::NoOwner,
+            ProducedValueOwnership::Borrowed,
+            ProducedValueOwnership::ReceiverIdentity,
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+        ] {
+            facts.insert(call_site, fact(HirProducedValueProducer::Call, ownership));
+            assert!(
+                !resolve_user_call_facts(&verifier, &mut facts),
+                "the compatibility closure must not report a concrete checker fact as changed"
+            );
+            assert_eq!(
+                facts[&call_site].ownership, ownership,
+                "the borrowed-forwarder promotion must not replace a concrete checker verdict"
+            );
         }
     }
 

@@ -359,11 +359,17 @@ fn canary4b_string_call_temp_arg_releases_once() {
 // A whole by-value string parameter is retained before the return-slot move.
 // A string projection is retained by the field load. Both therefore hand the
 // caller exactly one independently releasable share even though the returned
-// pointer can alias input storage. A direct borrowing consumer must give that
-// anonymous call-result carrier exactly one caller-side release.
+// pointer can alias input storage. A direct borrowing consumer gives each
+// checker-owned anonymous carrier one caller-side release. The generic identity
+// call is checker-authored `Borrowed`, so it must keep the parameter's existing
+// owner instead of letting HIR closure mint another one.
 // ---------------------------------------------------------------------------
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture compares every direct return-carrier route"
+)]
 fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
     let pl = pipeline_with_tc(
         "record Holder { value: string }\n\
@@ -443,7 +449,6 @@ fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
         "nested_call",
         "early_call",
         "return_join_twice_call",
-        "generic_call",
     ] {
         assert_eq!(
             return_exit_string_drops(&pl, caller),
@@ -458,6 +463,17 @@ fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
              by the nested runtime-temp path"
         );
     }
+    assert_eq!(
+        return_exit_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: a concrete Borrowed checker verdict must keep the parameter owner \
+         instead of minting a caller-side release"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: borrowing the identity result needs no independent temp release"
+    );
     assert_eq!(
         total_string_drops(&pl, "return_again"),
         0,

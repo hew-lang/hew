@@ -51,10 +51,10 @@ pub struct RemoteRegistry {
 }
 
 /// Default registry API URL.
-pub const DEFAULT_REGISTRY_API: &str = "https://registry.hew.sh/api/v1";
+pub const DEFAULT_REGISTRY_API: &str = "https://registry.hewpkg.com/api/v1";
 
 /// Default package CDN URL.
-pub const DEFAULT_REGISTRY_CDN: &str = "https://pkg.hew.sh";
+pub const DEFAULT_REGISTRY_CDN: &str = "https://cdn.hewpkg.com";
 
 /// Default fallback registry API URL.
 pub const DEFAULT_FALLBACK_API: Option<&str> = Some("https://mirror.hewpkg.com/api/v1");
@@ -102,9 +102,9 @@ impl std::error::Error for ConfigError {
 /// Compiled-in registry endpoints.
 #[derive(Debug, Clone)]
 pub struct RegistryEndpoints {
-    /// Base URL for the registry API (e.g. `https://registry.hew.sh/api/v1`).
+    /// Base URL for the registry API (e.g. `https://registry.hewpkg.com/api/v1`).
     pub api: String,
-    /// Base URL for the package CDN (e.g. `https://pkg.hew.sh`).
+    /// Base URL for the package CDN (e.g. `https://cdn.hewpkg.com`).
     pub cdn: String,
     /// Optional fallback API URL for read operations when the primary is down.
     pub fallback_api: Option<String>,

@@ -4,7 +4,7 @@
 //! exported runtime symbols; compiler/codegen magic uses distinct linkage
 //! variants so the catalog never pretends a HIR shim name is a C ABI symbol.
 
-use hew_types::{MathGenericOp, ResolvedTy};
+use hew_types::{MathGenericOp, ProducedValueAcquisition, ProducedValueOwnership, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinClass {
@@ -2714,6 +2714,22 @@ pub fn resolve_overload(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static B
     CATALOG.iter().find(|entry| entry.name == lowered_name)
 }
 
+/// Return an ownership contract only for catalog linkages whose result
+/// allocation semantics are intrinsic to the typed linkage variant.
+#[must_use]
+pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
+    let entry = CATALOG.iter().find(|entry| entry.name == endpoint)?;
+    match entry.linkage {
+        BuiltinLinkage::ToStringShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Fresh,
+        )),
+        BuiltinLinkage::StringCloneShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Clone,
+        )),
+        _ => None,
+    }
+}
+
 fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static str> {
     match name {
         "println" if arg_tys.len() == 1 => {
@@ -2822,7 +2838,26 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::compiler_synthetic_runtime_ownership_symbol;
+    use super::{compiler_synthetic_runtime_ownership_symbol, result_ownership};
+    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+
+    #[test]
+    fn string_result_linkages_publish_exact_ownership() {
+        assert_eq!(
+            result_ownership("to_string_i64"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("to_string_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Clone
+            ))
+        );
+        assert_eq!(result_ownership("println_i64"), None);
+        assert_eq!(result_ownership("missing"), None);
+    }
 
     #[test]
     fn identity_display_synthetics_map_only_to_real_runtime_formatters() {

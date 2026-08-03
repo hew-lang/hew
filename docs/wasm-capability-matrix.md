@@ -312,6 +312,7 @@ These gaps are explicitly deferred and tracked here:
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
 | Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO(channels):` |
+| Actor-local panic/trap containment and restart on production WASI | The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI | `WASM-TODO(actor-crash-containment):` |
 | Blocking semaphore acquire parity | Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32 | `WASM-TODO(semaphore):` |
 | Raw socket-backed Hew networking surface | Stable cross-host socket abstraction above host-provided WASI sockets | `WASM-TODO(wasi-sockets):` |
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO(streams):` |

@@ -513,7 +513,7 @@ tracking_label = "WASM-TODO(crypto-sign):"
 native_only_modules = ["sign"]
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (39 rows; mirror of the backlog table).
+# WASM-TODO backlog (40 rows; mirror of the backlog table).
 # ---------------------------------------------------------------------------
 
 [[backlog]]
@@ -543,6 +543,12 @@ blocker = "Stable cross-host socket abstraction above host-provided WASI sockets
 tracking_label = "WASM-TODO(wasi-sockets):"
 marker_disposition = "non-source"
 non_source_reason = "Raw WASI sockets have no supported Hew source surface; this row tracks host-capability API design only."
+
+[[backlog]]
+id = "websocket"
+gap = "WebSocket transport parity"
+blocker = "Browser/WASI WebSocket bridge for the native socket- and thread-backed stdlib transport"
+tracking_label = "WASM-TODO(websocket):"
 
 [[backlog]]
 id = "streams"

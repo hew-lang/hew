@@ -33,9 +33,8 @@ asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asa
 checked-mir-fixtures	exact	58	-	golden-MIR fixtures under examples/v05/checked-mir
 ci-parity-marked-steps	exact	33	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
 ci-required-checks	exact	36	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
-corpus-floor-registry	exact	25	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
+corpus-floor-registry	exact	26	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	exact	70	-	curated examples/*.hew programs the runtime coverage execution proof builds and runs
-runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
 ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
 fuzz-oracle-candidates	min	646	120	ratcheted candidates collected by the fuzz-to-run oracle
@@ -48,10 +47,11 @@ macos-leak-oracle-binaries	exact	110	-	nonempty hew-cli memory-oracle binaries s
 macos-leak-oracle-tests	exact	735	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 opaque-resource-lifecycle-facts	exact	17	-	AST-derived shipped empty opaque resource declarations with one close/release/producer lifecycle
+runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	70	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	74	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
-structural-authority-inventory	exact	165	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
+structural-authority-inventory	exact	170	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

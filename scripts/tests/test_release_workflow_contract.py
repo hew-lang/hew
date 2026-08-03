@@ -33,8 +33,10 @@ PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
 WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
 SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
 WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
-WINDOWS_LLVM_TOOLCHAIN_TAG = "toolchain/llvm-22.1.0-windows-msvc-v4"
-WINDOWS_LLVM_TOOLCHAIN_ASSET = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
+WINDOWS_LLVM_TOOLCHAIN_REPO = "hew-lang/llvm-toolchain"
+WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
+WINDOWS_LLVM_TOOLCHAIN_TAG = f"llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}"
+WINDOWS_LLVM_TOOLCHAIN_ASSET = f"hew-llvm-{WINDOWS_LLVM_TOOLCHAIN_VERSION}.tar.gz"
 
 
 def workflow() -> str:
@@ -749,67 +751,91 @@ def test_windows_test_workflow_msvc_ordering_mutations_are_rejected() -> None:
 
 
 def assert_windows_llvm_toolchain_contract(
-    prebuild: str, setup_action: str, release: str, build_guide: str
+    setup_action: str, release: str, build_guide: str
 ) -> None:
-    """Keep static llvm-sys linking on Windows compatible with the UCRT."""
-    assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in prebuild
-    assert "llvm-ar.exe" in prebuild
-    assert "rpmalloc\\.c\\.obj" in prebuild
-    assert f'TOOLCHAIN_TAG: "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in prebuild
-    assert f'ASSET_NAME: "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in prebuild
-    assert f'asset="{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in setup_action
+    """Keep static llvm-sys linking on Windows compatible with the UCRT.
+
+    The source build that produces this archive now lives in
+    hew-lang/llvm-toolchain, so the allocator flag and the rpmalloc archive
+    scan are asserted in that repository. What this repository owns — and what
+    this contract pins — is the consumer side: every download, verification and
+    extraction step must name the same toolchain repository, tag and asset, so
+    a partial bump cannot verify one archive and extract another.
+    """
+    assert f'version="{WINDOWS_LLVM_TOOLCHAIN_VERSION}"' in setup_action
     assert f'"{WINDOWS_LLVM_TOOLCHAIN_ASSET}")' in setup_action
-    assert f"releases/download/{WINDOWS_LLVM_TOOLCHAIN_TAG}/${{asset}}" in setup_action
-    assert f'$toolchainTag = "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in release
-    assert f'$asset        = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in release
-    assert release.count(f'$asset = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"') == 2
-    assert "windows-msvc-v3" not in "\n".join((prebuild, setup_action, release))
+    assert (
+        f"https://github.com/{WINDOWS_LLVM_TOOLCHAIN_REPO}/releases/download/"
+        in setup_action
+    )
+    assert f'$toolchainRepo = "{WINDOWS_LLVM_TOOLCHAIN_REPO}"' in release
+    assert f'$toolchainTag  = "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in release
+    assert f'$asset         = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in release
+    # Download, provenance-verify and extract must all name the same archive.
+    assert release.count(WINDOWS_LLVM_TOOLCHAIN_ASSET) == 3
+    assert release.count(f'$toolchainRepo = "{WINDOWS_LLVM_TOOLCHAIN_REPO}"') == 2
+    assert "windows-msvc-v3" not in "\n".join((setup_action, release))
     assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in build_guide
 
 
-def test_windows_llvm_toolchain_disables_integrated_crt_allocator() -> None:
+def test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository() -> None:
+    assert not WINDOWS_LLVM_PREBUILD.exists()
+
+
+def test_windows_llvm_toolchain_pin_is_coherent_across_consumers() -> None:
     assert_windows_llvm_toolchain_contract(
-        WINDOWS_LLVM_PREBUILD.read_text(),
         SETUP_LLVM_ACTION.read_text(),
         workflow(),
         WINDOWS_BUILD_GUIDE.read_text(),
     )
 
 
-def test_windows_llvm_toolchain_allocator_mutations_are_rejected() -> None:
-    prebuild = WINDOWS_LLVM_PREBUILD.read_text()
+def test_windows_llvm_toolchain_pin_mutations_are_rejected() -> None:
     setup_action = SETUP_LLVM_ACTION.read_text()
     release = workflow()
     build_guide = WINDOWS_BUILD_GUIDE.read_text()
     for mutation in (
+        # Half-bumped pin: setup-llvm moves forward, release.yml does not.
         (
-            prebuild.replace(
-                "-DLLVM_INTEGRATED_CRT_ALLOC=OFF",
-                "-DLLVM_INTEGRATED_CRT_ALLOC=ON",
-                1,
+            setup_action.replace(
+                WINDOWS_LLVM_TOOLCHAIN_VERSION,
+                "22.1.0-windows-msvc-v2",
             ),
-            setup_action,
             release,
             build_guide,
         ),
+        # Extraction step left on the previous asset revision.
         (
-            prebuild,
             setup_action,
             release.replace(
-                WINDOWS_LLVM_TOOLCHAIN_TAG,
-                "toolchain/llvm-22.1.0-windows-msvc-v3",
+                f'$asset = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"',
+                '$asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"',
                 1,
             ),
             build_guide,
+        ),
+        # Provenance verified against this repository instead of the toolchain one.
+        (
+            setup_action,
+            release.replace(
+                f'$toolchainRepo = "{WINDOWS_LLVM_TOOLCHAIN_REPO}"',
+                '$toolchainRepo = "hew-lang/hew"',
+                1,
+            ),
+            build_guide,
+        ),
+        # Local build guide loses the allocator instruction.
+        (
+            setup_action,
+            release,
+            build_guide.replace("-DLLVM_INTEGRATED_CRT_ALLOC=OFF", "", 1),
         ),
     ):
         try:
             assert_windows_llvm_toolchain_contract(*mutation)
         except AssertionError:
             continue
-        raise AssertionError(
-            "Windows LLVM allocator safety mutation escaped the contract"
-        )
+        raise AssertionError("Windows LLVM toolchain pin mutation escaped the contract")
 
 
 def _write_release_binary_smoke_double(path: Path) -> None:
@@ -1350,8 +1376,9 @@ _TESTS = [
     test_contract_oracle_runs_in_required_ci,
     test_windows_test_workflows_initialise_msvc_before_lld_link,
     test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
-    test_windows_llvm_toolchain_disables_integrated_crt_allocator,
-    test_windows_llvm_toolchain_allocator_mutations_are_rejected,
+    test_windows_llvm_prebuild_workflow_is_not_owned_by_this_repository,
+    test_windows_llvm_toolchain_pin_is_coherent_across_consumers,
+    test_windows_llvm_toolchain_pin_mutations_are_rejected,
     test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
     test_local_release_builds_and_assembles_every_shipped_binary,
     test_windows_completion_packaging_fails_closed,

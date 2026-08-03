@@ -1595,7 +1595,7 @@ actor Server {
         let listener = net.listen(addr);
         loop {
             let conn = await listener.accept();
-            let data = await conn.read();
+            let _data = await conn.read();
             // ...
         }
     }

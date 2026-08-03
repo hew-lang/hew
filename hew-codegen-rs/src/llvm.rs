@@ -7308,7 +7308,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
 /// BitCopy field. Null-tolerant entry guard.
 ///
 /// Contract: fields-only. The wrapper allocation is owned and freed by the
-/// runtime at every consumer — `free_actor_resources_with_options`
+/// runtime at every consumer — `free_actor_resources`
 /// (actor.rs, native and wasm) and `InternalChildSpec::drop`
 /// (supervisor.rs) each call `libc::free` on the wrapper immediately after
 /// invoking this callback. Emitting `free(state)` here double-frees on

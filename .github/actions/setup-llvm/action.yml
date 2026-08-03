@@ -69,9 +69,17 @@ runs:
           Windows-X64)
             # The official upstream Windows tarball statically embeds rpmalloc
             # (defines malloc/free/calloc -> duplicate symbols against ucrt at
-            # lld-link time) and omits xml2s.lib. Use the repo's own LLVM build
-            # published under the toolchain/llvm-22.1.0-windows-msvc-v4 release.
-            asset="hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
+            # lld-link time) and omits xml2s.lib. Use hew-lang/llvm-toolchain's
+            # LLVM build, published under the llvm-22.1.0-windows-msvc-v1 release.
+            # Override `version` to the pinned toolchain identifier (independent
+            # of inputs.version, which only tracks the Linux/macOS upstream
+            # version): the cache key and install_root are derived from
+            # `version` below, and inputs.version bumping without this override
+            # would leave both mislabelled and, since the Windows sha256 is the
+            # constant "companion" sentinel, could serve a stale cached archive
+            # under a v2/v3/... repackage that keeps the same inputs.version.
+            version="22.1.0-windows-msvc-v1"
+            asset="hew-llvm-${version}.tar.gz"
             # The prebuild workflow tars from C:\ with root llvm-22/ .
             subdir="llvm-22"
             ;;
@@ -90,7 +98,7 @@ runs:
           "LLVM-22.1.5-Linux-ARM64.tar.xz")
             sha256="05e303cf01a97ca2a11e42e75ade839e85af274f84573554c5e5c05f714be989"
             ;;
-          "hew-llvm-22.1.0-windows-msvc-v4.tar.gz")
+          "hew-llvm-22.1.0-windows-msvc-v1.tar.gz")
             # Verified against the companion .sha256 asset on the toolchain
             # release at download time (sha256="companion" sentinel).
             sha256="companion"
@@ -138,7 +146,7 @@ runs:
         set -euo pipefail
         asset="${{ steps.layout.outputs.asset }}"
         if [[ "${asset}" == hew-llvm-* ]]; then
-          url="https://github.com/hew-lang/hew/releases/download/toolchain/llvm-22.1.0-windows-msvc-v4/${asset}"
+          url="https://github.com/hew-lang/llvm-toolchain/releases/download/llvm-${{ steps.layout.outputs.version }}/${asset}"
         else
           url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${asset}"
         fi

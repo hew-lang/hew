@@ -3,10 +3,10 @@
 # independently of the Stage 1-5 cutover dependency map.
 group	form	path	count	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-hir/src/lower.rs	28	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/calls.rs	22	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-hir/src/lower.rs	30	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/calls.rs	25	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/methods.rs	17	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/methods.rs	20	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	10	stage-4	exact checker-selected executable identity carrier
 checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/expressions.rs	1	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-consumer	hew-types/src/check/mod.rs	3	stage-2	real checker/HIR produced-value carrier inventory
@@ -14,13 +14,13 @@ checker-hir-fact-relation	checker-relation-use	hew-hir/src/lower.rs	7	stage-2	re
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/expressions.rs	11	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-use	hew-types/src/check/mod.rs	15	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	checker-relation-variant	hew-types/src/check/types.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	336	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	347	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	3	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	3	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	1	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	9	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	6	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	2	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	19	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	60	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
@@ -49,11 +49,14 @@ owner-retirement-path	join-owner-consumer	hew-mir/src/lower/mod.rs	1	stage-3	com
 owner-retirement-path	join-owner-consumer	hew-mir/src/lower/suspend_places.rs	3	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-consumer	hew-mir/src/lower/temp_drop.rs	1	stage-3	composed owner retirement path
 owner-retirement-path	join-owner-path	hew-mir/src/lower/task.rs	1	stage-3	composed owner retirement path
+runtime-call-authority	runtime-call-family-consumer	hew-hir/src/verify.rs	1	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	7	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-hir/src/verify.rs	7	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/closure_gen.rs	3	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/lower/vec_index.rs	2	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	1	stage-4	typed runtime-family dispatch carrier
-runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	221	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-mir/src/runtime_symbols.rs	3	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	16	stage-4	typed runtime-family dispatch carrier
+runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	227	stage-4	typed runtime-family dispatch carrier
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/hover.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/inlay_hints.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/signature_help.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -66,13 +69,14 @@ semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/registration.rs	4	stage
 semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/resolution.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	6	stage-1	reviewed unique imported constructor surface compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	7	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	9	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	11	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ffi_contracts.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/lib.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -83,13 +87,14 @@ semantic-leaf-name	short-name-field	hew-types/src/check/types.rs	2	stage-1	revie
 semantic-leaf-name	short-name-identifier	hew-analysis/src/hover.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-analysis/src/signature_help.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/llvm.rs	10	stage-5	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-hir/src/lower.rs	9	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	short-name-identifier	hew-hir/src/lower.rs	11	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-hir/src/stdlib_catalog.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-mir/src/lib.rs	1	stage-4	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-mir/src/lower/drop_plan.rs	3	stage-3	reviewed remaining leaf-name presentation or compatibility seam after exact resource owner cutover
 semantic-leaf-name	short-name-identifier	hew-mir/src/lower/mod.rs	1	stage-3	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/calls.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	short-name-identifier	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/mod.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/patterns.rs	25	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/registration.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -103,7 +108,7 @@ string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	20	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	112	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	114	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	64	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
@@ -117,9 +122,8 @@ string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stag
 string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	2	stage-3	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan/typed_resource_close_authority.rs	1	stage-5	reviewed typed-resource close test identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	11	stage-5	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	12	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	17	stage-5	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-mir/src/lower/ownership.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	reviewed qualified string identity construction
@@ -129,12 +133,13 @@ string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	4	st
 string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	31	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/lints/mod.rs	1	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	54	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	57	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	3	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	37	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	38	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	11	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	3	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	3	stage-1	reviewed qualified string identity construction
 suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	18	stage-3	composed suspend authority carrier

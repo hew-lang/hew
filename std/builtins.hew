@@ -569,10 +569,10 @@ impl<Y> Iterator for AsyncGenerator<Y> {
 pub trait Index<Idx> {
     type Output;
 
-    #[lang_item("index_get")]
+    #[lang_item(index_get)]
     fn get(self, index: Idx) -> Option<Self::Output>;
 
-    #[lang_item("index_at")]
+    #[lang_item(index_at)]
     fn at(self, index: Idx) -> Self::Output;
 }
 
@@ -603,7 +603,7 @@ impl<K, V> Index<K> for HashMap<K, V> {
 /// `char`, and `string`; user types add their own impls per receiver.
 #[lang_item("display")]
 pub trait Display {
-    #[lang_item("display_fmt")]
+    #[lang_item(display_fmt)]
     fn fmt(val: Self) -> string;
 }
 

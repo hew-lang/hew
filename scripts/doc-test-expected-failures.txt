@@ -37,6 +37,12 @@
 #             pool reserved-word clash, or a checker-boundary HIR error.
 #             Fix: compiler follow-on; annotate fence for now.
 #
+# STDLIB-OWNERSHIP-IMBALANCE — stdlib ownership imbalance under the new
+#             produced-value authority. Lift: the stdlib ownership-rebalance fix
+#             landing on this integration branch (a dedicated lane is being
+#             dispatched for it — the fences come OUT of the expected-failures
+#             file when it lands).
+#
 # Baseline: 172 pass, 86 fail, 19 skip (NYI/skip-annotated) out of 277 total fences.
 # Updated 2026-06-22: fixed spec-0033/0038/0073 (now PASS) and annotated
 # spec-0048/0049/0051/0052/0066/0067/0069/0070/0097/0099/0113 (now SKIP).
@@ -48,7 +54,7 @@
 # intentional actor-boundary error demos, corrected spec-0122..spec-0133 labels,
 # and bound entries to cksum metadata.
 #
-# ─── Guide failures (0) ─────────────────────────────────────────────────────────
+# ─── Guide failures (4) ─────────────────────────────────────────────────────────
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).

@@ -1,6 +1,7 @@
 // Golden MIR coverage for concrete Vec runtime families.
-
-fn identity(x: i64) -> i64 { x }
+fn identity(x: i64) -> i64 {
+    x
+}
 
 fn shared_families() {
     let left: Vec<i64> = Vec::new();
@@ -9,7 +10,6 @@ fn shared_families() {
     let copy = left.clone();
     let _ = copy.is_empty();
     copy.clear();
-
     let words: Vec<string> = Vec::new();
     words.push("a");
     let _joined = words.join(",");

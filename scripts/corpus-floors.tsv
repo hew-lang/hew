@@ -52,6 +52,6 @@ sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requir
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	70	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	74	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
-structural-authority-inventory	exact	167	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
+structural-authority-inventory	exact	170	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

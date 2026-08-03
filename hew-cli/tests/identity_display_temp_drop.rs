@@ -9,7 +9,7 @@
 //!
 //! This canary pins all three direct paths plus named and mixed controls at
 //! both MIR and LLVM. The real low/high Node startup + remote lookup allocator
-//! measurement lives in `cap13_identity_monitor_leak_oracle`.
+//! measurement lives in `identity_monitor_leak_oracle`.
 
 #![cfg(unix)]
 

@@ -5017,6 +5017,36 @@ fn admit_resource_record_lifecycles(
     }
 }
 
+/// Render an opaque-resource lifecycle conflict for a diagnostic message.
+/// A hand-written arm per variant instead of `{:?}` keeps the surfaced text
+/// stable and readable if the enum's field names or ordering change.
+fn describe_opaque_resource_lifecycle_conflict(
+    kind: &hew_types::OpaqueResourceLifecycleConflictKind,
+) -> String {
+    use hew_types::OpaqueResourceLifecycleConflictKind as Kind;
+    match kind {
+        Kind::ProducerResultMismatch { actual } => {
+            format!("producer result type does not match the resource type: found `{actual}`")
+        }
+        Kind::ReleaseDeclarationMissing => {
+            "no matching release declaration was found for the producer".to_string()
+        }
+        Kind::CloseDeclarationMissing => {
+            "no inherent `close` declaration was found for the resource".to_string()
+        }
+        Kind::ReleaseSignatureMismatch { detail } => {
+            format!("release declaration signature does not match: {detail}")
+        }
+        Kind::MultipleProducerLifecycle {
+            established,
+            conflicting,
+        } => format!(
+            "resource already has an established lifecycle from `{established}`; \
+             `{conflicting}` conflicts with it"
+        ),
+    }
+}
+
 fn resource_lifecycle_boundary_diagnostic(
     name: &str,
     reason: String,
@@ -5097,7 +5127,7 @@ fn admit_opaque_resource_lifecycles(
                 resource_type: conflict.resource_type.clone(),
                 producer: conflict.producer_symbol.clone(),
                 release: conflict.release_symbol.clone(),
-                detail: format!("{:?}", conflict.kind),
+                detail: describe_opaque_resource_lifecycle_conflict(&conflict.kind),
             },
             0..0,
             "conflicting generated/source lifecycle facts leave no automatic close authority",
@@ -5213,15 +5243,26 @@ fn admit_declared_opaque_resource_lifecycles(
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
     for decl in items.iter().filter_map(|item| match item {
-        HirItem::TypeDecl(decl)
-            if decl.is_opaque
-                && decl.marker == ResourceMarker::Resource
-                && decl.variants.is_empty() =>
-        {
+        HirItem::TypeDecl(decl) if decl.is_opaque && decl.marker == ResourceMarker::Resource => {
             Some(decl)
         }
         _ => None,
     }) {
+        if !decl.variants.is_empty() {
+            // Every sibling rejection under this filter emits a diagnostic;
+            // a variant-bearing `#[resource]` opaque declaration has no
+            // single-representation lifecycle boundary to admit and must not
+            // fall out of the iterator silently.
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                decl.declaration.full_path(),
+                "opaque #[resource] declarations with variants have no single-representation \
+                 lifecycle boundary to admit"
+                    .to_string(),
+                &decl.span,
+                "a variant-bearing opaque resource cannot receive an automatic close",
+            ));
+            continue;
+        }
         // The authored fallback exists only when the checker discovered no
         // producer/release contract for this exact declaration. Once a
         // candidate or conflict exists, the checker graph owns the lifecycle

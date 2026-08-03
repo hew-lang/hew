@@ -1814,6 +1814,7 @@ dependencies = [
 name = "hew-codegen-rs"
 version = "0.6.0-rc1"
 dependencies = [
+ "cc",
  "hew-cabi",
  "hew-hir",
  "hew-mir",
@@ -1823,6 +1824,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "libc",
+ "llvm-sys",
  "tempfile",
 ]
 

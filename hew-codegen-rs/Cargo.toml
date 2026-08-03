@@ -45,6 +45,10 @@ inkwell = { version = "0.9", default-features = false, features = [
   "target-webassembly",
 ] }
 
+[build-dependencies]
+cc = "1"
+llvm-sys = { version = "221", features = ["no-llvm-linking"] }
+
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
 # The worker-free actor teardown seam is test-only. Keeping its feature on the

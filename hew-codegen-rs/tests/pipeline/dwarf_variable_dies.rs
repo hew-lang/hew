@@ -2,7 +2,7 @@
 //! value inspection. Compiles real Hew source through the front-end → MIR →
 //! codegen with `debug: true`, then asserts the emitted textual LLVM IR carries
 //! the variable DIEs (`!DILocalVariable`), the struct member DIEs, the enum
-//! tag enumerators, and the parameter `arg:` index. A NEGATIVE case proves a
+//! tag enumerators + variant part, and the parameter `arg:` index. A NEGATIVE case proves a
 //! non-`-g` build emits zero debug-variable/type metadata, so the whole feature
 //! stays gated on `-g` (the #2004 byte-clean invariant).
 //!
@@ -203,6 +203,25 @@ fn debug_build_emits_enum_tag_enumerators_by_variant_name() {
     assert!(
         has_enumerator("Rect"),
         "expected enumerator `Rect`; IR:\n{ir}"
+    );
+}
+
+#[test]
+fn debug_build_emits_discriminated_enum_variant_part() {
+    let ir = emit_ll(true, "variant-part");
+
+    assert!(
+        ir.contains("DW_TAG_variant_part"),
+        "expected a DW_TAG_variant_part for Shape; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("discriminator:") && ir.contains("extraData: i8 0"),
+        "expected the variant part to reference the tag and carry Circle's \
+         discriminant value; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("extraData: i8 1"),
+        "expected Rect's discriminant value; IR:\n{ir}"
     );
 }
 

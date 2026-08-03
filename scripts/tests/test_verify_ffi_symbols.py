@@ -67,6 +67,29 @@ def run_script(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def ownership_errors_for_source(source: str) -> list[str]:
+    with tempfile.TemporaryDirectory() as directory:
+        classification_path = Path(directory) / "jit-symbol-classification.toml"
+        classification_path.write_text(source, encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            classification_path,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            return verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+
+
 def test_classify_stable_outputs_sorted_names_only() -> None:
     result = run_script("--classify", "stable", "--validate")
     assert result.returncode == 0, result.stderr
@@ -262,6 +285,39 @@ def test_malformed_string_to_bytes_retention_fails_verification() -> None:
     ), errors
 
 
+def test_resource_transfer_without_body_basis_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    basis = (
+        'result-retention-basis = "accept inserts the newly accepted TcpStream under a '
+        'fresh table handle; only that returned token selects its hew_tcp_close removal"\n'
+    )
+    assert source.count(basis) == 1
+    errors = ownership_errors_for_source(source.replace(basis, ""))
+    assert any(
+        "ownership contract for hew_tcp_accept resource-transfer retention requires "
+        "a non-empty result-retention-basis" in error
+        for error in errors
+    ), errors
+
+
+def test_unmeasured_resource_result_is_accepted_without_mint_authority() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    measured = (
+        'result-retention = "resource-transfer"\n'
+        'result-retention-basis = "accept inserts the newly accepted TcpStream under a '
+        'fresh table handle; only that returned token selects its hew_tcp_close removal"\n'
+    )
+    assert source.count(measured) == 1
+    errors = ownership_errors_for_source(source.replace(measured, ""))
+    assert not any(
+        "ownership contract for hew_tcp_accept" in error for error in errors
+    ), errors
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
@@ -273,6 +329,8 @@ _TESTS = [
     test_local_pid_runtime_surface_is_jit_stable,
     test_string_to_bytes_transfer_contract_is_exact,
     test_malformed_string_to_bytes_retention_fails_verification,
+    test_resource_transfer_without_body_basis_fails_verification,
+    test_unmeasured_resource_result_is_accepted_without_mint_authority,
 ]
 
 if __name__ == "__main__":

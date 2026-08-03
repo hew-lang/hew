@@ -109,6 +109,7 @@ fn generate_ffi_ownership_table(contracts: &BTreeMap<String, ContractRow>, out_d
         let retention = match row.result_retention.as_str() {
             "transferred" => "ExternResultRetention::Transferred",
             "shared-refcount" => "ExternResultRetention::SharedRefcount",
+            "resource-transfer" => "ExternResultRetention::ResourceTransfer",
             "" => "ExternResultRetention::Unspecified",
             other => panic!("unmapped result retention: {other}"),
         };

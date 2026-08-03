@@ -21,11 +21,16 @@ struct ContractRow {
     release_symbol: String,
     discharge_depth: String,
     /// The RETENTION answer for an owned result: `"transferred"` for an
-    /// exclusive handoff, `"shared-refcount"` for an independently balanced
-    /// retained alias, and empty when the question has not been answered.
+    /// exclusive allocation handoff, `"shared-refcount"` for an independently
+    /// balanced retained alias, `"resource-transfer"` for an opaque close
+    /// authority, and empty when the question has not been answered.
     /// Empty is the fail-closed default — see the `result-retention` section
     /// of `scripts/jit-symbol-classification.toml`.
     result_retention: String,
+    /// Runtime-body evidence for an opaque `resource-transfer`. Kept in the
+    /// source table for auditability; it is validated but need not enter the
+    /// generated compiler table.
+    result_retention_basis: String,
 }
 
 fn quoted_value(line: &str) -> Option<&str> {
@@ -125,7 +130,8 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
     // so only measured positive spellings are allowed, and they are meaningful
     // only about an allocation the caller was actually given.
     assert!(
-        ["", "shared-refcount", "transferred"].contains(&row.result_retention.as_str()),
+        ["", "resource-transfer", "shared-refcount", "transferred"]
+            .contains(&row.result_retention.as_str()),
         "unknown result-retention for {symbol}: {}",
         row.result_retention
     );
@@ -138,8 +144,17 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "shared-refcount result-retention for {symbol} requires a retained result"
     );
     assert!(
-        row.resource_result_type.is_none() || row.result_retention == "transferred",
-        "resource result type for {symbol} requires transferred result retention"
+        row.result_retention != "resource-transfer" || row.resource_result_type.is_some(),
+        "resource-transfer result-retention for {symbol} requires a resource result type"
+    );
+    assert!(
+        row.result_retention != "resource-transfer"
+            || !row.result_retention_basis.trim().is_empty(),
+        "resource-transfer result-retention for {symbol} requires a non-empty basis"
+    );
+    assert!(
+        row.result_retention == "resource-transfer" || row.result_retention_basis.is_empty(),
+        "result-retention basis for {symbol} is only meaningful for resource-transfer"
     );
 }
 
@@ -193,6 +208,10 @@ fn validate_contract_graph(contracts: &std::collections::BTreeMap<String, Contra
 /// contract being accumulated and enters a skip state: keys inside a foreign
 /// trailing table — even ones spelled `symbol =` / `result =` — must never
 /// pollute the final contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fail-closed hand parser keeps every accepted contract key in one visible dispatch"
+)]
 fn parse_ownership_contracts(
     source: &str,
 ) -> std::collections::BTreeMap<String, ContractRow> {
@@ -226,6 +245,7 @@ fn parse_ownership_contracts(
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
                     result_retention: String::new(),
+                    result_retention_basis: String::new(),
                 },
             ));
             continue;
@@ -293,6 +313,10 @@ fn parse_ownership_contracts(
             quoted_value(line)
                 .expect("contract result-retention must be quoted")
                 .clone_into(&mut row.result_retention);
+        } else if line.starts_with("result-retention-basis =") {
+            quoted_value(line)
+                .expect("contract result-retention-basis must be quoted")
+                .clone_into(&mut row.result_retention_basis);
         }
     }
     finish(current.take(), &mut contracts);

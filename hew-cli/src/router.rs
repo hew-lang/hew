@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn dispatch_command_routes_build_to_dispatcher() {
         let command = crate::args::Command::Build(crate::args::BuildArgs {
-            input: PathBuf::from("sample.hew"),
+            input: Some(PathBuf::from("sample.hew")),
             output: None,
             target: None,
             emit_obj: false,
@@ -369,7 +369,11 @@ mod tests {
         }
 
         fn build(&mut self, args: &crate::args::BuildArgs) {
-            self.calls.push(format!("build:{}", args.input.display()));
+            let input = args
+                .input
+                .as_deref()
+                .map_or_else(|| "<none>".to_string(), |p| p.display().to_string());
+            self.calls.push(format!("build:{input}"));
         }
 
         fn doc(&mut self, _args: &crate::args::DocArgs) {

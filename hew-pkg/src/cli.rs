@@ -288,12 +288,13 @@ pub fn run_native_build() {
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
+/// The package name is the (canonicalized) directory name.
 ///
 /// Never destructive: errors if `hew.toml` already exists, skips any scaffold
 /// source file that already exists, and merges (never replaces) `.gitignore`.
-pub fn run_init(dir: &Path, name: Option<&str>, template: manifest::ManifestTemplate) {
+pub fn run_init(dir: &Path, template: manifest::ManifestTemplate) {
     let cfg = load_config_or_exit();
-    cmd_init(dir, name, template, &cfg);
+    cmd_init(dir, template, &cfg);
 }
 
 /// Build a [`RegistryClient`] for the given named registry (or default).
@@ -324,25 +325,16 @@ fn load_config_or_exit() -> config::AdzeConfig {
     })
 }
 
-fn cmd_init(
-    dir: &Path,
-    name: Option<&str>,
-    template: manifest::ManifestTemplate,
-    cfg: &config::AdzeConfig,
-) {
-    let name = name.map_or_else(
-        || {
-            dir.canonicalize()
-                .ok()
-                .as_deref()
-                .and_then(Path::file_name)
-                .or_else(|| dir.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("myproject")
-                .to_string()
-        },
-        str::to_string,
-    );
+fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::AdzeConfig) {
+    let name = dir
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(Path::file_name)
+        .or_else(|| dir.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("myproject")
+        .to_string();
     let manifest_path = dir.join("hew.toml");
     if manifest_path.exists() {
         eprintln!("hew init: hew.toml already exists");

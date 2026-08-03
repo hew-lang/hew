@@ -13,11 +13,11 @@
 //! LESSONS row `end-to-end-before-layer-thickening` (P0): every cross-stage
 //! producer-emit must carry a structural assertion test before the
 //! consumer ships, so a future regression is caught at the producer
-//! gate. This file is that gate for the select-actor-ask-race lane.
+//! gate. This file pins that select contract.
 
-use hew_hir::{lower_program, ResolutionCtx};
+use hew_hir::{lower_program, HirExprKind, HirItem, HirSelectArmKind, HirStmtKind, ResolutionCtx};
 use hew_mir::{ExitPath, IrPipeline, RawMirFunction, SelectArmKind, Terminator};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 fn lower_checked(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -47,19 +47,39 @@ fn lower_checked(source: &str) -> IrPipeline {
     hew_mir::lower_hir_module(&hir.module)
 }
 
-fn lower_hir_without_typecheck(source: &str) -> IrPipeline {
+fn lower_typed_select_source_without_checker(source: &str, source_ty: &ResolvedTy) -> IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
         parsed.errors
     );
-    let hir = hew_hir::lower_program(
+    let mut hir = hew_hir::lower_program(
         &parsed.program,
         &hew_types::TypeCheckOutput::default(),
         &hew_hir::ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
+    for item in &mut hir.module.items {
+        let HirItem::Function(function) = item else {
+            continue;
+        };
+        for statement in &mut function.body.statements {
+            let HirStmtKind::Let(_, Some(value)) = &mut statement.kind else {
+                continue;
+            };
+            let HirExprKind::Select(select) = &mut value.kind else {
+                continue;
+            };
+            for arm in &mut select.arms {
+                match &mut arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => stream.ty = source_ty.clone(),
+                    HirSelectArmKind::TaskAwait { task } => task.ty = source_ty.clone(),
+                    _ => {}
+                }
+            }
+        }
+    }
     hew_mir::lower_hir_module(&hir.module)
 }
 
@@ -381,13 +401,13 @@ fn select_terminator_wires_exitpath_select_in_drop_plans() {
 }
 
 // Native MIR now carries `StreamNext` arms through to `Terminator::Select`.
-// We bypass the type-checker and use a literal stream operand because this
-// producer-side test only pins the HIR→MIR arm-kind bridge; codegen still
-// fails closed for this arm kind until the backend consumer lands.
+// We bypass the type-checker and stamp a literal operand with the exact
+// builtin Stream discriminator because this test only pins the HIR→MIR
+// arm-kind bridge; codegen still fails closed for this arm kind.
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn stream_next_arm_emits_select_arm_kind_on_native() {
-    let pipeline = lower_hir_without_typecheck(
+    let pipeline = lower_typed_select_source_without_checker(
         r"
         fn main() -> i64 {
             let r = select {
@@ -397,6 +417,7 @@ fn stream_next_arm_emits_select_arm_kind_on_native() {
             r
         }
         ",
+        &ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]),
     );
     assert!(
         pipeline.diagnostics.is_empty(),
@@ -422,7 +443,7 @@ fn stream_next_arm_emits_select_arm_kind_on_native() {
 #[test]
 #[cfg(target_arch = "wasm32")]
 fn stream_next_arm_rejected_on_wasm32() {
-    let pipeline = lower_hir_without_typecheck(
+    let pipeline = lower_typed_select_source_without_checker(
         r"
         fn main() -> i64 {
             let r = select {
@@ -432,6 +453,7 @@ fn stream_next_arm_rejected_on_wasm32() {
             r
         }
         ",
+        &ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]),
     );
     assert!(
         pipeline.diagnostics.iter().any(|d| matches!(
@@ -445,10 +467,10 @@ fn stream_next_arm_rejected_on_wasm32() {
 }
 
 // MIR now carries `TaskAwait` arms through to `Terminator::Select`; codegen
-// keeps the defence-in-depth rejection until the backend consumer lands.
+// keeps the defence-in-depth rejection until its consumer is available.
 #[test]
 fn task_await_arm_emits_select_arm_kind() {
-    let pipeline = lower_hir_without_typecheck(
+    let pipeline = lower_typed_select_source_without_checker(
         r"
         fn main() -> i64 {
             let r = select {
@@ -458,6 +480,7 @@ fn task_await_arm_emits_select_arm_kind() {
             r
         }
         ",
+        &ResolvedTy::Task(Box::new(ResolvedTy::I64)),
     );
     assert!(
         pipeline.diagnostics.is_empty(),

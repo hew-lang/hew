@@ -1398,7 +1398,7 @@ impl Builder {
     /// the codegen dispatch site, not at function exit).
     #[allow(
         clippy::too_many_lines,
-        reason = "lower_select threads four phases — arm-kind rejection, \
+        reason = "lower_select threads four responsibilities — arm-kind rejection, \
                   block allocation, per-arm Place lowering + binding \
                   registration, and per-arm body emit — that don't \
                   factor cleanly into helpers without re-threading \

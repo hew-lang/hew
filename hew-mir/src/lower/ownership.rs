@@ -121,6 +121,34 @@ impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
 }
 
 impl Builder {
+    pub(crate) fn publish_produced_value_place(&mut self, expr: &HirExpr, place: Place) {
+        self.published_value_places.insert(expr.site, place);
+        let borrowed_publication = self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .is_some_and(|fact| {
+                matches!(expr.kind, HirExprKind::Match { .. })
+                    && matches!(fact.ownership, ProducedValueOwnership::Borrowed)
+                    && matches!(fact.relation, HirProducedValueRelation::Join(_))
+            });
+        if !borrowed_publication {
+            return;
+        }
+        let Place::Local(local) = place else {
+            return;
+        };
+        match self.subst_ty(&expr.ty) {
+            ResolvedTy::String => {
+                self.typed_borrowed_string_publication_locals.insert(local);
+            }
+            ResolvedTy::Bytes => {
+                self.typed_borrowed_bytes_publication_locals.insert(local);
+            }
+            _ => {}
+        }
+    }
+
     /// The ownership classify context over this builder's live registries — the
     /// same three tables the drop derivations read, bundled so
     /// [`ValueOwnership::classify`] builds its answer from the one authority.
@@ -646,14 +674,28 @@ impl Builder {
     ) {
         let released: HashSet<u32> = blocks
             .iter()
-            .flat_map(|block| &block.instructions)
-            .filter_map(|instruction| match instruction {
-                Instr::Drop {
-                    place: Place::Local(local),
-                    drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
-                    ..
-                } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop") => Some(*local),
-                _ => None,
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, instruction)| match instruction {
+                        Instr::Drop {
+                            place: Place::Local(local),
+                            drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                            ..
+                        } if matches!(*symbol, "hew_string_drop" | "hew_bytes_drop")
+                            && !block.instructions[index + 1..].iter().any(|later| {
+                                crate::dataflow::instr_reads_writes(later)
+                                    .1
+                                    .iter()
+                                    .any(|place| base_local(*place) == Some(*local))
+                            }) =>
+                        {
+                            Some(*local)
+                        }
+                        _ => None,
+                    })
             })
             .collect();
         let consumed: Vec<_> = self
@@ -1660,16 +1702,15 @@ impl Builder {
         self.owned_locals
             .iter()
             .filter(|entry| {
-                matches!(
-                    entry.disposition,
-                    Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                ) && (!self
-                    .synthetic_owner_publication_sites
-                    .contains_key(&entry.binding)
-                    || self
-                        .iteration_owner_drop_blocks
-                        .values()
-                        .any(|bindings| bindings.contains(&entry.binding)))
+                entry.disposition == Disposition::ScopeExit
+                    || (matches!(entry.disposition, Disposition::ConsumedAt { .. })
+                        && (!self
+                            .synthetic_owner_publication_sites
+                            .contains_key(&entry.binding)
+                            || self
+                                .iteration_owner_drop_blocks
+                                .values()
+                                .any(|bindings| bindings.contains(&entry.binding))))
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()

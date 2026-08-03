@@ -471,16 +471,8 @@ fn bound_return_carrier_keeps_one_release_without_a_second_temp_owner() {
 }
 
 const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
-        extern "C" {
-            fn host_opaque_string() -> string;
-        }
-
         fn invoke(make: fn() -> string) -> string {
             make()
-        }
-
-        fn opaque_extern_wrapper() -> string {
-            unsafe { host_opaque_string() }
         }
 
         fn borrow_len(value: string) -> i64 {
@@ -524,9 +516,6 @@ const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
             make();
         }
 
-        fn opaque_extern_direct() -> i64 {
-            borrow_len(opaque_extern_wrapper())
-        }
         "#;
 
 #[test]
@@ -585,12 +574,28 @@ fn closure_invoke_string_carriers_release_once_without_widening_opaque_externs()
              binding-scoped owner"
         );
     }
-    assert_eq!(
-        total_string_drops(&pl, "opaque_extern_direct"),
-        0,
-        "the closure-only authority must not make a direct ownership-opaque \
-         extern wrapper releasable"
+}
+
+#[test]
+fn direct_opaque_extern_string_scrutinee_fails_closed() {
+    let pl = pipeline_with_tc(
+        r#"
+        extern "C" { fn host_opaque_string() -> string; }
+        fn opaque_extern_wrapper() -> string { unsafe { host_opaque_string() } }
+        fn borrow_len(value: string) -> i64 { value.len() }
+        fn main() -> i64 { borrow_len(opaque_extern_wrapper()) }
+        "#,
     );
+    assert!(
+        pl.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "call-scrutinee ownership is unresolved"
+        )),
+        "an ownership-opaque result must stop before codegen: {:#?}",
+        pl.diagnostics
+    );
+    assert_eq!(total_string_drops(&pl, "main"), 0);
 }
 
 #[test]
@@ -906,7 +911,12 @@ fn opaque_wrapped(make: fn() -> string) -> i64 {
              exactly one caller-side release"
         );
     }
-    for caller in ["mixed_if", "static_literal", "borrowed"] {
+    assert_eq!(
+        total_string_drops(&pl, "mixed_if"),
+        1,
+        "the fresh-or-borrowed join retains one independent result share"
+    );
+    for caller in ["static_literal", "borrowed"] {
         assert_eq!(
             total_string_drops(&pl, caller),
             0,

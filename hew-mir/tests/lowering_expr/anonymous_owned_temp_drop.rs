@@ -386,7 +386,7 @@ fn run() -> i64 {
 }
 
 #[test]
-fn escaping_while_let_payload_keeps_composite_fail_closed() {
+fn escaping_while_let_payload_transfers_owner_and_drops_composite_shells() {
     let p = pipeline_with_tc(
         r#"
 fn next() -> Result<string, string> {
@@ -403,12 +403,34 @@ fn run() -> i64 {
 }
 "#,
     );
-
     let drops = enum_drops(&p, "run", |_| true);
+    assert_eq!(
+        drops.len(),
+        3,
+        "the live scrutinee must release on each reachable exit: {drops:?}"
+    );
     assert!(
-        drops.is_empty(),
-        "a payload moved into a surviving outer binding must keep the composite excluded; \
-         got {drops:?}"
+        drops.iter().all(|drop| drop.place == drops[0].place),
+        "every exit must discharge the same composite owner: {drops:?}"
+    );
+    let run = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("raw fn run");
+    assert_eq!(
+        run.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .count(),
+        1,
+        "the escaping payload must transfer out of its composite slot exactly once"
+    );
+    assert_eq!(
+        string_retain_count(&p, "run"),
+        0,
+        "the exact payload transfer must not mint a competing share"
     );
 }
 

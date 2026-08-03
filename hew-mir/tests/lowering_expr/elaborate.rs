@@ -229,7 +229,7 @@ fn call_arg_source_and_retained_result_are_both_freed() {
     // By-value string parameters borrow. Returning that parameter mints a
     // retained owner in `id`, so the caller keeps `s`'s drop and `_t` carries
     // its own balancing drop.
-    let p = pipeline(
+    let p = checked_pipeline(
         r#"fn id(x: string) -> string { return x; }
            fn main() { let s = "hello"; let _t = id(s); }"#,
     );
@@ -449,7 +449,7 @@ fn if_expression_result_keeps_single_owner() {
 fn call_argument_borrow_keeps_source_and_retained_result() {
     // `s` remains caller-owned across the by-value borrow, while `id` retains
     // the value it returns as a second owner.
-    let p = pipeline(
+    let p = checked_pipeline(
         r#"fn id(x: string) -> string { return x; }
            fn main() { let s = "z"; let _t = id(s); }"#,
     );

@@ -1011,13 +1011,10 @@ fn main() -> i64 {
 }
 
 /// An owned call-carrier enum param gets a terminal `ValueSnapshotDrop` on
-/// every exit, so a match arm that MOVES the payload out must neutralize the
-/// variant slot ON THAT ARM — the returned binder becomes the sole owner and
-/// the terminal drop observes null there, while a read-only sibling arm keeps
-/// its slot live for the terminal drop. Path-sensitive by construction: the
-/// neutralize sits in the arm's own block, never shared.
+/// every exit. Returning a refcounted payload retains an independent result
+/// share and leaves the carrier intact for that terminal structural drop.
 #[test]
-fn carrier_param_move_out_arm_neutralizes_variant_slot() {
+fn carrier_param_return_retains_payload_and_keeps_terminal_drop() {
     let pipeline = pipeline_with_tc(
         r#"
 fn ef(e: Result<string, string>) -> string {
@@ -1036,8 +1033,6 @@ fn main() -> i64 {
         .find(|f| f.name == "ef")
         .expect("raw fn ef");
 
-    // The move-out (Ok) arm neutralizes its variant payload slot; the
-    // read-only (Err) arm must NOT — its payload is the terminal drop's.
     let neutralized_variants: Vec<u32> = ef
         .blocks
         .iter()
@@ -1055,42 +1050,39 @@ fn main() -> i64 {
             _ => None,
         })
         .collect();
+    assert!(
+        neutralized_variants.is_empty(),
+        "a retained return share must leave the carrier intact"
+    );
     assert_eq!(
-        neutralized_variants,
-        vec![0],
-        "exactly the Ok arm's variant slot must be neutralized"
+        ef.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
+            .count(),
+        1,
+        "the returned Ok payload must gain exactly one independent share"
     );
 
-    // The terminal carrier drop remains on the return path (it releases the
-    // Err payload when that arm runs, and no-ops on the neutralized Ok path).
+    // The terminal carrier drop remains on the return path and releases the
+    // carrier's original payload after the selected result gains its share.
     assert!(
-        ef.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instr| {
-                matches!(
-                    instr,
-                    Instr::ValueSnapshotDrop {
-                        value: hew_mir::Place::Local(0),
-                        ..
-                    }
-                )
-            })
+        all_drops(&pipeline, "ef").iter().any(|drop| {
+            drop.place == hew_mir::Place::Local(0) && matches!(drop.kind, DropKind::EnumInPlace)
         }),
         "the carrier param keeps its terminal snapshot drop"
     );
 }
 
-/// A carrier payload forwarded to a Hew-bodied `string` parameter crosses two
-/// ownership protocols: the enclosing enum is a consuming call carrier, while
-/// the leaf parameter remains a `CoW` borrow. Neutralizing the enum slot must
-/// therefore promote the projected binder to the delayed release authority.
-/// A read-only control leaves the enum shell owning; a true return-consume
-/// transfers onward and must not mint the binder drop.
+/// A carrier payload forwarded to a Hew-bodied `string` parameter stays owned
+/// by the enclosing enum because the call boundary borrows it. A read-only
+/// control likewise needs no share; a returned payload retains its result.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the three-way MIR differential keeps forward, read, and consume ownership evidence together"
 )]
-fn carrier_payload_borrow_forward_promotes_exactly_one_delayed_owner() {
+fn carrier_payload_borrow_forward_preserves_composite_owner() {
     let pipeline = pipeline_with_tc(
         r#"
 fn stash(s: string) -> i64 {
@@ -1135,23 +1127,25 @@ fn main() -> i64 {
         hew_mir::Terminator::Call { args, .. } => args[0],
         _ => unreachable!("block selected by call terminator"),
     };
-    let binder = forward_block
-        .instructions
-        .iter()
-        .find_map(|instr| match instr {
-            Instr::Move { dest, src } if *dest == call_arg => Some(*src),
-            _ => None,
-        })
-        .expect("payload binder moved into call transport local");
     assert!(
         forward_block.instructions.iter().any(|instr| matches!(
             instr,
-            Instr::NeutralizePayloadSlot {
-                transferee: Some(dest),
-                ..
+            Instr::Move {
+                dest,
+                src: hew_mir::Place::MachineVariant { .. }
             } if *dest == call_arg
         )),
-        "forwarding must neutralize the carrier payload slot into the call transport"
+        "the projected payload must feed the borrowing call directly"
+    );
+    assert!(
+        forward
+            .blocks
+            .iter()
+            .all(|block| block.instructions.iter().all(|instr| !matches!(
+                instr,
+                Instr::NeutralizePayloadSlot { .. } | Instr::StringRetain { .. }
+            ))),
+        "a borrowing call must leave the carrier as the only owner"
     );
 
     let forward_leaf_drops = all_drops(&pipeline, "forward")
@@ -1161,28 +1155,15 @@ fn main() -> i64 {
                 && matches!(drop.kind, DropKind::CowHeap { .. })
         })
         .collect::<Vec<_>>();
-    let first_forward_drop = forward_leaf_drops
-        .first()
-        .expect("the forwarded payload needs a leaf release authority");
     assert!(
-        forward_leaf_drops.iter().all(|drop| {
-            drop.place == first_forward_drop.place && drop.guard == first_forward_drop.guard
-        }),
-        "every normal/cancel exit must use the same single leaf release authority"
+        forward_leaf_drops.is_empty(),
+        "the borrowed projection must not acquire a separate leaf release"
     );
-    assert_eq!(
-        first_forward_drop.place, binder,
-        "the projected binder, not the transport local, owns the delayed release"
-    );
-    let delayed_guard = first_forward_drop
-        .guard
-        .expect("the projected binder release is path-gated");
     assert!(
-        forward_block.instructions.iter().any(|instr| matches!(
-            instr,
-            Instr::ConstI64 { dest, value: 0 } if *dest == delayed_guard
-        )),
-        "the borrow-forward path must activate the binder's delayed release"
+        all_drops(&pipeline, "forward")
+            .iter()
+            .any(|drop| matches!(drop.kind, DropKind::EnumInPlace)),
+        "the carrier must keep its terminal structural release"
     );
 
     let inspect = find_fn(&pipeline, "inspect");
@@ -1201,27 +1182,27 @@ fn main() -> i64 {
     );
 
     let take = find_fn(&pipeline, "take");
-    let consume_blocks = take
+    let retain_blocks = take
         .blocks
         .iter()
         .filter(|block| {
             block
                 .instructions
                 .iter()
-                .any(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+                .any(|instr| matches!(instr, Instr::StringRetain { .. }))
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        consume_blocks.len(),
-        2,
-        "both return-consume arms must transfer their payload onward"
+        retain_blocks.len(),
+        1,
+        "the joined return must retain exactly one selected payload share"
     );
     assert!(
-        consume_blocks.iter().all(|block| block
+        retain_blocks.iter().all(|block| block
             .instructions
             .iter()
-            .all(|instr| !matches!(instr, Instr::ConstI64 { value: 0, .. }))),
-        "a true consume must not reactivate the projected binder release"
+            .all(|instr| !matches!(instr, Instr::NeutralizePayloadSlot { .. }))),
+        "retained return shares must leave their carrier slots intact"
     );
     assert!(
         all_drops(&pipeline, "take")

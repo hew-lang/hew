@@ -392,6 +392,25 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
+    /// The compile's identity interner (rc1-F1 stage A): module identities
+    /// minted once at `check_program` entry, provenance-invariant (root vs
+    /// import vs dual-import of one source resolve to one `ModuleId`). The
+    /// canonical fn-sig identity of a root free function is
+    /// [`crate::identity::IdentityTable::root_fn_identity`]; later stages key
+    /// declaration registries by IDs minted here.
+    pub identity: crate::identity::IdentityTable,
+    /// Function signatures keyed by declaration identity.
+    ///
+    /// Key shapes: `{module}.{name}` for module free functions,
+    /// `Type::method` for methods, bare names for builtins/externs and for
+    /// legacy-rendered root free functions. Inside the checker the root
+    /// unit's free functions are keyed CANONICALLY (`{root_module}.{name}`,
+    /// minted through `identity`); at this publication boundary they are
+    /// re-rendered to the legacy bare spelling because HIR
+    /// (`hew-hir/src/lower.rs` `fn_sigs` clone) and hew-analysis still
+    /// resolve root functions by source spelling.
+    /// WHEN OBSOLETE: stage C/D of the identity lane re-key consumers by
+    /// `DefId`; the render then disappears and canonical keys publish as-is.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -1264,6 +1283,7 @@ impl Default for TypeCheckOutput {
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
+            identity: crate::identity::IdentityTable::new(),
             fn_sigs: HashMap::new(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -3079,6 +3099,13 @@ pub struct Checker {
     pub(super) task_scope_depth: u32,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
+    /// The compile's identity interner (rc1-F1 stage A). Minted once in
+    /// `check_program` from the module graph before any registration pass;
+    /// moved into [`TypeCheckOutput::identity`] at publication. The root
+    /// compilation unit's canonical identity (when it has a source) lives
+    /// here — `identity.root_module_path()` — and is the authority the
+    /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
+    pub(super) identity: crate::identity::IdentityTable,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3555,6 +3582,7 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
+            identity: crate::identity::IdentityTable::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),

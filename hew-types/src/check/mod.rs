@@ -311,6 +311,49 @@ impl Checker {
         }
     }
 
+    /// Mint the compile's module identities (rc1-F1 stage A).
+    ///
+    /// One minting authority, run once at `check_program` entry: every graph
+    /// module is interned under its canonical dotted identity (deduped by
+    /// canonical source, so dual-import/peer-assembly spellings of one source
+    /// resolve to one `ModuleId`), then the ROOT compilation unit is minted
+    /// from its canonical source — reusing a graph module's identity when the
+    /// root IS an importable source (root-vs-import provenance invariance).
+    ///
+    /// Bare-by-design exclusions:
+    /// * REPL fragments — their functions are re-declared across fragments
+    ///   and have no stable source module; the fragment keeps the legacy bare
+    ///   namespace.
+    /// * Source-less roots (synthetic stdlib floor roots from
+    ///   `rewrite_direct_stdlib_module_root`, unit-test programs without
+    ///   source paths) — nothing canonical exists to mint from.
+    fn mint_module_identities(&mut self, program: &Program) {
+        self.identity = crate::identity::IdentityTable::new();
+        let Some(module_graph) = &program.module_graph else {
+            return;
+        };
+        // Deterministic mint order: the topo order, root last.
+        for mod_id in &module_graph.topo_order {
+            if *mod_id == module_graph.root {
+                continue;
+            }
+            let Some(module) = module_graph.modules.get(mod_id) else {
+                continue;
+            };
+            let dotted = mod_id.path.join(".");
+            let canonical = crate::module_registry::canonical_source_module_identity(
+                &dotted,
+                &module.source_paths,
+            );
+            self.identity.mint_module(&canonical, &module.source_paths);
+        }
+        if !self.repl_fragment {
+            if let Some(root) = module_graph.modules.get(&module_graph.root) {
+                self.identity.mint_root_module(&root.source_paths);
+            }
+        }
+    }
+
     /// Pass 3: Check all bodies
     #[expect(
         clippy::too_many_lines,
@@ -321,6 +364,10 @@ impl Checker {
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.root_value_bindings.clear();
+        // Mint the compile's module identities FIRST (rc1-F1 stage A): every
+        // registration pass below resolves declaration identity through this
+        // table, so it must be complete before any key is minted.
+        self.mint_module_identities(program);
         // Record concrete stdlib source provenance once, before registration
         // manufactures any compiler-recognised carrier signatures. Module
         // spelling is not authority: a user package may imitate the legacy
@@ -1183,6 +1230,7 @@ impl Checker {
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
+            identity: std::mem::take(&mut self.identity),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),

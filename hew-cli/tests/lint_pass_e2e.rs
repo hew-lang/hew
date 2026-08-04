@@ -666,21 +666,26 @@ fn clean_counter_is_unregistered_and_fails_closed() {
 
 // ── checker-stage lint: must_use ─────────────────────────────────────
 
-/// A program whose only diagnostic is `must_use`: the `Result<(), WriteError>`
-/// returned by `w()` is discarded in statement position, so a write error is
-/// silently dropped. `main` and `w` are both reachable (no `dead_code` noise).
-const MUST_USE_DISCARD: &str = "enum WriteError { Disconnected(i64); }\n\
-     fn w() -> Result<(), WriteError> { Ok(()) }\n\
+/// A program whose only diagnostic is `must_use`: `c.write(...)` returns
+/// `Result<(), std.net.WriteError>` and the call is discarded in statement
+/// position, so a backpressure/disconnect signal is silently dropped. The
+/// lint matches `std.net.WriteError` by its exact canonical owner (a
+/// same-named local enum no longer spoofs it — see `must_use.rs`), so the
+/// fixture must exercise the real stdlib type, not a look-alike local one.
+const MUST_USE_DISCARD: &str = "import std::net::{Connection};\n\
+     fn w(c: Connection) {\n\
+     c.write(b\"hi\");\n\
+     }\n\
      fn main() {\n\
-     w();\n\
      }\n";
 
 /// The same program with an in-source allow directive on the line above.
-const MUST_USE_SUPPRESSED: &str = "enum WriteError { Disconnected(i64); }\n\
-     fn w() -> Result<(), WriteError> { Ok(()) }\n\
-     fn main() {\n\
+const MUST_USE_SUPPRESSED: &str = "import std::net::{Connection};\n\
+     fn w(c: Connection) {\n\
      // hew:allow(must_use)\n\
-     w();\n\
+     c.write(b\"hi\");\n\
+     }\n\
+     fn main() {\n\
      }\n";
 
 const MUST_USE_MESSAGE: &str = "an ignored write/send error fails open";

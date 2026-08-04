@@ -1,3 +1,4 @@
+use super::branch_join::BranchArmExit;
 use super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 use super::types::GenericLambdaSig;
 #[allow(
@@ -6024,12 +6025,20 @@ impl Checker {
         // the per-arm guard check and pattern binding are not tail positions, so
         // re-arm immediately before each arm body.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        // Exactly one arm runs. Each arm therefore starts from the ownership
+        // state at the match's entry, not from whatever the previous arm left
+        // behind, and the state after the match is the union over the arms that
+        // actually reach the join.
+        let ownership_entry = self.env.ownership_snapshot();
+        let mut arm_exits = Vec::with_capacity(arms.len());
         for arm in arms {
             self.env.push_scope();
+            self.env.restore_ownership(&ownership_entry);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
-            // Check guard if present
+            // Check guard if present. A guard runs only on its own arm's path,
+            // so it belongs inside that arm's restored state.
             if let Some((guard, gs)) = &arm.guard {
                 self.check_against(guard, gs, &Ty::Bool);
             }
@@ -6040,6 +6049,10 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            arm_exits.push(BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: matches!(arm_ty, Ty::Never),
+            });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
             if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
@@ -6048,6 +6061,7 @@ impl Checker {
 
             self.env.pop_scope();
         }
+        self.join_branch_ownership(&ownership_entry, &arm_exits);
         // Leave the flag disarmed: the arm loop set it per-arm, and the
         // exhaustiveness check below is not a tail position.
         self.tail_ok_armed = false;

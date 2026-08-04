@@ -896,7 +896,7 @@ jobs:
           $pdb = Join-Path $dir "pdb-e2e.pdb"
           if (-not (Test-Path -LiteralPath $pdb)) { throw "hew build -g did not produce the expected PDB at $pdb" }
 
-          $dump = & $pdbutil.Source dump -summary -modules -symbols -lines $pdb 2>&1
+          $dump = & $pdbutil.Source dump -summary -modules -symbols -l $pdb 2>&1
           if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil could not inspect $pdb`n$dump" }
           $dumpText = $dump -join "`n"
           if ($dumpText -notmatch "pdb-e2e\.hew") { throw "PDB dump has no source module record for pdb-e2e.hew`n$dumpText" }

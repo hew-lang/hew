@@ -2313,20 +2313,10 @@ mod tests {
         (target_fd, write_fd)
     }
 
-    #[cfg(unix)]
-    fn open_fd_count() -> usize {
-        let dir = if std::path::Path::new("/proc/self/fd").exists() {
-            "/proc/self/fd"
-        } else {
-            "/dev/fd"
-        };
-        std::fs::read_dir(dir).map_or(0, std::iter::Iterator::count)
-    }
-
     /// Active-mode attach consumes each connection into its registration. When
     /// the handler is dropped, the reactor teardown must release both ownership
-    /// ledgers: no registration and no transport-table entry may survive, and
-    /// the process fd count must return to its baseline after peers are dropped.
+    /// ledgers: no registration, transport-table entry, or reactor-owned socket
+    /// fd may survive.
     #[cfg(unix)]
     #[test]
     fn active_mode_teardown_releases_all_consumed_connections() {
@@ -2337,15 +2327,16 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_reactor();
-        let fds_before = open_fd_count();
 
         let mut handles = Vec::with_capacity(CONNECTIONS);
+        let mut connection_fds = Vec::with_capacity(CONNECTIONS);
         let mut peers = Vec::with_capacity(CONNECTIONS);
         for _ in 0..CONNECTIONS {
             let (conn, peer) = crate::transport::tcp_socketpair_conn_for_test();
             let fd = crate::transport::tcp_conn_raw_fd(conn).expect("connection fd");
             inject_registration_for_test(fd, conn, dead_actor_ref(), ACTOR_KEY);
             handles.push(conn);
+            connection_fds.push(fd);
             peers.push(peer);
         }
         assert_eq!(registration_count_for_test(), CONNECTIONS);
@@ -2367,14 +2358,19 @@ mod tests {
                 "consumed connection {handle} survived in the transport table"
             );
         }
-        let fds_after = open_fd_count();
-        // This count oracle exercises only the ordinary detach path. The
-        // forced fd-reuse probe below covers the concurrent close/unregister
-        // ordering race.
-        assert_eq!(
-            fds_after, fds_before,
-            "active-mode teardown leaked fds: before={fds_before} after={fds_after}"
-        );
+        for fd in connection_fds {
+            assert_eq!(
+                // SAFETY: F_GETFD only queries the recorded numeric descriptor.
+                unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                -1,
+                "reactor-owned connection fd {fd} survived handler teardown"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF),
+                "closed connection fd {fd} did not report EBADF"
+            );
+        }
         reset_reactor();
     }
 

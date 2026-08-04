@@ -3822,7 +3822,9 @@ fn remove_consumed_cow_bindings(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !actor_message_flags.contains_key(binding)
             {
                 allowed.remove(binding);

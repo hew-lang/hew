@@ -31,6 +31,97 @@ extern "C" {
 "#;
 
 #[test]
+fn resource_close_discharges_and_moves_the_receiver() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(consuming self) {}
+            fn status(self) -> i64 { self.fd }
+        }
+
+        fn probe(socket: Socket) -> i64 {
+            socket.close();
+            socket.status()
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("use of moved value `socket`")),
+        "close must move the receiver so a later probe is use-after-move, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(output.method_call_discharges_receiver.len(), 1);
+}
+
+#[test]
+fn non_close_consuming_method_moves_the_receiver() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(consuming self) {}
+            fn detach(consuming self) -> i64 { self.fd }
+            fn status(self) -> i64 { self.fd }
+        }
+
+        fn probe(socket: Socket) -> i64 {
+            let _ = socket.detach();
+            socket.status()
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("use of moved value `socket`")),
+        "a consuming method not named close must still move its receiver, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_discharges_receiver.is_empty(),
+        "detach is not the canonical close and must not register a discharge, got: {:?}",
+        output.method_call_discharges_receiver
+    );
+}
+
+#[test]
+fn resource_close_discharge_rejects_a_second_close() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(consuming self) {}
+        }
+
+        fn bad(socket: Socket) {
+            socket.close();
+            socket.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error
+                .message
+                .contains("resource `socket` cannot be closed more than once")
+        }),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn tcp_like_owned_results_join_one_qualified_lifecycle() {
     let output = check_source_in_module(
         TCP_CONNECTION_SOURCE,

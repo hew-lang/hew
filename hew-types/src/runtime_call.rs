@@ -85,7 +85,9 @@ pub enum ProducedValueAcquisition {
 /// manufacture a drop from a display name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProducedValueOwnership {
-    /// Scalar, unit, static literal, or another value with no release.
+    /// Scalar, unit, static literal, or another value with no caller-side
+    /// release obligation (including an opaque foreign result whose lifecycle
+    /// was not transferred to Hew).
     NoOwner,
     /// Alias of storage whose owner remains elsewhere.
     Borrowed,

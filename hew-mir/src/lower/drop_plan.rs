@@ -259,7 +259,9 @@ pub(super) fn elaborate(
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
                 ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
                 {
                     derived.remove(binding);
@@ -386,7 +388,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
                 && !vec_iter_borrowed_owned_sources.contains(binding)
             {
@@ -465,7 +469,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 local_collection_drop_allowed.remove(binding);
@@ -510,7 +516,9 @@ pub(super) fn elaborate(
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
                 ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
                 {
                     derived.remove(binding);
@@ -539,7 +547,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_vec_drop_allowed.remove(binding);
             }
@@ -584,7 +594,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 plain_vec_drop_allowed.remove(binding);
@@ -753,7 +765,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_pair_drop_allowed.remove(binding);
             }
@@ -795,7 +809,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 indirect_enum_drop_allowed.remove(binding);
             }
@@ -2082,6 +2098,19 @@ impl ObligationState {
             .min(OBLIGATION_COUNT_SATURATION);
     }
 
+    /// Confirm that the current generation has transferred exactly once.
+    /// The string aggregate/capture lowering writes an empty static string
+    /// into the moved-from slot after publishing its bytes into the successor
+    /// owner. Aggregation is initially modelled as an ambiguous discharge;
+    /// this commit marker turns that same event into a definite one instead of
+    /// counting a second discharge. If no ambiguous event preceded it, the
+    /// marker still establishes the one transfer it commits.
+    fn confirm_transfer_discharge(&mut self) {
+        self.lo = self.lo.max(1);
+        self.hi = self.hi.max(1);
+        self.max_definite = self.max_definite.max(1);
+    }
+
     /// A discharge whose single-owner resolution belongs to another
     /// authority: widens the interval upward only, so it can never produce
     /// a definite under- or over-release verdict by itself.
@@ -2422,6 +2451,18 @@ fn apply_balance_instr(
                 obligation_entry(state, root).drop_discharge();
             }
         }
+        Instr::StringLit { bytes, dest } if bytes.is_empty() => {
+            // `apply_string_retain_sites` uses an empty static string write as
+            // the moved-from commit marker after an owned string enters a
+            // record, tuple, or capture environment. A static string carries
+            // no heap owner of its own, so confirm the preceding transfer and
+            // do not let the generic write pass remint this slot below.
+            if let Some(root) = cx.tracked_root(*dest) {
+                if let Some(entry) = state.get_mut(&root) {
+                    entry.confirm_transfer_discharge();
+                }
+            }
+        }
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
             if let Some(root) = cx.tracked_root(*src) {
                 if retained_share_move {
@@ -2643,6 +2684,13 @@ fn apply_balance_instr(
     }
     let (_, writes, _) = dataflow::instr_reads_writes(instr);
     for write in writes {
+        // A string literal points into read-only module storage; its drop is a
+        // guarded no-op and therefore it never mints a heap obligation. Empty
+        // literal writes over an already-minted slot are handled above as the
+        // aggregate/capture transfer commit marker.
+        if matches!(instr, Instr::StringLit { dest, .. } if *dest == write) {
+            continue;
+        }
         if let Some(local) = mint_target_local(write) {
             // The defining write of a payload-alias binder is the transfer
             // moment of its carrier's payload, not a fresh mint.

@@ -1011,7 +1011,17 @@ impl Checker {
                                 Ownership::Unknown
                             }
                         });
-                fact.ownership = owned.unwrap_or(Ownership::Unknown);
+                // An opaque extern-produced nominal without an audited
+                // transfer lifecycle is foreign-owned. The caller must not
+                // invent a release obligation for it. String and Bytes stay
+                // Unknown above/below because they require a concrete adoption
+                // or release contract.
+                let fallback = if matches!(resolved_result, Ty::Named { .. }) {
+                    Ownership::NoOwner
+                } else {
+                    Ownership::Unknown
+                };
+                fact.ownership = owned.unwrap_or(fallback);
             } else if non_owning {
                 fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
             }
@@ -1070,6 +1080,10 @@ impl Checker {
                         Some(ExternResultOwnership::Borrowed | ExternResultOwnership::None)
                         | None => Ownership::Unknown,
                     }
+                } else if matches!(resolved_result, Ty::Named { .. }) {
+                    // Same caller-obligation authority as direct extern calls:
+                    // an unaudited opaque nominal stays foreign-owned.
+                    Ownership::NoOwner
                 } else {
                     Ownership::Unknown
                 };
@@ -1132,6 +1146,9 @@ impl Checker {
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
+            method_call_discharges_receiver: std::mem::take(
+                &mut self.method_call_discharges_receiver,
+            ),
             method_call_preserves_receiver_identity: std::mem::take(
                 &mut self.method_call_preserves_receiver_identity,
             ),

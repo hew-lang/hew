@@ -22093,6 +22093,76 @@ fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
     left == right
 }
 
+/// Prove that a MIR ownership sidecar can never select its live (`0`) edge.
+///
+/// This deliberately understands only constant writes and whole-value moves
+/// between scalar locals. Any arithmetic, parameter ingress, missing write, or
+/// cycle stays unknown and therefore keeps crash cleanup registered. A cursor
+/// borrowed from actor state is the important proven case: its sidecar is
+/// seeded nonzero and only copied through generated temporaries, so registering
+/// a cleanup snapshot would fabricate an owner the cursor never has.
+fn helper_crash_cleanup_guard_is_always_consumed(func: &RawMirFunction, guard: Place) -> bool {
+    fn prove(func: &RawMirFunction, place: Place, visiting: &mut HashSet<Place>) -> bool {
+        if !visiting.insert(place) {
+            return false;
+        }
+        let mut saw_write = false;
+        let all_consumed = func
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instr| {
+                if !hew_mir::dataflow::instr_write_places(instr).contains(&place) {
+                    return true;
+                }
+                saw_write = true;
+                match instr {
+                    Instr::ConstI64 { dest, value } if *dest == place => *value != 0,
+                    Instr::Move { dest, src } if *dest == place => prove(func, *src, visiting),
+                    _ => false,
+                }
+            });
+        visiting.remove(&place);
+        saw_write && all_consumed
+    }
+
+    prove(func, guard, &mut HashSet::new())
+}
+
+/// Whether a specialised `Terminator::Call` emitter brackets its destination
+/// publication with the same deactivate/arm lifecycle as the generic call
+/// tail.
+///
+/// Keep this as the single admission authority shared by descriptor
+/// collection and the lowering-time fail-closed check. A destination must not
+/// enter this catalog until its specialised emitter publishes only a complete
+/// value before rearming cleanup.
+fn call_destination_has_specialized_crash_cleanup_lifecycle(
+    authority: hew_mir::CallAuthority,
+) -> bool {
+    use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as Family};
+
+    match authority {
+        hew_mir::CallAuthority::Runtime(family) => {
+            matches!(
+                family,
+                Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+            ) || matches!(
+                family.abi_shape(),
+                Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
+            )
+        }
+        hew_mir::CallAuthority::Compiler(
+            hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+            | hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex
+            | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
+        ) => true,
+        hew_mir::CallAuthority::Direct
+        | hew_mir::CallAuthority::Extern
+        | hew_mir::CallAuthority::Compiler(_) => false,
+    }
+}
+
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
@@ -22136,28 +22206,13 @@ fn collect_helper_crash_cleanup_descriptors(
                 authority,
                 hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern
             ) && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
-                || matches!(
-                    authority,
-                    hew_mir::CallAuthority::Runtime(
-                        hew_types::runtime_call::RuntimeCallFamily::VecGet(
-                            hew_types::runtime_call::VecGetElem::Clone
-                        )
-                    )
-                ) =>
+                || call_destination_has_specialized_crash_cleanup_lifecycle(*authority) =>
             {
                 supported_producers.extend(terminator_writes);
             }
-            Terminator::Call {
-                authority:
-                    hew_mir::CallAuthority::Compiler(
-                        hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
-                        | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
-                    ),
-                ..
-            } => {
-                // Both compiler intercepts complete an owned Option in-place,
-                // converge their Some/None edges, and arm crash cleanup only
-                // after the tag and optional payload are fully initialized.
+            Terminator::Ask { .. } | Terminator::RemoteAsk { .. } => {
+                // Ask emitters converge their success/failure paths only after
+                // publishing complete Result, reply, and error destinations.
                 supported_producers.extend(terminator_writes);
             }
             Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
@@ -22195,6 +22250,12 @@ fn collect_helper_crash_cleanup_descriptors(
             if !crash_cleanup_drop_requires_registration(drop)? {
                 continue;
             }
+            if drop
+                .guard
+                .is_some_and(|guard| helper_crash_cleanup_guard_is_always_consumed(func, guard))
+            {
+                continue;
+            }
             if !supported_producers.contains(&drop.place) {
                 return Err(CodegenError::FailClosed(format!(
                     "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
@@ -22202,8 +22263,8 @@ fn collect_helper_crash_cleanup_descriptors(
                      whole-slot instruction writes, completed enum/machine \
                      aggregate construction, collapsed-suspend ready \
                      destinations, select/join bindings, compiler-owned handle \
-                     constructors, generic Real-call destinations, and Vec clone \
-                     destinations",
+                     constructors, ask results, generic Real-call destinations, \
+                     and lifecycle-instrumented collection destinations",
                     drop.place, drop.ty
                 )));
             }
@@ -22242,8 +22303,9 @@ fn collect_helper_crash_cleanup_descriptors(
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "ordinary helper crash snapshot for {:?} has conflicting \
-                         typed drop descriptors across exit plans",
-                        drop.place
+                         typed drop descriptors across exit plans: registered \
+                         {:?}, encountered {:?}",
+                        drop.place, existing.descriptor, drop
                     )));
                 }
                 match (existing.descriptor.guard, drop.guard) {
@@ -22255,8 +22317,9 @@ fn collect_helper_crash_cleanup_descriptors(
                     _ => {
                         return Err(CodegenError::FailClosed(format!(
                             "ordinary helper crash snapshot for {:?} has conflicting \
-                             typed drop descriptors across exit plans",
-                            drop.place
+                             typed drop descriptors across exit plans: registered \
+                             {:?}, encountered {:?}",
+                            drop.place, existing.descriptor, drop
                         )));
                     }
                 }
@@ -22338,6 +22401,21 @@ fn projection_neutralize_transferee(instr: &Instr) -> Option<Place> {
         } => Some(*place),
         _ => None,
     }
+}
+
+/// Whether an interior-write marker is the exact handoff that consumes the
+/// whole registered owner. The source slot is neutral after this instruction,
+/// so refreshing its crash snapshot would mint a second owner beside the
+/// transferee.
+fn helper_whole_owner_was_transferred(instr: &Instr, owner: Place) -> bool {
+    matches!(
+        instr,
+        Instr::NeutralizePayloadSlot {
+            place,
+            transferee: Some(_),
+            ..
+        } if *place == owner
+    )
 }
 
 /// Normalize any place that addresses bytes within a MIR local to the
@@ -28725,6 +28803,7 @@ fn call_bypasses_crash_cleanup_common_tail(
             if !matches!(
                 kind,
                 hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                    | hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex
                     | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout
             )
     );
@@ -29136,6 +29215,7 @@ fn lower_terminator<'ctx>(
             if let Some(dest) = dest {
                 if fn_ctx.helper_crash_cleanup_owners.contains_key(dest)
                     && call_bypasses_crash_cleanup_common_tail(*authority)?
+                    && !call_destination_has_specialized_crash_cleanup_lifecycle(*authority)
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "typed crash cleanup for call destination {dest:?} cannot \
@@ -31724,20 +31804,44 @@ fn emit_wasm_main_export_wrapper<'ctx>(
             .llvm_ctx("WASM main wrapper return void")?;
     }
 
-    // The WASI runtime owns `_start` and therefore needs one stable C ABI
-    // regardless of the Hew source-level `main` return width. Keep the
-    // freestanding `main` export above source-shaped, but publish a dedicated
-    // `() -> i32` adapter for `_start`: unit maps to success and integer exit
-    // values use the platform status width. This prevents wasm-ld from
-    // synthesizing a signature-mismatch trap for the common `main() -> i64`
-    // spelling.
+    emit_wasi_entry_adapter(ctx, llvm_mod, original, returns_unit)?;
+
+    Ok(())
+}
+
+/// Publish the canonical entry adapter consumed by the WASI runtime's `_start`.
+///
+/// Full-pipeline lowering calls this after preserving the source-shaped `main`
+/// export. Direct LLVM users, including the coroutine substrate, must call it
+/// for WASI command modules as well so the runtime entry contract is complete.
+/// Unit maps to success; integer results are normalized to the platform status
+/// width.
+pub fn emit_wasi_entry_adapter<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    source_main: FunctionValue<'ctx>,
+    returns_unit: bool,
+) -> Result<FunctionValue<'ctx>, CodegenError> {
+    let params = source_main.get_type().get_param_types();
+    if !params.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "WASI entry adapter expected parameterless main, got {} parameters",
+            params.len()
+        )));
+    }
+    if llvm_mod.get_function("__hew_wasi_main").is_some() {
+        return Err(CodegenError::FailClosed(
+            "WASI entry adapter symbol `__hew_wasi_main` is already defined".into(),
+        ));
+    }
+
     let wasi_ty = ctx.i32_type().fn_type(&[], false);
     let wasi_entry = llvm_mod.add_function("__hew_wasi_main", wasi_ty, Some(Linkage::External));
     let wasi_block = ctx.append_basic_block(wasi_entry, "entry");
     let wasi_builder = ctx.create_builder();
     wasi_builder.position_at_end(wasi_block);
     let wasi_call = wasi_builder
-        .build_call(original, &[], "hew_source_main_call")
+        .build_call(source_main, &[], "hew_source_main_call")
         .llvm_ctx("WASI source main adapter call")?;
     let exit_code = if returns_unit {
         ctx.i32_type().const_zero()
@@ -31768,7 +31872,7 @@ fn emit_wasm_main_export_wrapper<'ctx>(
         .build_return(Some(&exit_code))
         .llvm_ctx("WASI source main adapter return")?;
 
-    Ok(())
+    Ok(wasi_entry)
 }
 
 fn function_needs_closure_call_fallback_context(func: &RawMirFunction) -> bool {
@@ -34203,7 +34307,9 @@ fn lower_function<'ctx>(
             // This MUST precede arming a projection transferee so the source
             // escrow can never retain the moved-out pointer concurrently.
             for place in interior_owner_writes {
-                if !deferred_interior_owner_arms.contains(&place) {
+                if !deferred_interior_owner_arms.contains(&place)
+                    && !helper_whole_owner_was_transferred(instr, place)
+                {
                     emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
                 }
             }

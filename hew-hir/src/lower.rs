@@ -4027,6 +4027,7 @@ pub fn lower_program_with_mono_cap(
                             ctx.check_boundary_consume_discipline(
                                 &method.name,
                                 &method.params,
+                                None,
                                 "trait method signature",
                                 &method.span,
                             );
@@ -4056,6 +4057,7 @@ pub fn lower_program_with_mono_cap(
                     ctx.check_boundary_consume_discipline(
                         &func.name,
                         &func.params,
+                        Some(&param_tys),
                         "extern fn",
                         &func.span,
                     );
@@ -4373,6 +4375,7 @@ pub fn lower_program_with_mono_cap(
                                 ctx.check_boundary_consume_discipline(
                                     &func.name,
                                     &func.params,
+                                    Some(&param_tys),
                                     "extern fn",
                                     &func.span,
                                 );
@@ -4629,6 +4632,7 @@ pub fn lower_program_with_mono_cap(
                                         ctx.check_boundary_consume_discipline(
                                             &method.name,
                                             &method.params,
+                                            None,
                                             "trait method signature",
                                             &method.span,
                                         );
@@ -6435,6 +6439,9 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-proven affine close calls. Their receiver release obligation is
+    /// discharged, but their closed handle storage remains readable.
+    method_call_discharges_receiver: HashSet<SpanKey>,
     /// Receiver-identity calls whose result is discarded in statement
     /// position. These call sites borrow the original owner into the exact
     /// receiver/result alias instead of moving it away.
@@ -7348,6 +7355,7 @@ impl LowerCtx {
             impl_method_body_symbols: HashMap::new(),
             impl_body_plan: ImplBodyPlan::default(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            method_call_discharges_receiver: tc_output.method_call_discharges_receiver.clone(),
             method_call_preserves_receiver_identity: tc_output
                 .method_call_preserves_receiver_identity
                 .clone(),
@@ -7618,6 +7626,23 @@ impl LowerCtx {
 
     fn checked_span_is_user_resource(&self, span: &Span) -> bool {
         self.checked_span_user_resource_type(span).is_some()
+    }
+
+    /// Project the checker's terminal-receiver disposition without
+    /// reclassifying the selected method in HIR.
+    fn method_receiver_intent(
+        &self,
+        key: &SpanKey,
+        consumes_receiver: bool,
+        preserves_receiver: bool,
+    ) -> IntentKind {
+        if self.method_call_discharges_receiver.contains(key) {
+            IntentKind::Discharge
+        } else if consumes_receiver && !preserves_receiver {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
     }
 
     /// Intent for an ordinary (non-receiver) call argument at `span`: `Consume`
@@ -12270,6 +12295,7 @@ impl LowerCtx {
         &mut self,
         func_name: &str,
         params: &[hew_parser::ast::Param],
+        resolved_param_tys: Option<&[ResolvedTy]>,
         boundary: &str,
         span: &Span,
     ) {
@@ -12293,7 +12319,15 @@ impl LowerCtx {
                     // user-declared resources, whose `close` frees a real
                     // foreign resource and could double-free across an
                     // invisible body, must pin `consume` here.
-                    if crate::builtin_type_classes::builtin_type_registration(name).is_some() {
+                    let resolved_nominal = resolved_param_tys
+                        .and_then(|tys| tys.get(index))
+                        .and_then(|ty| match ty {
+                            ResolvedTy::Named { name, builtin, .. } => Some((name, *builtin)),
+                            _ => None,
+                        });
+                    if resolved_nominal.is_some_and(|(_, builtin)| builtin.is_some())
+                        || crate::builtin_type_classes::builtin_type_registration(name).is_some()
+                    {
                         return None;
                     }
                     match self.type_classes.get(name) {
@@ -12312,7 +12346,7 @@ impl LowerCtx {
                                     func_name,
                                     index,
                                     self.current_module_name.as_deref(),
-                                    name,
+                                    resolved_nominal.map_or(name.as_str(), |(name, _)| name.as_str()),
                                 )
                             {
                                 None
@@ -25478,11 +25512,11 @@ impl LowerCtx {
         if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
             let preserves_receiver = dyn_call.signature.returns_receiver_identity
                 && self.method_call_preserves_receiver_identity.contains(&key);
-            let receiver_intent = if dyn_call.signature.consumes_receiver && !preserves_receiver {
-                IntentKind::Consume
-            } else {
-                IntentKind::Read
-            };
+            let receiver_intent = self.method_receiver_intent(
+                &key,
+                dyn_call.signature.consumes_receiver,
+                preserves_receiver,
+            );
             let lowered_receiver = self.lower_expr(receiver, receiver_intent);
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             // Result type comes from the checker's expr_types side-table
@@ -25907,11 +25941,8 @@ impl LowerCtx {
                 // `IntentKind::Read`.
                 let preserves_receiver = returns_receiver_identity
                     && self.method_call_preserves_receiver_identity.contains(&key);
-                let receiver_intent = if consumes_receiver && !preserves_receiver {
-                    IntentKind::Consume
-                } else {
-                    IntentKind::Read
-                };
+                let receiver_intent =
+                    self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
                 let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 // `c_symbol` is either projected from the exact selected impl
                 // declaration above or carried by a typed runtime/user target.
@@ -26200,14 +26231,11 @@ impl LowerCtx {
                             );
                             let preserves_receiver = returns_receiver_identity
                                 && self.method_call_preserves_receiver_identity.contains(&key);
-                            let receiver_intent = if (requires_mutable_receiver
-                                || consumes_receiver)
-                                && !preserves_receiver
-                            {
-                                IntentKind::Consume
-                            } else {
-                                IntentKind::Read
-                            };
+                            let receiver_intent = self.method_receiver_intent(
+                                &key,
+                                requires_mutable_receiver || consumes_receiver,
+                                preserves_receiver,
+                            );
                             let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                             let mut lowered_args = vec![lowered_receiver];
                             for arg in args {
@@ -26274,11 +26302,8 @@ impl LowerCtx {
                 // the monomorphization substitution map.
                 let preserves_receiver = returns_receiver_identity
                     && self.method_call_preserves_receiver_identity.contains(&key);
-                let receiver_intent = if consumes_receiver && !preserves_receiver {
-                    IntentKind::Consume
-                } else {
-                    IntentKind::Read
-                };
+                let receiver_intent =
+                    self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
                 let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 (

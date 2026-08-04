@@ -9359,6 +9359,13 @@ impl Checker {
                     // A terminal consuming method moves its receiver, so record
                     // the per-call-site flag for HIR/codegen AND mark the receiver
                     // expression moved (a later use surfaces `UseAfterMove`).
+                    // A resource's canonical close additionally records a
+                    // one-time discharge: lowering uses it to suppress the
+                    // scope-exit implicit drop on the consumed path, and the
+                    // checker uses it to report a second close with the
+                    // specific double-close diagnostic. Discharging the
+                    // obligation is a consequence of the move, never a
+                    // substitute for it — close-then-use is use-after-move.
                     // Three surfaces qualify:
                     //   1. stdlib `impl Closable for T { fn close }` — the trait
                     //      `close` flattens into T's inherent-method table; honour
@@ -9381,7 +9388,59 @@ impl Checker {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
-                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                        let discharges_resource = self.named_type_inherent_close_consumes_receiver(
+                            name, *builtin, method, &sig,
+                        );
+                        if discharges_resource {
+                            self.method_call_discharges_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            if let Expr::Identifier(receiver_name) = &receiver.0 {
+                                match self.env.mark_released(receiver_name, receiver.1.clone()) {
+                                    Some(Some(prior)) => {
+                                        let mut error = TypeError::new(
+                                            TypeErrorKind::UseAfterConsume,
+                                            receiver.1.clone(),
+                                            format!(
+                                                "resource `{receiver_name}` cannot be closed more than once"
+                                            ),
+                                        )
+                                        .with_note(prior, "resource was first closed here");
+                                        if let Some(source_module) = &self.current_module {
+                                            error = error.with_source_module(source_module.clone());
+                                        }
+                                        self.errors.push(error);
+                                    }
+                                    // First discharge: the close consumes its
+                                    // receiver, so the move lands with it and any
+                                    // later use is use-after-move. Marked directly
+                                    // (not via `mark_expr_moved_if_non_copy`)
+                                    // because the released flag was just set by
+                                    // this very call and must not read as a prior
+                                    // consumption of the receiver.
+                                    Some(None)
+                                        if !self.registry.implements_marker(
+                                            &resolved_recv,
+                                            MarkerTrait::Copy,
+                                        ) =>
+                                    {
+                                        self.env.mark_moved(receiver_name, receiver.1.clone());
+                                    }
+                                    Some(None) | None => {}
+                                }
+                            } else {
+                                self.mark_expr_moved_if_non_copy(
+                                    &receiver.0,
+                                    &receiver.1,
+                                    &resolved_recv,
+                                );
+                            }
+                        } else {
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_recv,
+                            );
+                        }
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     let builtin_option_result_marker =

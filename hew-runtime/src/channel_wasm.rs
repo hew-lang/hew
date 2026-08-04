@@ -800,6 +800,7 @@ mod tests {
         assert_eq!(active_handle_count(), 0);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn abi_handle_accounting_is_test_thread_local() {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();

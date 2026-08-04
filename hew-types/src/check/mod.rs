@@ -311,6 +311,56 @@ impl Checker {
         }
     }
 
+    /// The canonical module identity that owns items registered/checked in the
+    /// current context (rc1-F1 stage A): the current graph module, or the ROOT
+    /// unit's minted identity. This is the fn-sig mint chokepoint — root free
+    /// functions key `{root_module}.{name}` exactly as they would when their
+    /// module is imported (`scoped_module_item_name`'s bare-for-root behaviour
+    /// is dead for the fn-sig family). `None` only for bare-by-design roots
+    /// (REPL fragments, source-less roots).
+    pub(super) fn canonical_fn_owner(&self) -> Option<&str> {
+        self.current_module
+            .as_deref()
+            .or_else(|| self.identity.root_module_path())
+    }
+
+    /// Canonical-first `fn_sigs` key for a bare free-fn spelling written in
+    /// ROOT context. Returns the root-canonical key only when it is actually
+    /// registered, so bare builtin/extern registrations keep resolving
+    /// unchanged (the bare rung is the builtin/extern floor, not a root
+    /// fallback).
+    pub(super) fn root_canonical_fn_sig_key(&self, name: &str) -> Option<String> {
+        if self.current_module.is_some() {
+            return None;
+        }
+        let scoped = scoped_module_item_name(self.identity.root_module_path(), name)?;
+        self.fn_sigs.contains_key(&scoped).then_some(scoped)
+    }
+
+    /// When `key` is a ROOT-owned canonical free-fn key (`{root}.{leaf}`),
+    /// return its bare leaf; with no minted root identity, a bare free-fn key
+    /// IS root-owned and returns itself. `None` for module/method keys.
+    ///
+    /// Two consumers: root-fn detection where the legacy code tested "key has
+    /// no dot" (dead-code entry points and warn set), and the LEGACY RENDER of
+    /// root declarations at publication boundaries (published `CallTarget`
+    /// `DefId`s, published `fn_sigs` keys, diagnostics), where downstream
+    /// consumers still resolve root items by bare spelling.
+    /// WHEN OBSOLETE: stage C/D of the identity lane re-key those consumers by
+    /// `DefId`; the render half of this helper is deleted with them.
+    pub(super) fn root_owned_fn_leaf<'k>(&self, key: &'k str) -> Option<&'k str> {
+        if key.contains("::") {
+            return None;
+        }
+        match self.identity.root_module_path() {
+            Some(root) => key
+                .strip_prefix(root)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .filter(|leaf| !leaf.contains('.')),
+            None => (!key.contains('.')).then_some(key),
+        }
+    }
+
     /// Mint the compile's module identities (rc1-F1 stage A).
     ///
     /// One minting authority, run once at `check_program` entry: every graph
@@ -777,6 +827,34 @@ impl Checker {
                 (name, resolved)
             })
             .collect();
+
+        // LEGACY ROOT RENDER (rc1-F1 stage A): inside the checker, root free
+        // functions are keyed canonically (`{root}.{name}`). At this
+        // publication boundary they re-render to the legacy bare spelling,
+        // because HIR (`hew-hir/src/lower.rs` fn_sigs clone) and hew-analysis
+        // still resolve root functions by source spelling and stage A must be
+        // byte-identical downstream. Overwriting a same-named bare entry
+        // reproduces the legacy registration semantics (a root declaration
+        // shadows a builtin's bare slot). The canonical identity remains
+        // published through `TypeCheckOutput::identity`.
+        // WHEN OBSOLETE: stage C/D re-key downstream consumers by `DefId`;
+        // this render is deleted and canonical keys publish unchanged.
+        if let Some(root) = self.identity.root_module_path() {
+            let prefix = format!("{root}.");
+            let root_keys: Vec<String> = resolved_fn_sigs
+                .keys()
+                .filter(|key| {
+                    key.strip_prefix(&prefix)
+                        .is_some_and(|leaf| !leaf.contains('.') && !leaf.contains("::"))
+                })
+                .cloned()
+                .collect();
+            for key in root_keys {
+                if let Some(sig) = resolved_fn_sigs.remove(&key) {
+                    resolved_fn_sigs.insert(key[prefix.len()..].to_string(), sig);
+                }
+            }
+        }
 
         self.validate_checker_output_contract(
             &mut resolved_expr_types,

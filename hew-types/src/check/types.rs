@@ -2669,11 +2669,21 @@ pub struct Checker {
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — keyed by
+    /// the canonical declaration identity (`{module}.{name}`, root included
+    /// via the minted root identity), so declaration-authority probes share
+    /// one key shape with the signature registry and never miss on
+    /// alignment. The stored module (`None` = root) remains the
+    /// display/provenance axis for diagnostics and the legacy root render.
     pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
     /// Declared visibility for each function, keyed by the same registry key used
-    /// in `fn_def_spans` (scoped name: `{module}.{name}` or bare for root).
+    /// in `fn_def_spans`.
     /// Populated alongside `fn_def_spans` during `collect_function_item` and when
     /// cross-module functions are registered in the import-surface passes.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` (co-minted
+    /// with `fn_def_spans` under the canonical declaration key).
     pub(super) fn_visibility: HashMap<String, Visibility>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
@@ -3048,6 +3058,13 @@ pub struct Checker {
     pub(super) published_bare_trait_owners:
         HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — caller
+    /// keys are `current_function` (a canonical fn-sig key) and callee keys
+    /// are the resolved fn-sig keys, so dead-code reachability joins against
+    /// canonical `fn_def_spans` without a bare/scoped rewrite. Bare callee
+    /// entries remain for builtins/externs, which have no declaration span
+    /// and never participate in dead-code findings.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,
@@ -3176,6 +3193,14 @@ pub struct Checker {
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
     /// Names of functions that require an unsafe block to call.
+    ///
+    /// rc1-F1 stage A classification: BARE-BY-DESIGN (for now) — this is an
+    /// EXTERN-only registry: every insert site is extern registration
+    /// (`register_extern_block` and the channel/layout-witness paths), and
+    /// user `fn` declarations never enter it. Extern identity is stage B's
+    /// single-owner `ExternTable`; re-keying this set is deferred to that
+    /// stage rather than half-canonicalizing it against a spelling-keyed
+    /// extern substrate here.
     pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -3280,6 +3305,11 @@ pub struct Checker {
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
     /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
+    ///
+    /// rc1-F1 stage A classification: CANONICAL-BY-CONSTRUCTION — the
+    /// `E_INTRINSIC_OUTSIDE_FLOOR` module-axis gate restricts declarations
+    /// to stdlib-floor modules, so every key is already a module-qualified
+    /// `std.*` path; the root unit cannot mint an entry. No re-keying needed.
     pub(super) intrinsic_declarations: HashMap<String, String>,
     /// Per-arm pattern resolutions accumulated during match checking.
     ///

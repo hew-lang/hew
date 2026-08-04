@@ -1,0 +1,59 @@
+// Union teeth for the branch join. Accepting a consume in every arm must not
+// make the binding live again after the join: whichever arm ran, the handle is
+// gone by the time control reaches the code below it.
+//
+// Rejected by the env checker with `use of moved value`, once per shape.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+fn use_after_match_join(r: Result<i64, string>) -> i64 {
+    let held = Conn { fd: 1 };
+    match r {
+        Ok(_) => { held.close(); },
+        Err(_) => { held.close(); },
+    }
+    held.detach()
+}
+
+fn use_after_if_join(flag: bool) -> i64 {
+    let held = Conn { fd: 2 };
+    if flag {
+        held.close();
+    } else {
+        held.close();
+    }
+    held.detach()
+}
+
+fn use_after_partial_join(flag: bool) -> i64 {
+    let held = Conn { fd: 3 };
+    if flag {
+        let _ = held.detach();
+    }
+    held.detach()
+}
+
+fn use_after_diverging_sibling(flag: bool) -> i64 {
+    let held = Conn { fd: 4 };
+    match flag {
+        true => { return 0; },
+        false => { let _ = held.detach(); },
+    }
+    held.detach()
+}
+
+fn main() {
+    print(use_after_match_join(Ok(1)));
+    print(use_after_if_join(true));
+    print(use_after_partial_join(true));
+    print(use_after_diverging_sibling(true));
+}

@@ -17,6 +17,7 @@ pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 mod actor_fields;
 mod basic;
+mod branch_join;
 mod builtins;
 mod collections;
 mod control_flow;

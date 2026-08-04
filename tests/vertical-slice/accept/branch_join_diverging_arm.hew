@@ -1,0 +1,83 @@
+// A branch arm that never reaches the join — it returns — must not leave its
+// consume behind for the fall-through path. `if flag { return held.detach(); }`
+// followed by `held.detach()` is the ordinary cleanup-then-return shape: only
+// one of the two consumes runs.
+//
+// Covers the same divergence exclusion for a `return` match arm, a `let`-else
+// (whose else block diverges by construction), and a mixed match where one arm
+// moves, one arm closes and one arm returns.
+//
+// The close body prints, so stdout is the drop oracle: each call closes its
+// handle exactly once, and a `detach`ed handle is never closed.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {
+        print(self.fd);
+        println(" closed");
+    }
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+fn detach_on_either_path(flag: bool) -> i64 {
+    let held = Conn { fd: 10 };
+    if flag {
+        return held.detach();
+    }
+    held.detach()
+}
+
+fn close_then_return(flag: bool) -> i64 {
+    let held = Conn { fd: 11 };
+    if flag {
+        held.close();
+        return 1;
+    }
+    held.close();
+    0
+}
+
+fn let_else_cleanup(o: Option<i64>) -> i64 {
+    let held = Conn { fd: 12 };
+    let Some(v) = o else {
+        held.close();
+        return -1;
+    };
+    held.close();
+    v
+}
+
+fn mixed_arms(n: i64) -> i64 {
+    let held = Conn { fd: 13 };
+    match n {
+        0 => { held.detach() },
+        1 => { held.close(); 100 },
+        _ => { return held.detach(); },
+    }
+}
+
+fn main() {
+    print(detach_on_either_path(true));
+    println("");
+    print(detach_on_either_path(false));
+    println("");
+    print(close_then_return(true));
+    println("");
+    print(close_then_return(false));
+    println("");
+    print(let_else_cleanup(Some(7)));
+    println("");
+    print(let_else_cleanup(None));
+    println("");
+    print(mixed_arms(0));
+    println("");
+    print(mixed_arms(1));
+    println("");
+    print(mixed_arms(2));
+    println("");
+}

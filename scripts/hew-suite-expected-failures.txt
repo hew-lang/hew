@@ -10,25 +10,9 @@
 # gate green. Remove an entry the moment its class is fixed — the ratchet
 # fails on an unexpected pass precisely so a fix cannot go unnoticed.
 #
-# Entries marked NEWLY-SURFACED are not inherited, and they are FALSE
-# rejections — the first thing to fix off this branch.
-#
-# hew_http_request_hew and the hew_http_response_* family are declared exactly
-# once, in std/net/http/http_client.hew. In a unit that imports both
-# std::net::http and that submodule, the checker registers the one declaration
-# under two owners — std.net.http and std.net.http.http_client — and the
-# duplicate-extern check then reports the module against itself, in both
-# directions. The "first declaration" spans land on unrelated comments in
-# http.hew, which declares none of those symbols. The types are identical; only
-# the registered owner differs, so this is an owner-identity gap in extern
-# registration, not a contract defect.
-#
-# The same rejection blocks two http_ws_string_result_retention leak-oracle
-# tests, which the leak oracle has no tracked list for.
-#
 # Format: <test_function_name>  # <class>: <root cause>
 #
-# Total: 84 unique failing test function names.
+# Total: 81 unique failing test function names.
 
 # producer-lifecycle-hook (24)
 test_hashmap_clone_copy_record_key  # producer-lifecycle-hook: typed crash cleanup has no NYI hook for this producer
@@ -103,14 +87,11 @@ test_try_read_delivers_payload_bytes_unchanged  # ownership-move-diagnostic: own
 test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
 test_try_read_reports_an_orderly_eof_as_an_empty_success  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
 
-# extern-contract-conflict (15)
+# extern-contract-conflict (12)
 test_http_listen_clears_the_detail_slot_on_success  # extern-contract-conflict: one C symbol resolves under two nominal owners
 test_http_listen_on_an_ephemeral_port_succeeds  # extern-contract-conflict: one C symbol resolves under two nominal owners
 test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server  # extern-contract-conflict: one C symbol resolves under two nominal owners
 test_http_listen_reports_an_unparsable_address_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_response_accessors_linked_in_dual_import_unit  # extern-contract-conflict: NEWLY-SURFACED: FALSE rejection from extern owner-identity
-test_server_client_roundtrip_returns_200_and_echoes_path  # extern-contract-conflict: NEWLY-SURFACED: FALSE rejection from extern owner-identity
-test_server_impl_linked_in_dual_import_unit  # extern-contract-conflict: NEWLY-SURFACED: FALSE rejection from extern owner-identity
 test_url_resolve_reports_an_unresolvable_path_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
 test_url_resolve_returns_the_joined_url  # extern-contract-conflict: one C symbol resolves under two nominal owners
 test_websocket_connect_reports_a_refused_connection_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners

@@ -31,6 +31,56 @@ extern "C" {
 "#;
 
 #[test]
+fn resource_close_discharges_once_but_keeps_non_consuming_reads_available() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(consuming self) {}
+            fn status(self) -> i64 { self.fd }
+        }
+
+        fn probe(socket: Socket) -> i64 {
+            socket.close();
+            socket.status()
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_eq!(output.method_call_discharges_receiver.len(), 1);
+}
+
+#[test]
+fn resource_close_discharge_rejects_a_second_close() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(consuming self) {}
+        }
+
+        fn bad(socket: Socket) {
+            socket.close();
+            socket.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error
+                .message
+                .contains("resource `socket` cannot be closed more than once")
+        }),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn tcp_like_owned_results_join_one_qualified_lifecycle() {
     let output = check_source_in_module(
         TCP_CONNECTION_SOURCE,

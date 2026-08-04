@@ -7105,7 +7105,14 @@ impl Checker {
                 // derivation. In particular, LambdaActorHandle is represented
                 // by an empty stdlib nominal, but release still consumes its
                 // sole runtime handle and any later receiver use is invalid.
-                self.env.mark_moved(name, receiver.1.clone());
+                if method != "close"
+                    || self
+                        .env
+                        .lookup_ref(name)
+                        .is_none_or(|binding| binding.released_at.is_none())
+                {
+                    self.env.mark_moved(name, receiver.1.clone());
+                }
             }
         }
         self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
@@ -9356,18 +9363,21 @@ impl Checker {
                             _ => {}
                         }
                     }
-                    // A terminal consuming method moves its receiver, so record
-                    // the per-call-site flag for HIR/codegen AND mark the receiver
-                    // expression moved (a later use surfaces `UseAfterMove`).
+                    // A terminal consuming method exhausts the receiver's
+                    // ownership obligation, so record the per-call-site flag
+                    // for HIR/codegen. Ordinary consuming methods move the
+                    // receiver; a resource's canonical close instead records a
+                    // one-time discharge while leaving its closed handle bits
+                    // readable by non-consuming probes.
                     // Three surfaces qualify:
                     //   1. stdlib `impl Closable for T { fn close }` — the trait
                     //      `close` flattens into T's inherent-method table; honour
                     //      the `consumes_receiver` declared on the trait.
                     //   2. a `#[resource]` type's inherent `fn close(self)` — the
                     //      implicit-drop dispatch target, which when called
-                    //      explicitly also moves the receiver so the scope-exit
-                    //      implicit drop is suppressed on the consumed path (no
-                    //      double-close).
+                    //      explicitly discharges the receiver so the scope-exit
+                    //      implicit drop is suppressed on that path (no
+                    //      double-close), while closed-handle probes remain legal.
                     //   3. any `fn m(consuming self)` inherent method — the
                     //      terminal single-consume surface (a builder's
                     //      `build(consuming self)`, a `#[linear]` type's consuming
@@ -9381,7 +9391,43 @@ impl Checker {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
-                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                        let discharges_resource = self.named_type_inherent_close_consumes_receiver(
+                            name, *builtin, method, &sig,
+                        );
+                        if discharges_resource {
+                            self.method_call_discharges_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            if let Expr::Identifier(receiver_name) = &receiver.0 {
+                                if let Some(Some(prior)) =
+                                    self.env.mark_released(receiver_name, receiver.1.clone())
+                                {
+                                    let mut error = TypeError::new(
+                                        TypeErrorKind::UseAfterConsume,
+                                        receiver.1.clone(),
+                                        format!(
+                                            "resource `{receiver_name}` cannot be closed more than once"
+                                        ),
+                                    )
+                                    .with_note(prior, "resource was first closed here");
+                                    if let Some(source_module) = &self.current_module {
+                                        error = error.with_source_module(source_module.clone());
+                                    }
+                                    self.errors.push(error);
+                                }
+                            } else {
+                                self.mark_expr_moved_if_non_copy(
+                                    &receiver.0,
+                                    &receiver.1,
+                                    &resolved_recv,
+                                );
+                            }
+                        } else {
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_recv,
+                            );
+                        }
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     let builtin_option_result_marker =

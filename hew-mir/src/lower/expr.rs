@@ -3276,7 +3276,9 @@ impl Builder {
                     });
                     let direct_vec_iter_move =
                         self.vec_iter_direct_move_sites.last().copied() == Some(expr.site);
-                    if use_intent == IntentKind::Consume || direct_vec_iter_move {
+                    if matches!(use_intent, IntentKind::Consume | IntentKind::Discharge)
+                        || direct_vec_iter_move
+                    {
                         if let Some(flag) = self.vec_iter_drop_flags.get(id).copied() {
                             if direct_vec_iter_move {
                                 if let Some(result_flag) =
@@ -3303,7 +3305,7 @@ impl Builder {
                             });
                         }
                     }
-                    if use_intent == IntentKind::Consume
+                    if matches!(use_intent, IntentKind::Consume | IntentKind::Discharge)
                         && self.binding_seeds_drop_elaboration(&use_ty)
                     {
                         // #1933 / #1941 — a non-idempotent user `#[resource]`

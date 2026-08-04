@@ -259,7 +259,9 @@ pub(super) fn elaborate(
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
                 ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
                 {
                     derived.remove(binding);
@@ -386,7 +388,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
                 && !vec_iter_borrowed_owned_sources.contains(binding)
             {
@@ -465,7 +469,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 local_collection_drop_allowed.remove(binding);
@@ -510,7 +516,9 @@ pub(super) fn elaborate(
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
                 ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
                 {
                     derived.remove(binding);
@@ -539,7 +547,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_vec_drop_allowed.remove(binding);
             }
@@ -584,7 +594,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 plain_vec_drop_allowed.remove(binding);
@@ -753,7 +765,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_pair_drop_allowed.remove(binding);
             }
@@ -795,7 +809,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 indirect_enum_drop_allowed.remove(binding);
             }

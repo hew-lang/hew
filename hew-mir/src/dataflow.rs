@@ -1,4 +1,4 @@
-//! Per-block move-checker dataflow over the four-state binding lattice.
+//! Per-block move-checker dataflow over the binding-state lattice.
 //!
 //! Replaces the pre-CFG flat-stream forward-scan that worked correctly
 //! only while `HirExprKind::If` lowered its arms inline (single basic
@@ -16,6 +16,7 @@
 //! ```text
 //!     Uninit  ⊔ X         = Uninit          (most-conservative)
 //!     Live    ⊔ Live      = Live
+//!     Live    ⊔ Disch     = MaybeConsumed
 //!     Live    ⊔ Consumed  = MaybeConsumed
 //!     Live    ⊔ MaybeC    = MaybeConsumed
 //!     Cons(a) ⊔ Cons(b)   = Consumed(min(a,b))
@@ -38,11 +39,16 @@
 //! On `Use`:
 //!  - `Uninit`     → emit `InitialisedBeforeUse`.
 //!  - `Consumed(s)` → emit `UseAfterConsume{consumed_at: s, used_at}`.
+//!  - `Discharged(s)` → permit non-consuming reads, but emit
+//!    `UseAfterConsume` for another consume/discharge.
 //!  - `MaybeConsumed(s)` → emit `UseAfterConsume{consumed_at: s,
 //!    used_at}` (the diagnostic surface is the same; a future polish
 //!    cluster may add the "consumed on some paths" annotation).
 //!  - If the use is `IntentKind::Consume` on a non-`BitCopy` type,
 //!    transition to `Consumed(use_site)` after the read-check.
+//!  - If the use is `IntentKind::Discharge`, transition to
+//!    `Discharged(use_site)` so exit cleanup is suppressed while later
+//!    non-consuming closed-handle probes remain valid.
 //!  - `BitCopy` uses do not transition the state.
 //!
 //! On `Return`: anchor — per-`@linear`-binding `MustConsume` check
@@ -86,6 +92,10 @@ pub enum BindingState {
     /// `Bind` observed on every predecessor path; the binding has
     /// not been consumed.
     Live,
+    /// The binding's affine release obligation was explicitly discharged on
+    /// every predecessor path. Its closed handle bits remain available to
+    /// non-consuming reads, but no later consume or discharge is legal.
+    Discharged(SiteId),
     /// Consumed on every predecessor path; the carried site is the
     /// minimum (earliest) consume site over predecessors, for
     /// diagnostic anchoring.
@@ -110,7 +120,7 @@ pub enum BindingState {
 #[must_use]
 pub fn meet(a: BindingState, b: BindingState) -> BindingState {
     use BindingState::AliasedIntoAggregate as Aliased;
-    use BindingState::{Consumed, Live, MaybeConsumed, Uninit};
+    use BindingState::{Consumed, Discharged, Live, MaybeConsumed, Uninit};
     // Order operands so the match table is half-size: handle (a, b)
     // and (b, a) via canonical ordering on the discriminant.
     let (lo, hi) = canonical_order(a, b);
@@ -127,8 +137,12 @@ pub fn meet(a: BindingState, b: BindingState) -> BindingState {
     match (lo, hi) {
         (Uninit, _) => Uninit,
         (Live, Live) => Live,
+        (Live, Discharged(s)) => MaybeConsumed(s),
         (Live, Consumed(s)) => MaybeConsumed(s),
         (Live, MaybeConsumed(s)) => MaybeConsumed(s),
+        (Discharged(sa), Discharged(sb)) => Discharged(min_site(sa, sb)),
+        (Discharged(sa), Consumed(sb)) => Consumed(min_site(sa, sb)),
+        (Discharged(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
         (Consumed(sa), Consumed(sb)) => Consumed(min_site(sa, sb)),
         (Consumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
         (MaybeConsumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
@@ -141,6 +155,7 @@ pub fn meet(a: BindingState, b: BindingState) -> BindingState {
         // resulting `MaybeConsumed` still flags a post-join use.
         (Aliased(sa), Aliased(sb)) => Aliased(min_site(sa, sb)),
         (Live, Aliased(s)) => Aliased(s),
+        (Discharged(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         (Consumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         (MaybeConsumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         // The canonical ordering ensures `lo` ≤ `hi`; the remaining
@@ -161,9 +176,10 @@ fn discriminant_rank(s: BindingState) -> u8 {
     match s {
         BindingState::Uninit => 0,
         BindingState::Live => 1,
-        BindingState::Consumed(_) => 2,
-        BindingState::MaybeConsumed(_) => 3,
-        BindingState::AliasedIntoAggregate(_) => 4,
+        BindingState::Discharged(_) => 2,
+        BindingState::Consumed(_) => 3,
+        BindingState::MaybeConsumed(_) => 4,
+        BindingState::AliasedIntoAggregate(_) => 5,
     }
 }
 
@@ -250,6 +266,18 @@ fn transfer_block<S: std::hash::BuildHasher>(
                         }
                     }
                     BindingState::Live => {}
+                    BindingState::Discharged(discharged_at) => {
+                        if matches!(intent, IntentKind::Consume | IntentKind::Discharge)
+                            && use_after_consume_seen.insert((*binding, *site))
+                        {
+                            checks.push(MirCheck::UseAfterConsume {
+                                binding: *binding,
+                                name: name.clone(),
+                                consumed_at: discharged_at,
+                                used_at: *site,
+                            });
+                        }
+                    }
                     BindingState::Consumed(consumed_at)
                     | BindingState::MaybeConsumed(consumed_at)
                     | BindingState::AliasedIntoAggregate(consumed_at) => {
@@ -268,7 +296,11 @@ fn transfer_block<S: std::hash::BuildHasher>(
                 // (the very breakage `AliasedIntoAggregate` exists to avoid),
                 // and the use was already flagged. For any other prior state a
                 // genuine `Consume` use transitions to `Consumed` as usual.
-                if *intent == IntentKind::Consume
+                if *intent == IntentKind::Discharge {
+                    if matches!(state.get(binding), Some(BindingState::Live)) {
+                        state.insert(*binding, BindingState::Discharged(*site));
+                    }
+                } else if *intent == IntentKind::Consume
                     && (ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
                         || is_channel_handle_ty(ty))
                     && !matches!(
@@ -320,6 +352,7 @@ fn transfer_block<S: std::hash::BuildHasher>(
                     }
                     Some(
                         BindingState::Uninit
+                        | BindingState::Discharged(_)
                         | BindingState::Consumed(_)
                         | BindingState::MaybeConsumed(_),
                     ) => {}
@@ -1739,6 +1772,8 @@ mod tests {
         vec![
             BindingState::Uninit,
             BindingState::Live,
+            BindingState::Discharged(SiteId(3)),
+            BindingState::Discharged(SiteId(7)),
             BindingState::Consumed(SiteId(3)),
             BindingState::Consumed(SiteId(7)),
             BindingState::MaybeConsumed(SiteId(3)),
@@ -1749,16 +1784,18 @@ mod tests {
     /// Wider exhaustive state-space for the M2 substrate's drop-plan
     /// invariants. Includes multiple consume sites with non-trivial
     /// ordering (1, 3, 7, 11) so the min-site rule for
-    /// Consumed/MaybeConsumed meets is exercised at every pair.
+    /// Discharged/Consumed/MaybeConsumed meets is exercised at every pair.
     /// Property tests below sample every (state × state) and every
-    /// (state × state × state) tuple — the lattice has 9 elements
-    /// (Uninit + Live + 4×Consumed + 4×MaybeConsumed = 1+1+4+4 = 10),
-    /// so the exhaustive cube is 1000 tuples; fast enough to keep in
-    /// CI per the existing pattern.
+    /// (state × state × state) tuple — the lattice has 14 elements, so the
+    /// exhaustive cube remains fast enough to keep in CI.
     fn states_wide() -> Vec<BindingState> {
         vec![
             BindingState::Uninit,
             BindingState::Live,
+            BindingState::Discharged(SiteId(1)),
+            BindingState::Discharged(SiteId(3)),
+            BindingState::Discharged(SiteId(7)),
+            BindingState::Discharged(SiteId(11)),
             BindingState::Consumed(SiteId(1)),
             BindingState::Consumed(SiteId(3)),
             BindingState::Consumed(SiteId(7)),
@@ -2084,6 +2121,53 @@ mod tests {
         assert_eq!(
             result.exit_states[&0][&binding],
             BindingState::Consumed(SiteId(11))
+        );
+    }
+
+    #[test]
+    fn affine_discharge_suppresses_exit_drop_but_permits_closed_handle_read() {
+        let binding = BindingId(35);
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![
+                MirStatement::Bind {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::String,
+                },
+                MirStatement::Use {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(11),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Discharge,
+                },
+                MirStatement::Use {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(12),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Read,
+                },
+            ],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }];
+
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.exit_states[&0][&binding],
+            BindingState::Discharged(SiteId(11))
+        );
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::UseAfterConsume { binding: used, used_at, .. }
+                    if *used == binding && *used_at == SiteId(12)
+            )),
+            "a non-consuming closed-handle probe must stay legal: {:?}",
+            result.checks
         );
     }
 

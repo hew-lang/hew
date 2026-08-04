@@ -24,6 +24,11 @@ pub struct Binding {
     pub is_moved: bool,
     /// Where the move happened, for error reporting
     pub moved_at: Option<Span>,
+    /// Where an affine resource's explicit `close` discharged its implicit
+    /// scope-exit obligation. Unlike a move, discharge leaves the handle bits
+    /// readable so non-consuming operations can report a closed-handle error;
+    /// a second consuming operation is still rejected.
+    pub released_at: Option<Span>,
     /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
     /// Whether the variable has been reassigned after initial definition
@@ -164,6 +169,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
                     is_written: false,
                     def_span: None,
@@ -186,6 +192,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    released_at: None,
                     read_count: 0,
                     is_written: false,
                     def_span: Some(span.clone()),
@@ -252,6 +259,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     is_written: false,
                     def_span: None,
@@ -272,6 +280,20 @@ impl TypeEnv {
             }
         }
         false
+    }
+
+    /// Discharge one affine resource without making its closed handle bits
+    /// unreadable. Returns the earlier discharge site when this binding was
+    /// already released.
+    pub fn mark_released(&mut self, name: &str, span: Span) -> Option<Option<Span>> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                let prior = binding.released_at.clone();
+                binding.released_at = Some(span);
+                return Some(prior);
+            }
+        }
+        None
     }
 
     /// Restore a binding after a validated receiver-identity method result is

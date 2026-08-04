@@ -300,10 +300,10 @@ fn resolve_binding_transfer_facts(
 
     let mut changed = false;
     for (site, binding) in &verifier.binding_reference_targets {
-        if facts
+        let existing = facts
             .get(site)
-            .is_some_and(|fact| !matches!(fact.ownership, Ownership::Unknown))
-        {
+            .map_or(Ownership::Unknown, |fact| fact.ownership);
+        if !matches!(existing, Ownership::Unknown | Ownership::Borrowed) {
             continue;
         }
         let source = verifier.binding_definitions.get(binding).map_or_else(
@@ -344,6 +344,14 @@ fn resolve_binding_transfer_facts(
                 Ownership::Unknown => Ownership::Unknown,
             },
         };
+        // A provisional Borrowed binding reference is already the correct
+        // conservative answer for an unresolved domestic producer. Refine it
+        // only for the one stronger fact needed here: a foreign NoOwner source
+        // must not be laundered into a caller-owned aggregate through a local
+        // binding. Unknown references remain eligible for every exact result.
+        if existing == Ownership::Borrowed && ownership != Ownership::NoOwner {
+            continue;
+        }
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };

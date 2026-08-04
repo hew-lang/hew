@@ -1834,12 +1834,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 // its composite. Anything not provably borrow-safe stays a
                 // fail-closed payload escape.
                 if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
-                    let read_is_borrow = binder_read_is_borrow_safe_terminator(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        l,
-                    ) || (all_candidates_are_plain_string_payload
-                        && string_binder_read_is_user_fn_borrow(
+                    // Every borrow exemption keeps the enclosing enum's
+                    // EnumInPlace owner alive. That is sound only when the
+                    // helper family can clone and drop every possible active
+                    // payload. A sibling affine/IO/resource/opaque nominal has
+                    // drop-only semantics, so even a perfectly ordinary read
+                    // of the string arm must exclude the whole enum owner: the
+                    // active payload binder (if any) is then the sole close
+                    // authority. This is the same positive cap used for user
+                    // functions, applied to the complete borrow-safe surface.
+                    let read_is_borrow = all_candidates_are_plain_string_payload
+                        && (binder_read_is_borrow_safe_terminator(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                        ) || string_binder_read_is_user_fn_borrow(
                             &block.terminator,
                             suspend_kinds.get(&block.id),
                             l,

@@ -1085,6 +1085,24 @@ impl Checker {
     pub(super) fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
             if let Expr::Identifier(name) = expr {
+                let released_at = self
+                    .env
+                    .lookup_ref(name)
+                    .and_then(|binding| binding.released_at.clone());
+                if let Some(released_at) = released_at {
+                    let mut error = TypeError::new(
+                        TypeErrorKind::UseAfterConsume,
+                        span.clone(),
+                        format!(
+                            "cannot consume released resource `{name}`; its close obligation was already discharged"
+                        ),
+                    )
+                    .with_note(released_at, "resource was closed here");
+                    if let Some(source_module) = &self.current_module {
+                        error = error.with_source_module(source_module.clone());
+                    }
+                    self.errors.push(error);
+                }
                 self.env.mark_moved(name, span.clone());
             }
         }

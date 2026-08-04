@@ -246,13 +246,13 @@ pub struct TypeCheckOutput {
     /// Spans of method calls whose resolved method declares `consumes_receiver`.
     ///
     /// Per-call-site flag derived from [`MethodSig::consumes_receiver`] at the
-    /// dispatch site. Codegen consults this side table to null the receiver's
-    /// drop slot after the call, so the scope-exit drop becomes a null-guarded
-    /// no-op. PR 1 (issue #1295) ships the plumbing; the recognised set is
-    /// empty (no Hew surface syntax sets the flag yet), so this map is empty
-    /// for Hew programs — but tests can populate `consume_receiver_methods` on
-    /// the [`Checker`] to exercise the path end-to-end.
+    /// dispatch site. Lowering consults this side table to transfer or
+    /// discharge the receiver's drop obligation. The companion discharge set
+    /// distinguishes a canonical affine close from an ordinary ownership move.
     pub method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Affine `close` calls that discharge the receiver's release obligation
+    /// without making its closed handle bits unreadable.
+    pub method_call_discharges_receiver: HashSet<SpanKey>,
     /// Receiver-identity calls whose result is discarded through a borrowing
     /// method chain. HIR lowers these receivers as reads, returning the sole
     /// ownership obligation to the original binding.
@@ -1247,6 +1247,7 @@ impl Default for TypeCheckOutput {
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
+            method_call_discharges_receiver: HashSet::default(),
             method_call_preserves_receiver_identity: HashSet::default(),
             opaque_resource_candidates: OpaqueResourceCandidateGraph::default(),
             lowering_facts: HashMap::new(),
@@ -2473,6 +2474,7 @@ pub struct Checker {
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    pub(super) method_call_discharges_receiver: HashSet<SpanKey>,
     pub(super) method_call_preserves_receiver_identity: HashSet<SpanKey>,
     /// Source extern declarations retained until the output boundary, where
     /// they are joined to the generated FFI ownership graph.
@@ -3421,6 +3423,7 @@ impl Checker {
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_discharges_receiver: HashSet::new(),
             method_call_preserves_receiver_identity: HashSet::new(),
             source_extern_declarations: Vec::new(),
             current_module_direct_imports: BTreeSet::new(),

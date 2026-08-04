@@ -31804,20 +31804,44 @@ fn emit_wasm_main_export_wrapper<'ctx>(
             .llvm_ctx("WASM main wrapper return void")?;
     }
 
-    // The WASI runtime owns `_start` and therefore needs one stable C ABI
-    // regardless of the Hew source-level `main` return width. Keep the
-    // freestanding `main` export above source-shaped, but publish a dedicated
-    // `() -> i32` adapter for `_start`: unit maps to success and integer exit
-    // values use the platform status width. This prevents wasm-ld from
-    // synthesizing a signature-mismatch trap for the common `main() -> i64`
-    // spelling.
+    emit_wasi_entry_adapter(ctx, llvm_mod, original, returns_unit)?;
+
+    Ok(())
+}
+
+/// Publish the canonical entry adapter consumed by the WASI runtime's `_start`.
+///
+/// Full-pipeline lowering calls this after preserving the source-shaped `main`
+/// export. Direct LLVM users, including the coroutine substrate, must call it
+/// for WASI command modules as well so the runtime entry contract is complete.
+/// Unit maps to success; integer results are normalized to the platform status
+/// width.
+pub fn emit_wasi_entry_adapter<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    source_main: FunctionValue<'ctx>,
+    returns_unit: bool,
+) -> Result<FunctionValue<'ctx>, CodegenError> {
+    let params = source_main.get_type().get_param_types();
+    if !params.is_empty() {
+        return Err(CodegenError::FailClosed(format!(
+            "WASI entry adapter expected parameterless main, got {} parameters",
+            params.len()
+        )));
+    }
+    if llvm_mod.get_function("__hew_wasi_main").is_some() {
+        return Err(CodegenError::FailClosed(
+            "WASI entry adapter symbol `__hew_wasi_main` is already defined".into(),
+        ));
+    }
+
     let wasi_ty = ctx.i32_type().fn_type(&[], false);
     let wasi_entry = llvm_mod.add_function("__hew_wasi_main", wasi_ty, Some(Linkage::External));
     let wasi_block = ctx.append_basic_block(wasi_entry, "entry");
     let wasi_builder = ctx.create_builder();
     wasi_builder.position_at_end(wasi_block);
     let wasi_call = wasi_builder
-        .build_call(original, &[], "hew_source_main_call")
+        .build_call(source_main, &[], "hew_source_main_call")
         .llvm_ctx("WASI source main adapter call")?;
     let exit_code = if returns_unit {
         ctx.i32_type().const_zero()
@@ -31848,7 +31872,7 @@ fn emit_wasm_main_export_wrapper<'ctx>(
         .build_return(Some(&exit_code))
         .llvm_ctx("WASI source main adapter return")?;
 
-    Ok(())
+    Ok(wasi_entry)
 }
 
 fn function_needs_closure_call_fallback_context(func: &RawMirFunction) -> bool {

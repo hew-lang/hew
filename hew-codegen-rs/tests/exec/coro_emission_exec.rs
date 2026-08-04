@@ -56,9 +56,10 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use hew_codegen_rs::coro::{
-    emit_coro_intrinsic_token, emit_coro_prologue, module_has_coroutines, run_coro_passes,
-    CoroContext,
+    emit_coro_end_ret, emit_coro_intrinsic_token, emit_coro_prologue, module_has_coroutines,
+    run_coro_passes, CoroContext,
 };
+use hew_codegen_rs::emit_wasi_entry_adapter;
 use inkwell::context::Context;
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::module::{Linkage, Module as LlvmModule};
@@ -441,29 +442,11 @@ fn emit_gen_counter<'ctx>(
     }
     builder.build_unconditional_branch(suspend_ret).unwrap();
 
-    // suspend_ret: single exit — coro.end marks the suspension boundary, then
-    // ret returns the handle from the ramp (→ ret void in .resume/.destroy).
+    // suspend_ret: the production helper emits the single coro.end, transfers
+    // the normally returned ramp frame out of the runtime's active stack, and
+    // returns the handle (the handoff becomes a phase-safe no-op in outlines).
     builder.position_at_end(suspend_ret);
-    let coro_end = {
-        use inkwell::intrinsics::Intrinsic;
-        Intrinsic::find("llvm.coro.end")
-            .unwrap()
-            .get_declaration(cc.llvm_mod, &[])
-            .unwrap()
-    };
-    unsafe {
-        let c = cc.ctx.raw();
-        let token_ty = inkwell::llvm_sys::core::LLVMTokenTypeInContext(c);
-        let none = inkwell::llvm_sys::core::LLVMConstNull(token_ty);
-        let mut args: [LLVMValueRef; 3] = [
-            cc.handle.as_value_ref(),
-            cc.ctx.bool_type().const_int(0, false).as_value_ref(),
-            none,
-        ];
-        let name = std::ffi::CString::new("").unwrap();
-        emit_coro_intrinsic_token(builder.as_mut_ptr(), coro_end, &mut args, &name);
-    }
-    builder.build_return(Some(&cc.handle)).unwrap();
+    emit_coro_end_ret(&cc).expect("emit coroutine end, frame handoff, and handle return");
 }
 
 fn get_or_add<'ctx>(
@@ -1011,15 +994,20 @@ fn coro_substrate_round_trips_value_wasm32() {
     // the module carries is consistent with the object file the linker sees.
     let machine = machine_for("wasm32-wasi");
     let module = build_module(&ctx, "coro_wasm", FrameTeardown::Free);
+    let main = module
+        .get_function("main")
+        .expect("coroutine substrate defines main");
+    emit_wasi_entry_adapter(&ctx, &module, main, false)
+        .expect("emit canonical WASI runtime entry adapter");
     module.set_triple(&machine.get_triple());
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     emit_object(&module, &machine, &obj);
 
     // Link: libc (strlen/malloc/etc.) + runtime (_start + hew_cont_* + hew_alloc).
-    // The runtime ships its own _start which calls main(argc, argv) → propagates
-    // the i32 exit code to wasmtime's process exit. No crt1-command.o needed.
+    // The runtime's _start calls the canonical __hew_wasi_main adapter above,
+    // which propagates the driver's i32 result to wasmtime. No crt1-command.o
+    // is needed, and unresolved runtime-entry symbols fail at link time.
     let link = Command::new(&wasm_ld)
-        .arg("--allow-undefined")
         .arg(&libc)
         .arg(&obj)
         .arg(&runtime)

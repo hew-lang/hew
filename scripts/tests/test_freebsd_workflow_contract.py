@@ -47,7 +47,6 @@ PKG_INSTALL_PREFIX = (
     "pkg",
     "install",
     "-y",
-    "-U",
     "-r",
     "FreeBSD",
 )
@@ -72,6 +71,7 @@ EXPECTED_PKG_PHASES = (
 )
 NIGHTLY_TOOL_PACKAGES = (
     "llvm22",
+    "gdb",
     "rust",
     "cmake",
     "ninja",
@@ -691,7 +691,7 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                 command_text.replace(" -r FreeBSD", " -r FreeBSD-ports", 1),
             ]
             if command[:2] == ("pkg", "install"):
-                replacements.append(command_text.replace(" -U", "", 1))
+                replacements.append(command_text.replace(" -y", " -y -U", 1))
             if command == EXPECTED_PKG_BOOTSTRAP:
                 replacements.extend(
                     (

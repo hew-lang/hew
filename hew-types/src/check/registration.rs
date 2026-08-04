@@ -5841,9 +5841,19 @@ impl Checker {
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
 
-                    for (item, span) in &module.items {
+                    let item_sources = self.module_item_sources.get(&module_name).cloned();
+                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        // Per-item defining-file identity (rc1-F1 stage C):
+                        // registration-time facts (extern contracts, their
+                        // conflict diagnostics) attribute to the item's own
+                        // source file, not the assembled module's primary.
+                        self.current_item_source = item_sources
+                            .as_ref()
+                            .and_then(|sources| sources.get(item_idx))
+                            .cloned();
                         self.collect_function_item(item, span);
                     }
+                    self.current_item_source = None;
 
                     for e in &mut self.errors[err_before..] {
                         if e.source_module.is_none() {
@@ -9256,6 +9266,21 @@ impl Checker {
     /// further declaration of an established symbol (no span-based
     /// same-site shortcut: a byte-offset span carries no file identity, and
     /// peer files of one directory module can align spans exactly).
+    /// Diagnostic routing token for an item declared in `file` under
+    /// `module`: the file's own path when it is NOT the module's primary
+    /// source (a peer file of a directory module), else `None` (the module
+    /// identity routes as before). The CLI/LSP source maps carry an entry per
+    /// source file keyed by this exact rendering.
+    fn item_file_routing_token(
+        &self,
+        module: Option<&str>,
+        file: Option<&std::path::PathBuf>,
+    ) -> Option<String> {
+        let file = file?;
+        let primary = self.module_source_paths.get(module?)?.first()?;
+        (file != primary).then(|| file.display().to_string())
+    }
+
     fn resolve_extern_contract(
         &mut self,
         key: &str,
@@ -9291,6 +9316,7 @@ impl Checker {
                 is_variadic: f.is_variadic,
                 span: f.span.clone(),
                 declaring_module: self.current_module.clone(),
+                declaring_source: self.current_item_source.clone(),
             });
             return;
         };
@@ -9336,41 +9362,78 @@ impl Checker {
                 source_symbol.to_string(),
                 self.current_module.clone(),
             );
-            let established_description = extern_signature_description(
-                &established.params,
-                &established.return_type,
-                &established.consuming_params,
-                established.is_variadic,
-            );
-            let conflicting = extern_signature_description(
-                &sig.params,
-                &sig.return_type,
+            self.report_extern_contract_conflict(
+                source_symbol,
+                &established,
+                sig,
                 consuming_params,
-                f.is_variadic,
+                f,
             );
-            self.errors.push(TypeError {
-                severity: crate::error::Severity::Error,
-                kind: TypeErrorKind::ConflictingExternDeclaration {
-                    symbol_name: source_symbol.to_string(),
-                },
-                span: f.span.clone(),
-                message: format!(
-                    "extern symbol `{source_symbol}` has conflicting declarations: \
-                     `{conflicting}` does not match the established `{established_description}`"
-                ),
-                notes: vec![(
-                    established.span.clone(),
-                    format!(
-                        "the first declaration of `{source_symbol}` established `{established_description}`"
-                    ),
-                    established.declaring_module.clone(),
-                )],
-                suggestions: vec![format!(
-                    "make every declaration of `{source_symbol}` use exactly `{established_description}`"
-                )],
-                source_module: self.current_module.clone(),
-            });
         }
+    }
+
+    /// Report a declaration whose signature disagrees with the symbol's
+    /// established contract, attributing both sides to their declaring FILES.
+    fn report_extern_contract_conflict(
+        &mut self,
+        source_symbol: &str,
+        established: &crate::extern_table::ExternContract,
+        sig: &FnSig,
+        consuming_params: &[bool],
+        f: &hew_parser::ast::ExternFnDecl,
+    ) {
+        let established_description = extern_signature_description(
+            &established.params,
+            &established.return_type,
+            &established.consuming_params,
+            established.is_variadic,
+        );
+        let conflicting = extern_signature_description(
+            &sig.params,
+            &sig.return_type,
+            consuming_params,
+            f.is_variadic,
+        );
+        // File-accurate attribution (rc1-F1 stage C): item spans are
+        // file-relative byte offsets, so a declaration living in a peer
+        // file of a directory module must route to THAT file, never the
+        // module's primary source. The routing token is the declaring
+        // file itself when it differs from the module's primary file;
+        // otherwise the module identity routes as before.
+        let error_token = self
+            .item_file_routing_token(
+                self.current_module.as_deref(),
+                self.current_item_source.as_ref(),
+            )
+            .or_else(|| self.current_module.clone());
+        let note_token = self
+            .item_file_routing_token(
+                established.declaring_module.as_deref(),
+                established.declaring_source.as_ref(),
+            )
+            .or_else(|| established.declaring_module.clone());
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::ConflictingExternDeclaration {
+                symbol_name: source_symbol.to_string(),
+            },
+            span: f.span.clone(),
+            message: format!(
+                "extern symbol `{source_symbol}` has conflicting declarations: \
+                 `{conflicting}` does not match the established `{established_description}`"
+            ),
+            notes: vec![(
+                established.span.clone(),
+                format!(
+                    "the first declaration of `{source_symbol}` established `{established_description}`"
+                ),
+                note_token,
+            )],
+            suggestions: vec![format!(
+                "make every declaration of `{source_symbol}` use exactly `{established_description}`"
+            )],
+            source_module: error_token,
+        });
     }
 
     #[expect(

@@ -431,7 +431,11 @@ impl Checker {
         self.canonical_std_module_sources.clear();
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
+        self.module_item_sources.clear();
+        self.current_item_source = None;
         if let Some(module_graph) = &program.module_graph {
+            self.module_item_sources
+                .clone_from(&module_graph.item_sources);
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
             // source-less floor module and promotes the shipped file to its
             // canonical `std.foo` identity. In a normal user program the root

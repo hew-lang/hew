@@ -2483,6 +2483,16 @@ pub struct Checker {
     /// is what lets a consumer prove that relation from the graph rather than
     /// guessing it from the two owner spellings.
     pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Per-item defining source file for each graph module (parallel to the
+    /// module's items), captured from `ModuleGraph::item_sources` at
+    /// `check_program` entry. Item spans are file-relative byte offsets with
+    /// no file identity, so this table is the sole sound authority for "which
+    /// file declared item N of directory module M" (rc1-F1 stage C).
+    pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Defining source file of the item currently being registered, when the
+    /// enclosing module recorded per-item attribution. `None` for the root
+    /// unit and for hand-built module graphs.
+    pub(super) current_item_source: Option<std::path::PathBuf>,
     /// Canonical stdlib owners compiled as the root source unit itself. This
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
@@ -3475,6 +3485,8 @@ impl Checker {
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
+            module_item_sources: HashMap::new(),
+            current_item_source: None,
             canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),

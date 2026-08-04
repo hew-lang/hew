@@ -79,6 +79,11 @@ pub struct ExternContract {
     /// Minting declaration's span, for conflict diagnostics.
     pub span: Span,
     pub declaring_module: Option<String>,
+    /// Minting declaration's own source file, when its module recorded
+    /// per-item attribution (rc1-F1 stage C). Item spans carry no file
+    /// identity, so this is what lets a conflict note name the actual peer
+    /// file of a directory module instead of the module's primary file.
+    pub declaring_source: Option<std::path::PathBuf>,
 }
 
 /// One extern declaration's own record — the provenance unit.

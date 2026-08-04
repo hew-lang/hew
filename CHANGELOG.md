@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.0-rc1] - Unreleased
+## [0.6.0-rc1] - 2026-07-29
 
 Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the
 ownership model, closes a batch of actor and machine correctness gaps, and

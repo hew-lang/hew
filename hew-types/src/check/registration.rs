@@ -156,25 +156,70 @@ fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
     }
 }
 
+/// Fold a peer-assembled submodule owner into the directory module that also
+/// assembles it.
+///
+/// A directory module is its primary file plus every peer `.hew` file in that
+/// directory (hew-compile's `resolve_completed_import_internal`). Importing
+/// both `std::net::http` and its `std::net::http::http_client` peer registers
+/// the one declaration in `http_client.hew` under both owners, so the
+/// duplicate-extern compare sees the module disagree with itself purely on
+/// nominal-owner spelling.
+///
+/// The relation is read off the module graph, not the two spellings: an owner
+/// folds only when it is assembled from exactly one source file AND some other
+/// module assembles that same file among its own. Two modules sharing a source
+/// file share its declarations, so this cannot equate distinct ones. The fold
+/// normalizes NOMINAL OWNERS ONLY — arity, types, ownership modes, and
+/// variadicity are still compared structurally by the caller.
+///
+/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
+/// direct submodule import aliases the assembled module instead of registering
+/// a second copy.
+fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
+    let (owner, short) = name.rsplit_once('.')?;
+    let sources = checker.module_source_paths.get(owner)?;
+    let [source] = sources.as_slice() else {
+        return None;
+    };
+    let mut assemblers = checker
+        .module_source_paths
+        .iter()
+        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
+        .map(|(other, _)| other);
+    let assembler = assemblers.next()?;
+    if assemblers.next().is_some() {
+        return None;
+    }
+    Some(format!("{assembler}.{short}"))
+}
+
 /// Canonical nominal identity of an extern signature type, for the
 /// single-owner contract comparison.
 ///
 /// Two declarations of one C symbol may legitimately spell one nominal
-/// differently (alias qualifier, prelude-bare name); the compare must map
-/// both spellings to the declaration's source identity before an EXACT
-/// structural compare. The peer-assembled duplicate registration (one source
-/// file assembled into two modules) never reaches this compare — the extern
-/// table recognizes it as the same declaration site off the module graph.
+/// differently (alias qualifier, prelude-bare name, peer-assembled owner);
+/// the compare must map both spellings to the declaration's source identity
+/// before an EXACT structural compare. Every further declaration of an
+/// established symbol goes through this compare — there is no
+/// same-declaration-site shortcut (a byte-offset span carries no file
+/// identity, so "same site" cannot be recognized soundly; owner
+/// normalization plus the structural compare handles the peer-assembly
+/// duplicate registration while still comparing arity, types, ownership
+/// modes, and variadicity).
 ///
 /// WHEN OBSOLETE: stage C of the identity lane, when extern signatures are
 /// stored `NominalId`-resolved at registration — the contract compare becomes
 /// plain ID equality and this spelling canonicalization is deleted with the
-/// `complete_prelude_std_owner` heuristic it rides on.
+/// `complete_prelude_std_owner` / `fold_peer_assembled_owner` heuristics it
+/// rides on.
 fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
     fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
         match ty {
             Ty::Named { name, args, .. } => Ty::Named {
-                name: complete_prelude_std_owner(checker, name).unwrap_or_else(|| name.clone()),
+                name: complete_prelude_std_owner(checker, name)
+                    .or_else(|| fold_peer_assembled_owner(checker, name))
+                    .unwrap_or_else(|| name.clone()),
                 args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
                 // The builtin marker is checker metadata and can legitimately
                 // differ when one module spells that nominal through an import
@@ -9204,36 +9249,13 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
-    /// Whether the current module and `established_module` assemble at least
-    /// one common source file — read off the module graph, never off the two
-    /// owner spellings. A directory module and its directly-imported peer
-    /// submodule (`std.net.http` / `std.net.http.http_client`) share the peer
-    /// file, so a declaration in that file registering under both owners is
-    /// ONE declaration site.
-    fn extern_declaring_modules_share_source(&self, established_module: Option<&str>) -> bool {
-        let (Some(current), Some(established)) =
-            (self.current_module.as_deref(), established_module)
-        else {
-            return false;
-        };
-        if current == established {
-            return true;
-        }
-        let Some(current_sources) = self.module_source_paths.get(current) else {
-            return false;
-        };
-        self.module_source_paths
-            .get(established)
-            .is_some_and(|sources| {
-                sources
-                    .iter()
-                    .any(|source| current_sources.contains(source))
-            })
-    }
-
     /// Resolve one extern declaration against the single-owner table
-    /// (rc1-F1 stage B): mint the symbol's contract, adopt the established
-    /// one when the declarations agree, or report the contract conflict.
+    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
+    /// structural compare against the established one — adopt on agreement,
+    /// register-then-report on conflict. The compare ALWAYS runs for a
+    /// further declaration of an established symbol (no span-based
+    /// same-site shortcut: a byte-offset span carries no file identity, and
+    /// peer files of one directory module can align spans exactly).
     fn resolve_extern_contract(
         &mut self,
         key: &str,
@@ -9248,17 +9270,11 @@ impl Checker {
             // call-independent symbol and therefore no symbol-keyed contract
             // slot; they still register as extern declarations (call-target
             // resolution, `unsafe` gating).
-            self.extern_table.mint(crate::extern_table::ExternContract {
-                owner: declaration,
-                symbol: String::new(),
-                params: sig.params.clone(),
-                return_type: sig.return_type.clone(),
-                consuming_params: consuming_params.to_vec(),
-                is_variadic: f.is_variadic,
-                span: f.span.clone(),
-                declaring_module: self.current_module.clone(),
-                adopting_modules: std::collections::BTreeSet::new(),
-            });
+            self.extern_table.register_detached_declaration(
+                declaration,
+                String::new(),
+                self.current_module.clone(),
+            );
             return;
         }
         let Some((established_id, established)) = self
@@ -9275,19 +9291,14 @@ impl Checker {
                 is_variadic: f.is_variadic,
                 span: f.span.clone(),
                 declaring_module: self.current_module.clone(),
-                adopting_modules: std::collections::BTreeSet::new(),
             });
             return;
         };
-        // One source file assembled into two modules (a directory module and
-        // a directly-imported peer submodule) registers the SAME declaration
-        // twice. Recognized off the module graph — same declaring span,
-        // shared source file — it is one declaration site and one contract
-        // by construction; comparing its two assembly-context spellings
-        // would only chase owner-qualifier drift.
-        let same_site = established.span == f.span
-            && self.extern_declaring_modules_share_source(established.declaring_module.as_deref());
-        let agrees = same_site || {
+        // Peer-assembled owner spellings are normalized inside
+        // `extern_contract_type_identity` (fold_peer_assembled_owner), so the
+        // one-declaration-registered-under-two-owners case agrees here while
+        // arity, types, ownership modes, and variadicity are still compared.
+        let agrees = {
             let established_params = established
                 .params
                 .iter()
@@ -9307,13 +9318,24 @@ impl Checker {
         };
         if agrees {
             // Single-owner property: a further agreeing declaration becomes
-            // another name of the ONE established contract.
+            // another name of the ONE established ABI contract, keeping its
+            // OWN provenance (declaring module, endpoint).
             self.extern_table.adopt_declaration(
                 declaration,
+                source_symbol.to_string(),
                 self.current_module.clone(),
                 established_id,
             );
         } else {
+            // Register FIRST, report second: the conflicting declaration
+            // must keep its `unsafe` gate and call-target endpoint while the
+            // hard error propagates (the unsafe registry is not conditional
+            // on ABI agreement).
+            self.extern_table.register_detached_declaration(
+                declaration,
+                source_symbol.to_string(),
+                self.current_module.clone(),
+            );
             let established_description = extern_signature_description(
                 &established.params,
                 &established.return_type,

@@ -1619,23 +1619,22 @@ impl Checker {
         let Some((owner_module, _)) = receiver_name.rsplit_once('.') else {
             return false;
         };
-        // rc1-F1 stage B: resolve through the single-owner extern table —
-        // the symbol has ONE contract, and the receiver's canonical owner
-        // must be one of its declaring modules (minter or agreeing adopter).
-        // The published identity is the contract's owner declaration, so a
-        // peer-assembled second owner resolves to the same declaration
-        // identity as the primary.
-        let Some(contract) = self
+        // rc1-F1 stage B: resolve through the extern table's declaration
+        // index — the receiver's canonical owner must ITSELF declare the
+        // symbol, and the published identity is THAT declaration (its own
+        // key, its own provenance), never whichever declaration happened to
+        // mint the symbol's ABI contract.
+        let Some((declaration_key, declaration)) = self
             .extern_table
-            .contract_declared_by_module(&c_symbol, owner_module)
+            .declaration_by_symbol_and_module(&c_symbol, owner_module)
         else {
             return false;
         };
 
         let extern_identity = ExternMethodCallIdentity {
-            endpoint: contract.symbol.clone(),
-            signature_key: contract.owner.full_path().to_string(),
-            declaring_module: contract.declaring_module.clone(),
+            endpoint: declaration.symbol.clone(),
+            signature_key: declaration_key.full_path().to_string(),
+            declaring_module: declaration.declaring_module.clone(),
             trusted_compiled_stdlib: self.canonical_std_module_sources.contains(owner_module),
         };
         let consumes_receiver =

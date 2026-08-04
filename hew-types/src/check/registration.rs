@@ -71,22 +71,63 @@ fn extern_signature_description(
     )
 }
 
+/// Complete a canonical stdlib owner that a module reached through the prelude
+/// rather than an import.
+///
+/// `canonical_nominal_name` widens a partial owner only through an import
+/// binding of the declaring module. A module can name a shipped type without
+/// importing its owner — `std/net/http/http.hew` returns `Sink<string>`, which
+/// the prelude resolves to `stream.Sink` while `std/stream.hew` declares the
+/// same extern against its own `std.stream.Sink`. Comparing those spellings
+/// rejects one type as two.
+///
+/// WHY this is scoped to the extern-contract comparison: it widens a NAME, and
+/// nominal identity feeds layout, dispatch and ownership routing. Only the
+/// duplicate-declaration check needs it, so only that check gets it.
+///
+/// WHEN OBSOLETE: when prelude-resolved nominals carry their canonical owner at
+/// resolution, so nothing downstream ever sees a partial one.
+///
+/// The trust gates are the same ones `canonical_nominal_name` uses: the owner
+/// must be a bare segment, exactly one canonical stdlib source may end in it
+/// (an ambiguous suffix proves nothing and is left alone), and the completed
+/// name must already be a known type.
+fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
+    let (owner, short) = name.rsplit_once('.')?;
+    if owner.contains('.') {
+        return None;
+    }
+    let suffix = format!(".{owner}");
+    let mut sources = checker
+        .canonical_std_module_sources
+        .iter()
+        .filter(|source| source.ends_with(&suffix));
+    let full_owner = sources.next()?;
+    if sources.next().is_some() {
+        return None;
+    }
+    let completed = format!("{full_owner}.{short}");
+    (checker.type_defs.contains_key(&completed) || checker.known_types.contains(&completed))
+        .then_some(completed)
+}
+
 fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
-    fn erase_builtin_presentation(ty: &Ty) -> Ty {
+    fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
         match ty {
             Ty::Named { name, args, .. } => Ty::Named {
-                name: name.clone(),
-                args: args.iter().map(erase_builtin_presentation).collect(),
+                name: complete_prelude_std_owner(checker, name).unwrap_or_else(|| name.clone()),
+                args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
+                // The builtin marker is checker metadata and can legitimately
+                // differ when one module spells that nominal through an import
+                // qualifier, so it is erased rather than compared.
                 builtin: None,
             },
-            _ => ty.map_children_pub(&erase_builtin_presentation),
+            _ => ty.map_children_pub(&|child| rewrite(checker, child)),
         }
     }
 
-    // The owner-qualified nominal name is the source contract identity. The
-    // builtin marker is checker metadata and can legitimately differ when one
-    // module spells that nominal through an import qualifier.
-    erase_builtin_presentation(&checker.canonicalize_nominal_identity(ty))
+    // The owner-qualified nominal name is the source contract identity.
+    rewrite(checker, &checker.canonicalize_nominal_identity(ty))
 }
 
 impl super::lints::NodeVisitor for ExplicitReturnFinder {

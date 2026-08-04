@@ -715,7 +715,9 @@ impl Checker {
         // resolved name is a reliable "the user defined this symbol" signal.
         // Mirror the module-qualified-first resolution `check_call` itself
         // uses below so a module-scoped shadow (`mod.sleep`) is caught too.
-        let resolved_name = scoped_module_item_name(self.current_module.as_deref(), func_name)
+        // rc1-F1 stage A: probe under the CANONICAL owner (root included) —
+        // `fn_def_spans` keys root declarations canonically.
+        let resolved_name = scoped_module_item_name(self.canonical_fn_owner(), func_name)
             .filter(|qualified| self.fn_def_spans.contains_key(qualified))
             .unwrap_or_else(|| func_name.to_string());
         if self.fn_def_spans.contains_key(&resolved_name) {
@@ -1074,10 +1076,35 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one declaration-identity decision tree keeps target precedence explicit"
-    )]
+    /// Publish the `CallTarget::User` for a source-declared function found in
+    /// `fn_def_spans` under `signature_key`, or `None` when no declaration
+    /// exists under that key.
+    ///
+    /// LEGACY ROOT RENDER (rc1-F1 stage A): the checker keys root free
+    /// functions canonically (`{root}.{name}`), but the published `DefId`
+    /// must keep the legacy bare spelling — HIR/MIR/codegen still derive
+    /// symbols and lookups from it, and stage A must be byte-identical
+    /// downstream. The stored declaring module (`None` = root) selects the
+    /// render: root declarations publish their bare leaf, module
+    /// declarations publish `{module}.{leaf}`.
+    /// WHEN OBSOLETE: stage C/D re-key downstream consumers by canonical
+    /// `DefId`; this render then publishes the canonical key unchanged.
+    fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
+        let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
+        let declaration = declaring_module.as_ref().map_or_else(
+            || {
+                self.root_owned_fn_leaf(signature_key)
+                    .unwrap_or(signature_key)
+                    .to_string()
+            },
+            |module| {
+                let name = signature_key.rsplit('.').next().unwrap_or(signature_key);
+                format!("{module}.{name}")
+            },
+        );
+        Some(CallTarget::User(crate::DefId::new(declaration)))
+    }
+
     fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1115,15 +1142,8 @@ impl Checker {
                 }
             }
         }
-        if let Some((_, declaring_module)) = self.fn_def_spans.get(signature_key) {
-            let declaration = declaring_module.as_ref().map_or_else(
-                || signature_key.to_string(),
-                |module| {
-                    let name = signature_key.rsplit('.').next().unwrap_or(signature_key);
-                    format!("{module}.{name}")
-                },
-            );
-            return CallTarget::User(crate::DefId::new(declaration));
+        if let Some(target) = self.user_call_target_for_declared_fn(signature_key) {
+            return target;
         }
         // A source declaration always wins over a catalog spelling.  Once that
         // authority check above has ruled it out, every executable monomorphic
@@ -1181,11 +1201,15 @@ impl Checker {
                 return CallTarget::User(crate::DefId::new(declaration));
             }
         }
-        if let Some(source_key) =
-            scoped_module_item_name(self.current_module.as_deref(), signature_key)
-                .filter(|source_key| self.fn_def_spans.contains_key(source_key))
+        // rc1-F1 stage A: a bare spelling that reaches this rung re-anchors
+        // through the CANONICAL owner (current module, or the root unit's
+        // minted identity) — `fn_def_spans` is canonically keyed, so the
+        // bare-for-root probe would silently miss. The publication render is
+        // the declared-fn helper's (root declarations publish bare leaves).
+        if let Some(target) = scoped_module_item_name(self.canonical_fn_owner(), signature_key)
+            .and_then(|source_key| self.user_call_target_for_declared_fn(&source_key))
         {
-            return CallTarget::User(crate::DefId::new(source_key));
+            return target;
         }
         if let Some(source_key) = self
             .import_fn_name_aliases
@@ -1792,7 +1816,12 @@ impl Checker {
 
         // Look up function signature first, preferring the current module's
         // private helper/extern over another module's same-named item.
-        let resolved_fn_name = scoped_module_item_name(self.current_module.as_deref(), &func_name)
+        // rc1-F1 stage A: canonical-first — a root caller resolves its own
+        // free fns under the canonical `{root_module}.{name}` key the mint
+        // produces; the contains_key filter keeps bare registrations
+        // (builtins, externs) resolving unchanged (the bare rung is the
+        // builtin/extern floor, not a root fallback).
+        let resolved_fn_name = scoped_module_item_name(self.canonical_fn_owner(), &func_name)
             .filter(|qualified| self.fn_sigs.contains_key(qualified))
             .unwrap_or_else(|| func_name.clone());
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
@@ -2129,7 +2158,10 @@ impl Checker {
         if name.contains('.') || name.contains("::") {
             return false;
         }
-        let current_local = scoped_module_item_name(self.current_module.as_deref(), name)
+        // rc1-F1 stage A: the local-declaration probe resolves through the
+        // CANONICAL owner — root declarations live under `{root}.{name}` in
+        // `fn_def_spans` now.
+        let current_local = scoped_module_item_name(self.canonical_fn_owner(), name)
             .is_some_and(|qualified| self.fn_def_spans.contains_key(&qualified));
         if current_local
             || (self.current_module.is_none() && self.root_value_bindings.contains(name))

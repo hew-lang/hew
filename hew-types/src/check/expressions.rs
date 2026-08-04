@@ -1353,7 +1353,13 @@ impl Checker {
                 }
             }
             ty
-        } else if self.fn_sigs.contains_key(name) {
+        } else if let Some(fn_sig_key) = self
+            // rc1-F1 stage A: canonical-first — a root fn used as a value
+            // resolves under its canonical `{root_module}.{name}` fn_sigs
+            // key; bare registrations (builtins, externs) resolve unchanged.
+            .root_canonical_fn_sig_key(name)
+            .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
+        {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -1366,12 +1372,14 @@ impl Checker {
                 }
             }
             if let Some(caller) = &self.current_function {
+                // The callee edge records the RESOLVED key so dead-code
+                // reachability stays aligned with canonical `fn_def_spans`.
                 self.call_graph
                     .entry(caller.clone())
                     .or_default()
-                    .insert(name.to_string());
+                    .insert(fn_sig_key.clone());
             }
-            let sig = self.fn_sigs[name].clone();
+            let sig = self.fn_sigs[&fn_sig_key].clone();
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the
             // same name (e.g. user `enum AppError { NotFound(string); }` shadows

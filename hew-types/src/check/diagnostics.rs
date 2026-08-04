@@ -19,8 +19,16 @@ impl Checker {
         let mut reachable = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
 
+        // rc1-F1 stage A: `fn_def_spans`/`call_graph` key ROOT declarations
+        // canonically (`{root}.{name}`), so root-fn classification tests the
+        // root-owned LEAF (`root_owned_fn_leaf`), never "key has no dot".
         for fn_name in self.fn_def_spans.keys() {
-            if fn_name == "main" || fn_name.contains("::") || fn_name.starts_with('_') {
+            let root_leaf = self.root_owned_fn_leaf(fn_name);
+            if root_leaf == Some("main")
+                || fn_name.contains("::")
+                || fn_name.starts_with('_')
+                || root_leaf.is_some_and(|leaf| leaf.starts_with('_'))
+            {
                 reachable.insert(fn_name.clone());
                 queue.push_back(fn_name.clone());
             }
@@ -44,16 +52,19 @@ impl Checker {
 
         let mut findings: Vec<(Span, String, Option<String>)> = Vec::new();
         for (fn_name, (def_span, stored_module)) in &self.fn_def_spans {
-            if fn_name == "main" || fn_name.starts_with('_') || fn_name.contains("::") {
+            // Only ROOT free functions are warned (module functions keep
+            // their historical exemption); the finding renders the bare
+            // source leaf, exactly as before root keys became canonical.
+            let Some(leaf) = self.root_owned_fn_leaf(fn_name) else {
                 continue;
-            }
-            if fn_name.starts_with("std.") || fn_name.contains('.') {
+            };
+            if leaf == "main" || leaf.starts_with('_') {
                 continue;
             }
             if reachable.contains(fn_name) {
                 continue;
             }
-            findings.push((def_span.clone(), fn_name.clone(), stored_module.clone()));
+            findings.push((def_span.clone(), leaf.to_string(), stored_module.clone()));
         }
         // Route through the lint registry so `dead_code` is configurable
         // (`-A/-W/-D`) and suppressible (`// hew:allow(dead_code)`). The

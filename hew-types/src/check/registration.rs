@@ -5873,14 +5873,25 @@ impl Checker {
     pub(super) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
-                let scoped_name = match &self.current_module {
-                    Some(m) => format!("{m}.{}", fd.name),
-                    None => fd.name.clone(),
-                };
+                // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
+                // CANONICALIZED with `fn_sigs` — one key shape per
+                // declaration, so declaration-authority probes never miss on
+                // key misalignment. The stored declaring module stays
+                // `current_module` (None = root): it is the display/provenance
+                // axis, and the legacy root render at publication boundaries
+                // derives from it.
+                let scoped_name = scoped_module_item_name(self.canonical_fn_owner(), &fd.name)
+                    .unwrap_or_else(|| fd.name.clone());
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
+                    // Root diagnostics render the bare leaf, exactly as the
+                    // declaration is spelled in source.
+                    let display_name = self
+                        .root_owned_fn_leaf(&scoped_name)
+                        .unwrap_or(&scoped_name)
+                        .to_string();
                     self.errors.push(TypeError::duplicate_definition(
                         span.clone(),
-                        &scoped_name,
+                        &display_name,
                         prev_span.clone(),
                     ));
                 } else {
@@ -6907,7 +6918,13 @@ impl Checker {
             ..FnSig::default()
         };
 
-        let key = scoped_module_item_name(self.current_module.as_deref(), name)
+        // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
+        // module — a root free function keys `{root_module}.{name}`,
+        // identical to the key the same declaration mints when its module is
+        // imported. The side registries (`fn_param_ownership`,
+        // `fn_type_param_assoc_bindings`, `fn_sig_inference_holes`,
+        // `intrinsic_declarations`) are co-minted under this same key.
+        let key = scoped_module_item_name(self.canonical_fn_owner(), name)
             .unwrap_or_else(|| name.to_string());
         let param_ownership = fd
             .params

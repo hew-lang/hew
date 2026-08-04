@@ -12,7 +12,7 @@
 #
 # Format: <test_function_name>  # <class>: <root cause>
 #
-# Total: 45 unique failing test function names.
+# Total: 33 unique failing test function names.
 
 # unresolved-module-type (31)
 test_collect_after_partial_advance  # unresolved-module-type: unresolved module-owned type at the import boundary
@@ -46,20 +46,6 @@ test_words_only_whitespace_returns_empty  # unresolved-module-type: unresolved m
 test_words_single_word  # unresolved-module-type: unresolved module-owned type at the import boundary
 test_words_tab_and_newline_as_separator  # unresolved-module-type: unresolved module-owned type at the import boundary
 test_words_two_words_single_space  # unresolved-module-type: unresolved module-owned type at the import boundary
-
-# extern-contract-conflict (12)
-test_http_listen_clears_the_detail_slot_on_success  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_http_listen_on_an_ephemeral_port_succeeds  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_http_listen_reports_a_bind_failure_instead_of_a_null_backed_server  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_http_listen_reports_an_unparsable_address_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_url_resolve_reports_an_unresolvable_path_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_url_resolve_returns_the_joined_url  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_connect_reports_a_refused_connection_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_connect_reports_an_unparsable_url_as_a_failure  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_listen_clears_the_detail_slot_on_success  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_listen_on_an_ephemeral_port_succeeds  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_listen_reports_a_bind_failure_instead_of_a_null_backed_server  # extern-contract-conflict: one C symbol resolves under two nominal owners
-test_websocket_listen_reports_an_unparsable_address_as_invalid_argument  # extern-contract-conflict: one C symbol resolves under two nominal owners
 
 # checker-target-gap (2)
 test_generic_record_of_vec_clone  # checker-target-gap: ordinary call admitted with no canonical target

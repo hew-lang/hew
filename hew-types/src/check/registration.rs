@@ -44,12 +44,12 @@ struct ExplicitReturnFinder {
 }
 
 fn extern_signature_description(
-    signature: &FnSig,
+    signature_params: &[Ty],
+    return_type: &Ty,
     consuming_params: &[bool],
     is_variadic: bool,
 ) -> String {
-    let mut params = signature
-        .params
+    let mut params = signature_params
         .iter()
         .enumerate()
         .map(|(index, ty)| {
@@ -64,11 +64,7 @@ fn extern_signature_description(
     if is_variadic {
         params.push("...".to_string());
     }
-    format!(
-        "fn({}) -> {}",
-        params.join(", "),
-        signature.return_type.user_facing()
-    )
+    format!("fn({}) -> {}", params.join(", "), return_type.user_facing())
 }
 
 /// Complete a canonical stdlib owner that a module reached through the prelude
@@ -160,50 +156,25 @@ fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
     }
 }
 
-/// Fold a peer-assembled submodule owner into the directory module that also
-/// assembles it.
+/// Canonical nominal identity of an extern signature type, for the
+/// single-owner contract comparison.
 ///
-/// A directory module is its primary file plus every peer `.hew` file in that
-/// directory (hew-compile's `resolve_completed_import_internal`). Importing
-/// both `std::net::http` and its `std::net::http::http_client` peer registers
-/// the one declaration in `http_client.hew` under both owners, so the
-/// duplicate-extern check sees the module disagree with itself — that is what
-/// `hew_http_response_*` hit, with the reported "first declaration" spans
-/// landing in `http.hew`, which declares none of them.
+/// Two declarations of one C symbol may legitimately spell one nominal
+/// differently (alias qualifier, prelude-bare name); the compare must map
+/// both spellings to the declaration's source identity before an EXACT
+/// structural compare. The peer-assembled duplicate registration (one source
+/// file assembled into two modules) never reaches this compare — the extern
+/// table recognizes it as the same declaration site off the module graph.
 ///
-/// The relation is read off the module graph, not the two spellings: an owner
-/// folds only when it is assembled from exactly one source file AND some other
-/// module assembles that same file among its own. Two modules sharing a source
-/// file share its declarations, so this cannot equate distinct ones.
-///
-/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
-/// direct submodule import aliases the assembled module instead of registering
-/// a second copy.
-fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
-    let (owner, short) = name.rsplit_once('.')?;
-    let sources = checker.module_source_paths.get(owner)?;
-    let [source] = sources.as_slice() else {
-        return None;
-    };
-    let mut assemblers = checker
-        .module_source_paths
-        .iter()
-        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
-        .map(|(other, _)| other);
-    let assembler = assemblers.next()?;
-    if assemblers.next().is_some() {
-        return None;
-    }
-    Some(format!("{assembler}.{short}"))
-}
-
+/// WHEN OBSOLETE: stage C of the identity lane, when extern signatures are
+/// stored `NominalId`-resolved at registration — the contract compare becomes
+/// plain ID equality and this spelling canonicalization is deleted with the
+/// `complete_prelude_std_owner` heuristic it rides on.
 fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
     fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
         match ty {
             Ty::Named { name, args, .. } => Ty::Named {
-                name: complete_prelude_std_owner(checker, name)
-                    .or_else(|| fold_peer_assembled_owner(checker, name))
-                    .unwrap_or_else(|| name.clone()),
+                name: complete_prelude_std_owner(checker, name).unwrap_or_else(|| name.clone()),
                 args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
                 // The builtin marker is checker metadata and can legitimately
                 // differ when one module spells that nominal through an import
@@ -9233,6 +9204,153 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
+    /// Whether the current module and `established_module` assemble at least
+    /// one common source file — read off the module graph, never off the two
+    /// owner spellings. A directory module and its directly-imported peer
+    /// submodule (`std.net.http` / `std.net.http.http_client`) share the peer
+    /// file, so a declaration in that file registering under both owners is
+    /// ONE declaration site.
+    fn extern_declaring_modules_share_source(&self, established_module: Option<&str>) -> bool {
+        let (Some(current), Some(established)) =
+            (self.current_module.as_deref(), established_module)
+        else {
+            return false;
+        };
+        if current == established {
+            return true;
+        }
+        let Some(current_sources) = self.module_source_paths.get(current) else {
+            return false;
+        };
+        self.module_source_paths
+            .get(established)
+            .is_some_and(|sources| {
+                sources
+                    .iter()
+                    .any(|source| current_sources.contains(source))
+            })
+    }
+
+    /// Resolve one extern declaration against the single-owner table
+    /// (rc1-F1 stage B): mint the symbol's contract, adopt the established
+    /// one when the declarations agree, or report the contract conflict.
+    fn resolve_extern_contract(
+        &mut self,
+        key: &str,
+        source_symbol: &str,
+        sig: &FnSig,
+        consuming_params: &[bool],
+        f: &hew_parser::ast::ExternFnDecl,
+    ) {
+        let declaration = crate::DefId::new(key.to_string());
+        if source_symbol.is_empty() {
+            // Template declarations (`#[extern_symbol("…{T}…")]`) have no
+            // call-independent symbol and therefore no symbol-keyed contract
+            // slot; they still register as extern declarations (call-target
+            // resolution, `unsafe` gating).
+            self.extern_table.mint(crate::extern_table::ExternContract {
+                owner: declaration,
+                symbol: String::new(),
+                params: sig.params.clone(),
+                return_type: sig.return_type.clone(),
+                consuming_params: consuming_params.to_vec(),
+                is_variadic: f.is_variadic,
+                span: f.span.clone(),
+                declaring_module: self.current_module.clone(),
+                adopting_modules: std::collections::BTreeSet::new(),
+            });
+            return;
+        }
+        let Some((established_id, established)) = self
+            .extern_table
+            .established(source_symbol)
+            .map(|(id, contract)| (id, contract.clone()))
+        else {
+            self.extern_table.mint(crate::extern_table::ExternContract {
+                owner: declaration,
+                symbol: source_symbol.to_string(),
+                params: sig.params.clone(),
+                return_type: sig.return_type.clone(),
+                consuming_params: consuming_params.to_vec(),
+                is_variadic: f.is_variadic,
+                span: f.span.clone(),
+                declaring_module: self.current_module.clone(),
+                adopting_modules: std::collections::BTreeSet::new(),
+            });
+            return;
+        };
+        // One source file assembled into two modules (a directory module and
+        // a directly-imported peer submodule) registers the SAME declaration
+        // twice. Recognized off the module graph — same declaring span,
+        // shared source file — it is one declaration site and one contract
+        // by construction; comparing its two assembly-context spellings
+        // would only chase owner-qualifier drift.
+        let same_site = established.span == f.span
+            && self.extern_declaring_modules_share_source(established.declaring_module.as_deref());
+        let agrees = same_site || {
+            let established_params = established
+                .params
+                .iter()
+                .map(|ty| extern_contract_type_identity(self, ty))
+                .collect::<Vec<_>>();
+            let candidate_params = sig
+                .params
+                .iter()
+                .map(|ty| extern_contract_type_identity(self, ty))
+                .collect::<Vec<_>>();
+            let established_return = extern_contract_type_identity(self, &established.return_type);
+            let candidate_return = extern_contract_type_identity(self, &sig.return_type);
+            established_params == candidate_params
+                && established_return == candidate_return
+                && established.consuming_params == consuming_params
+                && established.is_variadic == f.is_variadic
+        };
+        if agrees {
+            // Single-owner property: a further agreeing declaration becomes
+            // another name of the ONE established contract.
+            self.extern_table.adopt_declaration(
+                declaration,
+                self.current_module.clone(),
+                established_id,
+            );
+        } else {
+            let established_description = extern_signature_description(
+                &established.params,
+                &established.return_type,
+                &established.consuming_params,
+                established.is_variadic,
+            );
+            let conflicting = extern_signature_description(
+                &sig.params,
+                &sig.return_type,
+                consuming_params,
+                f.is_variadic,
+            );
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::ConflictingExternDeclaration {
+                    symbol_name: source_symbol.to_string(),
+                },
+                span: f.span.clone(),
+                message: format!(
+                    "extern symbol `{source_symbol}` has conflicting declarations: \
+                     `{conflicting}` does not match the established `{established_description}`"
+                ),
+                notes: vec![(
+                    established.span.clone(),
+                    format!(
+                        "the first declaration of `{source_symbol}` established `{established_description}`"
+                    ),
+                    established.declaring_module.clone(),
+                )],
+                suggestions: vec![format!(
+                    "make every declaration of `{source_symbol}` use exactly `{established_description}`"
+                )],
+                source_module: self.current_module.clone(),
+            });
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "extern registration validates ABI authority and records lifecycle provenance"
@@ -9341,97 +9459,19 @@ impl Checker {
                 .as_ref()
                 .filter(|spec| !spec.template.is_monomorphic())
                 .map(|spec| spec.template.clone());
-            let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
+            // rc1-F1 stage B: extern declarations mint their key through the
+            // canonical owner chokepoint, exactly like ordinary free
+            // functions — a root extern fn keys `{root_module}.{name}` inside
+            // the checker (the publication boundary re-renders root entries
+            // to their legacy bare spelling).
+            let key = scoped_module_item_name(self.canonical_fn_owner(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
             let consuming_params = f
                 .params
                 .iter()
                 .map(|param| param.is_consume)
                 .collect::<Vec<_>>();
-            if !source_symbol.is_empty() {
-                let conflict = self.source_extern_declarations.iter().find_map(|existing| {
-                    if existing.symbol != source_symbol || existing.symbol_template.is_some() {
-                        return None;
-                    }
-                    // Extern declarations are module-private. A bare
-                    // compatibility binding published while collecting an
-                    // unrelated module cannot turn that module's declaration
-                    // into an ABI contract visible here: the current module's
-                    // private declaration wins. Compare declarations within
-                    // one module, or across the direct import edge that makes
-                    // the established declaration visible to this module.
-                    let established_is_directly_imported =
-                        existing.declaring_module.as_ref().is_some_and(|module| {
-                            self.current_module_direct_imports.contains(module)
-                                || (!module.contains('.')
-                                    && self.current_module_direct_imports.iter().any(|imported| {
-                                        self.canonical_std_module_sources.contains(imported)
-                                            && imported.ends_with(&format!(".{module}"))
-                                    }))
-                        });
-                    let established_is_visible = existing.declaring_module == self.current_module
-                        || established_is_directly_imported;
-                    if !established_is_visible {
-                        return None;
-                    }
-                    let established = self.fn_sigs.get(&existing.signature_key)?;
-                    let established_params = established
-                        .params
-                        .iter()
-                        .map(|ty| extern_contract_type_identity(self, ty))
-                        .collect::<Vec<_>>();
-                    let candidate_params = sig
-                        .params
-                        .iter()
-                        .map(|ty| extern_contract_type_identity(self, ty))
-                        .collect::<Vec<_>>();
-                    let established_return =
-                        extern_contract_type_identity(self, &established.return_type);
-                    let candidate_return = extern_contract_type_identity(self, &sig.return_type);
-                    let disagrees = established_params != candidate_params
-                        || established_return != candidate_return
-                        || existing.consuming_params != consuming_params
-                        || existing.is_variadic != f.is_variadic;
-                    disagrees.then(|| {
-                        (
-                            existing.span.clone(),
-                            existing.declaring_module.clone(),
-                            extern_signature_description(
-                                established,
-                                &existing.consuming_params,
-                                existing.is_variadic,
-                            ),
-                            extern_signature_description(&sig, &consuming_params, f.is_variadic),
-                        )
-                    })
-                });
-                if let Some((established_span, established_module, established, conflicting)) =
-                    conflict
-                {
-                    self.errors.push(TypeError {
-                        severity: crate::error::Severity::Error,
-                        kind: TypeErrorKind::ConflictingExternDeclaration {
-                            symbol_name: source_symbol.clone(),
-                        },
-                        span: f.span.clone(),
-                        message: format!(
-                            "extern symbol `{source_symbol}` has conflicting declarations: \
-                             `{conflicting}` does not match the established `{established}`"
-                        ),
-                        notes: vec![(
-                            established_span,
-                            format!(
-                                "the first declaration of `{source_symbol}` established `{established}`"
-                            ),
-                            established_module,
-                        )],
-                        suggestions: vec![format!(
-                            "make every declaration of `{source_symbol}` use exactly `{established}`"
-                        )],
-                        source_module: self.current_module.clone(),
-                    });
-                }
-            }
+            self.resolve_extern_contract(&key, &source_symbol, &sig, &consuming_params, f);
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
@@ -9440,8 +9480,6 @@ impl Checker {
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
-                    span: f.span.clone(),
-                    is_variadic: f.is_variadic,
                     declaring_module: self.current_module.clone(),
                     direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params,
@@ -9459,7 +9497,6 @@ impl Checker {
                     })
                     .collect(),
             );
-            self.unsafe_functions.insert(key);
             self.record_root_value_binding(&f.name);
         }
 
@@ -9594,7 +9631,8 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
-            self.unsafe_functions.insert(key);
+            self.extern_table
+                .register_declaration_only(crate::DefId::new(key));
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -9611,7 +9649,8 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(send_key.clone(), sig);
-            self.unsafe_functions.insert(send_key);
+            self.extern_table
+                .register_declaration_only(crate::DefId::new(send_key));
         }
     }
 
@@ -9692,7 +9731,8 @@ impl Checker {
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.unsafe_functions.insert(func.name.clone());
+                        self.extern_table
+                            .register_declaration_only(crate::DefId::new(func.name.clone()));
                         self.fn_sigs.insert(func.name, sig);
                     }
 
@@ -9765,7 +9805,8 @@ impl Checker {
                             // canonical slot from the wrapper/extern registry.
                             self.fn_sigs.entry(key.clone()).or_insert(sig);
                             if !source_sig_exists && wrapper_sig.is_none() {
-                                self.unsafe_functions.insert(key);
+                                self.extern_table
+                                    .register_declaration_only(crate::DefId::new(key));
                             }
                         }
                     }

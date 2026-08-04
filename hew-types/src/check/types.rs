@@ -159,8 +159,6 @@ pub(super) struct SourceExternDeclaration {
     /// exact resolved expansion.
     pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
     pub(super) signature_key: String,
-    pub(super) span: Span,
-    pub(super) is_variadic: bool,
     pub(super) declaring_module: Option<String>,
     /// Exact direct module-graph targets imported by the declaring module.
     ///
@@ -399,6 +397,12 @@ pub struct TypeCheckOutput {
     /// [`crate::identity::IdentityTable::root_fn_identity`]; later stages key
     /// declaration registries by IDs minted here.
     pub identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B):
+    /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
+    /// minted at the first declaration; later declarations must agree and
+    /// adopt the established contract. Also the `unsafe`-gating declaration
+    /// index (replaces the former `unsafe_functions` side registry).
+    pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity.
     ///
     /// Key shapes: `{module}.{name}` for module free functions,
@@ -1284,6 +1288,7 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             identity: crate::identity::IdentityTable::new(),
+            extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -3123,6 +3128,13 @@ pub struct Checker {
     /// here — `identity.root_module_path()` — and is the authority the
     /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
     pub(super) identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B).
+    /// The ONE authority for extern symbol identity and `unsafe` gating:
+    /// contracts are minted at `register_extern_block`, contract-less extern
+    /// declarations (registry imports, layout-witness builtins) register as
+    /// declaration-only entries. Moved into
+    /// [`TypeCheckOutput::extern_contracts`] at publication.
+    pub(super) extern_table: crate::extern_table::ExternTable,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3192,16 +3204,6 @@ pub struct Checker {
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
-    /// Names of functions that require an unsafe block to call.
-    ///
-    /// rc1-F1 stage A classification: BARE-BY-DESIGN (for now) — this is an
-    /// EXTERN-only registry: every insert site is extern registration
-    /// (`register_extern_block` and the channel/layout-witness paths), and
-    /// user `fn` declarations never enter it. Extern identity is stage B's
-    /// single-owner `ExternTable`; re-keying this set is deferred to that
-    /// stage rather than half-canonicalizing it against a spelling-keyed
-    /// extern substrate here.
-    pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -3613,6 +3615,7 @@ impl Checker {
             task_scope_depth: 0,
             current_module: None,
             identity: crate::identity::IdentityTable::new(),
+            extern_table: crate::extern_table::ExternTable::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),
@@ -3628,7 +3631,6 @@ impl Checker {
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
-            unsafe_functions: HashSet::new(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,

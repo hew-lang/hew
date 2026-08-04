@@ -418,6 +418,10 @@ impl Checker {
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
         self.mint_module_identities(program);
+        // Fresh extern authority per compile (rc1-F1 stage B): contracts are
+        // minted by the registration passes below; a stale table would leak
+        // symbol ownership across `check_program` runs.
+        self.extern_table = crate::extern_table::ExternTable::new();
         // Record concrete stdlib source provenance once, before registration
         // manufactures any compiler-recognised carrier signatures. Module
         // spelling is not authority: a user package may imitate the legacy
@@ -1309,6 +1313,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity),
+            extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),

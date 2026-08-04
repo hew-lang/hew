@@ -4587,9 +4587,15 @@ impl Checker {
     }
 
     pub(super) fn require_unsafe(&mut self, name: &str, span: &Span) {
-        let scoped_unsafe = scoped_module_item_name(self.current_module.as_deref(), name)
-            .is_some_and(|qualified| self.unsafe_functions.contains(&qualified));
-        if !self.in_unsafe && (scoped_unsafe || self.unsafe_functions.contains(name)) {
+        // rc1-F1 stage B: `unsafe` gating is derived from the extern table's
+        // declaration index — a call requires `unsafe` exactly when its
+        // resolved declaration key names a registered extern declaration.
+        // The canonical-owner probe covers root extern declarations, which
+        // key `{root_module}.{name}` inside the checker while root call
+        // sites spell the bare leaf.
+        let scoped_unsafe = scoped_module_item_name(self.canonical_fn_owner(), name)
+            .is_some_and(|qualified| self.extern_table.requires_unsafe(&qualified));
+        if !self.in_unsafe && (scoped_unsafe || self.extern_table.requires_unsafe(name)) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

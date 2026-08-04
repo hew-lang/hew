@@ -789,10 +789,35 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
-    assert!(
-        output.errors.is_empty(),
-        "same-module private extern should win over another module's bare extern name; errors: {:?}",
+    // Single-owner extern identity (rc1-F1 stage B): one C symbol carries ONE
+    // contract program-wide, so beta's drifting re-declaration of alpha's
+    // symbol is a conflict — the linker binds both call sites to one
+    // implementation, and a second signature is an ABI hazard, not a private
+    // convenience. The original regression half still holds: alpha's body
+    // call resolves against alpha's own `-> i64` declaration (any resolution
+    // through beta's `-> string` copy would surface as an additional type
+    // mismatch alongside the conflict).
+    let (conflicts, other): (Vec<_>, Vec<_>) = output.errors.iter().partition(|error| {
+        matches!(
+            &error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                if symbol_name == "hew_test_raw"
+        )
+    });
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "one symbol, one contract: beta's drifting re-declaration must conflict; errors: {:?}",
         output.errors
+    );
+    assert_eq!(
+        conflicts[0].source_module.as_deref(),
+        Some("beta"),
+        "the conflict is reported at the re-declaring module"
+    );
+    assert!(
+        other.is_empty(),
+        "same-module private extern still wins body resolution; unexpected extra errors: {other:?}"
     );
 }
 

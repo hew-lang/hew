@@ -1111,22 +1111,25 @@ impl Checker {
         // declaration identity is semantic authority, while the validated ABI
         // symbol is the executable endpoint. Treating them as ordinary User
         // calls loses that endpoint and leaves MIR without a symbol mapping.
-        if let Some(extern_decl) = self
-            .source_extern_declarations
-            .iter()
-            .find(|declaration| declaration.signature_key == signature_key)
-        {
-            if extern_decl.symbol.is_empty() {
+        if let Some(contract) = self.extern_table.contract_for_declaration(signature_key) {
+            if contract.symbol.is_empty() {
                 return CallTarget::Unsupported {
                     reason: format!(
                         "generic extern declaration `{signature_key}` has no monomorphic endpoint"
                     ),
                 };
             }
+            // LEGACY ROOT RENDER (rc1-F1 stage B, mirrors stage A's fn_sigs
+            // publication): a root extern declaration is keyed canonically
+            // inside the checker but publishes its bare leaf, because HIR
+            // still resolves root declarations by source spelling.
+            // WHEN OBSOLETE: stage C/D re-key downstream consumers by DefId.
+            let owner = contract.owner.full_path();
+            let declaration = self.root_owned_fn_leaf(owner).unwrap_or(owner).to_string();
             return CallTarget::Extern {
-                declaration: crate::DefId::new(extern_decl.signature_key.clone()),
-                endpoint: extern_decl.symbol.clone(),
-                trusted_compiled_stdlib: extern_decl
+                declaration: crate::DefId::new(declaration),
+                endpoint: contract.symbol.clone(),
+                trusted_compiled_stdlib: contract
                     .declaring_module
                     .as_deref()
                     .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
@@ -1298,14 +1301,13 @@ impl Checker {
                     )
                 });
         let source_extern = self
-            .source_extern_declarations
-            .iter()
-            .find(|declaration| declaration.signature_key == signature_key)
-            .cloned();
+            .extern_table
+            .contract_for_declaration(signature_key)
+            .map(|contract| (contract.symbol.clone(), contract.declaring_module.clone()));
         let call_key = SpanKey::in_module(span, self.current_module_idx);
-        let exact_extern_symbol = source_extern.as_ref().and_then(|declaration| {
+        let exact_extern_symbol = source_extern.as_ref().and_then(|(symbol, _)| {
             sig.extern_symbol.as_ref().map_or_else(
-                || (!declaration.symbol.is_empty()).then(|| declaration.symbol.clone()),
+                || (!symbol.is_empty()).then(|| symbol.clone()),
                 |spec| {
                     if spec.template.is_monomorphic() {
                         Some(spec.template.raw.clone())
@@ -1339,7 +1341,7 @@ impl Checker {
                     arguments,
                 },
                 extern_symbol: exact_extern_symbol,
-                extern_declaring_module: source_extern.and_then(|decl| decl.declaring_module),
+                extern_declaring_module: source_extern.and_then(|(_, module)| module),
                 extern_param_count: sig.params.len(),
                 resolved_result_ty,
             },

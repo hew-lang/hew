@@ -9275,6 +9275,27 @@ impl Checker {
                     if existing.symbol != source_symbol || existing.symbol_template.is_some() {
                         return None;
                     }
+                    // Extern declarations are module-private. A bare
+                    // compatibility binding published while collecting an
+                    // unrelated module cannot turn that module's declaration
+                    // into an ABI contract visible here: the current module's
+                    // private declaration wins. Compare declarations within
+                    // one module, or across the direct import edge that makes
+                    // the established declaration visible to this module.
+                    let established_is_directly_imported =
+                        existing.declaring_module.as_ref().is_some_and(|module| {
+                            self.current_module_direct_imports.contains(module)
+                                || (!module.contains('.')
+                                    && self.current_module_direct_imports.iter().any(|imported| {
+                                        self.canonical_std_module_sources.contains(imported)
+                                            && crate::short_name(imported) == module
+                                    }))
+                        });
+                    let established_is_visible = existing.declaring_module == self.current_module
+                        || established_is_directly_imported;
+                    if !established_is_visible {
+                        return None;
+                    }
                     let established = self.fn_sigs.get(&existing.signature_key)?;
                     let established_params = established
                         .params

@@ -10088,6 +10088,114 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
 }
 
 #[test]
+fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "guarded_receive_parameter".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![ResolvedTy::Bytes],
+        locals: vec![ResolvedTy::Bytes, ResolvedTy::I64],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let guarded = ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::Bytes,
+        drop_fn: None,
+        kind: hew_mir::DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::Bytes,
+        },
+        guard: Some(Place::Local(1)),
+    };
+    let mut entry_cancel = guarded.clone();
+    entry_cancel.guard = None;
+
+    for entry_first in [true, false] {
+        let plans = if entry_first {
+            vec![
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+            ]
+        } else {
+            vec![
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+            ]
+        };
+        let elab = ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: plans,
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let descriptors = collect_helper_crash_cleanup_descriptors(
+            &raw,
+            Some(&elab),
+            false,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .expect("entry cancellation and guarded exits share one owner ritual");
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(
+            descriptors[0].descriptor, guarded,
+            "the guarded descriptor must drive crash-snapshot lifecycle"
+        );
+    }
+}
+
+#[test]
 fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
     use hew_mir::model::NeutralizeAuthority;
 

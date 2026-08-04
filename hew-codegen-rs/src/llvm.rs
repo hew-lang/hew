@@ -22077,6 +22077,22 @@ fn crash_cleanup_drop_requires_registration(drop: &ElabDrop) -> CodegenResult<bo
     Ok(true)
 }
 
+/// Compare the type-directed destructor authority independently of its
+/// path-local liveness predicate.
+///
+/// A receive parameter's function-entry cancellation plan is intentionally
+/// unconditional because that edge precedes the generated consume-flag
+/// initialisation in MIR. Later exit plans for the same owner carry the flag.
+/// Those plans still describe one destructor ritual and therefore one crash
+/// snapshot owner.
+fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.guard = None;
+    right.guard = None;
+    left == right
+}
+
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
@@ -22167,7 +22183,11 @@ fn collect_helper_crash_cleanup_descriptors(
     }
     let mut descriptors = Vec::<HelperCrashCleanupDescriptor>::new();
     let mut by_place = HashMap::<Place, usize>::new();
-    for (_, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+    let mut entry_cancel_unguarded = HashSet::<Place>::new();
+    let entry_block_id = func.blocks.first().map(|block| block.id);
+    for (exit, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+        let is_entry_cancel =
+            matches!(exit, ExitPath::Cancel { block } if Some(*block) == entry_block_id);
         for drop in &plan.drops {
             if !matches!(drop.place, Place::Local(_)) {
                 continue;
@@ -22208,8 +22228,17 @@ fn collect_helper_crash_cleanup_descriptors(
                 )));
             }
             if let Some(&index) = by_place.get(&drop.place) {
-                if descriptors[index].descriptor != *drop
-                    || descriptors[index].disposition != HelperCrashCleanupDisposition::Owned
+                let existing = &mut descriptors[index];
+                if existing.descriptor == *drop
+                    && existing.disposition == HelperCrashCleanupDisposition::Owned
+                {
+                    continue;
+                }
+                let current_is_entry_cancel = is_entry_cancel && drop.guard.is_none();
+                let existing_is_entry_cancel = entry_cancel_unguarded.contains(&drop.place)
+                    && existing.descriptor.guard.is_none();
+                if existing.disposition != HelperCrashCleanupDisposition::Owned
+                    || !helper_crash_cleanup_same_ritual(&existing.descriptor, drop)
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "ordinary helper crash snapshot for {:?} has conflicting \
@@ -22217,9 +22246,26 @@ fn collect_helper_crash_cleanup_descriptors(
                         drop.place
                     )));
                 }
+                match (existing.descriptor.guard, drop.guard) {
+                    (None, Some(_)) if existing_is_entry_cancel => {
+                        existing.descriptor = drop.clone();
+                        entry_cancel_unguarded.remove(&drop.place);
+                    }
+                    (Some(_), None) if current_is_entry_cancel => {}
+                    _ => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "ordinary helper crash snapshot for {:?} has conflicting \
+                             typed drop descriptors across exit plans",
+                            drop.place
+                        )));
+                    }
+                }
                 continue;
             }
             by_place.insert(drop.place, descriptors.len());
+            if is_entry_cancel && drop.guard.is_none() {
+                entry_cancel_unguarded.insert(drop.place);
+            }
             descriptors.push(HelperCrashCleanupDescriptor {
                 descriptor: drop.clone(),
                 disposition: HelperCrashCleanupDisposition::Owned,
@@ -23146,7 +23192,9 @@ fn emit_helper_crash_cleanup_retire_before_drop(
     let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&drop.place).cloned() else {
         return Ok(());
     };
-    if owner.descriptor != *drop {
+    let guard_is_compatible = owner.descriptor.guard == drop.guard
+        || (owner.descriptor.guard.is_some() && drop.guard.is_none());
+    if !guard_is_compatible || !helper_crash_cleanup_same_ritual(&owner.descriptor, drop) {
         return Err(CodegenError::FailClosed(format!(
             "ordinary helper cleanup descriptor drift at {:?}",
             drop.place

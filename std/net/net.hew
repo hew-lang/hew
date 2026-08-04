@@ -693,7 +693,7 @@ impl Connection {
         Err(AttachError::Refused)
     }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
-    fn into_stream_sink(consuming self) -> (Stream<bytes>, Sink<bytes>) {
+    fn into_stream_sink(consuming self) -> (Stream<bytes>, stream.Sink<bytes>) {
         unsafe {
             let pair = hew_tcp_stream_from_conn(self);
             let s = hew_stream_pair_stream_bytes(pair);

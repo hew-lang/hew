@@ -88,27 +88,76 @@ fn extern_signature_description(
 /// WHEN OBSOLETE: when prelude-resolved nominals carry their canonical owner at
 /// resolution, so nothing downstream ever sees a partial one.
 ///
-/// The trust gates are the same ones `canonical_nominal_name` uses: the owner
-/// must be a bare segment, exactly one canonical stdlib source may end in it
-/// (an ambiguous suffix proves nothing and is left alone), and the completed
-/// name must already be a known type.
+/// The trust gates are the same ones `canonical_nominal_name` uses. A partial
+/// owner must be one bare segment and identify exactly one canonical stdlib
+/// source. An owner-less name must not shadow a local declaration and must
+/// identify exactly one known type across the canonical stdlib sources. An
+/// ambiguous or unknown completion proves nothing and is left alone.
 fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
-    let (owner, short) = name.rsplit_once('.')?;
-    if owner.contains('.') {
+    if let Some((owner, short)) = name.rsplit_once('.') {
+        if owner.contains('.') {
+            return None;
+        }
+        let suffix = format!(".{owner}");
+        let mut sources = checker
+            .canonical_std_module_sources
+            .iter()
+            .filter(|source| source.ends_with(&suffix));
+        let full_owner = sources.next()?;
+        if sources.next().is_some() {
+            return None;
+        }
+        let completed = format!("{full_owner}.{short}");
+        return (checker.type_defs.contains_key(&completed)
+            || checker.known_types.contains(&completed))
+        .then_some(completed);
+    }
+
+    let shadows_local_declaration = checker.current_module.as_ref().map_or_else(
+        || checker.local_type_defs.contains(name),
+        |module| checker.type_defs.contains_key(&format!("{module}.{name}")),
+    );
+    if shadows_local_declaration {
         return None;
     }
-    let suffix = format!(".{owner}");
-    let mut sources = checker
+    let mut completions = checker
         .canonical_std_module_sources
         .iter()
-        .filter(|source| source.ends_with(&suffix));
-    let full_owner = sources.next()?;
-    if sources.next().is_some() {
-        return None;
+        .map(|source| format!("{source}.{name}"))
+        .filter(|completed| {
+            checker.type_defs.contains_key(completed) || checker.known_types.contains(completed)
+        });
+    let completed = completions.next()?;
+    completions.next().is_none().then_some(completed)
+}
+
+/// Carry a uniquely proven owner-less prelude nominal into the stored extern
+/// signature, not only the duplicate-contract comparison.
+///
+/// Leaving the accepted declaration bare would merely postpone the same
+/// identity loss until MIR/codegen, where a generic user nominal named `Sink`
+/// is not a legal runtime carrier. Partial owners already retain enough source
+/// identity for downstream canonicalisation; this rewrite is deliberately
+/// limited to owner-less names.
+fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
+    match ty {
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        } => Ty::Named {
+            name: (!name.contains('.'))
+                .then(|| complete_prelude_std_owner(checker, name))
+                .flatten()
+                .unwrap_or_else(|| name.clone()),
+            args: args
+                .iter()
+                .map(|arg| complete_ownerless_prelude_std_types(checker, arg))
+                .collect(),
+            builtin: *builtin,
+        },
+        _ => ty.map_children_pub(&|child| complete_ownerless_prelude_std_types(checker, child)),
     }
-    let completed = format!("{full_owner}.{short}");
-    (checker.type_defs.contains_key(&completed) || checker.known_types.contains(&completed))
-        .then_some(completed)
 }
 
 /// Fold a peer-assembled submodule owner into the directory module that also
@@ -5847,13 +5896,19 @@ impl Checker {
             Item::Actor(ad) => {
                 // Module actors are identified by their full dotted source
                 // owner (`{module_path}.{name}`); root actors stay bare.
-                // Registering the full declaration here
-                // (not only the signatures) covers PRIVATE module actors,
-                // which never pass through the pub-only import paths but
-                // still need a type def for in-module spawn checking.
+                // Registering the full declaration here (not only the
+                // signatures) covers PRIVATE module actors, which never pass
+                // through the pub-only import paths but still need a type def
+                // for in-module spawn checking. A root actor is normally
+                // already registered; restore it only if import registration
+                // replaced its bare compatibility slot with a non-actor type.
                 let module_identity = self.current_module.clone();
                 let identity = Self::actor_identity(module_identity.as_deref(), &ad.name);
-                if module_identity.is_some() {
+                let local_actor_needs_restore = self
+                    .type_defs
+                    .get(&identity)
+                    .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
+                if module_identity.is_some() || local_actor_needs_restore {
                     self.register_actor_decl_as(ad, &identity);
                 }
                 // The actor's own generics (`actor Worker<T>`) are in scope for
@@ -9241,13 +9296,19 @@ impl Checker {
                     TypeResolutionContext::ExternSignature,
                 )
             });
-            let sig = FnSig {
+            let mut sig = FnSig {
                 param_names,
                 params,
                 return_type,
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
+            sig.params = sig
+                .params
+                .iter()
+                .map(|ty| complete_ownerless_prelude_std_types(self, ty))
+                .collect();
+            sig.return_type = complete_ownerless_prelude_std_types(self, &sig.return_type);
             let source_symbol = sig.extern_symbol.as_ref().map_or_else(
                 || f.name.clone(),
                 |spec| {
@@ -9288,7 +9349,7 @@ impl Checker {
                                 || (!module.contains('.')
                                     && self.current_module_direct_imports.iter().any(|imported| {
                                         self.canonical_std_module_sources.contains(imported)
-                                            && crate::short_name(imported) == module
+                                            && imported.ends_with(&format!(".{module}"))
                                     }))
                         });
                     let established_is_visible = existing.declaring_module == self.current_module

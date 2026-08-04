@@ -3624,10 +3624,31 @@ impl Checker {
                     ..
                 },
             ) => {
+                // Qualified unit-variant identifier (`SplitMode::SplitWords`)
+                // under a known expected nominal: the expected type's resolved
+                // identity is the resolution authority for its own source-leaf
+                // qualifier, exactly as pattern position already resolves a
+                // qualified variant against its scrutinee's nominal
+                // (`variant_surface_owner_matches`). This is identity-based:
+                // the prefix must canonicalize to the expected declaration's
+                // exact nominal — a local/source declaration claims the bare
+                // spelling first and a foreign owner never folds in — so two
+                // same-leaf enums cannot merge here; a mismatched owner falls
+                // through to synthesize-and-diagnose.
+                let variant_after_owner = name
+                    .rsplit_once("::")
+                    .filter(|(prefix, _)| !prefix.contains('.'))
+                    .filter(|_| self.variant_surface_owner_matches(name, expected))
+                    .map(|(_, variant)| variant.to_string());
                 let is_unit_variant = self
                     .lookup_type_def(expected_type_name)
-                    .and_then(|td| td.variants.get(name.as_str()).cloned())
-                    .is_some_and(|v| matches!(v, VariantDef::Unit));
+                    .and_then(|td| {
+                        td.variants
+                            .get(variant_after_owner.as_deref().unwrap_or(name.as_str()))
+                            .cloned()
+                    })
+                    .is_some_and(|v| matches!(v, VariantDef::Unit))
+                    && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,

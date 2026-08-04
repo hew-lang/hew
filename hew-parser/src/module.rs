@@ -137,6 +137,16 @@ pub struct ModuleGraph {
     pub root: ModuleId,
     /// Topological order for processing (dependencies before dependents).
     pub topo_order: Vec<ModuleId>,
+    /// Per-item defining source file for each module, keyed by the module's
+    /// dotted path and parallel to that module's `items` vector. A directory
+    /// module assembles its primary file plus every peer `.hew` file; the
+    /// item spans stay file-relative byte offsets with no file identity of
+    /// their own, so this table is the only sound way to attribute an
+    /// assembled item to its declaring file. Absent entries (older callers,
+    /// hand-built graphs) mean "every item comes from the module's first
+    /// source path".
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub item_sources: HashMap<String, Vec<PathBuf>>,
 }
 
 impl ModuleGraph {
@@ -146,7 +156,16 @@ impl ModuleGraph {
             modules: HashMap::new(),
             root,
             topo_order: Vec::new(),
+            item_sources: HashMap::new(),
         }
+    }
+
+    /// The defining source file of `modules[id].items[item_idx]`, when
+    /// per-item attribution was recorded and disagrees are impossible: the
+    /// recorded vector must be parallel to the module's items.
+    #[must_use]
+    pub fn item_source(&self, id: &ModuleId, item_idx: usize) -> Option<&PathBuf> {
+        self.item_sources.get(&id.path.join("."))?.get(item_idx)
     }
 
     /// Insert a module into the graph.

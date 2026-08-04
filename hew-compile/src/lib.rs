@@ -433,6 +433,19 @@ fn build_module_source_map(program: &Program) -> ModuleSourceMap {
         if let Ok(text) = std::fs::read_to_string(path) {
             map.insert(mod_id.path.join("."), (text, path.display().to_string()));
         }
+        // Per-file routing entries (rc1-F1 stage C): a directory module's
+        // item spans are file-relative offsets, so the checker routes a
+        // diagnostic on a peer-file item by the file's own path token. Every
+        // source file of every module resolves under that token.
+        for path in &module.source_paths {
+            let key = path.display().to_string();
+            if map.contains_key(&key) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(path) {
+                map.insert(key.clone(), (text, key));
+            }
+        }
     }
     map
 }
@@ -996,6 +1009,16 @@ fn extract_module_info(
                 } else {
                     decl.resolved_source_paths.clone()
                 };
+                // Per-item file attribution for directory-assembled modules:
+                // `resolved_item_source_paths` is built parallel to the
+                // resolved items, so record it only when that parallelism
+                // holds (an absent entry means "first source path").
+                if decl.resolved_item_source_paths.len() == resolved.len() {
+                    graph.item_sources.insert(
+                        module_id.path.join("."),
+                        decl.resolved_item_source_paths.clone(),
+                    );
+                }
                 let module = Module {
                     id: module_id,
                     items: resolved.clone(),
@@ -3990,6 +4013,61 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             err.message.contains("warnings treated as errors"),
             "expected warnings-as-errors message, got: {}",
             err.message
+        );
+    }
+
+    /// A directory module's item spans are file-relative byte offsets, so a
+    /// diagnostic on a peer-file item must route to THAT file. Two peer files
+    /// declaring one C symbol with conflicting signatures: the error names
+    /// the peer file (`pkg/aaa.hew`), the note names the minting file
+    /// (`pkg/pkg.hew`) — never the peer's span rendered against the primary.
+    #[test]
+    fn extern_conflict_in_peer_file_routes_to_the_declaring_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let pkg_dir = dir.path().join("pkg");
+        fs::create_dir(&pkg_dir).expect("create pkg dir");
+        let main = write_source(
+            dir.path(),
+            "main.hew",
+            "import pkg;\n\nfn main() {\n    print(\"{pkg.a(\\\"x\\\")}\");\n}\n",
+        );
+        fs::write(
+            pkg_dir.join("pkg.hew"),
+            "extern \"C\" {\n    #[extern_symbol(hew_bytes_from_str)]\n    fn alpha(x: string) -> bytes;\n}\n\npub fn a(v: string) -> i64 { unsafe { alpha(v).len() } }\n",
+        )
+        .expect("write pkg.hew");
+        fs::write(
+            pkg_dir.join("aaa.hew"),
+            "extern \"C\" {\n    #[extern_symbol(hew_bytes_from_str)]\n    fn betaa(x: i64) -> bytes;\n}\n\npub fn b(v: i64) -> i64 { unsafe { betaa(v).len() } }\n",
+        )
+        .expect("write aaa.hew");
+
+        let err = check_file(&main, &FrontendOptions::default())
+            .expect_err("conflicting extern declarations must fail the check");
+        let conflict = err
+            .diagnostics
+            .iter()
+            .find(|d| match &d.kind {
+                FrontendDiagnosticKind::Type(t) => t.message.contains("conflicting declarations"),
+                _ => false,
+            })
+            .expect("conflict diagnostic present");
+        assert!(
+            conflict
+                .filename
+                .as_deref()
+                .is_some_and(|f| f.ends_with("aaa.hew")),
+            "conflict must route to the declaring peer file, got {:?}",
+            conflict.filename
+        );
+        assert!(
+            conflict
+                .note_sources
+                .first()
+                .and_then(|n| n.as_ref())
+                .is_some_and(|(_, f)| f.ends_with("pkg.hew")),
+            "note must route to the minting file, got {:?}",
+            conflict.note_sources.first()
         );
     }
 

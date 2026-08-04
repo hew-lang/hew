@@ -12,7 +12,7 @@
 #
 # Format: <test_function_name>  # <class>: <root cause>
 #
-# Total: 57 unique failing test function names.
+# Total: 45 unique failing test function names.
 
 # unresolved-module-type (31)
 test_collect_after_partial_advance  # unresolved-module-type: unresolved module-owned type at the import boundary
@@ -46,20 +46,6 @@ test_words_only_whitespace_returns_empty  # unresolved-module-type: unresolved m
 test_words_single_word  # unresolved-module-type: unresolved module-owned type at the import boundary
 test_words_tab_and_newline_as_separator  # unresolved-module-type: unresolved module-owned type at the import boundary
 test_words_two_words_single_space  # unresolved-module-type: unresolved module-owned type at the import boundary
-
-# ownership-move-diagnostic (12)
-test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowing  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_listener_close_surface_returns_unit  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_net_error_tcp_variants_are_distinct  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_net_error_windows_cancelled_variants  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_net_error_windows_wsa_variants  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_connect_bad_address_returns_err  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_connect_refused_returns_connection_refused  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_listen_address_in_use_returns_address_in_use  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_listen_returns_ok_on_available_port  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_read_delivers_payload_bytes_unchanged  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
-test_try_read_reports_an_orderly_eof_as_an_empty_success  # ownership-move-diagnostic: ownership move diagnostic on a std net fixture
 
 # extern-contract-conflict (12)
 test_http_listen_clears_the_detail_slot_on_success  # extern-contract-conflict: one C symbol resolves under two nominal owners

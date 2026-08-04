@@ -4568,14 +4568,17 @@ fn mir_checked_dump(source: &str) -> String {
 #[test]
 fn suspending_stream_recv_send_flip_in_execution_context() {
     let dump = mir_checked_dump(
+        // The stream externs are scaffolding for the suspend-lowering subject,
+        // so they must restate the shipped contract exactly: the pair handle is
+        // `stream.StreamPair`, not a private opaque, and the free consumes it.
+        // A private handle type or a borrowing free is a real contract
+        // disagreement and the checker rejects it.
         "import std::stream;\n\
-         #[opaque]\n\
-         type Pair {}\n\
          extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: Pair) -> Sink<bytes>;\n\
-         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
-         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
+         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
+         \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
+         \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
          \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
          }\n\
          actor Runner {\n\

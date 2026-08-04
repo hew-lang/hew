@@ -264,6 +264,11 @@
         "name": "AskError"
       },
       {
+        "id": "type:CrashInfo",
+        "kind": "record",
+        "name": "CrashInfo"
+      },
+      {
         "id": "type:HashMapIter",
         "kind": "record",
         "name": "HashMapIter"
@@ -317,6 +322,16 @@
         "id": "type:f64",
         "kind": "float",
         "name": "f64"
+      },
+      {
+        "id": "type:failure.CrashAction",
+        "kind": "enum",
+        "name": "failure.CrashAction"
+      },
+      {
+        "id": "type:failure.CrashInfo",
+        "kind": "record",
+        "name": "failure.CrashInfo"
       },
       {
         "id": "type:i64",
@@ -394,6 +409,16 @@
         "name": "std.builtins.VecIter"
       },
       {
+        "id": "type:std.failure.CrashAction",
+        "kind": "enum",
+        "name": "std.failure.CrashAction"
+      },
+      {
+        "id": "type:std.failure.CrashInfo",
+        "kind": "record",
+        "name": "std.failure.CrashInfo"
+      },
+      {
         "id": "type:std.text.regex.Pattern",
         "kind": "regex",
         "name": "std.text.regex.Pattern"
@@ -434,7 +459,7 @@
       }
     ]
   },
-  "package_id": "pkg:3c72948fbe402d70",
+  "package_id": "pkg:40bf506c68e019e9",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

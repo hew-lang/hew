@@ -27,6 +27,10 @@ env:
   # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
   # llvm-sys-221) build script. Must match ci.yml / setup-llvm action pins.
   LLVM_VERSION: "22.1.5"
+  # Pinned wasmtime release tag for full-windows's WASI provisioning step,
+  # matching ci.yml's single pin (see ci.yml's WASMTIME_VERSION comment for
+  # why it is pinned rather than resolved as "latest").
+  WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -290,10 +294,65 @@ jobs:
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
 
+      - name: Install WASI runner prerequisites
+        # This job runs the full workspace nextest, including hew-cli's
+        # WASI-dependent tests (eval_wasm_*, sort_merge_authority_runs_under_
+        # wasmtime, etc.), which require_wasi_runner() panics on hard-failing
+        # if wasmtime is unreachable. Windows had no equivalent of the Linux
+        # tarball / macOS brew install here — same class of gap ci.yml's
+        # build-and-test-windows job carried before it was fixed, and the same
+        # class the FreeBSD nightly was missing. Provision from the same
+        # pinned WASMTIME_VERSION ci.yml uses and prove it runs inside this
+        # step, not inside a test.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rustup target add wasm32-wasip1
+          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
+
+          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
+
+          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
+          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
+          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
+            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
+
+          & $wasmtimeExe --version
+          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
+
+          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
+          # link step shells out to it, so an unreachable wasm-ld is the same
+          # class of silent gap as a missing runtime.
+          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
+          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
+          & $wasmLd.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
+
+      - name: Build hew-runtime for wasm32-wasip1 (debug)
+        # The full workspace nextest below runs debug test binaries, and
+        # bootstrap_wasi_runner() builds this archive on demand when it is
+        # absent. Without a pre-build, every parallel nextest process races to
+        # cargo-build the same non-atomically written staticlib and wasm-ld
+        # intermittently fails to open it. Mirrors ci.yml's Windows job.
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+
+      - name: Build hew-std for wasm32-wasip1 (debug)
+        # Same race, same medicine: bootstrap_wasi_runner() also builds
+        # libhew_std.a on demand when it is missing.
+        run: cargo build -p hew-std --target wasm32-wasip1
+
       - name: Run Rust workspace tests
-        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
-        # that conflict with hew-runtime when both are linked into a
-        # test binary (duplicate symbol errors).
+        # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
+        # when both are linked into a test binary (duplicate symbol errors).
+        # hew-wasm is excluded on every platform (profile.ci's default-filter
+        # does the same) — the browser/tooling WASM surface has its own
+        # playground-wasm-build job.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-

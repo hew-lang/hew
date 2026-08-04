@@ -2607,3 +2607,101 @@ fn test_file_import_private_items_not_visible() {
         "private type must not be registered from file import"
     );
 }
+
+/// Harness for the qualified-variant-under-expected-nominal rule: a module
+/// `m` exporting `enum Mode` + `fn pick(m: Mode)`, checked from a root that
+/// reaches `Mode` only through the call's expected parameter type.
+fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
+    let module = hew_parser::parse(
+        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n",
+    );
+    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.as_slice() == ["m"] {
+                import.resolved_items = Some(module.program.items.clone());
+            }
+        }
+    }
+    let root_id = ModuleId::root();
+    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: m_id.clone(),
+            items: module.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add module m");
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root");
+    module_graph.topo_order = vec![m_id, root_id];
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    })
+}
+
+/// A qualified unit-variant expression (`Mode::A`) in a position whose
+/// expected type is the module-owned nominal resolves through that expected
+/// identity — mirroring pattern position — without requiring the bare name
+/// to be published by the plain `import`.
+#[test]
+fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected-nominal authority must resolve `Mode::A`; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A root-local enum with the same leaf claims the spelling: `Mode::A` then
+/// denotes the LOCAL nominal, which is distinct from `m.Mode` — the pairing
+/// stays a type mismatch (no false merge through the expected type).
+#[test]
+fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")),
+        "local `Mode` is a distinct nominal; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A wrong owner prefix (`Other::A`) is never folded into the expected
+/// nominal, even though the variant name matches.
+#[test]
+fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")),
+        "`Other` must not fold into `m.Mode`; errors: {:?}",
+        output.errors
+    );
+}

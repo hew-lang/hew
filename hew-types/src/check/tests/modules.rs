@@ -2501,3 +2501,118 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         }
     }
 }
+
+/// rc1-F1 stage A oracle — the fn-sig ROOT AXIS.
+///
+/// One source file must mint ONE fn-sig identity whether it is checked as
+/// the root compilation unit or reached through an import. Before stage A,
+/// the root compile registered `shared_helper` under the BARE key while an
+/// import registered `oracle_mod.shared_helper` — the same declaration had
+/// two identities depending on how the file was handed to the compiler.
+#[test]
+fn root_and_imported_compiles_mint_one_fn_sig_identity() {
+    let shared_helper = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        name: "shared_helper".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+        consumes_self: false,
+    };
+    let source = std::path::PathBuf::from("/hew-oracle-fixture/oracle_mod.hew");
+
+    // Import axis: the file participates as module `oracle_mod`.
+    let root_id = ModuleId::root();
+    let oracle_id = ModuleId::new(vec!["oracle_mod".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: oracle_id.clone(),
+        items: vec![(Item::Function(shared_helper.clone()), 0..10)],
+        imports: vec![],
+        source_paths: vec![source.clone()],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![oracle_id, root_id.clone()];
+    let import_program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut import_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let import_out = import_checker.check_program(&import_program);
+    assert!(
+        import_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        "import axis registers the canonical module-qualified identity"
+    );
+
+    // Root axis: the SAME file is the root compilation unit.
+    let mut root_mg = ModuleGraph::new(root_id.clone());
+    root_mg
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![source],
+            doc: None,
+        })
+        .unwrap();
+    root_mg.topo_order = vec![root_id];
+    let root_program = Program {
+        module_graph: Some(root_mg),
+        items: vec![(Item::Function(shared_helper), 0..10)],
+        module_doc: None,
+    };
+    let mut root_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let root_out = root_checker.check_program(&root_program);
+
+    // THE invariance: the root compile minted the declaration under the
+    // import-equal canonical identity (fails pre-stage-A: bare key only).
+    assert!(
+        root_checker
+            .fn_def_spans
+            .contains_key("oracle_mod.shared_helper"),
+        "root axis must mint the import-equal canonical declaration identity; keys: {:?}",
+        root_checker.fn_def_spans.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        root_out
+            .identity
+            .root_fn_identity("shared_helper")
+            .as_deref(),
+        Some("oracle_mod.shared_helper"),
+        "the identity table publishes the canonical root fn identity"
+    );
+    // Stage-A boundary render contract: published fn_sigs keeps the legacy
+    // bare spelling for root declarations (HIR/hew-analysis still resolve by
+    // source spelling). This assertion FLIPS to the canonical key when stage
+    // C/D re-key downstream consumers by DefId.
+    assert!(
+        root_out.fn_sigs.contains_key("shared_helper"),
+        "stage-A publication renders the root declaration to its bare leaf"
+    );
+    assert!(
+        !root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        "the canonical key must not publish as a SECOND authority beside the render"
+    );
+}

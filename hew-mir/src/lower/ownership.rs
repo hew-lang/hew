@@ -529,7 +529,17 @@ impl Builder {
         }
         match &fact.relation {
             HirProducedValueRelation::Identity(source) => {
-                self.transfer_identity_owner(expr.site, Some(*source), place);
+                // `Identity` records value flow, not ownership by itself. A
+                // borrowed block/scope tail is commonly secured into a fresh
+                // branch-local MIR slot before the join; moving the source
+                // owner's drop authority to that slot would schedule a drop
+                // on sibling paths where the slot was never initialised. Only
+                // the checker-authoritative Owned verdict licenses the owner
+                // transfer. Borrowed / NoOwner / Unknown identities preserve
+                // their existing source authority (or lack of one).
+                if matches!(fact.ownership, ProducedValueOwnership::Owned { .. }) {
+                    self.transfer_identity_owner(expr.site, Some(*source), place);
+                }
                 return;
             }
             HirProducedValueRelation::Join(_) => {
@@ -4773,6 +4783,54 @@ mod typed_produced_owner_tests {
             builder.binding_scope[&binding], builder.loop_back_edge_blocks[&7],
             "the loop back-edge must not select an outer owner for per-iteration release"
         );
+    }
+
+    #[test]
+    fn borrowed_identity_keeps_the_source_owner_on_its_dominating_place() {
+        let source_site = SiteId(712);
+        let result_site = SiteId(713);
+        let source = owned_resource(source_site);
+        let mut result = owned_resource(result_site);
+        result.intent = IntentKind::Read;
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            source_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        facts.produced_value_facts.insert(
+            result_site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Block,
+                ownership: ProducedValueOwnership::Borrowed,
+                relation: hew_hir::HirProducedValueRelation::Identity(source_site),
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            ..Builder::default()
+        };
+        let source_place = Place::Local(18);
+        let branch_local_place = Place::Local(19);
+        builder.adopt_typed_produced_value_owner(&source, source_place);
+        builder
+            .published_value_places
+            .insert(source_site, source_place);
+
+        builder.adopt_typed_produced_value_owner(&result, branch_local_place);
+
+        assert_eq!(builder.owned_locals_ledger().len(), 1);
+        let binding = builder.owned_locals[0].binding;
+        assert_eq!(builder.binding_locals[&binding], source_place);
     }
 
     #[test]

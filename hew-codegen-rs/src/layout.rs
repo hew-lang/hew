@@ -3466,6 +3466,14 @@ pub(crate) fn lower_bool_vec_direct_call(
         _ => unreachable!("matched above"),
     }
 
+    // Every destination-producing arm above has now published its complete
+    // scalar or owned collection value. The caller deactivated any prior
+    // generation before entering this specialised emitter; rearm the one new
+    // generation before control reaches `next`.
+    if let Some(dest_place) = dest {
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    }
+
     let next_bb = *fn_ctx
         .blocks
         .get(&next)

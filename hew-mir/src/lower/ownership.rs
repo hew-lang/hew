@@ -475,6 +475,18 @@ impl Builder {
     )]
     pub(crate) fn adopt_typed_produced_value_owner(&mut self, expr: &HirExpr, place: Place) {
         let expected_ty = self.subst_ty(&expr.ty);
+        if self
+            .vec_iter_cursor_release_protocol(&expected_ty)
+            .is_some()
+        {
+            // VecIter owns only its field-0 snapshot, and its path-sensitive
+            // sidecar is the sole mint/discharge authority for that field.
+            // Registering the whole produced value here would add a competing
+            // RecordInPlace owner to normal exits while abandonment exits use
+            // VecIterCursor, yielding two incompatible teardown rituals for
+            // the same local.
+            return;
+        }
         if matches!(
             place,
             Place::DuplexHandle(_)
@@ -4459,7 +4471,7 @@ mod typed_produced_owner_tests {
         HirExpr, HirExprKind, HirLiteral, HirNodeId, HirProducedValueFact,
         HirProducedValueProducer, IntentKind, ScopeId, ValueClass,
     };
-    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+    use hew_types::{BuiltinType, ProducedValueAcquisition, ProducedValueOwnership};
 
     fn owned_resource(site: SiteId) -> HirExpr {
         HirExpr {
@@ -4831,6 +4843,42 @@ mod typed_produced_owner_tests {
         assert_eq!(builder.owned_locals_ledger().len(), 1);
         let binding = builder.owned_locals[0].binding;
         assert_eq!(builder.binding_locals[&binding], source_place);
+    }
+
+    #[test]
+    fn typed_vec_iter_publication_defers_to_the_cursor_sidecar() {
+        let site = SiteId(714);
+        let ty = ResolvedTy::named_builtin(
+            BuiltinType::VecIter.canonical_name(),
+            BuiltinType::VecIter,
+            vec![ResolvedTy::I64],
+        );
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Call,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        let mut builder = Builder {
+            param_ownership: Rc::new(facts),
+            locals: vec![ty.clone()],
+            ..Builder::default()
+        };
+        let expr = HirExpr {
+            site,
+            ty,
+            ..owned_resource(site)
+        };
+
+        builder.adopt_typed_produced_value_owner(&expr, Place::Local(0));
+
+        assert!(builder.owned_locals_ledger().is_empty());
     }
 
     #[test]

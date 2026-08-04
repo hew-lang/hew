@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::process::Command;
 
 use tempfile::tempdir;
@@ -128,6 +129,86 @@ fn llvm_blocks(function: &str) -> Vec<&str> {
     blocks
 }
 
+fn drop_plan_sections(function: &str) -> Vec<Vec<&str>> {
+    let mut sections = Vec::new();
+    for line in function.lines() {
+        let is_header =
+            line.starts_with("    ") && !line.starts_with("      ") && line.contains("] ->");
+        if is_header {
+            sections.push(vec![line.trim()]);
+        } else if let Some(section) = sections.last_mut() {
+            if line.starts_with("      ") {
+                section.push(line.trim());
+            }
+        }
+    }
+    sections
+}
+
+fn plan_header<'a>(section: &'a [&'a str]) -> &'a str {
+    section.first().copied().unwrap_or_default()
+}
+
+fn mir_plan_edges(header: &str) -> Vec<(String, String)> {
+    let Some((_, tail)) = header.split_once('[') else {
+        return Vec::new();
+    };
+    let Some((inside, _)) = tail.split_once(']') else {
+        return Vec::new();
+    };
+    if header.starts_with("goto[") {
+        return inside
+            .split_once("->")
+            .map(|(from, to)| vec![(from.to_owned(), to.to_owned())])
+            .unwrap_or_default();
+    }
+    if header.starts_with("branch[") {
+        let Some((from, targets)) = inside.split_once(": ") else {
+            return Vec::new();
+        };
+        return targets
+            .split('/')
+            .map(|to| (from.to_owned(), to.to_owned()))
+            .collect();
+    }
+    if header.starts_with("call[") {
+        let Some((from, rest)) = inside.split_once(' ') else {
+            return Vec::new();
+        };
+        return rest
+            .rsplit_once(" -> ")
+            .map(|(_, to)| vec![(from.to_owned(), to.to_owned())])
+            .unwrap_or_default();
+    }
+    Vec::new()
+}
+
+fn mir_plan_source(header: &str) -> Option<&str> {
+    let (_, tail) = header.split_once('[')?;
+    let (inside, _) = tail.split_once(']')?;
+    inside
+        .split_once([' ', ':', '-', ']'])
+        .map_or(Some(inside), |(source, _)| Some(source))
+}
+
+fn mir_reachable(sections: &[Vec<&str>], root: &str) -> BTreeSet<String> {
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (from, to) in sections
+        .iter()
+        .flat_map(|section| mir_plan_edges(plan_header(section)))
+    {
+        edges.entry(from).or_default().push(to);
+    }
+    let mut reachable = BTreeSet::new();
+    let mut pending = VecDeque::from([root.to_owned()]);
+    while let Some(block) = pending.pop_front() {
+        if reachable.insert(block.clone()) {
+            pending.extend(edges.get(&block).into_iter().flatten().cloned());
+        }
+    }
+    reachable
+}
+
 #[test]
 fn llvm_function_slicing_preserves_crlf_and_finds_logical_blocks() {
     let llvm = concat!(
@@ -201,13 +282,41 @@ fn returned_result_branch_releases_only_the_nonreturned_string_sibling() {
         sibling_drops, 2,
         "each return arm must drop exactly its non-returned sibling:\n{choose}"
     );
-    assert!(
-        choose.contains("goto[bb5->bb7] ->\n      drop ")
-            && choose.contains("goto[bb6->bb7] ->\n      drop "),
-        "the drops must be attached to the two arm-to-join exits, not the common return:\n{choose}"
+    let sections = drop_plan_sections(choose);
+    let return_section = sections
+        .iter()
+        .find(|section| plan_header(section).starts_with("return["))
+        .expect("choose must have a return drop plan");
+    let return_block = plan_header(return_section)
+        .strip_prefix("return[")
+        .and_then(|tail| tail.split(']').next())
+        .expect("return plan must name its MIR block");
+    let arm_exits: Vec<_> = sections
+        .iter()
+        .filter(|section| {
+            let header = plan_header(section);
+            header.starts_with("goto[") && header.contains(&format!("->{return_block}]"))
+        })
+        .collect();
+    assert_eq!(
+        arm_exits.len(),
+        2,
+        "both branch arms must flow into the shared return block:\n{choose}"
     );
     assert!(
-        choose.contains("return[bb7] ->\n      (none)"),
+        arm_exits.iter().all(|section| {
+            section
+                .iter()
+                .filter(|line| line.contains("kind=cow_heap(hew_string_drop)"))
+                .count()
+                == 1
+        }),
+        "each arm-to-join exit must release exactly its non-returned sibling:\n{choose}"
+    );
+    assert!(
+        return_section.len() == 2
+            && plan_header(return_section) == format!("return[{return_block}] ->")
+            && return_section[1] == "(none)",
         "the joined return owns neither branch-local sibling:\n{choose}"
     );
 }
@@ -272,6 +381,8 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
+            "--dump-mir",
+            "elab",
             "--emit-dir",
             emit_dir.to_str().expect("emit directory path is UTF-8"),
             source.to_str().expect("fixture path is UTF-8"),
@@ -285,31 +396,29 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
         describe_output(&output)
     );
 
-    let llvm = std::fs::read_to_string(emit_dir.join("cancelled_result.ll"))
-        .expect("read emitted LLVM IR");
-    let resolve = llvm_function(&llvm, "Driver__recv__resolve");
-    let blocks = llvm_blocks(resolve);
-    let normal_index_releases: Vec<_> = blocks
+    let dump = String::from_utf8(output.stdout).expect("MIR dump is UTF-8");
+    let resolve = function_dump(&dump, "Driver__recv__resolve");
+    let sections = drop_plan_sections(resolve);
+    let index_release = |section: &&Vec<&str>| {
+        section
+            .iter()
+            .any(|line| line.contains("drop _7 ty=string"))
+    };
+    let normal_index_releases: Vec<_> = sections
         .iter()
-        .copied()
-        .filter(|block| {
-            block.trim_start().starts_with("after_cooperate")
-                && block.contains("call void @hew_string_drop")
-                && block.contains("ptr %local_7")
-        })
+        .enumerate()
+        .filter(|(_, section)| plan_header(section).starts_with("goto[") && index_release(section))
         .collect();
     assert_eq!(
         normal_index_releases.len(),
         1,
         "the scope-closing Goto must have one normal release authority for index:\n{resolve}"
     );
-    let index_cancellation_blocks: Vec<_> = blocks
+    let index_cancellation_blocks: Vec<_> = sections
         .iter()
-        .copied()
-        .filter(|block| {
-            block.trim_start().starts_with("cancel_exit")
-                && block.contains("call void @hew_string_drop")
-                && block.contains("ptr %local_7")
+        .enumerate()
+        .filter(|(_, section)| {
+            plan_header(section).starts_with("cancel[") && index_release(section)
         })
         .collect();
     assert_eq!(
@@ -317,20 +426,30 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
         2,
         "only cancellation paths that bypass the normal Goto may release index:\n{resolve}"
     );
+    let normal_release_header = plan_header(normal_index_releases[0].1);
+    let normal_release_target = normal_release_header
+        .split_once("->")
+        .and_then(|(_, tail)| tail.split(']').next())
+        .expect("normal index release must be a Goto with a target");
+    let after_normal_release = mir_reachable(&sections, normal_release_target);
+    let later_cancellations: Vec<_> = sections
+        .iter()
+        .filter(|section| {
+            let header = plan_header(section);
+            header.starts_with("cancel[")
+                && mir_plan_source(header)
+                    .is_some_and(|source| after_normal_release.contains(source))
+        })
+        .collect();
     assert!(
-        index_cancellation_blocks.iter().all(|block| {
-            block.trim_start().starts_with("cancel_exit9")
-                || block.trim_start().starts_with("cancel_exit22")
-        }),
-        "the retained index releases must belong to cancellation paths that run \
-         before the normal Goto:\n{index_cancellation_blocks:#?}"
-    );
-    assert!(
-        blocks
+        index_cancellation_blocks
             .iter()
-            .copied()
-            .find(|block| block.trim_start().starts_with("cancel_exit36"))
-            .is_some_and(|block| !block.contains("ptr %local_7")),
+            .all(|(_, section)| mir_plan_source(plan_header(section))
+                .is_some_and(|source| !after_normal_release.contains(source)))
+            && !later_cancellations.is_empty()
+            && later_cancellations
+                .iter()
+                .all(|section| !index_release(section)),
         "the later loop cancellation must not duplicate the index release after \
          the normal Goto:\n{resolve}"
     );

@@ -1,0 +1,68 @@
+// Consuming a resource once on every path through a branch is legal. The arms
+// of a match, an if/else, an else-if chain and an if-let are alternative
+// executions, so one arm's consume must not make the binding look consumed in
+// its siblings.
+//
+// The close body prints, so stdout is the drop oracle: every call prints its
+// handle exactly once. A missed close prints nothing; a double close prints
+// twice. Each function is called down both of its paths.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {
+        print(self.fd);
+        println(" closed");
+    }
+}
+
+fn close_in_match_arms(r: Result<i64, string>) {
+    let held = Conn { fd: 1 };
+    match r {
+        Ok(_) => { held.close(); },
+        Err(_) => { held.close(); },
+    }
+}
+
+fn close_in_if_arms(x: bool) {
+    let held = Conn { fd: 2 };
+    if x {
+        held.close();
+    } else {
+        held.close();
+    }
+}
+
+fn close_in_else_if_chain(n: i64) {
+    let held = Conn { fd: 3 };
+    if n == 0 {
+        held.close();
+    } else if n == 1 {
+        held.close();
+    } else {
+        held.close();
+    }
+}
+
+fn close_in_if_let_arms(o: Option<i64>) {
+    let held = Conn { fd: 4 };
+    if let Some(_v) = o {
+        held.close();
+    } else {
+        held.close();
+    }
+}
+
+fn main() {
+    close_in_match_arms(Ok(1));
+    close_in_match_arms(Err("boom"));
+    close_in_if_arms(true);
+    close_in_if_arms(false);
+    close_in_else_if_chain(0);
+    close_in_else_if_chain(1);
+    close_in_else_if_chain(9);
+    close_in_if_let_arms(Some(5));
+    close_in_if_let_arms(None);
+}

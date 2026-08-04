@@ -1,0 +1,34 @@
+// A `break` arm diverges out of the branch but rejoins after the loop, so its
+// consume DOES reach the code below the loop. The env checker excludes every
+// diverging arm from the join it sits in and does not model the loop-exit
+// edge, so this rejection belongs to the checked-MIR dataflow pass
+// (`E_MIR_CHECK: UseAfterConsume`).
+//
+// The fixture exists to prove the backstop actually covers the escape edge the
+// env layer gives up on.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+fn break_escape(n: i64) -> i64 {
+    let held = Conn { fd: 1 };
+    for i in 0..3 {
+        if i == n {
+            let _ = held.detach();
+            break;
+        }
+    }
+    held.detach()
+}
+
+fn main() {
+    print(break_escape(1));
+}

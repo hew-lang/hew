@@ -22093,6 +22093,40 @@ fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
     left == right
 }
 
+/// Whether a specialised `Terminator::Call` emitter brackets its destination
+/// publication with the same deactivate/arm lifecycle as the generic call
+/// tail.
+///
+/// Keep this as the single admission authority shared by descriptor
+/// collection and the lowering-time fail-closed check. A destination must not
+/// enter this catalog until its specialised emitter publishes only a complete
+/// value before rearming cleanup.
+fn call_destination_has_specialized_crash_cleanup_lifecycle(
+    authority: hew_mir::CallAuthority,
+) -> bool {
+    use hew_types::runtime_call::{RuntimeCallAbiShape as Shape, RuntimeCallFamily as Family};
+
+    match authority {
+        hew_mir::CallAuthority::Runtime(family) => {
+            matches!(
+                family,
+                Family::VecGet(hew_types::runtime_call::VecGetElem::Clone)
+            ) || matches!(
+                family.abi_shape(),
+                Shape::HashCollectionLayoutOp | Shape::HashMapLayoutGet
+            )
+        }
+        hew_mir::CallAuthority::Compiler(
+            hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+            | hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex
+            | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
+        ) => true,
+        hew_mir::CallAuthority::Direct
+        | hew_mir::CallAuthority::Extern
+        | hew_mir::CallAuthority::Compiler(_) => false,
+    }
+}
+
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
@@ -22136,28 +22170,13 @@ fn collect_helper_crash_cleanup_descriptors(
                 authority,
                 hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern
             ) && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
-                || matches!(
-                    authority,
-                    hew_mir::CallAuthority::Runtime(
-                        hew_types::runtime_call::RuntimeCallFamily::VecGet(
-                            hew_types::runtime_call::VecGetElem::Clone
-                        )
-                    )
-                ) =>
+                || call_destination_has_specialized_crash_cleanup_lifecycle(*authority) =>
             {
                 supported_producers.extend(terminator_writes);
             }
-            Terminator::Call {
-                authority:
-                    hew_mir::CallAuthority::Compiler(
-                        hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
-                        | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout,
-                    ),
-                ..
-            } => {
-                // Both compiler intercepts complete an owned Option in-place,
-                // converge their Some/None edges, and arm crash cleanup only
-                // after the tag and optional payload are fully initialized.
+            Terminator::Ask { .. } | Terminator::RemoteAsk { .. } => {
+                // Ask emitters converge their success/failure paths only after
+                // publishing complete Result, reply, and error destinations.
                 supported_producers.extend(terminator_writes);
             }
             Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
@@ -22202,8 +22221,8 @@ fn collect_helper_crash_cleanup_descriptors(
                      whole-slot instruction writes, completed enum/machine \
                      aggregate construction, collapsed-suspend ready \
                      destinations, select/join bindings, compiler-owned handle \
-                     constructors, generic Real-call destinations, and Vec clone \
-                     destinations",
+                     constructors, ask results, generic Real-call destinations, \
+                     and lifecycle-instrumented collection destinations",
                     drop.place, drop.ty
                 )));
             }
@@ -28725,6 +28744,7 @@ fn call_bypasses_crash_cleanup_common_tail(
             if !matches!(
                 kind,
                 hew_mir::CompilerCallKind::HashMapGetCloneLayoutOption
+                    | hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex
                     | hew_mir::CompilerCallKind::HashMapRemoveTakeLayout
             )
     );
@@ -29136,6 +29156,7 @@ fn lower_terminator<'ctx>(
             if let Some(dest) = dest {
                 if fn_ctx.helper_crash_cleanup_owners.contains_key(dest)
                     && call_bypasses_crash_cleanup_common_tail(*authority)?
+                    && !call_destination_has_specialized_crash_cleanup_lifecycle(*authority)
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "typed crash cleanup for call destination {dest:?} cannot \

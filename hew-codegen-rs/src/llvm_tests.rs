@@ -10357,6 +10357,81 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             true,
         ),
         (
+            "HashMap index initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_get_clone_layout".to_string(),
+                authority: hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "HashMap clone initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_clone_layout".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapCloneLayout,
+                ),
+                args: vec![Place::Local(1)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "HashMap get initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_get_layout".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapGetLayout,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "actor ask Result publication",
+            Terminator::Ask {
+                actor: Place::Local(1),
+                stable_role: None,
+                msg_type: 0,
+                value: Place::Local(2),
+                arg_modes: vec![],
+                cleanup_plan: None,
+                result_dest: Place::Local(0),
+                reply_dest: Place::Local(3),
+                error_dest: Place::Local(4),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "remote ask Result publication",
+            Terminator::RemoteAsk {
+                actor: Place::Local(1),
+                msg_type: 0,
+                value: Place::Local(2),
+                timeout_ms: Place::Local(3),
+                result_dest: Place::Local(0),
+                reply_dest: Place::Local(4),
+                error_dest: Place::Local(5),
+                reply_ty: ResolvedTy::String,
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
             "shared select winner tail",
             Terminator::Select {
                 arms: vec![SelectArm {

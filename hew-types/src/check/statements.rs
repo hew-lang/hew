@@ -1,3 +1,4 @@
+use super::branch_join::BranchArmExit;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -393,6 +394,63 @@ impl Checker {
         ty
     }
 
+    /// Check a statement-position `if` chain whose value is discarded, keeping
+    /// each arm's ownership state separate and joining them at the end.
+    ///
+    /// Returns whether every path through the chain diverges, which is what the
+    /// recursion needs to classify an `else if` link as a non-reaching arm.
+    fn check_discarded_if_chain(
+        &mut self,
+        condition: &Spanned<Expr>,
+        then_block: &Block,
+        else_block: Option<&hew_parser::ast::ElseBlock>,
+    ) -> bool {
+        self.check_against(&condition.0, &condition.1, &Ty::Bool);
+        let entry = self.env.ownership_snapshot();
+        let then_ty = self.check_block(then_block, None);
+        let then_exit = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: matches!(then_ty, Ty::Never),
+        };
+        let then_diverges = then_exit.diverges;
+        let Some(eb) = else_block else {
+            self.join_fall_through(&entry, then_exit);
+            return false;
+        };
+        self.env.restore_ownership(&entry);
+        let else_diverges = if let Some(if_stmt) = &eb.if_stmt {
+            if let Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } = &if_stmt.0
+            {
+                self.check_discarded_if_chain(condition, then_block, else_block.as_ref())
+            } else {
+                self.check_stmt(&if_stmt.0, &if_stmt.1);
+                false
+            }
+        } else if let Some(block) = &eb.block {
+            matches!(self.check_block(block, None), Ty::Never)
+        } else {
+            // `else` with neither a block nor a chained `if`: nothing runs on
+            // that path, so it is the implicit fall-through.
+            self.join_fall_through(&entry, then_exit);
+            return false;
+        };
+        self.join_branch_ownership(
+            &entry,
+            &[
+                then_exit,
+                BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: else_diverges,
+                },
+            ],
+        );
+        then_diverges && else_diverges
+    }
+
     /// Type-check the operand of a `return` against the enclosing function's
     /// declared return type.
     ///
@@ -466,18 +524,32 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_block(then_block, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: matches!(then_ty, Ty::Never),
+                };
+                // An `else if` link is itself a two-way branch, so recursing
+                // gives the chain its join for free: each link restores to its
+                // own entry, which is this arm's restored state.
                 if let Some(eb) = else_block {
                     if let Some(ref if_stmt) = eb.if_stmt {
+                        self.env.restore_ownership(&entry);
                         let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
+                        self.join_two_way(&entry, then_exit, &else_ty);
                         self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
                     } else if let Some(block) = &eb.block {
+                        self.env.restore_ownership(&entry);
                         let else_ty = self.check_block(block, expected);
+                        self.join_two_way(&entry, then_exit, &else_ty);
                         self.unify_branches(&then_ty, &else_ty, span)
                     } else {
+                        self.join_fall_through(&entry, then_exit);
                         Ty::Unit
                     }
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -491,6 +563,7 @@ impl Checker {
                 if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
                     return Ty::Error;
                 }
+                let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 // Record the pattern resolution so HIR lowering can consume
@@ -498,11 +571,18 @@ impl Checker {
                 // `WhileLet` and `Match` lowering.
                 self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 let then_ty = self.check_block(body, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: matches!(then_ty, Ty::Never),
+                };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
+                    self.env.restore_ownership(&entry);
                     let else_ty = self.check_block(block, expected);
+                    self.join_two_way(&entry, then_exit, &else_ty);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -905,7 +985,25 @@ impl Checker {
                             // `while let`. Without this the let-else lowering
                             // finds no resolution and fails closed.
                             self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
+                            // The else block is the failure arm of a two-way
+                            // branch whose success arm is the binding path that
+                            // continues below. It must diverge, so whatever it
+                            // consumes never reaches that path.
+                            let entry = self.env.ownership_snapshot();
                             let else_ty = self.check_block(else_blk, None);
+                            self.join_branch_ownership(
+                                &entry,
+                                &[
+                                    BranchArmExit {
+                                        ownership: entry.clone(),
+                                        diverges: false,
+                                    },
+                                    BranchArmExit {
+                                        ownership: self.env.ownership_snapshot(),
+                                        diverges: matches!(else_ty, Ty::Never),
+                                    },
+                                ],
+                            );
                             if !matches!(else_ty, Ty::Never)
                                 && !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error)
                             {
@@ -1263,15 +1361,7 @@ impl Checker {
                 then_block,
                 else_block,
             } => {
-                self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                self.check_block(then_block, None);
-                if let Some(eb) = else_block {
-                    if let Some(ref if_stmt) = eb.if_stmt {
-                        self.check_stmt(&if_stmt.0, &if_stmt.1);
-                    } else if let Some(block) = &eb.block {
-                        self.check_block(block, None);
-                    }
-                }
+                self.check_discarded_if_chain(condition, then_block, else_block.as_ref());
             }
             Stmt::IfLet {
                 pattern,
@@ -1283,6 +1373,7 @@ impl Checker {
                 if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
                     return;
                 }
+                let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 // Record the pattern resolution so HIR lowering can consume
@@ -1291,10 +1382,18 @@ impl Checker {
                 // cannot resolve the constructor's `(type_name, variant_name)`
                 // identity or payload-binding field indices for `if-let`.
                 self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
-                self.check_block(body, None);
+                let then_ty = self.check_block(body, None);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: matches!(then_ty, Ty::Never),
+                };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
-                    self.check_block(block, None);
+                    self.env.restore_ownership(&entry);
+                    let else_ty = self.check_block(block, None);
+                    self.join_two_way(&entry, then_exit, &else_ty);
+                } else {
+                    self.join_fall_through(&entry, then_exit);
                 }
             }
             Stmt::Return(value) => {

@@ -344,11 +344,25 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: matches!(then_ty, Ty::Never),
+                };
                 if let Some(eb) = else_block {
+                    self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&eb.0, &eb.1);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: matches!(else_ty, Ty::Never),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    // No `else`: the implicit fall-through arm runs with the
+                    // state the condition left behind and never consumes.
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -1056,6 +1070,7 @@ impl Checker {
         if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
             return Ty::Error;
         }
+        let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
         // Record the pattern resolution so HIR lowering can consume
@@ -1063,11 +1078,22 @@ impl Checker {
         // `WhileLet` and `Match` lowering.
         self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
         let then_ty = self.check_block(body, None);
+        let then_exit = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: matches!(then_ty, Ty::Never),
+        };
         self.env.pop_scope();
         if let Some(block) = else_body {
+            self.env.restore_ownership(&entry);
             let else_ty = self.check_block(block, None);
+            let else_exit = BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: matches!(else_ty, Ty::Never),
+            };
+            self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
+            self.join_fall_through(&entry, then_exit);
             Ty::Unit
         }
     }
@@ -2386,8 +2412,15 @@ impl Checker {
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
+                // Exactly one arm of a `select` fires, so the arms are
+                // alternatives just like match arms and get the same
+                // restore-per-arm, union-at-the-join treatment. The timeout
+                // clause is one more arm.
+                let entry = self.env.ownership_snapshot();
+                let mut arm_exits = Vec::with_capacity(arms.len() + 1);
                 for arm in arms {
                     self.env.push_scope();
+                    self.env.restore_ownership(&entry);
                     let source_ty = self.synthesize_actor_concurrency_source(
                         &arm.source.0,
                         &arm.source.1,
@@ -2399,20 +2432,30 @@ impl Checker {
                     } else {
                         self.synthesize(&arm.body.0, &arm.body.1)
                     };
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: matches!(body_ty, Ty::Never),
+                    });
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
                     }
                     self.env.pop_scope();
                 }
                 if let Some(tc) = timeout {
+                    self.env.restore_ownership(&entry);
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
                     let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: matches!(timeout_ty, Ty::Never),
+                    });
                     if let Some(expected) = &result_ty {
                         self.expect_type(expected, &timeout_ty, &tc.body.1);
                     } else {
                         result_ty = Some(timeout_ty);
                     }
                 }
+                self.join_branch_ownership(&entry, &arm_exits);
                 result_ty.unwrap_or(Ty::Unit)
             }
             Expr::Join(exprs) => {
@@ -2671,11 +2714,22 @@ impl Checker {
                 // so they inherit this expression's armed state; the condition
                 // (checked above against `Bool`) does not.
                 self.tail_ok_armed = tail_ok_armed;
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: matches!(then_ty, Ty::Never),
+                };
                 let actual = if let Some(else_block) = else_block {
                     self.tail_ok_armed = tail_ok_armed;
+                    self.env.restore_ownership(&entry);
                     let else_ty =
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: matches!(else_ty, Ty::Never),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
                         Ty::Error
                     } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
@@ -2684,6 +2738,7 @@ impl Checker {
                         self.subst.resolve(expected)
                     }
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 };
                 if matches!(actual, Ty::Never | Ty::Error) {

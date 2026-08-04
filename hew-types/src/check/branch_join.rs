@@ -31,6 +31,7 @@
 
 use super::types::Checker;
 use crate::env::OwnershipSnapshot;
+use crate::ty::Ty;
 
 /// What one branch arm left behind.
 pub(super) struct BranchArmExit {
@@ -65,5 +66,36 @@ impl Checker {
             reaching = arms.iter().map(|arm| arm.ownership.clone()).collect();
         }
         self.env.merge_ownership(entry, &reaching);
+    }
+
+    /// Join a two-armed branch whose second arm has just finished checking.
+    ///
+    /// `taken` is the already-captured exit of the first arm; the second arm's
+    /// exit is read from the environment and classified by `other_ty`.
+    pub(super) fn join_two_way(
+        &mut self,
+        entry: &OwnershipSnapshot,
+        taken: BranchArmExit,
+        other_ty: &Ty,
+    ) {
+        let other = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: matches!(other_ty, Ty::Never),
+        };
+        self.join_branch_ownership(entry, &[taken, other]);
+    }
+
+    /// Join a one-armed branch — an `if` or `if let` with no `else` — against
+    /// its implicit fall-through path.
+    ///
+    /// The fall-through arm consumes nothing, so its exit is the branch entry
+    /// itself. Keeping it in the union is what preserves the rejection for a
+    /// conditional consume followed by an unconditional use.
+    pub(super) fn join_fall_through(&mut self, entry: &OwnershipSnapshot, taken: BranchArmExit) {
+        let fall_through = BranchArmExit {
+            ownership: entry.clone(),
+            diverges: false,
+        };
+        self.join_branch_ownership(entry, &[taken, fall_through]);
     }
 }

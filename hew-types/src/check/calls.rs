@@ -1111,25 +1111,34 @@ impl Checker {
         // declaration identity is semantic authority, while the validated ABI
         // symbol is the executable endpoint. Treating them as ordinary User
         // calls loses that endpoint and leaves MIR without a symbol mapping.
-        if let Some(contract) = self.extern_table.contract_for_declaration(signature_key) {
-            if contract.symbol.is_empty() {
+        if let Some(extern_decl) = self.extern_table.declaration(signature_key) {
+            if extern_decl.symbol.is_empty() {
                 return CallTarget::Unsupported {
                     reason: format!(
                         "generic extern declaration `{signature_key}` has no monomorphic endpoint"
                     ),
                 };
             }
+            // Provenance is per DECLARATION: the published identity is the
+            // declaration used at the call site, and `trusted_compiled_stdlib`
+            // derives from ITS declaring module — never from whichever
+            // declaration minted the symbol's ABI contract (a user extern
+            // stays user-provenance even when its spelling collides with an
+            // audited runtime endpoint, in either registration order).
+            //
             // LEGACY ROOT RENDER (rc1-F1 stage B, mirrors stage A's fn_sigs
             // publication): a root extern declaration is keyed canonically
             // inside the checker but publishes its bare leaf, because HIR
             // still resolves root declarations by source spelling.
             // WHEN OBSOLETE: stage C/D re-key downstream consumers by DefId.
-            let owner = contract.owner.full_path();
-            let declaration = self.root_owned_fn_leaf(owner).unwrap_or(owner).to_string();
+            let declaration = self
+                .root_owned_fn_leaf(signature_key)
+                .unwrap_or(signature_key)
+                .to_string();
             return CallTarget::Extern {
                 declaration: crate::DefId::new(declaration),
-                endpoint: contract.symbol.clone(),
-                trusted_compiled_stdlib: contract
+                endpoint: extern_decl.symbol.clone(),
+                trusted_compiled_stdlib: extern_decl
                     .declaring_module
                     .as_deref()
                     .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
@@ -1300,10 +1309,18 @@ impl Checker {
                         crate::runtime_call::RuntimeResultOwnership::Untracked
                     )
                 });
+        // Per-declaration record: ownership provenance attributes to the
+        // declaration used at this call site, not the symbol's contract
+        // minter.
         let source_extern = self
             .extern_table
-            .contract_for_declaration(signature_key)
-            .map(|contract| (contract.symbol.clone(), contract.declaring_module.clone()));
+            .declaration(signature_key)
+            .map(|extern_decl| {
+                (
+                    extern_decl.symbol.clone(),
+                    extern_decl.declaring_module.clone(),
+                )
+            });
         let call_key = SpanKey::in_module(span, self.current_module_idx);
         let exact_extern_symbol = source_extern.as_ref().and_then(|(symbol, _)| {
             sig.extern_symbol.as_ref().map_or_else(

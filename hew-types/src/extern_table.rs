@@ -1,17 +1,33 @@
 //! Single-owner extern contract table (rc1-F1 stage B).
 //!
 //! One C symbol resolves under exactly ONE contract per compile. The table is
-//! the checker's single authority for extern identity: every `extern "C"`
-//! declaration either MINTS its symbol's contract (first declaration wins) or
-//! must resolve to the established contract; a declaration that disagrees is
-//! a conflict at the declaration site, program-wide — visibility does not
-//! partition ABI identity, the linker sees one symbol.
+//! the checker's single authority for extern symbol identity: every
+//! `extern "C"` declaration either MINTS its symbol's contract (first
+//! declaration wins) or must resolve to the established contract through the
+//! canonicalized structural signature compare — the compare ALWAYS runs, for
+//! every further declaration of an established symbol; there is no
+//! same-declaration-site shortcut, because a byte-offset span carries no
+//! file identity and peer files of one directory module can align spans
+//! exactly. A declaration that disagrees is a conflict at the declaration
+//! site, program-wide — visibility does not partition ABI identity, the
+//! linker sees one symbol.
+//!
+//! Provenance stays PER DECLARATION. The contract owns the symbol's ABI;
+//! each declaration record keeps its own declaring module and endpoint, and
+//! call-site facts (call authority, `trusted_compiled_stdlib`, lifecycle
+//! authorization) derive from the declaration used at the call site — never
+//! from whichever declaration happened to mint the symbol. A user
+//! re-declaration of a stdlib symbol therefore adopts the ABI contract
+//! without inheriting stdlib provenance, and registration order cannot
+//! change a call's authority.
 //!
 //! The table also carries the extern-declaration index that gates `unsafe`:
-//! a call requires `unsafe` exactly when its resolved declaration key is an
-//! extern declaration recorded here. This replaces the former
-//! `unsafe_functions: HashSet<String>` side registry, whose contents could
-//! only drift from extern registration.
+//! a call requires `unsafe` exactly when its resolved declaration key names
+//! an extern declaration recorded here. Every declaration registers —
+//! including one whose signature CONFLICTS with the established contract
+//! (registration first, diagnosis second): the conflict is a hard error, but
+//! the declaration must not fall out of the unsafe/extern indexes while the
+//! rest of the program is checked.
 //!
 //! Registered but contract-less declarations (`declaration_only`) cover the
 //! two extern surfaces with no comparable ABI contract:
@@ -41,32 +57,44 @@ pub struct ExternContractId(u32);
 ///
 /// `owner` is the fn-sig declaration identity of the declaration that MINTED
 /// the contract (the first declaration in registration order). Later
-/// agreeing declarations of the same symbol adopt this contract; their keys
-/// resolve to it through [`ExternTable::contract_for_declaration`].
+/// agreeing declarations of the same symbol adopt this contract; their own
+/// provenance stays on their [`ExternDeclaration`] records.
 #[derive(Debug, Clone)]
 pub struct ExternContract {
     pub owner: DefId,
-    /// Monomorphic C symbol. Empty for template declarations
-    /// (`#[extern_symbol("…{T}…")]`), which have no call-independent
-    /// expansion and therefore no symbol-keyed contract slot.
+    /// Monomorphic C symbol.
     pub symbol: String,
-    /// Registered parameter types, exactly as stored on the declaring
-    /// `FnSig`. Contract comparison canonicalizes both sides at the compare
-    /// site (the checker owns spelling→identity resolution).
+    /// Registered parameter types, exactly as stored on the minting
+    /// declaration's `FnSig`. Contract comparison canonicalizes both sides
+    /// at the compare site (the checker owns spelling→identity resolution).
     pub params: Vec<Ty>,
     pub return_type: Ty,
+    /// Authoritative ABI ownership disposition (who frees each argument).
+    /// Adoption requires EXACT equality of consuming modes, so every
+    /// declaration that resolves to this contract stores identical modes —
+    /// the per-declaration `fn_param_ownership` view cannot diverge from
+    /// this field by construction.
     pub consuming_params: Vec<bool>,
     pub is_variadic: bool,
-    /// Declaring span, for conflict diagnostics and same-declaration-site
-    /// recognition (one source file assembled into two modules registers the
-    /// same declaration twice — same span, shared source).
+    /// Minting declaration's span, for conflict diagnostics.
     pub span: Span,
     pub declaring_module: Option<String>,
-    /// Modules whose (agreeing) declarations adopted this contract after it
-    /// was minted — the peer-assembled second owner, or an independent
-    /// re-declaration. Together with `declaring_module` these are the modules
-    /// entitled to resolve handle methods against the contract's endpoint.
-    pub adopting_modules: std::collections::BTreeSet<String>,
+}
+
+/// One extern declaration's own record — the provenance unit.
+#[derive(Debug, Clone)]
+pub struct ExternDeclaration {
+    /// The established contract this declaration resolved to. `None` for a
+    /// template declaration (no call-independent symbol) and for a
+    /// declaration whose signature conflicted with the established contract
+    /// (registered for `unsafe`/call-target indexing; the conflict is a
+    /// separate hard error).
+    pub contract: Option<ExternContractId>,
+    /// This declaration's own endpoint. Empty for template declarations.
+    pub symbol: String,
+    /// This declaration's own declaring module — the authority for
+    /// call-site provenance (`trusted_compiled_stdlib`, lifecycle joins).
+    pub declaring_module: Option<String>,
 }
 
 /// Per-compile single-owner extern authority. One instance per
@@ -75,7 +103,15 @@ pub struct ExternContract {
 pub struct ExternTable {
     contracts: Vec<ExternContract>,
     by_symbol: HashMap<String, ExternContractId>,
-    by_declaration: HashMap<DefId, ExternContractId>,
+    /// Every source extern declaration, keyed by its fn-sig declaration
+    /// identity.
+    declarations: HashMap<DefId, ExternDeclaration>,
+    /// First declaration of `(symbol, declaring module)` — the
+    /// opaque-handle method resolution probe (mirrors the legacy
+    /// first-match scan over source declarations).
+    by_symbol_and_module: HashMap<(String, Option<String>), DefId>,
+    /// Extern declarations that gate `unsafe` but carry no comparable ABI
+    /// contract (see module docs).
     declaration_only: HashSet<DefId>,
 }
 
@@ -98,60 +134,90 @@ impl ExternTable {
     ///
     /// # Panics
     ///
-    /// Panics when more than `u32::MAX` contracts are minted in one compile.
-    pub fn mint(&mut self, contract: ExternContract) -> ExternContractId {
+    /// Panics when the symbol already has a contract (a silent second mint
+    /// would orphan the first contract), when the symbol is empty (template
+    /// declarations have no symbol-owned contract — register them with
+    /// [`Self::register_detached_declaration`]), or when more than
+    /// `u32::MAX` contracts are minted in one compile.
+    pub(crate) fn mint(&mut self, contract: ExternContract) -> ExternContractId {
+        assert!(
+            !contract.symbol.is_empty(),
+            "a symbol-less declaration cannot own a symbol contract"
+        );
         let id = ExternContractId(
             u32::try_from(self.contracts.len()).expect("more than u32::MAX extern contracts"),
         );
-        if !contract.symbol.is_empty() {
-            let previous = self.by_symbol.insert(contract.symbol.clone(), id);
-            debug_assert!(
-                previous.is_none(),
-                "extern contract for `{}` minted twice",
-                contract.symbol
-            );
-        }
-        self.by_declaration.insert(contract.owner.clone(), id);
+        let previous = self.by_symbol.insert(contract.symbol.clone(), id);
+        assert!(
+            previous.is_none(),
+            "extern contract for `{}` minted twice",
+            contract.symbol
+        );
+        self.record_declaration(
+            contract.owner.clone(),
+            ExternDeclaration {
+                contract: Some(id),
+                symbol: contract.symbol.clone(),
+                declaring_module: contract.declaring_module.clone(),
+            },
+        );
         self.contracts.push(contract);
         id
     }
 
-    /// Record a further declaration that resolved to an established
-    /// contract (same declaration site reached through a second module
-    /// assembly, or an independently-agreeing re-declaration). The
-    /// declaration key becomes a second name of the ONE contract.
-    pub fn adopt_declaration(
+    /// Record a further declaration that resolved (by signature agreement)
+    /// to an established contract. The declaration keeps its OWN provenance;
+    /// only the ABI contract is shared.
+    pub(crate) fn adopt_declaration(
         &mut self,
         declaration: DefId,
+        symbol: String,
         declaring_module: Option<String>,
         id: ExternContractId,
     ) {
-        self.by_declaration.insert(declaration, id);
-        if let Some(module) = declaring_module {
-            self.contracts[id.0 as usize]
-                .adopting_modules
-                .insert(module);
-        }
+        self.record_declaration(
+            declaration,
+            ExternDeclaration {
+                contract: Some(id),
+                symbol,
+                declaring_module,
+            },
+        );
     }
 
-    /// The established contract for `symbol` when `module` is one of its
-    /// declaring modules (minter or agreeing adopter) — the module-authority
-    /// probe behind opaque-handle method resolution.
-    #[must_use]
-    pub fn contract_declared_by_module(
-        &self,
-        symbol: &str,
-        module: &str,
-    ) -> Option<&ExternContract> {
-        let (_, contract) = self.established(symbol)?;
-        (contract.declaring_module.as_deref() == Some(module)
-            || contract.adopting_modules.contains(module))
-        .then_some(contract)
+    /// Record a source extern declaration that carries no contract slot: a
+    /// template declaration (empty `symbol`), or a declaration whose
+    /// signature CONFLICTED with the established contract. Registration is
+    /// unconditional so the declaration keeps its `unsafe` gate and its
+    /// call-target endpoint while the conflict error propagates.
+    pub(crate) fn register_detached_declaration(
+        &mut self,
+        declaration: DefId,
+        symbol: String,
+        declaring_module: Option<String>,
+    ) {
+        self.record_declaration(
+            declaration,
+            ExternDeclaration {
+                contract: None,
+                symbol,
+                declaring_module,
+            },
+        );
+    }
+
+    fn record_declaration(&mut self, declaration: DefId, record: ExternDeclaration) {
+        if !record.symbol.is_empty() {
+            self.by_symbol_and_module
+                .entry((record.symbol.clone(), record.declaring_module.clone()))
+                .or_insert_with(|| declaration.clone());
+        }
+        self.declarations.insert(declaration, record);
     }
 
     /// Record an extern declaration that gates `unsafe` but carries no
     /// comparable ABI contract (see module docs).
-    pub fn register_declaration_only(&mut self, declaration: DefId) {
+    pub(crate) fn register_declaration_only(&mut self, declaration: DefId) {
         self.declaration_only.insert(declaration);
     }
 
@@ -159,14 +225,36 @@ impl ExternTable {
     /// `unsafe`-gating authority.
     #[must_use]
     pub fn requires_unsafe(&self, declaration: &str) -> bool {
-        self.by_declaration.contains_key(declaration) || self.declaration_only.contains(declaration)
+        self.declarations.contains_key(declaration) || self.declaration_only.contains(declaration)
     }
 
-    /// The contract a declaration key resolves to, if it is a contract-
-    /// bearing extern declaration.
+    /// The declaration record for a fn-sig declaration key — the call-site
+    /// provenance authority.
+    #[must_use]
+    pub fn declaration(&self, declaration: &str) -> Option<&ExternDeclaration> {
+        self.declarations.get(declaration)
+    }
+
+    /// The contract a declaration key resolves to, when it is a
+    /// contract-bearing extern declaration.
     #[must_use]
     pub fn contract_for_declaration(&self, declaration: &str) -> Option<&ExternContract> {
-        let id = *self.by_declaration.get(declaration)?;
+        let id = self.declarations.get(declaration)?.contract?;
         Some(&self.contracts[id.0 as usize])
+    }
+
+    /// The first declaration of `symbol` declared by exactly `module`, with
+    /// its record — the module-authority probe behind opaque-handle method
+    /// resolution.
+    #[must_use]
+    pub fn declaration_by_symbol_and_module(
+        &self,
+        symbol: &str,
+        module: &str,
+    ) -> Option<(&DefId, &ExternDeclaration)> {
+        let key = self
+            .by_symbol_and_module
+            .get(&(symbol.to_string(), Some(module.to_string())))?;
+        Some((key, &self.declarations[key]))
     }
 }

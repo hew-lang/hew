@@ -11,24 +11,20 @@
 # fails on an unexpected pass precisely so a fix cannot go unnoticed.
 #
 # Entries marked NEWLY-SURFACED are not inherited, and they are FALSE
-# rejections — the first thing to fix off this branch. The extern-contract
-# comparison rejects a symbol whose two declarations name different nominal
-# owners, and in a unit that imports both std::net::http and its http_client
-# submodule it sees a conflict that no source states:
+# rejections — the first thing to fix off this branch.
 #
-#   - hew_http_request_hew and the hew_http_response_* family are declared
-#     exactly once, in std/net/http/http_client.hew. The checker registers
-#     that one declaration under two owners (std.net.http and
-#     std.net.http.http_client) and reports the module against itself; the
-#     "first declaration" spans point into unrelated comments in http.hew,
-#     which declares none of those symbols.
-#   - hew_sink_is_valid really is declared twice (std/stream.hew and
-#     std/net/http/http.hew), but both name the same type. One spells the
-#     owner `stream`, the other `std.stream`, and canonical_nominal_name
-#     resolves the partially-qualified spelling only through an import
-#     binding that http.hew does not have.
+# hew_http_request_hew and the hew_http_response_* family are declared exactly
+# once, in std/net/http/http_client.hew. In a unit that imports both
+# std::net::http and that submodule, the checker registers the one declaration
+# under two owners — std.net.http and std.net.http.http_client — and the
+# duplicate-extern check then reports the module against itself, in both
+# directions. The "first declaration" spans land on unrelated comments in
+# http.hew, which declares none of those symbols. The types are identical; only
+# the registered owner differs, so this is an owner-identity gap in extern
+# registration, not a contract defect.
 #
-# Both are owner-identity gaps in extern registration, not contract defects.
+# The same rejection blocks two http_ws_string_result_retention leak-oracle
+# tests, which the leak oracle has no tracked list for.
 #
 # Format: <test_function_name>  # <class>: <root cause>
 #

@@ -158,26 +158,21 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
     listener.close();
 }
 
-#[test]
-fn test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success() {
-    let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
-    let client = net.connect(f"127.0.0.1:{port as i64}");
-    let server = listener.accept();
-    server.close();
-    match server.try_read() {
-        Ok(data) => panic(f"expected a closed connection to fail, got {data.len()} bytes"),
-        Err(_) => {},
-    }
-    match server.try_read_string() {
-        Ok(_) => panic("expected a closed connection to fail"),
-        Err(_) => {},
-    }
-    client.close();
-    listener.close();
-}
+// I removed `test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success`
+// from here. It did `server.close()` followed by `server.try_read()`, which the checker
+// now rejects outright: a canonical `close` moves its receiver, so there is no
+// well-typed way to hold a closed handle and read from it. Leaving the test in place
+// would have made this entire file fail to compile.
+//
+// The property it covered was not dropped, it was promoted from a runtime check to a
+// static one. Use-after-close is proven by the reject fixtures
+// `tests/vertical-slice/reject/safe_handle_resources_use_after_close.hew` (11 handle
+// types) and `tests/vertical-slice/reject/value_tree_resources_use_after_close.hew`
+// (3 cases), both of which assert exact diagnostic counts.
+//
+// The transport layer's runtime closed-handle check stays in place as defence in depth
+// for FFI callers that bypass the checker. It is unreachable from Hew source now, so it
+// belongs to the runtime's own test surface rather than a `.hew` test.
 
 #[test]
 fn test_try_read_delivers_payload_bytes_unchanged() {

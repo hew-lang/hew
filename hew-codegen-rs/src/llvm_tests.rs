@@ -10248,6 +10248,74 @@ fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
 }
 
 #[test]
+fn helper_crash_cleanup_consumed_guard_proof_is_conservative() {
+    let mut raw = platform_int_identity_fn("consumed_guard", ResolvedTy::I64);
+    raw.params.clear();
+    raw.return_ty = ResolvedTy::Unit;
+    raw.locals = vec![ResolvedTy::I64; 3];
+    raw.blocks = vec![BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::ConstI64 {
+                dest: Place::Local(1),
+                value: 1,
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            },
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    assert!(helper_crash_cleanup_guard_is_always_consumed(
+        &raw,
+        Place::Local(1)
+    ));
+    assert!(helper_crash_cleanup_guard_is_always_consumed(
+        &raw,
+        Place::Local(2)
+    ));
+
+    raw.blocks[0].instructions.push(Instr::ConstI64 {
+        dest: Place::Local(1),
+        value: 0,
+    });
+    assert!(
+        !helper_crash_cleanup_guard_is_always_consumed(&raw, Place::Local(1)),
+        "one live write must retain the cleanup descriptor"
+    );
+    assert!(
+        !helper_crash_cleanup_guard_is_always_consumed(&raw, Place::Local(0)),
+        "a parameter or unwritten guard remains unknown"
+    );
+}
+
+#[test]
+fn whole_owner_neutralize_transfers_crash_cleanup_authority() {
+    use hew_mir::model::NeutralizeAuthority;
+
+    let instr = Instr::NeutralizePayloadSlot {
+        place: Place::Local(0),
+        transferee: Some(Place::Local(1)),
+        authority: NeutralizeAuthority::WholeCarrierConsume,
+    };
+    assert!(helper_whole_owner_was_transferred(&instr, Place::Local(0)));
+    assert!(!helper_whole_owner_was_transferred(&instr, Place::Local(1)));
+
+    let no_transferee = Instr::NeutralizePayloadSlot {
+        place: Place::Local(0),
+        transferee: None,
+        authority: NeutralizeAuthority::WholeCarrierConsume,
+    };
+    assert!(!helper_whole_owner_was_transferred(
+        &no_transferee,
+        Place::Local(0)
+    ));
+}
+
+#[test]
 fn helper_crash_cleanup_aggregate_owner_arms_after_final_payload_store() {
     let owner = Place::Local(0);
     let block = BasicBlock {

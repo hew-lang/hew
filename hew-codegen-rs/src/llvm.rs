@@ -22093,6 +22093,42 @@ fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
     left == right
 }
 
+/// Prove that a MIR ownership sidecar can never select its live (`0`) edge.
+///
+/// This deliberately understands only constant writes and whole-value moves
+/// between scalar locals. Any arithmetic, parameter ingress, missing write, or
+/// cycle stays unknown and therefore keeps crash cleanup registered. A cursor
+/// borrowed from actor state is the important proven case: its sidecar is
+/// seeded nonzero and only copied through generated temporaries, so registering
+/// a cleanup snapshot would fabricate an owner the cursor never has.
+fn helper_crash_cleanup_guard_is_always_consumed(func: &RawMirFunction, guard: Place) -> bool {
+    fn prove(func: &RawMirFunction, place: Place, visiting: &mut HashSet<Place>) -> bool {
+        if !visiting.insert(place) {
+            return false;
+        }
+        let mut saw_write = false;
+        let all_consumed = func
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instr| {
+                if !hew_mir::dataflow::instr_write_places(instr).contains(&place) {
+                    return true;
+                }
+                saw_write = true;
+                match instr {
+                    Instr::ConstI64 { dest, value } if *dest == place => *value != 0,
+                    Instr::Move { dest, src } if *dest == place => prove(func, *src, visiting),
+                    _ => false,
+                }
+            });
+        visiting.remove(&place);
+        saw_write && all_consumed
+    }
+
+    prove(func, guard, &mut HashSet::new())
+}
+
 /// Whether a specialised `Terminator::Call` emitter brackets its destination
 /// publication with the same deactivate/arm lifecycle as the generic call
 /// tail.
@@ -22214,6 +22250,12 @@ fn collect_helper_crash_cleanup_descriptors(
             if !crash_cleanup_drop_requires_registration(drop)? {
                 continue;
             }
+            if drop
+                .guard
+                .is_some_and(|guard| helper_crash_cleanup_guard_is_always_consumed(func, guard))
+            {
+                continue;
+            }
             if !supported_producers.contains(&drop.place) {
                 return Err(CodegenError::FailClosed(format!(
                     "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
@@ -22261,8 +22303,9 @@ fn collect_helper_crash_cleanup_descriptors(
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "ordinary helper crash snapshot for {:?} has conflicting \
-                         typed drop descriptors across exit plans",
-                        drop.place
+                         typed drop descriptors across exit plans: registered \
+                         {:?}, encountered {:?}",
+                        drop.place, existing.descriptor, drop
                     )));
                 }
                 match (existing.descriptor.guard, drop.guard) {
@@ -22274,8 +22317,9 @@ fn collect_helper_crash_cleanup_descriptors(
                     _ => {
                         return Err(CodegenError::FailClosed(format!(
                             "ordinary helper crash snapshot for {:?} has conflicting \
-                             typed drop descriptors across exit plans",
-                            drop.place
+                             typed drop descriptors across exit plans: registered \
+                             {:?}, encountered {:?}",
+                            drop.place, existing.descriptor, drop
                         )));
                     }
                 }
@@ -22357,6 +22401,21 @@ fn projection_neutralize_transferee(instr: &Instr) -> Option<Place> {
         } => Some(*place),
         _ => None,
     }
+}
+
+/// Whether an interior-write marker is the exact handoff that consumes the
+/// whole registered owner. The source slot is neutral after this instruction,
+/// so refreshing its crash snapshot would mint a second owner beside the
+/// transferee.
+fn helper_whole_owner_was_transferred(instr: &Instr, owner: Place) -> bool {
+    matches!(
+        instr,
+        Instr::NeutralizePayloadSlot {
+            place,
+            transferee: Some(_),
+            ..
+        } if *place == owner
+    )
 }
 
 /// Normalize any place that addresses bytes within a MIR local to the
@@ -34224,7 +34283,9 @@ fn lower_function<'ctx>(
             // This MUST precede arming a projection transferee so the source
             // escrow can never retain the moved-out pointer concurrently.
             for place in interior_owner_writes {
-                if !deferred_interior_owner_arms.contains(&place) {
+                if !deferred_interior_owner_arms.contains(&place)
+                    && !helper_whole_owner_was_transferred(instr, place)
+                {
                     emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
                 }
             }

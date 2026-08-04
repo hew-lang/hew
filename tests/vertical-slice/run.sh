@@ -3234,7 +3234,7 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_pattern_double_clos
 fi
 # shellcheck disable=SC2016  # backticks are literal — they match the
 # diagnostic's pretty-printed `pat` binding name.
-grep -qF 'use of moved value `pat`' "${reject_output}"
+grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}"
 
 # B-1 safe stdlib resource migration: every migrated handle surface resolves
 # `close(self)` through its wrapper impl, including the same-short-name Message

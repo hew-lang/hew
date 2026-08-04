@@ -125,7 +125,7 @@ extern "C" {
 #[opaque]
 type Handle {}
 EOF
-[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --kind extern_function --json=stream "$tmp/externs.hew" | wc -l | tr -d ' ')" == 2 ]] || {
+[[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind extern_function --json=stream "$tmp/externs.hew" | wc -l | tr -d ' ')" == 2 ]] || {
     echo "pinned Hew grammar did not parse attributed consuming extern declarations" >&2
     exit 1
 }

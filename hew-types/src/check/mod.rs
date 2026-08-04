@@ -328,6 +328,7 @@ impl Checker {
         // identity.
         self.canonical_std_module_sources.clear();
         self.canonical_std_root_sources.clear();
+        self.module_source_paths.clear();
         if let Some(module_graph) = &program.module_graph {
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
             // source-less floor module and promotes the shipped file to its
@@ -340,6 +341,10 @@ impl Checker {
                 .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
                 let module_full_path = module_id.path.join(".");
+                if !module.source_paths.is_empty() {
+                    self.module_source_paths
+                        .insert(module_full_path.clone(), module.source_paths.clone());
+                }
                 if module.source_paths.iter().any(|source| {
                     crate::module_registry::is_canonical_stdlib_module_source(
                         source,

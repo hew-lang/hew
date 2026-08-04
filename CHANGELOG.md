@@ -1,12 +1,16 @@
 # Changelog
 
-## [0.6.0-rc1] - 2026-07-29
+## [0.6.0-rc1] - Unreleased
 
 Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the
 ownership model, closes a batch of actor and machine correctness gaps, and
 reshapes several language surfaces. The headline change is that ownership and
-drop elaboration are now unconditional and type-directed: every owned value is
-released exactly once, with no reliance on ad-hoc per-shape heap walkers.
+drop elaboration are now unconditional and type-directed: every owned value
+walks a single type-directed release authority instead of an ad-hoc per-shape
+heap walker. A small number of edges (a never-resolved crash-path projection
+transfer, an unvalidated Cancel/Panic drop path, one documented constant
+credential-file allocation) remain tracked residual leak-only surfaces rather
+than double-free risks.
 
 ### Changed — ownership and drop elaboration
 
@@ -111,8 +115,12 @@ released exactly once, with no reliance on ad-hoc per-shape heap walkers.
 - **`try_to_*` numeric conversions.** Fallible numeric conversions with exactness
   checking (`try_to_i32`, `try_to_u8`, …) return an error on an out-of-range or
   lossy conversion instead of truncating silently. (#2368)
-- **Unified `.send()`.** Actor fire-and-forget sends use one `.send()` verb
-  across local and remote targets. (#2369)
+- **Named local dispatch and typed remote `.send()`.** Local fire-and-forget
+  dispatch remains `ref.method(args)`, using the declared `receive fn` name.
+  `.send(args)` on a `LocalPid` dispatches only to a handler literally named
+  `send`; it is not a universal local-send spelling. `RemotePid<T>.send(message)`
+  remains the remote fire-and-forget surface, and lambda-actor handles retain
+  `.send()`. (#2369)
 - **`#[wire]` types.** Wire-format declarations use the `#[wire]` type attribute;
   the `struct` keyword has been removed. (#2370, closes #2365)
 - **Iterator-trait completion.** The iterator surface is completed across

@@ -112,3 +112,35 @@ result-retention = "retained"
 "#,
     );
 }
+
+#[test]
+fn shared_refcount_retention_requires_a_retained_result() {
+    let rows = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_clone"
+result = "retained"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "shared-refcount"
+"#,
+    );
+    assert_eq!(rows["hew_clone"].result_retention, "shared-refcount");
+}
+
+#[test]
+#[should_panic(expected = "requires a retained result")]
+fn shared_refcount_retention_rejects_a_fresh_result() {
+    let _ = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_fresh"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "shared-refcount"
+"#,
+    );
+}

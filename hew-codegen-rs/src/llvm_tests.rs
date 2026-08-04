@@ -5726,6 +5726,39 @@ fn fixture_send_error_layout() -> MirEnumLayout {
     }
 }
 
+fn fixture_result_unit_attach_error_layout() -> MirEnumLayout {
+    MirEnumLayout {
+        name: "Result$$unit$$AttachError".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Ok".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+            MachineVariantLayout {
+                name: "Err".to_string(),
+                field_tys: vec![ResolvedTy::named_user("AttachError", vec![])],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }
+}
+
+fn fixture_attach_error_layout() -> MirEnumLayout {
+    MirEnumLayout {
+        name: "AttachError".to_string(),
+        tag_width: 1,
+        variants: vec![MachineVariantLayout {
+            name: "Refused".to_string(),
+            field_tys: vec![],
+            field_names: vec![],
+        }],
+        is_indirect: false,
+    }
+}
+
 fn fixture_result_i64_lookuperror_layout() -> MirEnumLayout {
     MirEnumLayout {
         name: "Result$$i64$$LookupError".to_string(),
@@ -5988,6 +6021,58 @@ fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
 fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
     let zero = fn_ctx.ctx.i32_type().const_zero();
     fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
+}
+
+#[test]
+fn tcp_attach_status_materialises_result_instead_of_discarding_refusal() {
+    let ctx = Context::create();
+    let module = ctx.create_module("tcp_attach_result_test");
+    let harness = build_harness(
+        &ctx,
+        &[],
+        &[
+            fixture_attach_error_layout(),
+            fixture_result_unit_attach_error_layout(),
+        ],
+    );
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "drv");
+    alloc_local(
+        &mut fn_ctx,
+        0,
+        ResolvedTy::named_user("Result$$unit$$AttachError", vec![]),
+    );
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .expect("fixture function parent");
+    let next = ctx.append_basic_block(parent, "tcp_attach_next");
+    fn_ctx.blocks.insert(1, next);
+
+    let refused = ctx.i32_type().const_int(u64::MAX, true);
+    emit_tcp_attach_result(&fn_ctx, refused, Some(&Place::Local(0)), 1)
+        .expect("TCP attach status must lower to Result<(), AttachError>");
+    fn_ctx.builder.position_at_end(next);
+    finish_test_fn(&fn_ctx);
+
+    assert!(
+        module.verify().is_ok(),
+        "TCP attach Result module must verify:\n{}",
+        module.print_to_string().to_string()
+    );
+    let ir = module.print_to_string().to_string();
+    assert!(
+        ir.contains("tcp_attach_ok_bb") && ir.contains("tcp_attach_err_bb"),
+        "runtime status must branch into explicit Ok and Err construction:\n{ir}"
+    );
+    assert!(
+        ir.contains("store i8 0") && ir.contains("store i8 1"),
+        "TCP attach must materialise both Result tags:\n{ir}"
+    );
+    assert!(
+        ir.contains("zeroinitializer"),
+        "the refusal branch must store AttachError::Refused:\n{ir}"
+    );
 }
 
 #[test]
@@ -10000,6 +10085,114 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
             .collect::<Vec<_>>(),
         [frame_cleanup_string_descriptor(Place::Local(0))]
     );
+}
+
+#[test]
+fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "guarded_receive_parameter".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![ResolvedTy::Bytes],
+        locals: vec![ResolvedTy::Bytes, ResolvedTy::I64],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let guarded = ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::Bytes,
+        drop_fn: None,
+        kind: hew_mir::DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::Bytes,
+        },
+        guard: Some(Place::Local(1)),
+    };
+    let mut entry_cancel = guarded.clone();
+    entry_cancel.guard = None;
+
+    for entry_first in [true, false] {
+        let plans = if entry_first {
+            vec![
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+            ]
+        } else {
+            vec![
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+            ]
+        };
+        let elab = ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: plans,
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let descriptors = collect_helper_crash_cleanup_descriptors(
+            &raw,
+            Some(&elab),
+            false,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .expect("entry cancellation and guarded exits share one owner ritual");
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(
+            descriptors[0].descriptor, guarded,
+            "the guarded descriptor must drive crash-snapshot lifecycle"
+        );
+    }
 }
 
 #[test]

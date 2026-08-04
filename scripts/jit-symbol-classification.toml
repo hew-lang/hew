@@ -13,7 +13,10 @@
 #   resource-result-type = "<qualified source nominal>" (optional)
 #   release-symbol = "<hew_* release function or type-directed drop thunk>" | ""
 #   discharge-depth = "shallow" | "deep" | "none"
-#   result-retention = "transferred"   (optional; owned results only)
+#   result-retention = "transferred" | "shared-refcount" | "resource-transfer"
+#                      (optional; owned results only)
+#   result-retention-basis = "<runtime-body handoff evidence>"
+#                            (required for resource-transfer)
 #
 # `fresh` transfers a newly owned allocation to the caller. `retained`
 # transfers an additional reference to an existing ref-counted allocation.
@@ -36,17 +39,25 @@
 #
 # "transferred" therefore means: the callee provably keeps no pointer into the
 # returned allocation, the caller holds the SOLE owner, and `release-symbol` is
-# the balancing release. It is the only spelling, it is only legal on an owned
-# result, and it is the ONLY thing that licenses the compiler to mint a
-# caller-side release for a pointer-bearing extern result
+# the balancing release. "shared-refcount" means a retained result aliases an
+# existing allocation, but the callee incremented that allocation's refcount so
+# one `release-symbol` call independently balances the returned share. Both are
+# measured positive answers that license the compiler to mint a caller-side
+# release for a pointer-bearing extern result
 # (hew_mir::return_provenance::build_extern_contract_table).
+# "resource-transfer" is the corresponding answer for an opaque resource: the
+# runtime body creates a fresh allocation or table token, returns its only
+# caller-controlled close authority, and keeps no second authority that can run
+# the named release. Every such row records the inspected handoff in
+# `result-retention-basis`; merely naming `resource-result-type` proves nothing.
 #
 # ABSENCE is the fail-closed default and means the question has not been
 # answered for that symbol — no mint, which costs a leak rather than a double
-# free. A row may claim "transferred" only once an executable oracle has
-# established it for that symbol by measuring the runtime's actual retention
-# behaviour: distinct addresses for two live results, refcount 1 at handoff,
-# and the callee's own state surviving the caller's release. Those oracles are
+# free. A row may claim either positive spelling only once an executable oracle
+# has established it for that symbol. A transferred oracle requires distinct
+# live addresses, refcount 1 at handoff, and surviving producer state. A
+# shared-refcount oracle requires the same live address, an exact refcount bump,
+# and validity in both release orders. Those oracles are
 # hew-runtime/tests/{last_error_result_retention,string_result_retention,
 # identity_format_result_retention,os_io_string_result_retention}.rs,
 # hew-std/src/{last_error_retention,string_result_retention,
@@ -280,6 +291,7 @@ stable = [
   "hew_file_exists",
   "hew_file_read",
   "hew_file_read_bytes",
+  "hew_file_read_stream_collect_string",
   "hew_file_read_stream_close",
   "hew_file_read_stream_is_valid",
   "hew_file_read_stream_open",
@@ -2446,7 +2458,7 @@ result = "retained"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "shared-refcount"
 
 [[ownership.contracts]]
 symbol = "hew_string_compare"
@@ -2653,7 +2665,8 @@ params = ["borrow"]
 resource-result-type = "std.stream.StreamPair"
 release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "hew_stream_channel returns a fresh Box::into_raw(HewStreamPair); hew_stream_pair_free reclaims that sole pair box"
 
 [[ownership.contracts]]
 symbol = "hew_stream_close"
@@ -2666,7 +2679,6 @@ discharge-depth = "none"
 symbol = "hew_stream_collect_string"
 result = "fresh"
 params = ["consume"]
-resource-param-types = ["std.fs.FileReadStream"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -2694,6 +2706,15 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_file_read_stream_collect_string"
+result = "fresh"
+params = ["consume"]
+resource-param-types = ["std.fs.FileReadStream"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_file_read_stream_close"
 result = "none"
 params = ["consume"]
@@ -2716,7 +2737,8 @@ params = ["borrow"]
 resource-result-type = "std.fs.FileReadStream"
 release-symbol = "hew_file_read_stream_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "delegates to hew_stream_from_file_read, whose success path returns a fresh into_stream_ptr Box consumed by hew_file_read_stream_close"
 
 [[ownership.contracts]]
 symbol = "hew_stream_pair_free"
@@ -2785,7 +2807,8 @@ resource-param-types = ["std.net.Connection"]
 resource-result-type = "std.stream.StreamPair"
 release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "after cloning both socket halves and removing the input table entry, success returns one fresh Box::into_raw(HewStreamPair)"
 
 # channels — hew-runtime/src/channel.rs (native) / channel_wasm.rs (wasm; same
 # ownership shape). hew_channel_new returns a Box'd pair whose free drops
@@ -2799,7 +2822,8 @@ params = ["borrow"]
 resource-result-type = "std.channel.ChannelPair"
 release-symbol = "hew_channel_pair_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "native and wasm bodies each return one fresh Box::into_raw channel-pair wrapper reclaimed by hew_channel_pair_free"
 
 [[ownership.contracts]]
 symbol = "hew_channel_pair_free"
@@ -3106,7 +3130,8 @@ params = ["borrow"]
 resource-result-type = "std.process.ProcessResultHandle"
 release-symbol = "hew_process_result_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "command_output_to_result delegates success to output_to_result, which returns one fresh Box::into_raw(HewProcessResult)"
 
 [[ownership.contracts]]
 symbol = "hew_process_run_argv"
@@ -3115,7 +3140,8 @@ params = ["borrow", "borrow"]
 resource-result-type = "std.process.ProcessResultHandle"
 release-symbol = "hew_process_result_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "after argv is copied into Command, output_to_result returns one fresh Box::into_raw(HewProcessResult)"
 
 [[ownership.contracts]]
 symbol = "hew_process_spawn"
@@ -3387,7 +3413,8 @@ resource-param-types = ["std.net.Listener"]
 resource-result-type = "std.net.Connection"
 release-symbol = "hew_tcp_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "accept inserts the newly accepted TcpStream under a fresh table handle; only that returned token selects its hew_tcp_close removal"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_attach"
@@ -3436,7 +3463,8 @@ params = ["borrow"]
 resource-result-type = "std.net.Connection"
 release-symbol = "hew_tcp_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "delegates to timed connect, whose success inserts the new TcpStream under a fresh table handle returned as the sole close token"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_connect_timeout"
@@ -3445,7 +3473,8 @@ params = ["borrow", "borrow", "borrow"]
 resource-result-type = "std.net.Connection"
 release-symbol = "hew_tcp_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "success inserts the newly connected TcpStream under a fresh table handle returned as the sole hew_tcp_close token"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_listen"
@@ -3454,7 +3483,8 @@ params = ["borrow"]
 resource-result-type = "std.net.Listener"
 release-symbol = "hew_tcp_listener_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "success inserts the newly bound TcpListener under a fresh table handle returned as the sole hew_tcp_listener_close token"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_listener_close"
@@ -4277,7 +4307,8 @@ params = ["borrow"]
 resource-result-type = "std.net.http.Server"
 release-symbol = "hew_http_server_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful bind returns one fresh Box::into_raw(HewHttpServer), reclaimed only by hew_http_server_close"
 
 [[ownership.contracts]]
 symbol = "hew_http_server_recv"
@@ -4394,7 +4425,8 @@ params = ["borrow"]
 resource-result-type = "std.net.websocket.Conn"
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful handshake returns one fresh Box::into_raw(HewWsConn), reclaimed by hew_ws_close"
 
 [[ownership.contracts]]
 symbol = "hew_ws_message_free"
@@ -4464,7 +4496,8 @@ resource-result-type = "std.net.websocket.Conn"
 resource-param-types = ["std.net.websocket.Server"]
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "publish_if_open returns one fresh Box::into_raw(HewWsConn); cancellation publishes no pointer and the box is reclaimed by hew_ws_close"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_close"
@@ -4481,7 +4514,8 @@ params = ["borrow"]
 resource-result-type = "std.net.websocket.Server"
 release-symbol = "hew_ws_server_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful listener setup returns one fresh Box::into_raw(HewWsServer), reclaimed by hew_ws_server_close"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_port"
@@ -4519,7 +4553,8 @@ params = ["borrow", "borrow"]
 resource-result-type = "std.net.tls.TlsStream"
 release-symbol = "hew_tls_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful TLS setup returns one fresh Box::into_raw(HewTlsStream), reclaimed by hew_tls_close"
 
 [[ownership.contracts]]
 symbol = "hew_tls_last_error"
@@ -4568,7 +4603,8 @@ params = ["borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.smtp.Conn"
 release-symbol = "hew_smtp_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "after the transport probe succeeds, returns one fresh Box::into_raw(HewSmtpConn), reclaimed by hew_smtp_close"
 
 [[ownership.contracts]]
 symbol = "hew_smtp_connect_tls"
@@ -4577,7 +4613,8 @@ params = ["borrow", "borrow", "borrow", "borrow"]
 resource-result-type = "std.net.smtp.Conn"
 release-symbol = "hew_smtp_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "after the implicit-TLS transport probe succeeds, returns one fresh Box::into_raw(HewSmtpConn), reclaimed by hew_smtp_close"
 
 [[ownership.contracts]]
 symbol = "hew_smtp_last_error"
@@ -4649,7 +4686,8 @@ resource-result-type = "std.net.quic.QUICStream"
 resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_quic_stream_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "new_stream_handle wraps the accepted send/recv pair in one fresh Box::into_raw(HewQuicStream); hew_quic_stream_close reclaims it"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_accepted_streams"
@@ -4725,7 +4763,8 @@ resource-result-type = "std.net.quic.QUICStream"
 resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_quic_stream_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "new_stream_handle wraps the newly opened send/recv pair in one fresh Box::into_raw(HewQuicStream); hew_quic_stream_close reclaims it"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_opened_streams"
@@ -4760,7 +4799,8 @@ resource-result-type = "std.net.quic.QUICConnection"
 resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = "hew_quic_conn_disconnect"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "new_conn_handle returns one fresh Box::into_raw(HewQuicConn); its observer clone cannot invoke the wrapper's disconnect release"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_accepted_connections"
@@ -4786,7 +4826,8 @@ resource-result-type = "std.net.quic.QUICConnection"
 resource-param-types = ["std.net.quic.QUICEndpoint", "", ""]
 release-symbol = "hew_quic_conn_disconnect"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "new_conn_handle returns one fresh Box::into_raw(HewQuicConn); its observer clone cannot invoke the wrapper's disconnect release"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_last_error"
@@ -4843,7 +4884,8 @@ params = []
 resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "build_client_endpoint returns one fresh Box::into_raw(HewQuicEndpoint), reclaimed by hew_quic_endpoint_close"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_client_with_ca"
@@ -4852,7 +4894,8 @@ params = ["borrow"]
 resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "build_client_endpoint returns one fresh Box::into_raw(HewQuicEndpoint), reclaimed by hew_quic_endpoint_close"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_server"
@@ -4861,7 +4904,8 @@ params = ["borrow"]
 resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "build_server_endpoint returns one fresh Box::into_raw(HewQuicEndpoint), reclaimed by hew_quic_endpoint_close"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_server_with_tls"
@@ -4870,7 +4914,8 @@ params = ["borrow", "borrow", "borrow"]
 resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "build_server_endpoint returns one fresh Box::into_raw(HewQuicEndpoint), reclaimed by hew_quic_endpoint_close"
 
 [[ownership.contracts]]
 symbol = "hew_quic_stream_bytes_received"
@@ -4989,7 +5034,8 @@ resource-param-types = ["std.encoding.json.Value", ""]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected serde_json value into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_len"
@@ -5006,7 +5052,8 @@ params = []
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty serde_json array and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_push"
@@ -5071,7 +5118,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_json boolean and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_float"
@@ -5080,7 +5128,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "for a representable float, constructs a new serde_json number and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_int"
@@ -5089,7 +5138,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_json integer and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_null"
@@ -5098,7 +5148,8 @@ params = []
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_json null and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_string"
@@ -5107,7 +5158,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "copies the C string into a new serde_json string and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_get_bool"
@@ -5125,7 +5177,8 @@ resource-param-types = ["std.encoding.json.Value", ""]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected object field into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_get_float"
@@ -5184,7 +5237,8 @@ resource-param-types = ["std.encoding.json.Value"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "copies object keys into a new serde_json array and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_new"
@@ -5193,7 +5247,8 @@ params = []
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty serde_json object and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_set"
@@ -5254,7 +5309,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful serde_json parsing moves the new value into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_json_stringify"
@@ -5286,7 +5342,8 @@ resource-param-types = ["std.encoding.toml.Value", ""]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected toml value into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_len"
@@ -5303,7 +5360,8 @@ params = []
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty toml array and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_push"
@@ -5360,7 +5418,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new toml boolean and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_float"
@@ -5369,7 +5428,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new toml float and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_int"
@@ -5378,7 +5438,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new toml integer and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_string"
@@ -5387,7 +5448,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "copies the C string into a new toml string and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_bool"
@@ -5405,7 +5467,8 @@ resource-param-types = ["std.encoding.toml.Value", ""]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected table field into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_float"
@@ -5455,7 +5518,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful toml parsing moves the new table into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_stringify"
@@ -5473,7 +5537,8 @@ params = []
 resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty toml table and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_toml_table_set"
@@ -5539,7 +5604,8 @@ resource-param-types = ["std.encoding.yaml.Value", ""]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected serde_yaml value into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_len"
@@ -5556,7 +5622,8 @@ params = []
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty serde_yaml sequence and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_push"
@@ -5621,7 +5688,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_yaml boolean and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_float"
@@ -5630,7 +5698,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_yaml number and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_int"
@@ -5639,7 +5708,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_yaml integer and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_null"
@@ -5648,7 +5718,8 @@ params = []
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new serde_yaml null and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_string"
@@ -5657,7 +5728,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "copies the C string into a new serde_yaml string and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_bool"
@@ -5675,7 +5747,8 @@ resource-param-types = ["std.encoding.yaml.Value", ""]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "clones the selected mapping field into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_float"
@@ -5733,7 +5806,8 @@ params = []
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "constructs a new empty serde_yaml mapping and boxed_value returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_object_set"
@@ -5794,7 +5868,8 @@ params = ["borrow"]
 resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "successful serde_yaml parsing moves the new value into boxed_value, which returns one fresh Box::into_raw wrapper"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_stringify"

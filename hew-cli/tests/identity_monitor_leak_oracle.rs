@@ -1,4 +1,4 @@
-//! CAP-13 cross-process monitor lifecycle leak and poisoned-allocator oracle.
+//! Identity-monitor cross-process close leak and poisoned-allocator oracle.
 
 #![cfg(unix)]
 
@@ -48,7 +48,7 @@ fn compile_fixture(dir: &Path) -> PathBuf {
         .expect("invoke hew compile");
     assert!(
         output.status.success(),
-        "compiling CAP-13 leak fixture failed\n{}",
+        "compiling identity monitor leak fixture failed\n{}",
         describe_output(&output)
     );
     let binary = dir.join("dist_node");
@@ -79,7 +79,7 @@ fn spawn_server(binary: &Path, port: u16, scenario: &str, kx_dir: &Path) -> Chil
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn CAP-13 leak server"),
+            .expect("spawn identity monitor leak server"),
     )
 }
 
@@ -90,14 +90,14 @@ fn wait_for_server_ready(server: &mut ChildGuard) -> BufReader<std::process::Chi
     loop {
         assert!(
             Instant::now() < deadline,
-            "CAP-13 leak server did not become ready"
+            "identity monitor leak server did not become ready"
         );
         let mut line = String::new();
         match reader.read_line(&mut line) {
-            Ok(0) => panic!("CAP-13 leak server exited before READY"),
+            Ok(0) => panic!("identity monitor leak server exited before READY"),
             Ok(_) if line.starts_with("READY ") => return reader,
             Ok(_) => {}
-            Err(error) => panic!("read CAP-13 leak server stdout: {error}"),
+            Err(error) => panic!("read identity monitor leak server stdout: {error}"),
         }
     }
 }
@@ -108,8 +108,8 @@ fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &P
     // parent observes its exit. Capture to files so the child always drains.
     let stdout_path = kx_dir.join("client-leaks.stdout");
     let stderr_path = kx_dir.join("client-leaks.stderr");
-    let stdout = File::create(&stdout_path).expect("create CAP-13 client stdout capture");
-    let stderr = File::create(&stderr_path).expect("create CAP-13 client stderr capture");
+    let stdout = File::create(&stdout_path).expect("create identity monitor client stdout capture");
+    let stderr = File::create(&stderr_path).expect("create identity monitor client stderr capture");
     LeakClient {
         child: ChildGuard(
             Command::new("leaks")
@@ -128,7 +128,7 @@ fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &P
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
                 .spawn()
-                .expect("run CAP-13 leak client under leaks"),
+                .expect("run identity monitor leak client under leaks"),
         ),
         stdout_path,
         stderr_path,
@@ -138,17 +138,24 @@ fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &P
 fn finish_client(mut client: LeakClient) -> Output {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     let status = loop {
-        if let Some(status) = client.child.0.try_wait().expect("poll CAP-13 leak client") {
+        if let Some(status) = client
+            .child
+            .0
+            .try_wait()
+            .expect("poll identity monitor leak client")
+        {
             break status;
         }
         assert!(
             Instant::now() < deadline,
-            "CAP-13 leak client did not finish within {PROCESS_TIMEOUT:?}"
+            "identity monitor leak client did not finish within {PROCESS_TIMEOUT:?}"
         );
         thread::sleep(Duration::from_millis(20));
     };
-    let stdout = std::fs::read(&client.stdout_path).expect("read CAP-13 leak client stdout");
-    let stderr = std::fs::read(&client.stderr_path).expect("read CAP-13 leak client stderr");
+    let stdout =
+        std::fs::read(&client.stdout_path).expect("read identity monitor leak client stdout");
+    let stderr =
+        std::fs::read(&client.stderr_path).expect("read identity monitor leak client stderr");
     Output {
         status,
         stdout,
@@ -175,11 +182,15 @@ fn finish_server(
 ) -> String {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
-        if let Some(status) = server.0.try_wait().expect("poll CAP-13 leak server") {
+        if let Some(status) = server
+            .0
+            .try_wait()
+            .expect("poll identity monitor leak server")
+        {
             let mut stdout = String::new();
             reader
                 .read_to_string(&mut stdout)
-                .expect("drain CAP-13 leak server stdout");
+                .expect("drain identity monitor leak server stdout");
             let mut stderr = String::new();
             server
                 .0
@@ -187,23 +198,23 @@ fn finish_server(
                 .take()
                 .expect("server stderr was captured")
                 .read_to_string(&mut stderr)
-                .expect("drain CAP-13 leak server stderr");
+                .expect("drain identity monitor leak server stderr");
             assert!(
                 status.success(),
-                "CAP-13 leak server exited non-zero ({status:?})\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                "identity monitor leak server exited non-zero ({status:?})\nstdout:\n{stdout}\nstderr:\n{stderr}"
             );
             return stdout;
         }
         assert!(
             Instant::now() < deadline,
-            "CAP-13 leak server did not finish within {PROCESS_TIMEOUT:?}"
+            "identity monitor leak server did not finish within {PROCESS_TIMEOUT:?}"
         );
         thread::sleep(Duration::from_millis(20));
     }
 }
 
 fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
-    let kx_dir = tempfile::tempdir().expect("create CAP-13 key directory");
+    let kx_dir = tempfile::tempdir().expect("create identity monitor key directory");
     let port = allocate_loopback_port();
     let mut server = spawn_server(binary, port, scenario, kx_dir.path());
     let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());
@@ -216,7 +227,7 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
     );
     assert!(
         !client_stdout.contains("FAIL "),
-        "CAP-13 leak client reported failure\n{}",
+        "identity monitor leak client reported failure\n{}",
         describe_output(&client)
     );
     let server_stdout = finish_server(server, server_reader);
@@ -224,7 +235,7 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
         server_stdout.contains(&format!(
             "PASS {scenario} iterations={iterations} target=0 max=1"
         )),
-        "CAP-13 leak server missed exact target cleanup\nstdout:\n{server_stdout}"
+        "identity monitor leak server missed exact target cleanup\nstdout:\n{server_stdout}"
     );
     let report = format!("{client_stdout}\n{client_stderr}");
     let leak_nodes = parse_leak_nodes(&report).unwrap_or_else(|| {
@@ -238,7 +249,7 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
     let completed_leak_inspection = client.status.code() == Some(1) && leak_nodes > 0;
     assert!(
         (client.status.success() || completed_leak_inspection) && client_stdout.contains(&sentinel),
-        "CAP-13 leak client did not complete cleanly or its exact lifecycle sentinel\n{}",
+        "identity monitor leak client did not complete cleanly or its exact lifecycle sentinel\n{}",
         describe_output(&client)
     );
     leak_nodes
@@ -306,14 +317,14 @@ fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) 
 fn cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure() {
     require_leaks_tool();
     require_codegen();
-    let emit_dir = tempfile::tempdir().expect("create CAP-13 compile directory");
+    let emit_dir = tempfile::tempdir().expect("create identity monitor compile directory");
     let binary = compile_fixture(emit_dir.path());
 
     let low = run_probe(&binary, "monitor_leak_low", LOW_ITERATIONS);
     let high = run_probe(&binary, "monitor_leak_high", HIGH_ITERATIONS);
     assert!(
         high <= low,
-        "CAP-13 monitor lifecycle has a positive leak-node slope: low={low}, high={high}"
+        "identity monitor close lifecycle has a positive leak-node slope: low={low}, high={high}"
     );
 }
 

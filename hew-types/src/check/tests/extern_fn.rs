@@ -41,6 +41,182 @@ fn extern_borrow_signature_registers_exact_types() {
 }
 
 #[test]
+fn duplicate_extern_symbol_rejects_type_and_ownership_drift() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_duplicate")]
+            fn first(consume value: string) -> i64;
+            #[extern_symbol("hew_duplicate")]
+            fn second(value: bytes) -> i64;
+        }
+        "#,
+    );
+    let conflicts = output
+        .errors
+        .iter()
+        .filter(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_duplicate"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(conflicts.len(), 1, "errors: {:#?}", output.errors);
+    assert!(conflicts[0].message.contains("consume string"));
+    assert!(conflicts[0].message.contains("bytes"));
+}
+
+#[test]
+fn duplicate_extern_symbol_rejects_ownership_only_drift() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_duplicate_mode")]
+            fn first(consume value: string);
+            #[extern_symbol("hew_duplicate_mode")]
+            fn second(value: string);
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_duplicate_mode"
+            )
+        }),
+        "errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_extern_symbol_accepts_identical_contracts() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_same")]
+            fn first(consume value: string) -> i64;
+            #[extern_symbol("hew_same")]
+            fn second(consume value: string) -> i64;
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { .. }
+        )),
+        "identical extern contracts must coexist: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
+    let stream = hew_parser::parse(
+        r#"
+        pub type Stream<T> {}
+        extern "C" {
+            #[extern_symbol("hew_cross_module_same")]
+            fn first() -> Stream<bytes>;
+            #[extern_symbol("hew_cross_module_drift")]
+            fn first_drift() -> Stream<bytes>;
+        }
+        "#,
+    );
+    assert!(stream.errors.is_empty(), "parse: {:#?}", stream.errors);
+    let mut net = hew_parser::parse(
+        r#"
+        import std::stream;
+        extern "C" {
+            #[extern_symbol("hew_cross_module_same")]
+            fn second() -> stream.Stream<bytes>;
+            #[extern_symbol("hew_cross_module_drift")]
+            fn second_drift() -> stream.Stream<string>;
+        }
+        "#,
+    );
+    assert!(net.errors.is_empty(), "parse: {:#?}", net.errors);
+    let import_span = net.program.items[0].1.clone();
+    let Item::Import(import) = &mut net.program.items[0].0 else {
+        panic!("expected import");
+    };
+    import.resolved_items = Some(stream.program.items.clone());
+
+    let root_id = ModuleId::root();
+    let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);
+    let net_id = ModuleId::new(vec!["std".to_string(), "net".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: stream_id.clone(),
+            items: stream.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add stream module");
+    graph
+        .add_module(Module {
+            id: net_id.clone(),
+            items: net.program.items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: stream_id.clone(),
+                spec: None,
+                span: import_span,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add net module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root module");
+    graph.topo_order = vec![stream_id, net_id, root_id];
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                if symbol_name == "hew_cross_module_same"
+        )),
+        "alias-qualified copies of one nominal contract must coexist: {:#?}",
+        output.errors
+    );
+    let conflict = output
+        .errors
+        .iter()
+        .find(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                    if symbol_name == "hew_cross_module_drift"
+            )
+        })
+        .expect("cross-module contract drift must be rejected");
+    assert_eq!(
+        conflict.notes[0].2.as_deref(),
+        Some("std.stream"),
+        "the established declaration note must retain its own source module"
+    );
+}
+
+#[test]
 fn injected_ordinary_function_borrow_fails_closed() {
     let mut parsed = hew_parser::parse("fn ordinary(value: i64) {}");
     assert!(parsed.errors.is_empty());

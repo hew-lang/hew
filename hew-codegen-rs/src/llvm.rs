@@ -90,6 +90,13 @@ use hew_types::{
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
 // family, extended to discriminant codes). The runtime constants are `i32`;
 // `emit_trap_with_code` takes `u64`, so each use site casts `as u64`.
+//
+// `HEW_TRAP_ACTOR_SEND_FAILED` is also borrowed by the crash-cleanup and
+// lifecycle-lock traps introduced alongside this pass — those failure modes
+// are distinct from a plain send failure and share the code only because new
+// runtime trap discriminants are an ABI addition past the rc1 freeze. WHEN
+// OBSOLETE: rc2, once dedicated trap codes for crash-cleanup and
+// lifecycle-lock failures can be minted.
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
     HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
@@ -16804,6 +16811,12 @@ fn lower_record_field_store(
             false,
         )?;
     }
+    // WHY: no release/un-clonable check runs when `record_key` is `None` —
+    // preserves the pre-change leak posture (never UAF) for builtin, opaque,
+    // or otherwise-unregistered record bases, whose field layouts this pass
+    // cannot resolve. WHEN OBSOLETE: once every record base carries a
+    // registered layout key. WHAT: fail-closed with a `CodegenError` once that
+    // holds — hard-erroring the `None` path is L13's job, not this change's.
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
@@ -17498,6 +17511,12 @@ fn emit_field_overwrite_release(
                  ({descriptor:?}); MIR must reject the store until it carries \
                  source-slot neutralisation"
         ))),
+        // Leak-over-UAF: a user `#[resource]` handle (or bit-copy/closure-pair/
+        // opaque-handle field) overwritten here is never released — the prior
+        // value is abandoned, not freed. That is deliberate: releasing without
+        // proof the old value isn't aliased elsewhere risks a double-free/UAF,
+        // which this crate treats as strictly worse than a leak. This arm now
+        // also serves the widened ordinary-record-field-store call site above.
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
@@ -22058,6 +22077,22 @@ fn crash_cleanup_drop_requires_registration(drop: &ElabDrop) -> CodegenResult<bo
     Ok(true)
 }
 
+/// Compare the type-directed destructor authority independently of its
+/// path-local liveness predicate.
+///
+/// A receive parameter's function-entry cancellation plan is intentionally
+/// unconditional because that edge precedes the generated consume-flag
+/// initialisation in MIR. Later exit plans for the same owner carry the flag.
+/// Those plans still describe one destructor ritual and therefore one crash
+/// snapshot owner.
+fn helper_crash_cleanup_same_ritual(left: &ElabDrop, right: &ElabDrop) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.guard = None;
+    right.guard = None;
+    left == right
+}
+
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
@@ -22148,7 +22183,11 @@ fn collect_helper_crash_cleanup_descriptors(
     }
     let mut descriptors = Vec::<HelperCrashCleanupDescriptor>::new();
     let mut by_place = HashMap::<Place, usize>::new();
-    for (_, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+    let mut entry_cancel_unguarded = HashSet::<Place>::new();
+    let entry_block_id = func.blocks.first().map(|block| block.id);
+    for (exit, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+        let is_entry_cancel =
+            matches!(exit, ExitPath::Cancel { block } if Some(*block) == entry_block_id);
         for drop in &plan.drops {
             if !matches!(drop.place, Place::Local(_)) {
                 continue;
@@ -22189,8 +22228,17 @@ fn collect_helper_crash_cleanup_descriptors(
                 )));
             }
             if let Some(&index) = by_place.get(&drop.place) {
-                if descriptors[index].descriptor != *drop
-                    || descriptors[index].disposition != HelperCrashCleanupDisposition::Owned
+                let existing = &mut descriptors[index];
+                if existing.descriptor == *drop
+                    && existing.disposition == HelperCrashCleanupDisposition::Owned
+                {
+                    continue;
+                }
+                let current_is_entry_cancel = is_entry_cancel && drop.guard.is_none();
+                let existing_is_entry_cancel = entry_cancel_unguarded.contains(&drop.place)
+                    && existing.descriptor.guard.is_none();
+                if existing.disposition != HelperCrashCleanupDisposition::Owned
+                    || !helper_crash_cleanup_same_ritual(&existing.descriptor, drop)
                 {
                     return Err(CodegenError::FailClosed(format!(
                         "ordinary helper crash snapshot for {:?} has conflicting \
@@ -22198,9 +22246,26 @@ fn collect_helper_crash_cleanup_descriptors(
                         drop.place
                     )));
                 }
+                match (existing.descriptor.guard, drop.guard) {
+                    (None, Some(_)) if existing_is_entry_cancel => {
+                        existing.descriptor = drop.clone();
+                        entry_cancel_unguarded.remove(&drop.place);
+                    }
+                    (Some(_), None) if current_is_entry_cancel => {}
+                    _ => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "ordinary helper crash snapshot for {:?} has conflicting \
+                             typed drop descriptors across exit plans",
+                            drop.place
+                        )));
+                    }
+                }
                 continue;
             }
             by_place.insert(drop.place, descriptors.len());
+            if is_entry_cancel && drop.guard.is_none() {
+                entry_cancel_unguarded.insert(drop.place);
+            }
             descriptors.push(HelperCrashCleanupDescriptor {
                 descriptor: drop.clone(),
                 disposition: HelperCrashCleanupDisposition::Owned,
@@ -23127,7 +23192,9 @@ fn emit_helper_crash_cleanup_retire_before_drop(
     let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&drop.place).cloned() else {
         return Ok(());
     };
-    if owner.descriptor != *drop {
+    let guard_is_compatible = owner.descriptor.guard == drop.guard
+        || (owner.descriptor.guard.is_some() && drop.guard.is_none());
+    if !guard_is_compatible || !helper_crash_cleanup_same_ritual(&owner.descriptor, drop) {
         return Err(CodegenError::FailClosed(format!(
             "ordinary helper cleanup descriptor drift at {:?}",
             drop.place
@@ -26635,11 +26702,10 @@ fn emit_remote_pid_send_call<'ctx>(
 ///     the same IDs the dispatch trampoline switches on.
 ///   * Load the opaque transport handle and `LocalPid<A>` actor pointer, then
 ///     call the transport's real four-argument runtime ABI.
-///   * `attach` returns Unit on the Hew surface; the runtime rc is discarded
-///     (the runtime records the failure in last_error and the fail-closed
-///     mailbox guard already rejected leak-prone mailboxes at type-check via
-///     the runtime). Dispatch is by callee name (no new FnSymbol variant),
-///     matching the `hew_remote_pid_send` precedent.
+///   * Return the runtime status to the caller. TCP uses it to construct its
+///     public `Result<(), AttachError>`; TLS and WebSocket currently discard it
+///     for their Unit-returning borrowing surfaces. Dispatch is by callee name
+///     (no new FnSymbol variant), matching the `hew_remote_pid_send` precedent.
 fn emit_transport_attach_local_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     args: &[Place],
@@ -26648,7 +26714,7 @@ fn emit_transport_attach_local_call<'ctx>(
     data_handler_name: &str,
     close_handler_name: &str,
     ids_are_i64: bool,
-) -> CodegenResult<()> {
+) -> CodegenResult<IntValue<'ctx>> {
     let [conn_arg, handler_arg] = args else {
         return Err(CodegenError::FailClosed(format!(
             "{pseudo_callee} expects exactly 2 arguments (transport, handler), got {}",
@@ -26748,9 +26814,10 @@ fn emit_transport_attach_local_call<'ctx>(
         .build_load(handler_slot_ty, handler_ptr, "attach_actor_ptr")
         .llvm_ctx("load attach handler LocalPid ptr")?;
 
-    // Call the real four-argument runtime ABI. Its status is intentionally
-    // discarded, matching the established TCP `attach` Unit surface.
-    fn_ctx.call_runtime_void(
+    // Call the real four-argument runtime ABI and retain its status. The caller
+    // decides whether this transport exposes the status or deliberately
+    // discards it for an existing Unit-returning surface.
+    fn_ctx.call_runtime_int(
         runtime_callee,
         &[
             metadata_value_from_basic(conn_val),
@@ -26760,7 +26827,82 @@ fn emit_transport_attach_local_call<'ctx>(
         ],
         "attach_rc",
         "transport attach runtime call",
+    )
+}
+
+/// Materialise TCP active-mode attach's `Result<(), AttachError>` from the
+/// runtime status. `AttachError` has one payload-less variant (`Refused`), so a
+/// zeroed error value is its complete representation.
+fn emit_tcp_attach_result<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    status: IntValue<'ctx>,
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_tcp_attach_local must carry a Terminator::Call dest \
+             (Result<(), AttachError> return value)"
+                .into(),
+        )
+    })?;
+    let dest_local = match dest_place {
+        Place::Local(id) => *id,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_tcp_attach_local dest must be Place::Local(_), got {other:?}"
+            )));
+        }
+    };
+    let success = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            status.get_type().const_zero(),
+            "tcp_attach_is_ok",
+        )
+        .llvm_ctx("tcp attach status compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("TCP attach call has no parent function".into()))?;
+    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "tcp_attach_ok_bb");
+    let err_bb = fn_ctx.ctx.append_basic_block(parent, "tcp_attach_err_bb");
+    fn_ctx
+        .builder
+        .build_conditional_branch(success, ok_bb, err_bb)
+        .llvm_ctx("tcp attach result branch")?;
+    let next_bb = *fn_ctx.blocks.get(&next).ok_or_else(|| {
+        CodegenError::FailClosed(format!("hew_tcp_attach_local next bb{next} missing"))
+    })?;
+
+    fn_ctx.builder.position_at_end(ok_bb);
+    store_composite_tag(fn_ctx, dest_local, 0, "TCP attach Result::Ok")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("TCP attach Ok branch")?;
+
+    fn_ctx.builder.position_at_end(err_bb);
+    store_composite_tag(fn_ctx, dest_local, 1, "TCP attach Result::Err")?;
+    let (error_ptr, error_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 1,
+            field_idx: 0,
+        },
     )?;
+    fn_ctx
+        .builder
+        .build_store(error_ptr, error_ty.const_zero())
+        .llvm_ctx("store AttachError::Refused")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("TCP attach Err branch")?;
     Ok(())
 }
 
@@ -29121,8 +29263,9 @@ fn lower_terminator<'ctx>(
             // Typed TCP/TLS/WebSocket attach calls carry distinct runtime-call
             // families. Codegen resolves the concrete actor from the handler's
             // `LocalPid<A>`, synthesises the transport handler msg_ids, and
-            // emits the real four-argument runtime ABI. `attach` returns Unit,
-            // so any `dest` is a checker-boundary bug.
+            // emits the real four-argument runtime ABI. TCP exposes the status
+            // as `Result<(), AttachError>`; TLS and WebSocket retain their
+            // Unit-returning borrowing surfaces.
             if matches!(
                 builtin,
                 Some(
@@ -29131,7 +29274,7 @@ fn lower_terminator<'ctx>(
                         | RtFamily::WebSocketAttachLocal
                 )
             ) {
-                if dest.is_some() {
+                if builtin != Some(RtFamily::TcpAttachLocal) && dest.is_some() {
                     return Err(CodegenError::FailClosed(format!(
                         "{callee} (transport.attach) returns Unit and must not carry a \
                              Terminator::Call dest"
@@ -29149,7 +29292,7 @@ fn lower_terminator<'ctx>(
                     }
                     _ => unreachable!("guarded active transport attach family"),
                 };
-                emit_transport_attach_local_call(
+                let status = emit_transport_attach_local_call(
                     fn_ctx,
                     args,
                     callee,
@@ -29158,6 +29301,10 @@ fn lower_terminator<'ctx>(
                     close_handler,
                     ids_are_i64,
                 )?;
+                if builtin == Some(RtFamily::TcpAttachLocal) {
+                    emit_tcp_attach_result(fn_ctx, status, dest.as_ref(), *next)?;
+                    return Ok(());
+                }
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                     CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;

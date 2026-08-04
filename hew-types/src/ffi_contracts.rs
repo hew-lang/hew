@@ -33,11 +33,36 @@ pub enum ReleaseDischargeDepth {
     None,
 }
 
-/// Whether the foreign callee retained a pointer into an owned result.
+/// The measured aliasing disposition of an owned foreign result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum ExternResultRetention {
+    /// The caller receives the sole owner of the allocation.
     Transferred,
+    /// The caller receives an independently releasable refcount share of an
+    /// allocation that remains aliased by another owner.
+    SharedRefcount,
+    /// The caller receives the only close authority for a fresh opaque
+    /// resource allocation or runtime table token.
+    ResourceTransfer,
     Unspecified,
+}
+
+impl ExternResultRetention {
+    /// Whether one caller-side release is proven to balance this result.
+    #[must_use]
+    pub const fn authorizes_caller_release(self) -> bool {
+        matches!(
+            self,
+            Self::Transferred | Self::SharedRefcount | Self::ResourceTransfer
+        )
+    }
+
+    /// Whether this result is a directly releasable allocation/refcount share,
+    /// rather than an opaque resource close authority.
+    #[must_use]
+    pub const fn authorizes_direct_allocation_release(self) -> bool {
+        matches!(self, Self::Transferred | Self::SharedRefcount)
+    }
 }
 
 /// Complete contract for one FFI symbol.
@@ -52,8 +77,8 @@ pub struct ExternOwnershipContract {
     /// Qualified source nominal for an independently-owned opaque result.
     ///
     /// This is present only when the same generated contract also proves an
-    /// owned result, transferred retention, and an exact consuming release
-    /// edge for this nominal.
+    /// owned result, measured resource transfer, and an exact consuming
+    /// release edge for this nominal.
     pub resource_result_type: Option<&'static str>,
     pub result: ExternResultOwnership,
     pub release_symbol: &'static str,
@@ -143,7 +168,7 @@ pub(crate) fn owned_resource_result_for_contract(
         )
         || contract.release_symbol.is_empty()
         || contract.discharge_depth == ReleaseDischargeDepth::None
-        || contract.result_retention != ExternResultRetention::Transferred
+        || contract.result_retention != ExternResultRetention::ResourceTransfer
     {
         return None;
     }
@@ -355,7 +380,7 @@ mod tests {
             result: ExternResultOwnership::Fresh,
             release_symbol: "example_socket_close",
             discharge_depth: ReleaseDischargeDepth::Shallow,
-            result_retention: ExternResultRetention::Transferred,
+            result_retention: ExternResultRetention::ResourceTransfer,
         };
         let result =
             owned_resource_result_for_contract(&contract).expect("valid synthetic producer");
@@ -431,8 +456,8 @@ mod tests {
             );
             assert_eq!(
                 contract.result_retention,
-                ExternResultRetention::Transferred,
-                "{symbol} must prove it transfers the returned TCP owner"
+                ExternResultRetention::ResourceTransfer,
+                "{symbol} must prove it transfers the returned TCP close authority"
             );
             let typed = extern_owned_resource_result(symbol)
                 .unwrap_or_else(|| panic!("{symbol} must carry a typed resource result"));
@@ -446,8 +471,8 @@ mod tests {
             .expect("stream bridge contract");
         assert_eq!(
             stream_bridge.result_retention,
-            ExternResultRetention::Transferred,
-            "the bridge's temporary pair owner must not retain aliases after it is handed to Hew"
+            ExternResultRetention::ResourceTransfer,
+            "the bridge must transfer the returned pair's sole close authority"
         );
 
         assert!(
@@ -953,7 +978,7 @@ mod tests {
                 );
                 assert_eq!(
                     contract.result_retention,
-                    ExternResultRetention::Transferred,
+                    ExternResultRetention::ResourceTransfer,
                     "{symbol}"
                 );
             }

@@ -1939,10 +1939,10 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // `forward_param` shape passes — by-value params are caller-retained CoW
 // borrows and are excluded from the mint set entirely).
 //
-// SCOPE EXCLUSION: functions whose CFG carries a suspend terminator
-// (coroutine ramps) are excluded — across a suspend point ownership moves
-// through the coro frame and the single teardown outline, which the lite
-// whole-local model does not carry. The S2/OWN-V1 stages own that extension.
+// SUSPEND EXITS: `ExitPath::Suspend` is folded into the verdict alongside
+// `Return` (see `validate_obligation_balance`'s "suspend-abandon" edge) —
+// ownership moved through the coro frame at a suspend point is accounted for,
+// not excluded from this pass.
 //
 // LESSONS: lifecycle-symmetry (the invariant IS the row), checker-authority
 // (with the independence twist above), boundary-fail-closed (findings reject
@@ -6472,10 +6472,21 @@ pub(super) fn enumerate_exits(
     // already carry the binding's Place but not its id; reverse the
     // builder's `binding_locals` (BindingId -> Place) is the cleanest
     // bridge. Builds only as large as there are owned bindings.
-    let place_to_binding: std::collections::HashMap<Place, BindingId> = binding_locals
-        .iter()
-        .map(|(binding, place)| (*place, *binding))
-        .collect();
+    //
+    // Adoption/transfer/machine-synth seams legitimately point two bindings
+    // at one `Place`, so this reversal is not always injective. `.collect()`
+    // over a `HashMap` iteration order would let a random one win —
+    // `RandomState`-nondeterministic across runs, violating the compiler's
+    // determinism doctrine. Fold with an explicit tie-break instead: the
+    // lowest `BindingId` (first-declared) wins.
+    let mut place_to_binding: std::collections::HashMap<Place, BindingId> =
+        std::collections::HashMap::with_capacity(binding_locals.len());
+    for (&binding, &place) in binding_locals {
+        place_to_binding
+            .entry(place)
+            .and_modify(|existing| *existing = (*existing).min(binding))
+            .or_insert(binding);
+    }
 
     // Narrow the function-wide LIFO to the drops whose owning binding is
     // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
@@ -6499,12 +6510,15 @@ pub(super) fn enumerate_exits(
                         | dataflow::BindingState::MaybeConsumed(_)
                         | dataflow::BindingState::AliasedIntoAggregate(_)
                 ),
-                // No binding mapping → conservatively keep the drop.
-                // This arm guards against future surfaces that build
-                // drops outside the binding_locals registry; the
-                // current `build_lifo_drops` `expect()` rules out
-                // this path today, but keep it for forward safety.
-                None => true,
+                // No binding mapping → conservatively DROP the drop, not
+                // keep it. This crate's posture is leak-not-double-free: an
+                // unrecognised place with no dataflow-tracked owning binding
+                // must not be assumed live, since firing an unproven drop
+                // risks a double-free. `build_lifo_drops` panics on a
+                // missing entry today, so this arm is unreachable — the
+                // leak-safe polarity only guards future surfaces that build
+                // drops outside the binding_locals registry.
+                None => false,
             })
             .cloned()
             .collect()

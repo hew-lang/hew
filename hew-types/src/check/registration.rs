@@ -43,6 +43,181 @@ struct ExplicitReturnFinder {
     saw_return: bool,
 }
 
+fn extern_signature_description(
+    signature: &FnSig,
+    consuming_params: &[bool],
+    is_variadic: bool,
+) -> String {
+    let mut params = signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            let ownership = if consuming_params.get(index).copied().unwrap_or(false) {
+                "consume "
+            } else {
+                ""
+            };
+            format!("{ownership}{}", ty.user_facing())
+        })
+        .collect::<Vec<_>>();
+    if is_variadic {
+        params.push("...".to_string());
+    }
+    format!(
+        "fn({}) -> {}",
+        params.join(", "),
+        signature.return_type.user_facing()
+    )
+}
+
+/// Complete a canonical stdlib owner that a module reached through the prelude
+/// rather than an import.
+///
+/// `canonical_nominal_name` widens a partial owner only through an import
+/// binding of the declaring module. A module can name a shipped type without
+/// importing its owner — `std/net/http/http.hew` returns `Sink<string>`, which
+/// the prelude resolves to `stream.Sink` while `std/stream.hew` declares the
+/// same extern against its own `std.stream.Sink`. Comparing those spellings
+/// rejects one type as two.
+///
+/// WHY this is scoped to the extern-contract comparison: it widens a NAME, and
+/// nominal identity feeds layout, dispatch and ownership routing. Only the
+/// duplicate-declaration check needs it, so only that check gets it.
+///
+/// WHEN OBSOLETE: when prelude-resolved nominals carry their canonical owner at
+/// resolution, so nothing downstream ever sees a partial one.
+///
+/// The trust gates are the same ones `canonical_nominal_name` uses. A partial
+/// owner must be one bare segment and identify exactly one canonical stdlib
+/// source. An owner-less name must not shadow a local declaration and must
+/// identify exactly one known type across the canonical stdlib sources. An
+/// ambiguous or unknown completion proves nothing and is left alone.
+fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
+    if let Some((owner, short)) = name.rsplit_once('.') {
+        if owner.contains('.') {
+            return None;
+        }
+        let suffix = format!(".{owner}");
+        let mut sources = checker
+            .canonical_std_module_sources
+            .iter()
+            .filter(|source| source.ends_with(&suffix));
+        let full_owner = sources.next()?;
+        if sources.next().is_some() {
+            return None;
+        }
+        let completed = format!("{full_owner}.{short}");
+        return (checker.type_defs.contains_key(&completed)
+            || checker.known_types.contains(&completed))
+        .then_some(completed);
+    }
+
+    let shadows_local_declaration = checker.current_module.as_ref().map_or_else(
+        || checker.local_type_defs.contains(name),
+        |module| checker.type_defs.contains_key(&format!("{module}.{name}")),
+    );
+    if shadows_local_declaration {
+        return None;
+    }
+    let mut completions = checker
+        .canonical_std_module_sources
+        .iter()
+        .map(|source| format!("{source}.{name}"))
+        .filter(|completed| {
+            checker.type_defs.contains_key(completed) || checker.known_types.contains(completed)
+        });
+    let completed = completions.next()?;
+    completions.next().is_none().then_some(completed)
+}
+
+/// Carry a uniquely proven owner-less prelude nominal into the stored extern
+/// signature, not only the duplicate-contract comparison.
+///
+/// Leaving the accepted declaration bare would merely postpone the same
+/// identity loss until MIR/codegen, where a generic user nominal named `Sink`
+/// is not a legal runtime carrier. Partial owners already retain enough source
+/// identity for downstream canonicalisation; this rewrite is deliberately
+/// limited to owner-less names.
+fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
+    match ty {
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        } => Ty::Named {
+            name: (!name.contains('.'))
+                .then(|| complete_prelude_std_owner(checker, name))
+                .flatten()
+                .unwrap_or_else(|| name.clone()),
+            args: args
+                .iter()
+                .map(|arg| complete_ownerless_prelude_std_types(checker, arg))
+                .collect(),
+            builtin: *builtin,
+        },
+        _ => ty.map_children_pub(&|child| complete_ownerless_prelude_std_types(checker, child)),
+    }
+}
+
+/// Fold a peer-assembled submodule owner into the directory module that also
+/// assembles it.
+///
+/// A directory module is its primary file plus every peer `.hew` file in that
+/// directory (hew-compile's `resolve_completed_import_internal`). Importing
+/// both `std::net::http` and its `std::net::http::http_client` peer registers
+/// the one declaration in `http_client.hew` under both owners, so the
+/// duplicate-extern check sees the module disagree with itself — that is what
+/// `hew_http_response_*` hit, with the reported "first declaration" spans
+/// landing in `http.hew`, which declares none of them.
+///
+/// The relation is read off the module graph, not the two spellings: an owner
+/// folds only when it is assembled from exactly one source file AND some other
+/// module assembles that same file among its own. Two modules sharing a source
+/// file share its declarations, so this cannot equate distinct ones.
+///
+/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
+/// direct submodule import aliases the assembled module instead of registering
+/// a second copy.
+fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
+    let (owner, short) = name.rsplit_once('.')?;
+    let sources = checker.module_source_paths.get(owner)?;
+    let [source] = sources.as_slice() else {
+        return None;
+    };
+    let mut assemblers = checker
+        .module_source_paths
+        .iter()
+        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
+        .map(|(other, _)| other);
+    let assembler = assemblers.next()?;
+    if assemblers.next().is_some() {
+        return None;
+    }
+    Some(format!("{assembler}.{short}"))
+}
+
+fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
+    fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named { name, args, .. } => Ty::Named {
+                name: complete_prelude_std_owner(checker, name)
+                    .or_else(|| fold_peer_assembled_owner(checker, name))
+                    .unwrap_or_else(|| name.clone()),
+                args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
+                // The builtin marker is checker metadata and can legitimately
+                // differ when one module spells that nominal through an import
+                // qualifier, so it is erased rather than compared.
+                builtin: None,
+            },
+            _ => ty.map_children_pub(&|child| rewrite(checker, child)),
+        }
+    }
+
+    // The owner-qualified nominal name is the source contract identity.
+    rewrite(checker, &checker.canonicalize_nominal_identity(ty))
+}
+
 impl super::lints::NodeVisitor for ExplicitReturnFinder {
     fn visit_stmt(&mut self, stmt: &Stmt, _span: &Span) {
         self.saw_return |= matches!(stmt, Stmt::Return(_));
@@ -5721,13 +5896,19 @@ impl Checker {
             Item::Actor(ad) => {
                 // Module actors are identified by their full dotted source
                 // owner (`{module_path}.{name}`); root actors stay bare.
-                // Registering the full declaration here
-                // (not only the signatures) covers PRIVATE module actors,
-                // which never pass through the pub-only import paths but
-                // still need a type def for in-module spawn checking.
+                // Registering the full declaration here (not only the
+                // signatures) covers PRIVATE module actors, which never pass
+                // through the pub-only import paths but still need a type def
+                // for in-module spawn checking. A root actor is normally
+                // already registered; restore it only if import registration
+                // replaced its bare compatibility slot with a non-actor type.
                 let module_identity = self.current_module.clone();
                 let identity = Self::actor_identity(module_identity.as_deref(), &ad.name);
-                if module_identity.is_some() {
+                let local_actor_needs_restore = self
+                    .type_defs
+                    .get(&identity)
+                    .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
+                if module_identity.is_some() || local_actor_needs_restore {
                     self.register_actor_decl_as(ad, &identity);
                 }
                 // The actor's own generics (`actor Worker<T>`) are in scope for
@@ -6826,6 +7007,7 @@ impl Checker {
                      intrinsic as a top-level free function in the floor module and \
                      call it from the impl method body if needed."
                         .to_string(),
+                    self.current_module.clone(),
                 )],
                 suggestions: vec![
                     "remove the `#[intrinsic(\"…\")]` attribute from this method".to_string(),
@@ -6876,6 +7058,7 @@ impl Checker {
                  they never declare `#[intrinsic]` themselves. There is no \
                  user-visible `unsafe`/`@unsafe` surface (A605)."
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec!["remove the `#[intrinsic(\"…\")]` attribute and call the \
                  corresponding stdlib function instead"
@@ -9079,6 +9262,7 @@ impl Checker {
                              (e.g. cooperate safepoints, actor-state locks). Neither \
                              may be named by user code in `extern \"rt\"` blocks."
                                 .to_string(),
+                            self.current_module.clone(),
                         )],
                         suggestions: vec![format!(
                             "add `\"{}\"` to the `stable` list in \
@@ -9112,13 +9296,19 @@ impl Checker {
                     TypeResolutionContext::ExternSignature,
                 )
             });
-            let sig = FnSig {
+            let mut sig = FnSig {
                 param_names,
                 params,
                 return_type,
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
+            sig.params = sig
+                .params
+                .iter()
+                .map(|ty| complete_ownerless_prelude_std_types(self, ty))
+                .collect();
+            sig.return_type = complete_ownerless_prelude_std_types(self, &sig.return_type);
             let source_symbol = sig.extern_symbol.as_ref().map_or_else(
                 || f.name.clone(),
                 |spec| {
@@ -9136,6 +9326,95 @@ impl Checker {
                 .map(|spec| spec.template.clone());
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
+            let consuming_params = f
+                .params
+                .iter()
+                .map(|param| param.is_consume)
+                .collect::<Vec<_>>();
+            if !source_symbol.is_empty() {
+                let conflict = self.source_extern_declarations.iter().find_map(|existing| {
+                    if existing.symbol != source_symbol || existing.symbol_template.is_some() {
+                        return None;
+                    }
+                    // Extern declarations are module-private. A bare
+                    // compatibility binding published while collecting an
+                    // unrelated module cannot turn that module's declaration
+                    // into an ABI contract visible here: the current module's
+                    // private declaration wins. Compare declarations within
+                    // one module, or across the direct import edge that makes
+                    // the established declaration visible to this module.
+                    let established_is_directly_imported =
+                        existing.declaring_module.as_ref().is_some_and(|module| {
+                            self.current_module_direct_imports.contains(module)
+                                || (!module.contains('.')
+                                    && self.current_module_direct_imports.iter().any(|imported| {
+                                        self.canonical_std_module_sources.contains(imported)
+                                            && imported.ends_with(&format!(".{module}"))
+                                    }))
+                        });
+                    let established_is_visible = existing.declaring_module == self.current_module
+                        || established_is_directly_imported;
+                    if !established_is_visible {
+                        return None;
+                    }
+                    let established = self.fn_sigs.get(&existing.signature_key)?;
+                    let established_params = established
+                        .params
+                        .iter()
+                        .map(|ty| extern_contract_type_identity(self, ty))
+                        .collect::<Vec<_>>();
+                    let candidate_params = sig
+                        .params
+                        .iter()
+                        .map(|ty| extern_contract_type_identity(self, ty))
+                        .collect::<Vec<_>>();
+                    let established_return =
+                        extern_contract_type_identity(self, &established.return_type);
+                    let candidate_return = extern_contract_type_identity(self, &sig.return_type);
+                    let disagrees = established_params != candidate_params
+                        || established_return != candidate_return
+                        || existing.consuming_params != consuming_params
+                        || existing.is_variadic != f.is_variadic;
+                    disagrees.then(|| {
+                        (
+                            existing.span.clone(),
+                            existing.declaring_module.clone(),
+                            extern_signature_description(
+                                established,
+                                &existing.consuming_params,
+                                existing.is_variadic,
+                            ),
+                            extern_signature_description(&sig, &consuming_params, f.is_variadic),
+                        )
+                    })
+                });
+                if let Some((established_span, established_module, established, conflicting)) =
+                    conflict
+                {
+                    self.errors.push(TypeError {
+                        severity: crate::error::Severity::Error,
+                        kind: TypeErrorKind::ConflictingExternDeclaration {
+                            symbol_name: source_symbol.clone(),
+                        },
+                        span: f.span.clone(),
+                        message: format!(
+                            "extern symbol `{source_symbol}` has conflicting declarations: \
+                             `{conflicting}` does not match the established `{established}`"
+                        ),
+                        notes: vec![(
+                            established_span,
+                            format!(
+                                "the first declaration of `{source_symbol}` established `{established}`"
+                            ),
+                            established_module,
+                        )],
+                        suggestions: vec![format!(
+                            "make every declaration of `{source_symbol}` use exactly `{established}`"
+                        )],
+                        source_module: self.current_module.clone(),
+                    });
+                }
+            }
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
@@ -9144,9 +9423,11 @@ impl Checker {
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
+                    span: f.span.clone(),
+                    is_variadic: f.is_variadic,
                     declaring_module: self.current_module.clone(),
                     direct_import_modules: self.current_module_direct_imports.clone(),
-                    consuming_params: f.params.iter().map(|param| param.is_consume).collect(),
+                    consuming_params,
                 });
             self.fn_param_ownership.insert(
                 key.clone(),

@@ -20,13 +20,17 @@ struct ContractRow {
     resource_result_type: Option<String>,
     release_symbol: String,
     discharge_depth: String,
-    /// The RETENTION answer for an owned result: `"transferred"` when the
-    /// callee provably keeps no pointer into the returned allocation, empty
-    /// when the question has not been answered for this symbol. Empty is the
-    /// fail-closed default and is what every row carries unless an executable
-    /// oracle established otherwise — see the `result-retention` section of
-    /// `scripts/jit-symbol-classification.toml`.
+    /// The RETENTION answer for an owned result: `"transferred"` for an
+    /// exclusive allocation handoff, `"shared-refcount"` for an independently
+    /// balanced retained alias, `"resource-transfer"` for an opaque close
+    /// authority, and empty when the question has not been answered.
+    /// Empty is the fail-closed default — see the `result-retention` section
+    /// of `scripts/jit-symbol-classification.toml`.
     result_retention: String,
+    /// Runtime-body evidence for an opaque `resource-transfer`. Kept in the
+    /// source table for auditability; it is validated but need not enter the
+    /// generated compiler table.
+    result_retention_basis: String,
 }
 
 fn quoted_value(line: &str) -> Option<&str> {
@@ -70,6 +74,28 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         ["fresh", "retained", "borrowed", "none"].contains(&row.result.as_str()),
         "unknown ownership result for {symbol}: {}",
         row.result
+    );
+    // The generated table interpolates these three fields straight into
+    // `"..."` Rust string literals (`generate_ffi_ownership_table`); a `"` or
+    // `\` in an interpolated field would close the literal early or start an
+    // escape sequence, corrupting the generated source rather than failing
+    // the build cleanly. Reject them here instead.
+    for resource_type in &row.resource_param_types {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-param-types for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    if let Some(resource_type) = &row.resource_result_type {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-result-type for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    assert!(
+        !row.release_symbol.contains('"') && !row.release_symbol.contains('\\'),
+        "release-symbol for {symbol} must not contain `\"` or `\\`: {}",
+        row.release_symbol
     );
     for param in &row.params {
         assert!(
@@ -123,10 +149,11 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         );
     }
     // The RETENTION axis. Absence is the fail-closed answer "not established",
-    // so the only spelling is the positive one, and it is only meaningful about
-    // an allocation the caller was actually given.
+    // so only measured positive spellings are allowed, and they are meaningful
+    // only about an allocation the caller was actually given.
     assert!(
-        ["", "transferred"].contains(&row.result_retention.as_str()),
+        ["", "resource-transfer", "shared-refcount", "transferred"]
+            .contains(&row.result_retention.as_str()),
         "unknown result-retention for {symbol}: {}",
         row.result_retention
     );
@@ -135,8 +162,21 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "result-retention for {symbol} is meaningless without an owned result"
     );
     assert!(
-        row.resource_result_type.is_none() || row.result_retention == "transferred",
-        "resource result type for {symbol} requires transferred result retention"
+        row.result_retention != "shared-refcount" || row.result == "retained",
+        "shared-refcount result-retention for {symbol} requires a retained result"
+    );
+    assert!(
+        row.result_retention != "resource-transfer" || row.resource_result_type.is_some(),
+        "resource-transfer result-retention for {symbol} requires a resource result type"
+    );
+    assert!(
+        row.result_retention != "resource-transfer"
+            || !row.result_retention_basis.trim().is_empty(),
+        "resource-transfer result-retention for {symbol} requires a non-empty basis"
+    );
+    assert!(
+        row.result_retention == "resource-transfer" || row.result_retention_basis.is_empty(),
+        "result-retention basis for {symbol} is only meaningful for resource-transfer"
     );
 }
 
@@ -190,6 +230,10 @@ fn validate_contract_graph(contracts: &std::collections::BTreeMap<String, Contra
 /// contract being accumulated and enters a skip state: keys inside a foreign
 /// trailing table — even ones spelled `symbol =` / `result =` — must never
 /// pollute the final contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fail-closed hand parser keeps every accepted contract key in one visible dispatch"
+)]
 fn parse_ownership_contracts(
     source: &str,
 ) -> std::collections::BTreeMap<String, ContractRow> {
@@ -223,6 +267,7 @@ fn parse_ownership_contracts(
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
                     result_retention: String::new(),
+                    result_retention_basis: String::new(),
                 },
             ));
             continue;
@@ -290,6 +335,10 @@ fn parse_ownership_contracts(
             quoted_value(line)
                 .expect("contract result-retention must be quoted")
                 .clone_into(&mut row.result_retention);
+        } else if line.starts_with("result-retention-basis =") {
+            quoted_value(line)
+                .expect("contract result-retention-basis must be quoted")
+                .clone_into(&mut row.result_retention_basis);
         }
     }
     finish(current.take(), &mut contracts);

@@ -448,6 +448,8 @@ struct WasmNote {
     start_offset: usize,
     end_offset: usize,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_module: Option<String>,
 }
 
 /// Diagnostic reported by the WASM analysis pipeline.
@@ -715,6 +717,7 @@ fn hir_diagnostic_to_wasm(diag: hew_hir::HirDiagnostic) -> WasmDiagnostic {
             start_offset: span.start,
             end_offset: span.end,
             message: msg,
+            source_module: None,
         })
         .collect();
     WasmDiagnostic {
@@ -748,11 +751,12 @@ fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
         notes: err
             .notes
             .into_iter()
-            .map(|(span, msg)| WasmNote {
+            .map(|(span, msg, source_module)| WasmNote {
                 span: WasmSpan::from_span(&span),
                 start_offset: span.start,
                 end_offset: span.end,
                 message: msg,
+                source_module,
             })
             .collect(),
         suggestions: err.suggestions,

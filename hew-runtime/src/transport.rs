@@ -1112,6 +1112,33 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
     });
 }
 
+/// Close a connection whose user-facing handle has no remaining owner.
+///
+/// This is the transport-table half of connection teardown: remove the stored
+/// stream, shut down the socket, and let the `TcpStream` drop close its fd. It
+/// deliberately does not detach from the reactor; callers use it only after no
+/// reactor registration exists (or while that registration is itself being
+/// destroyed).
+fn tcp_close_unowned_conn(handle: c_int) -> bool {
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Release the connection owned by an active-mode reactor registration.
+///
+/// `Connection.attach` transfers the handle to the reactor. Dropping the
+/// registration is therefore the terminal close authority for the transport
+/// table entry and its socket fd.
+pub(crate) fn tcp_close_reactor_owned_conn(handle: c_int) {
+    let _ = tcp_close_unowned_conn(handle);
+}
+
 /// Close a freshly-accepted connection handle that has no Hew-side owner
 /// (NEW-2 accept/abandon race). When `handle_ready_accept` accepts a connection
 /// but the suspended handler was abandoned/cancelled before the deposit lands,
@@ -1124,11 +1151,7 @@ pub(crate) fn tcp_release_conn(handle: c_int) {
 /// accepted fd was never registered with the reactor (the reactor polls the
 /// listener, not this new conn), so no detach is required.
 pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
-    TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
-    });
+    let _ = tcp_close_unowned_conn(handle);
 }
 
 /// Test-only: create a connected loopback TCP socketpair, register the server
@@ -3334,7 +3357,12 @@ pub unsafe extern "C" fn hew_tcp_attach(
 ) -> c_int {
     // SAFETY: caller guarantees `actor_ref` is valid for this call; the reactor
     // takes a by-value snapshot before returning.
-    unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) }
+    let status =
+        unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) };
+    if status < 0 {
+        let _ = tcp_close_unowned_conn(conn);
+    }
+    status
 }
 
 /// Attach a TCP connection to a *local* actor, identified by its raw
@@ -3369,6 +3397,7 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
 ) -> c_int {
     if actor.is_null() {
         set_last_error("hew_tcp_attach_local: null actor pointer");
+        let _ = tcp_close_unowned_conn(conn);
         return -1;
     }
     // SAFETY: `actor` is non-null (checked above) and the caller guarantees it
@@ -3377,9 +3406,13 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
     // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; `reactor_attach`
     // takes a by-value snapshot before returning, so the address is only needed
     // for the duration of this call.
-    unsafe {
+    let status = unsafe {
         crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
+    };
+    if status < 0 {
+        let _ = tcp_close_unowned_conn(conn);
     }
+    status
 }
 
 /// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1).
@@ -3493,14 +3526,7 @@ pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
     // reactor); kept for symmetry with `hew_tcp_close` and robustness if the
     // call graph ever changes.
     crate::reactor::reactor_detach_conn(handle);
-    TCP_API_STATE.access(|state| {
-        if let Some(stream) = state.streams.remove(&handle) {
-            let _ = stream.shutdown(Shutdown::Both);
-            true
-        } else {
-            false
-        }
-    })
+    tcp_close_unowned_conn(handle)
 }
 
 /// Close either a TCP connection handle or listener handle.

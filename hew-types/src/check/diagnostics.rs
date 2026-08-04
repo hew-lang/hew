@@ -202,7 +202,7 @@ impl Checker {
             kind,
             span: span.clone(),
             message,
-            notes: vec![(note_span.clone(), note)],
+            notes: vec![(note_span.clone(), note, self.current_module.clone())],
             suggestions: vec![],
             source_module: self.current_module.clone(),
         });
@@ -271,7 +271,11 @@ impl Checker {
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` is already defined in this scope"),
-                notes: vec![(prev_span, "previously defined here".to_string())],
+                notes: vec![(
+                    prev_span,
+                    "previously defined here".to_string(),
+                    self.current_module.clone(),
+                )],
                 suggestions: vec![format!(
                     "choose a different name, or prefix with underscore: `_{name}`"
                 )],
@@ -308,7 +312,11 @@ impl Checker {
                         message: format!(
                             "variable `{name}` shadows a binding in an outer scope"
                         ),
-                        notes: vec![(prev, "previously defined here".to_string())],
+                        notes: vec![(
+                            prev,
+                            "previously defined here".to_string(),
+                            self.current_module.clone(),
+                        )],
                         suggestions: vec![format!(
                             "consider a more descriptive name, or prefix with underscore to suppress: `_{name}`"
                         )],

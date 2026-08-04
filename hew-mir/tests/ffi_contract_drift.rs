@@ -43,6 +43,42 @@ struct Contract {
     discharge_depth: String,
     #[serde(rename = "result-retention", default)]
     result_retention: String,
+    #[serde(rename = "result-retention-basis", default)]
+    result_retention_basis: String,
+}
+
+#[test]
+fn every_typed_resource_transfer_carries_runtime_body_evidence() {
+    let document = classification_toml();
+    let resource_rows = document
+        .ownership
+        .contracts
+        .iter()
+        .filter(|row| row.resource_result_type.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(resource_rows.len(), 55, "typed resource inventory drift");
+    for row in resource_rows {
+        assert_eq!(
+            row.result_retention, "resource-transfer",
+            "{} must use the resource-specific retention answer",
+            row.symbol
+        );
+        assert!(
+            !row.result_retention_basis.trim().is_empty(),
+            "{} must record the inspected runtime-body handoff",
+            row.symbol
+        );
+        let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+            .iter()
+            .find(|(symbol, _)| *symbol == row.symbol)
+            .unwrap_or_else(|| panic!("{} is absent from the compiled table", row.symbol));
+        assert_eq!(
+            compiled.result_retention,
+            ExternResultRetention::ResourceTransfer,
+            "{}",
+            row.symbol
+        );
+    }
 }
 
 fn classification_toml() -> Document {
@@ -80,8 +116,34 @@ fn depth_spelling(depth: ReleaseDischargeDepth) -> &'static str {
 fn retention_spelling(retention: ExternResultRetention) -> &'static str {
     match retention {
         ExternResultRetention::Transferred => "transferred",
+        ExternResultRetention::SharedRefcount => "shared-refcount",
+        ExternResultRetention::ResourceTransfer => "resource-transfer",
         ExternResultRetention::Unspecified => "",
     }
+}
+
+#[test]
+fn string_clone_records_an_independently_balanced_shared_owner() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_clone")
+        .expect("TOML string clone ownership row");
+    assert_eq!(source.result, "retained");
+    assert_eq!(source.result_retention, "shared-refcount");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_clone")
+        .expect("compiled string clone ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Retained);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::SharedRefcount
+    );
+    assert!(compiled.result_retention.authorizes_caller_release());
 }
 
 #[test]

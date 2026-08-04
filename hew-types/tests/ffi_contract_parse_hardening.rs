@@ -27,7 +27,8 @@ params = []
 resource-result-type = "example.io.Socket"
 release-symbol = "example_socket_close"
 discharge-depth = "shallow"
-result-retention = "transferred"
+result-retention = "resource-transfer"
+result-retention-basis = "synthetic constructor returns one close token"
 "#;
 
 const VALID_SYNTHETIC_BYTES: &str = r#"
@@ -98,11 +99,25 @@ fn resource_result_with_mismatched_release_nominal_fails_closed() {
 }
 
 #[test]
-#[should_panic(expected = "requires transferred result retention")]
-fn resource_result_without_retention_proof_fails_closed() {
-    let _ = parse_ownership_contracts(
-        &VALID_SYNTHETIC_RESOURCE.replace("result-retention = \"transferred\"\n", ""),
+fn resource_result_without_retention_proof_stays_unmeasured() {
+    let rows = parse_ownership_contracts(
+        &VALID_SYNTHETIC_RESOURCE
+            .replace("result-retention = \"resource-transfer\"\n", "")
+            .replace(
+                "result-retention-basis = \"synthetic constructor returns one close token\"\n",
+                "",
+            ),
     );
+    assert!(rows["example_socket_open"].result_retention.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "requires a non-empty basis")]
+fn resource_transfer_without_body_basis_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "result-retention-basis = \"synthetic constructor returns one close token\"\n",
+        "",
+    ));
 }
 
 #[test]
@@ -120,5 +135,65 @@ fn malformed_non_resource_retention_fails_closed() {
     let _ = parse_ownership_contracts(&VALID_SYNTHETIC_BYTES.replace(
         "result-retention = \"transferred\"",
         "result-retention = \"callee-keeps-alias\"",
+    ));
+}
+
+// The generated table interpolates resource-param-types, resource-result-type,
+// and release-symbol straight into `"..."` Rust string literals
+// (`generate_ffi_ownership_table`); an unescaped `"` or `\` in any of the
+// three would corrupt the generated source rather than fail the build
+// cleanly. These six tests pin each field rejecting each character.
+
+#[test]
+#[should_panic(expected = "resource-param-types for example_socket_close must not contain")]
+fn resource_param_types_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-param-types = [\"example.io.Socket\"]",
+        "resource-param-types = [\"example.io.Soc\"ket\"]",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-param-types for example_socket_close must not contain")]
+fn resource_param_types_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-param-types = [\"example.io.Socket\"]",
+        "resource-param-types = [\"example.io.Soc\\ket\"]",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-result-type for example_socket_open must not contain")]
+fn resource_result_type_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-result-type = \"example.io.Socket\"",
+        "resource-result-type = \"example.io.Soc\"ket\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "resource-result-type for example_socket_open must not contain")]
+fn resource_result_type_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "resource-result-type = \"example.io.Socket\"",
+        "resource-result-type = \"example.io.Soc\\ket\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "release-symbol for example_socket_open must not contain")]
+fn release_symbol_quote_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "release-symbol = \"example_socket_close\"",
+        "release-symbol = \"example_sock\"et_close\"",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "release-symbol for example_socket_open must not contain")]
+fn release_symbol_backslash_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_RESOURCE.replace(
+        "release-symbol = \"example_socket_close\"",
+        "release-symbol = \"example_sock\\et_close\"",
     ));
 }

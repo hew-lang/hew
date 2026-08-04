@@ -214,6 +214,9 @@ fn clear_copy_owner_authority(
     if copy_result && !matches!(fact.ownership, Ownership::Unknown) {
         // Copy-ness governs only the published result. Call leaves also carry
         // receiver and source-argument contracts, so clear only its obligation.
+        // `Unknown` is excluded on purpose: an unresolved ownership fact must
+        // stay `Unknown` rather than being downgraded to `NoOwner`, so MIR
+        // still rejects it fail-closed instead of silently treating it as safe.
         fact.ownership = Ownership::NoOwner;
     }
 }
@@ -325,6 +328,7 @@ impl Checker {
         // identity.
         self.canonical_std_module_sources.clear();
         self.canonical_std_root_sources.clear();
+        self.module_source_paths.clear();
         if let Some(module_graph) = &program.module_graph {
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
             // source-less floor module and promotes the shipped file to its
@@ -337,6 +341,10 @@ impl Checker {
                 .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
                 let module_full_path = module_id.path.join(".");
+                if !module.source_paths.is_empty() {
+                    self.module_source_paths
+                        .insert(module_full_path.clone(), module.source_paths.clone());
+                }
                 if module.source_paths.iter().any(|source| {
                     crate::module_registry::is_canonical_stdlib_module_source(
                         source,
@@ -942,9 +950,7 @@ impl Checker {
                     .implements_marker(&resolved_result, MarkerTrait::Copy);
             let mut fact = pending.fact;
             if let Some(symbol) = pending.extern_symbol.as_deref() {
-                use crate::ffi_contracts::{
-                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
-                };
+                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
@@ -957,7 +963,7 @@ impl Checker {
                     .contract()
                     .filter(|contract| contract.params.len() == pending.extern_param_count)
                     .filter(|contract| {
-                        contract.result_retention == ExternResultRetention::Transferred
+                        contract.result_retention.authorizes_caller_release()
                             && contract.discharge_depth != ReleaseDischargeDepth::None
                             && !contract.release_symbol.is_empty()
                     });
@@ -1021,9 +1027,7 @@ impl Checker {
                 .materialize_literal_defaults();
             let mut fact = pending.fact;
             if let Some(identity) = pending.extern_identity {
-                use crate::ffi_contracts::{
-                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
-                };
+                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
                 use crate::runtime_call::{
                     ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
                 };
@@ -1035,7 +1039,7 @@ impl Checker {
                 let contract =
                     crate::ffi_contracts::extern_ownership_contract(&identity.endpoint).contract();
                 let lifecycle_authorized = contract.is_some_and(|contract| {
-                    contract.result_retention == ExternResultRetention::Transferred
+                    contract.result_retention.authorizes_caller_release()
                         && contract.discharge_depth != ReleaseDischargeDepth::None
                         && !contract.release_symbol.is_empty()
                         && match (&resolved_result, contract.resource_result_type) {

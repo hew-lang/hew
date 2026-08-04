@@ -111,11 +111,50 @@ fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
         .then_some(completed)
 }
 
+/// Fold a peer-assembled submodule owner into the directory module that also
+/// assembles it.
+///
+/// A directory module is its primary file plus every peer `.hew` file in that
+/// directory (hew-compile's `resolve_completed_import_internal`). Importing
+/// both `std::net::http` and its `std::net::http::http_client` peer registers
+/// the one declaration in `http_client.hew` under both owners, so the
+/// duplicate-extern check sees the module disagree with itself — that is what
+/// `hew_http_response_*` hit, with the reported "first declaration" spans
+/// landing in `http.hew`, which declares none of them.
+///
+/// The relation is read off the module graph, not the two spellings: an owner
+/// folds only when it is assembled from exactly one source file AND some other
+/// module assembles that same file among its own. Two modules sharing a source
+/// file share its declarations, so this cannot equate distinct ones.
+///
+/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
+/// direct submodule import aliases the assembled module instead of registering
+/// a second copy.
+fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
+    let (owner, short) = name.rsplit_once('.')?;
+    let sources = checker.module_source_paths.get(owner)?;
+    let [source] = sources.as_slice() else {
+        return None;
+    };
+    let mut assemblers = checker
+        .module_source_paths
+        .iter()
+        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
+        .map(|(other, _)| other);
+    let assembler = assemblers.next()?;
+    if assemblers.next().is_some() {
+        return None;
+    }
+    Some(format!("{assembler}.{short}"))
+}
+
 fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
     fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
         match ty {
             Ty::Named { name, args, .. } => Ty::Named {
-                name: complete_prelude_std_owner(checker, name).unwrap_or_else(|| name.clone()),
+                name: complete_prelude_std_owner(checker, name)
+                    .or_else(|| fold_peer_assembled_owner(checker, name))
+                    .unwrap_or_else(|| name.clone()),
                 args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
                 // The builtin marker is checker metadata and can legitimately
                 // differ when one module spells that nominal through an import

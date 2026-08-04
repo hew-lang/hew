@@ -2449,6 +2449,14 @@ pub struct Checker {
     /// stdlib search-path authority for this check. A `std.*` spelling alone
     /// is not trusted: user packages may use the same path.
     pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Source files assembled into each module of this check's graph.
+    ///
+    /// A directory module owns its primary file plus every peer `.hew` file in
+    /// that directory, so importing both `std::net::http` and its
+    /// `http_client` peer registers one declaration under two owners. This map
+    /// is what lets a consumer prove that relation from the graph rather than
+    /// guessing it from the two owner spellings.
+    pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,
     /// Canonical stdlib owners compiled as the root source unit itself. This
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
@@ -3405,6 +3413,7 @@ impl Checker {
             extern_method_origins: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
+            module_source_paths: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),

@@ -115,6 +115,45 @@ fn duplicate_extern_symbol_accepts_identical_contracts() {
     );
 }
 
+/// Single-owner property (rc1-F1 stage B): an agreeing re-declaration does
+/// not create a second contract — both declaration keys resolve to the ONE
+/// established contract, owned by the first declaration.
+#[test]
+fn agreeing_duplicate_declarations_resolve_to_one_contract() {
+    let output = check_source(
+        r#"
+        extern "C" {
+            #[extern_symbol("hew_one_contract")]
+            fn first(consume value: string) -> i64;
+            #[extern_symbol("hew_one_contract")]
+            fn second(consume value: string) -> i64;
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
+    let (_, contract) = output
+        .extern_contracts
+        .established("hew_one_contract")
+        .expect("symbol must carry a contract");
+    assert_eq!(
+        contract.owner.full_path(),
+        "first",
+        "the first declaration owns the contract"
+    );
+    let first = output
+        .extern_contracts
+        .contract_for_declaration("first")
+        .expect("minting declaration resolves to the contract");
+    let second = output
+        .extern_contracts
+        .contract_for_declaration("second")
+        .expect("agreeing re-declaration adopts the contract");
+    assert_eq!(
+        first.owner, second.owner,
+        "one symbol, one contract: both declaration keys resolve to the same owner"
+    );
+}
+
 #[test]
 fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     let stream = hew_parser::parse(

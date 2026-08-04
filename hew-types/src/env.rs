@@ -92,6 +92,53 @@ impl Binding {
     }
 }
 
+/// The move/release facts tracked per execution path for one binding.
+///
+/// These three fields are the ONLY flow-sensitive ownership state. `read_count`
+/// and `is_written` are any-path lint accumulators (unused / never-mutated) and
+/// deliberately stay outside the snapshot: restoring them per branch arm would
+/// erase reads and writes that genuinely happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipState {
+    /// Whether the value has been moved on this path.
+    pub is_moved: bool,
+    /// Where the move happened, for error reporting.
+    pub moved_at: Option<Span>,
+    /// Where the close obligation was discharged on this path.
+    pub released_at: Option<Span>,
+}
+
+/// Ownership state of every visible binding at one point in the control flow.
+///
+/// Captured at a branch entry and at each arm's exit so alternative-execution
+/// constructs can restore per arm and merge at the join, instead of threading
+/// one arm's exit state into the next arm.
+#[derive(Debug, Clone, Default)]
+pub struct OwnershipSnapshot {
+    states: HashMap<TypeBindingId, OwnershipState>,
+}
+
+impl OwnershipSnapshot {
+    /// The recorded state for `id`, if the binding existed when the snapshot
+    /// was taken.
+    #[must_use]
+    pub fn get(&self, id: TypeBindingId) -> Option<&OwnershipState> {
+        self.states.get(&id)
+    }
+
+    /// Number of bindings recorded.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Whether no bindings were visible when this snapshot was taken.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+}
+
 /// A diagnostic about a binding discovered at scope exit.
 #[derive(Debug)]
 pub struct ScopeWarning {
@@ -308,6 +355,84 @@ impl TypeEnv {
             }
         }
         false
+    }
+
+    /// Capture the move/release state of every currently visible binding.
+    ///
+    /// Keyed by [`TypeBindingId`], so a shadowing re-`define` (which mints a
+    /// fresh id) is never confused with the binding it shadows.
+    #[must_use]
+    pub fn ownership_snapshot(&self) -> OwnershipSnapshot {
+        let mut states = HashMap::new();
+        for scope in &self.scopes {
+            for binding in scope.values() {
+                states.insert(
+                    binding.id,
+                    OwnershipState {
+                        is_moved: binding.is_moved,
+                        moved_at: binding.moved_at.clone(),
+                        released_at: binding.released_at.clone(),
+                    },
+                );
+            }
+        }
+        OwnershipSnapshot { states }
+    }
+
+    /// Reset every binding recorded in `snap` back to its snapshotted
+    /// move/release state.
+    ///
+    /// Bindings created after the snapshot are absent from it and are left
+    /// alone, as are lint accumulators on every binding.
+    pub fn restore_ownership(&mut self, snap: &OwnershipSnapshot) {
+        Self::apply_ownership(&mut self.scopes, &snap.states);
+    }
+
+    /// Join alternative execution paths: for every binding that existed at
+    /// `entry`, take the union of its state across `exits`.
+    ///
+    /// Union (may-analysis) is the sound direction for a consume: a value moved
+    /// on any path is not usable after the join. Callers pass one exit snapshot
+    /// per path that reaches the join — including the implicit fall-through
+    /// path of an `if` without an `else`.
+    pub fn merge_ownership(&mut self, entry: &OwnershipSnapshot, exits: &[OwnershipSnapshot]) {
+        let mut merged: HashMap<TypeBindingId, OwnershipState> =
+            HashMap::with_capacity(entry.states.len());
+        for (id, entry_state) in &entry.states {
+            let mut state = entry_state.clone();
+            for exit in exits {
+                let Some(exit_state) = exit.states.get(id) else {
+                    continue;
+                };
+                if exit_state.is_moved && !state.is_moved {
+                    state.is_moved = true;
+                    state.moved_at.clone_from(&exit_state.moved_at);
+                }
+                if state.moved_at.is_none() {
+                    state.moved_at.clone_from(&exit_state.moved_at);
+                }
+                if state.released_at.is_none() {
+                    state.released_at.clone_from(&exit_state.released_at);
+                }
+            }
+            merged.insert(*id, state);
+        }
+        Self::apply_ownership(&mut self.scopes, &merged);
+    }
+
+    fn apply_ownership(
+        scopes: &mut [HashMap<String, Binding>],
+        states: &HashMap<TypeBindingId, OwnershipState>,
+    ) {
+        for scope in scopes.iter_mut() {
+            for binding in scope.values_mut() {
+                if let Some(state) = states.get(&binding.id) {
+                    binding.is_moved = state.is_moved;
+                    binding.moved_at.clone_from(&state.moved_at);
+                    binding.released_at.clone_from(&state.released_at);
+                }
+            }
+        }
     }
 
     /// Mark a variable as written (reassigned after definition).
@@ -592,6 +717,146 @@ mod tests {
         let b = env.lookup_ref("self_").unwrap();
         assert!(b.read_count > 0, "synthetic bindings should start as used");
         assert!(b.def_span.is_none());
+    }
+
+    #[test]
+    fn restore_ownership_undoes_a_move_taken_after_the_snapshot() {
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        let entry = env.ownership_snapshot();
+
+        assert!(env.mark_moved("x", 10..20));
+        assert!(env.mark_released("x", 10..20).is_some());
+        env.restore_ownership(&entry);
+
+        let b = env.lookup_ref("x").unwrap();
+        assert!(!b.is_moved);
+        assert_eq!(b.moved_at, None);
+        assert_eq!(b.released_at, None);
+    }
+
+    #[test]
+    fn restore_ownership_preserves_read_and_write_lint_state() {
+        // R2: the snapshot carries ownership only. A read or a write inside a
+        // branch arm must survive the restore, or the unused / never-mutated
+        // lints regress silently.
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, true, 0..1);
+        let entry = env.ownership_snapshot();
+
+        let _ = env.lookup("x");
+        env.mark_written("x");
+        env.restore_ownership(&entry);
+
+        let b = env.lookup_ref("x").unwrap();
+        assert_eq!(b.read_count, 1);
+        assert!(b.is_written);
+    }
+
+    #[test]
+    fn restore_ownership_leaves_bindings_created_after_the_snapshot_alone() {
+        let mut env = TypeEnv::new();
+        let entry = env.ownership_snapshot();
+        env.define_with_span("later".to_string(), Ty::String, false, 0..1);
+        assert!(env.mark_moved("later", 5..6));
+
+        env.restore_ownership(&entry);
+
+        assert!(env.lookup_ref("later").unwrap().is_moved);
+    }
+
+    #[test]
+    fn restore_ownership_does_not_reach_a_shadowing_rebinding() {
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        assert!(env.mark_moved("x", 2..3));
+        let entry = env.ownership_snapshot();
+
+        env.push_scope();
+        env.define_with_span("x".to_string(), Ty::String, false, 4..5);
+        env.restore_ownership(&entry);
+
+        // The inner `x` is a distinct binding id and keeps its own live state.
+        assert!(!env.lookup_ref("x").unwrap().is_moved);
+        env.pop_scope();
+        assert!(env.lookup_ref("x").unwrap().is_moved);
+    }
+
+    #[test]
+    fn merge_ownership_unions_a_move_from_any_single_path() {
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        let entry = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        let live_exit = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        assert!(env.mark_moved("x", 10..20));
+        let moved_exit = env.ownership_snapshot();
+
+        env.merge_ownership(&entry, &[live_exit, moved_exit]);
+
+        let b = env.lookup_ref("x").unwrap();
+        assert!(b.is_moved, "moved on one path means moved after the join");
+        assert_eq!(b.moved_at, Some(10..20));
+    }
+
+    #[test]
+    fn merge_ownership_unions_move_and_release_from_different_paths() {
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        let entry = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        assert!(env.mark_moved("x", 10..20));
+        let moved_exit = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        assert!(env.mark_released("x", 30..40).is_some());
+        let released_exit = env.ownership_snapshot();
+
+        env.merge_ownership(&entry, &[moved_exit, released_exit]);
+
+        let b = env.lookup_ref("x").unwrap();
+        assert!(b.is_moved);
+        assert_eq!(b.moved_at, Some(10..20));
+        assert_eq!(b.released_at, Some(30..40));
+    }
+
+    #[test]
+    fn merge_ownership_over_only_live_paths_leaves_the_binding_live() {
+        let mut env = TypeEnv::new();
+        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        let entry = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        assert!(env.mark_moved("x", 10..20));
+        let diverging_exit = env.ownership_snapshot();
+
+        env.restore_ownership(&entry);
+        let live_exit = env.ownership_snapshot();
+
+        // The diverging arm's exit is excluded by the caller; it must not leak.
+        env.merge_ownership(&entry, &[live_exit]);
+        assert!(!env.lookup_ref("x").unwrap().is_moved);
+
+        // Including it flips the verdict, proving the exclusion is what matters.
+        env.merge_ownership(&entry, &[diverging_exit]);
+        assert!(env.lookup_ref("x").unwrap().is_moved);
+    }
+
+    #[test]
+    fn merge_ownership_ignores_bindings_that_did_not_exist_at_entry() {
+        let mut env = TypeEnv::new();
+        let entry = env.ownership_snapshot();
+        env.define_with_span("arm_local".to_string(), Ty::String, false, 0..1);
+        assert!(env.mark_moved("arm_local", 5..6));
+        let exit = env.ownership_snapshot();
+
+        env.merge_ownership(&entry, &[exit]);
+
+        assert!(env.lookup_ref("arm_local").unwrap().is_moved);
     }
 
     #[test]

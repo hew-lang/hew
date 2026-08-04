@@ -666,12 +666,15 @@ fn clean_counter_is_unregistered_and_fails_closed() {
 
 // ── checker-stage lint: must_use ─────────────────────────────────────
 
-/// A program whose only diagnostic is `must_use`: `c.write(...)` returns
+/// A program that triggers `must_use`: `c.write(...)` returns
 /// `Result<(), std.net.WriteError>` and the call is discarded in statement
 /// position, so a backpressure/disconnect signal is silently dropped. The
 /// lint matches `std.net.WriteError` by its exact canonical owner (a
 /// same-named local enum no longer spoofs it — see `must_use.rs`), so the
 /// fixture must exercise the real stdlib type, not a look-alike local one.
+/// `w` is never called, so `dead_code` can fire here too; the assertions
+/// below match the `must_use` message specifically rather than asserting a
+/// single diagnostic.
 const MUST_USE_DISCARD: &str = "import std::net::{Connection};\n\
      fn w(c: Connection) {\n\
      c.write(b\"hi\");\n\

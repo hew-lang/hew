@@ -6,3 +6,10 @@
 # MIR goldens preserve the compiler's byte-exact dump, including its final
 # separator line.
 *.mir -blank-at-eof
+# hew-capability-gen's authority file and its checked-in generated outputs
+# are compared byte-for-byte (normalized as defence in depth in the
+# comparison code itself); pin them to LF so a Windows checkout can't
+# introduce a false "stale" or a missed test mutation.
+/wasm-capability-manifest.toml text eol=lf
+/hew-types/src/wasm_capabilities_generated.rs text eol=lf
+/examples/playground/wasm-capabilities.json text eol=lf

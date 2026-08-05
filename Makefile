@@ -719,11 +719,11 @@ test-rust: wasm-runtime runtime $(LIBHEW_READY)
 		set -e; \
 		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
 		test -f "$(LIBHEW)"; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci; \
+		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
 		echo "         Install with: cargo install cargo-nextest" >&2; \
-		cargo test --workspace --exclude hew-cabi; \
+		cargo test --workspace --exclude hew-cabi --no-fail-fast; \
 	fi
 
 test-parser:

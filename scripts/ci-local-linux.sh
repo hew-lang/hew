@@ -74,7 +74,7 @@ export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run"
 
 case "$STEP" in
   wasm)            cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib ;;
-  workspace)       cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci ;;
+  workspace)       cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci --no-fail-fast ;;
   vertical-slice)  make test-vertical-slice ;;
   pkg-import)      make test-pkg-import ;;
   hew-ratchet)     make test-hew-ratchet ;;
@@ -82,7 +82,7 @@ case "$STEP" in
   sandbox)         make sandbox-parity ;;
   all)
     cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
-    cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci
+    cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci --no-fail-fast
     make test-vertical-slice
     make test-pkg-import
     make test-hew-ratchet

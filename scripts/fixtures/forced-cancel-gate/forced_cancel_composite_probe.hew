@@ -67,7 +67,7 @@ actor Driver {
             };
             let label = "forced-cancel-owned-string".to_upper();
             fork cleanup = consume_cancelled(label);
-            after(1000000) {};
+            after(1ms) {};
             await cleanup;
             let v = await t;
             out = v;

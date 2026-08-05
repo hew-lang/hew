@@ -7376,7 +7376,36 @@ impl LowerCtx {
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
-            fn_sigs: tc_output.fn_sigs.clone(),
+            fn_sigs: {
+                // rc1-F1 stage F: publish each root free function's canonical
+                // `{root}.{name}` identity (via `TypeCheckOutput::identity`)
+                // alongside the legacy bare key the checker still republishes
+                // at this boundary — the same additive, `or_insert`-only
+                // pattern used for `record_registry` below. `root_fn_identity`
+                // rejects any spelling containing `.`/`::`, so imported and
+                // already-qualified entries pass through untouched; only bare
+                // root keys gain a canonical twin. This rung is inert until a
+                // consumer looks up the canonical key (none does yet — see
+                // `direct_method_return_ty`/`generic_iterator_next_shape`,
+                // which key by mangled method symbol, not free-fn name); it
+                // activates without further code change once the checker
+                // publishes canonically. WHEN OBSOLETE: rc2
+                // render-canonicalization stage, once the bare key retires.
+                let mut sigs = tc_output.fn_sigs.clone();
+                let canonical_entries: Vec<(String, hew_types::FnSig)> = sigs
+                    .iter()
+                    .filter_map(|(name, sig)| {
+                        tc_output
+                            .identity
+                            .root_fn_identity(name)
+                            .map(|canonical| (canonical, sig.clone()))
+                    })
+                    .collect();
+                for (canonical, sig) in canonical_entries {
+                    sigs.entry(canonical).or_insert(sig);
+                }
+                sigs
+            },
             direct_call_targets: tc_output.direct_call_targets.clone(),
             user_modules: tc_output.user_modules.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),

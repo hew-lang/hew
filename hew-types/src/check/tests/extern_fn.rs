@@ -859,3 +859,195 @@ fn third_render_collision_keeps_peer_nominals_distinct() {
         output.errors
     );
 }
+
+/// Which import graph the re-declaring module sees in
+/// [`check_import_lexical_extern`].
+enum ImportLexicalShape {
+    /// `nt` imports `sm` alone: a bare nominal in its extern re-declaration
+    /// resolves through that import to `sm.Tok` and matches the contract.
+    SingleImport,
+    /// `nt` imports `sm` AND `om`, both declaring `Tok`: the bare spelling is
+    /// ambiguous, resolution must refuse, and the contract compare conflicts.
+    AmbiguousImports,
+    /// `nt` imports only `om`, whose `Tok` is a DIFFERENT type from the
+    /// `sm.Tok` that established the contract: resolution succeeds to
+    /// `om.Tok` and the compare must still conflict (no false merge).
+    ForeignDivergentImport,
+    /// `nt` imports `sm::{ Tok as ForeignTok }`: the import binds ONLY the
+    /// alias, so bare `Tok` is unbound in `nt` — resolution must refuse and
+    /// the contract compare must conflict, never adopt through the alias.
+    AliasedNamedImport,
+    /// `nt` imports `sm::{ Tok }`: the named import binds `Tok` bare, so the
+    /// bare spelling resolves to `sm.Tok` and adopts the contract.
+    BareNamedImport,
+}
+
+/// Import-lexical extern nominal fixture: module `sm` declares `Tok` and
+/// establishes `hew_zz`'s contract; module `nt` re-declares `hew_zz`
+/// spelling the parameter type BARE (`Tok`), declaring no `Tok` of its own.
+/// The bare name's meaning is decided by `nt`'s import set per `shape`.
+fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
+    use std::path::PathBuf;
+    let sm_source =
+        "pub type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let om_source = "pub type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n";
+    let nt_source = "extern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let sm_file = PathBuf::from("/nonexistent/implex/sm.hew");
+    let om_file = PathBuf::from("/nonexistent/implex/om.hew");
+    let nt_file = PathBuf::from("/nonexistent/implex/nt.hew");
+
+    let parsed = |source: &str| {
+        let out = hew_parser::parse(source);
+        assert!(out.errors.is_empty(), "parse: {:?}", out.errors);
+        out.program.items
+    };
+    let sm_items = parsed(sm_source);
+    let om_items = parsed(om_source);
+    let nt_items = parsed(nt_source);
+
+    let root_id = ModuleId::root();
+    let sm_id = ModuleId::new(vec!["sm".to_string()]);
+    let om_id = ModuleId::new(vec!["om".to_string()]);
+    let nt_id = ModuleId::new(vec!["nt".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+
+    let named = |source: &str, alias: Option<&str>| {
+        Some(ImportSpec::Names(vec![ImportName {
+            name: source.to_string(),
+            alias: alias.map(str::to_string),
+        }]))
+    };
+    let nt_imports: Vec<(ModuleId, Option<ImportSpec>)> = match shape {
+        ImportLexicalShape::SingleImport => vec![(sm_id.clone(), None)],
+        ImportLexicalShape::AmbiguousImports => {
+            vec![(sm_id.clone(), None), (om_id.clone(), None)]
+        }
+        ImportLexicalShape::ForeignDivergentImport => vec![(om_id.clone(), None)],
+        ImportLexicalShape::AliasedNamedImport => {
+            vec![(sm_id.clone(), named("Tok", Some("ForeignTok")))]
+        }
+        ImportLexicalShape::BareNamedImport => vec![(sm_id.clone(), named("Tok", None))],
+    };
+
+    let add_module = |mg: &mut ModuleGraph,
+                      id: &ModuleId,
+                      items: &Vec<Spanned<Item>>,
+                      file: &PathBuf,
+                      imports: Vec<(ModuleId, Option<ImportSpec>)>| {
+        mg.item_sources
+            .insert(id.path.join("."), vec![file.clone(); items.len()]);
+        mg.add_module(Module {
+            id: id.clone(),
+            items: items.clone(),
+            imports: imports
+                .into_iter()
+                .map(|(target, spec)| hew_parser::module::ModuleImport {
+                    target,
+                    spec,
+                    span: 0..0,
+                })
+                .collect(),
+            source_paths: vec![file.clone()],
+            doc: None,
+        })
+        .unwrap();
+    };
+    add_module(&mut mg, &sm_id, &sm_items, &sm_file, vec![]);
+    add_module(&mut mg, &om_id, &om_items, &om_file, vec![]);
+    add_module(&mut mg, &nt_id, &nt_items, &nt_file, nt_imports);
+
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![sm_id, om_id, nt_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    })
+}
+
+/// Import-lexical resolution (rc1-F1 stage C): a bare nominal in an extern
+/// re-declaration that the declaring file does not declare itself resolves
+/// through the declaring module's OWN import set — `nt` imports `sm`, so its
+/// bare `Tok` IS `sm.Tok` and the re-declaration adopts the established
+/// contract instead of conflicting on a spelling difference.
+#[test]
+fn bare_extern_nominal_resolves_through_the_declaring_files_import() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::SingleImport);
+    assert!(
+        output.errors.is_empty(),
+        "one declaration behind one import must resolve one identity; errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed ambiguity: two imported modules both declare `Tok`, so the
+/// bare spelling has no single import-lexical meaning. Resolution must
+/// refuse (never pick a winner) and the contract compare must conflict.
+#[test]
+fn ambiguous_imported_bare_extern_nominal_stays_unresolved_and_conflicts() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::AmbiguousImports);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("conflicting declarations")),
+        "an ambiguous bare nominal must not silently adopt either owner; errors: {:#?}",
+        output.errors
+    );
+}
+
+/// No false merge on the extern ABI axis: the bare `Tok` resolves cleanly
+/// through `nt`'s only import — but to `om.Tok`, a genuinely DIFFERENT type
+/// from the `sm.Tok` that established the contract. Same leaf, different
+/// identity: still a conflict.
+#[test]
+fn import_resolved_bare_nominal_with_different_identity_still_conflicts() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::ForeignDivergentImport);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("conflicting declarations")),
+        "same-leaf different-owner nominals on one C symbol must conflict; errors: {:#?}",
+        output.errors
+    );
+}
+
+/// An aliased item import binds ONLY its alias: `import sm::{ Tok as
+/// ForeignTok }` does not make bare `Tok` mean `sm.Tok` in `nt`, so the
+/// re-declaration spelling bare `Tok` must CONFLICT with the established
+/// `sm.Tok` contract, never merge through the alias's target.
+#[test]
+fn aliased_item_import_does_not_bind_the_bare_extern_nominal() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::AliasedNamedImport);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("conflicting declarations")),
+        "bare `Tok` is unbound under `Tok as ForeignTok`; errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Positive control for the binding rule: an UNALIASED item import
+/// (`import sm::{ Tok }`) binds `Tok` bare, so the bare spelling resolves
+/// to `sm.Tok` and the re-declaration adopts the established contract.
+#[test]
+fn unaliased_item_import_binds_the_bare_extern_nominal() {
+    let output = check_import_lexical_extern(&ImportLexicalShape::BareNamedImport);
+    assert!(
+        output.errors.is_empty(),
+        "`import sm::{{ Tok }}` binds `Tok` bare; errors: {:#?}",
+        output.errors
+    );
+}

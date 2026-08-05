@@ -6,6 +6,27 @@ use super::coerce::cast_is_valid;
 use super::*;
 use crate::BuiltinType;
 
+/// The canonical lifecycle owner an ALREADY-MINTED identity carries, paired
+/// with the module binding that owner is written as
+/// (`std.failure.CrashKind` → `failure`).
+///
+/// The two owners are enumerated, not derived: an identity the checker minted
+/// is never re-parsed to recover its parts, because reading
+/// `std.failure.CrashKind` as `binding.tail` finds a lexical binding named
+/// `std` and rejects the checker's own canonical spelling (rc1-F1 stage D).
+fn canonical_lifecycle_owner_binding(name: &str) -> Option<&'static str> {
+    [
+        ("std.failure.", "failure"),
+        ("std.link_monitor.", "link_monitor"),
+    ]
+    .into_iter()
+    .find_map(|(owner, binding)| {
+        name.strip_prefix(owner)
+            .filter(|leaf| !leaf.contains('.'))
+            .map(|_| binding)
+    })
+}
+
 impl Checker {
     /// Return the generated discriminator only when the exact enum owner is
     /// backed by a selected canonical std source (or the equivalent recorded
@@ -111,13 +132,11 @@ impl Checker {
         // module binding, finds none, and rejects the checker's own canonical
         // spelling. Credit the binding that PROVED the identity instead; with no
         // proof, name the owner leaf so the scope gate below still fails closed.
-        let already_canonical = name
-            .rsplit_once('.')
-            .is_some_and(|(owner, _)| matches!(owner, "std.failure" | "std.link_monitor"))
-            && crate::lookup_source_owned_lifecycle_type(name).is_some();
-        if already_canonical {
-            let binding = self.lexical_binding_for_lifecycle_identity(name);
-            return Some((name.to_string(), binding));
+        if let Some(owner_binding) = canonical_lifecycle_owner_binding(name) {
+            if crate::lookup_source_owned_lifecycle_type(name).is_some() {
+                let binding = self.lexical_binding_for_lifecycle_identity(name, owner_binding);
+                return Some((name.to_string(), binding));
+            }
         }
         let (binding, tail) = name.split_once('.')?;
         let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
@@ -143,21 +162,21 @@ impl Checker {
     /// The lexical spelling that proves a canonical lifecycle identity in the
     /// module being checked — the whole-module alias or bound name recorded by
     /// the source-path-proven import authority. Deterministic when an identity
-    /// was reached through more than one binding. Falls back to the identity's
-    /// own owner leaf, which no import can bind, so an unproven use stays
-    /// unauthorized.
-    fn lexical_binding_for_lifecycle_identity(&self, name: &str) -> String {
+    /// was reached through more than one binding. With no proof it falls back to
+    /// the owner's own module binding, which grants nothing on its own, so an
+    /// unproven use stays unauthorized at the scope gate.
+    fn lexical_binding_for_lifecycle_identity(
+        &self,
+        name: &str,
+        owner_binding: &'static str,
+    ) -> String {
         self.canonical_lifecycle_import_authority
             .iter()
             .filter(|(importer, _, identity)| importer == &self.current_module && identity == name)
             .map(|(_, binding, _)| binding)
             .min()
             .cloned()
-            .unwrap_or_else(|| {
-                name.rsplit_once('.')
-                    .and_then(|(owner, _)| owner.rsplit_once('.'))
-                    .map_or_else(|| name.to_string(), |(_, leaf)| leaf.to_string())
-            })
+            .unwrap_or_else(|| owner_binding.to_string())
     }
 
     /// Whether this source-owned lifecycle identity is available from the

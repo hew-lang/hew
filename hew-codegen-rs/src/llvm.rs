@@ -32654,6 +32654,20 @@ fn set_di_composite_type_variant_part<'ctx>(
     di_type_from_metadata(metadata)
 }
 
+// The transmute bridges below rely on inkwell 0.9's wrappers being exactly an
+// `LLVMMetadataRef` plus `PhantomData`. That is an observation about the
+// pinned `inkwell = "=0.9.0"` (repr(Rust), not a layout guarantee), so pin the
+// size at compile time: an inkwell bump that grows either wrapper fails the
+// build here instead of corrupting metadata pointers.
+const _: () = assert!(
+    std::mem::size_of::<inkwell::debug_info::DIType<'static>>()
+        == std::mem::size_of::<inkwell::llvm_sys::prelude::LLVMMetadataRef>()
+);
+const _: () = assert!(
+    std::mem::size_of::<inkwell::debug_info::DISubroutineType<'static>>()
+        == std::mem::size_of::<inkwell::llvm_sys::prelude::LLVMMetadataRef>()
+);
+
 fn di_type_from_metadata<'ctx>(
     metadata: inkwell::llvm_sys::prelude::LLVMMetadataRef,
 ) -> Option<inkwell::debug_info::DIType<'ctx>> {
@@ -32662,8 +32676,9 @@ fn di_type_from_metadata<'ctx>(
     }
 
     // Inkwell 0.9 exposes no constructor for a DIType returned by a raw LLVM
-    // extension. Its wrapper is exactly an LLVMMetadataRef plus PhantomData;
-    // this bridge is confined to the pinned inkwell 0.9 FFI seam.
+    // extension. Its wrapper is exactly an LLVMMetadataRef plus PhantomData
+    // (size-asserted above); this bridge is confined to the pinned inkwell 0.9
+    // FFI seam.
     Some(unsafe {
         std::mem::transmute::<
             inkwell::llvm_sys::prelude::LLVMMetadataRef,
@@ -32809,7 +32824,8 @@ fn emit_honest_coroutine_local_locations<'ctx>(
     pending: &[PendingCoroLocalDbg<'ctx>],
 ) {
     use inkwell::llvm_sys::core::{
-        LLVMGetBasicBlockTerminator, LLVMGetCalledValue, LLVMGetNumSuccessors, LLVMGetSuccessor,
+        LLVMGetBasicBlockTerminator, LLVMGetCalledValue, LLVMGetFirstUse, LLVMGetNextUse,
+        LLVMGetNumSuccessors, LLVMGetSuccessor, LLVMGetUser,
     };
     use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
     use inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
@@ -32871,28 +32887,50 @@ fn emit_honest_coroutine_local_locations<'ctx>(
 
     for local in pending {
         let slot_ref = local.slot.as_value_ref();
+        // Walk the slot's USERS, not the block list: value-anchoring is only
+        // truthful if every write to the slot is a direct `store` this pass
+        // can see. Any other user — a GEP or bitcast (field-wise writes), a
+        // memcpy/memset intrinsic, the slot pointer escaping into a call or
+        // into memory — is a write path the anchors would miss, leaving the
+        // last anchored value confidently wrong. One unmatched user therefore
+        // downgrades the whole local to the conservative prologue declare.
         let mut stores: Vec<inkwell::values::InstructionValue<'ctx>> = Vec::new();
         let mut any_post_suspend = false;
-        for bb in &blocks {
-            let in_post = post_suspend.contains(&(bb.as_mut_ptr() as usize));
-            let mut cursor = bb.get_first_instruction();
-            while let Some(instr) = cursor {
-                if instr.get_opcode() == InstructionOpcode::Store
-                    && instr
+        let mut unmatched_user = false;
+        // SAFETY: read-only def-use iteration over a live function's IR;
+        // every use/user handle stays owned by the module.
+        let mut use_ref = unsafe { LLVMGetFirstUse(slot_ref) };
+        while !use_ref.is_null() {
+            let user = unsafe { LLVMGetUser(use_ref) };
+            let user_instr = unsafe { inkwell::values::InstructionValue::new(user) };
+            match user_instr.get_opcode() {
+                InstructionOpcode::Load => {}
+                // A store is matched only when the slot is the POINTER
+                // operand; a store of the slot's own address into memory is
+                // an escape.
+                InstructionOpcode::Store
+                    if user_instr
                         .get_operand(1)
                         .and_then(|op| op.value())
-                        .is_some_and(|ptr| ptr.as_value_ref() == slot_ref)
+                        .is_some_and(|ptr| ptr.as_value_ref() == slot_ref) =>
                 {
+                    let in_post = user_instr
+                        .get_parent()
+                        .is_some_and(|bb| post_suspend.contains(&(bb.as_mut_ptr() as usize)));
                     any_post_suspend |= in_post;
-                    stores.push(instr);
+                    stores.push(user_instr);
                 }
-                cursor = instr.get_next_instruction();
+                _ => {
+                    unmatched_user = true;
+                    break;
+                }
             }
+            use_ref = unsafe { LLVMGetNextUse(use_ref) };
         }
-        if stores.is_empty() || !any_post_suspend {
-            // Pre-suspend-only (or aggregate-initialized) local: the declare
-            // shape survives CoroSplit's frame rewrite and stays readable
-            // across resumes.
+        if unmatched_user || stores.is_empty() || !any_post_suspend {
+            // Pre-suspend-only, aggregate-initialized, or indirectly-written
+            // local: the declare shape survives CoroSplit's frame rewrite and
+            // stays readable across resumes.
             dbg_declare_at_end(
                 dctx.di_builder,
                 local.slot,
@@ -32912,13 +32950,26 @@ fn emit_honest_coroutine_local_locations<'ctx>(
             let Some(value) = store.get_operand(0).and_then(|op| op.value()) else {
                 continue;
             };
+            // A constant-null pointer store is the raii-null-after-move
+            // interior state, never a user-visible value of the variable
+            // (Hew has no null): anchoring it would put "s = 0x0" on the
+            // reassignment line. Anchor UNDEF instead, which ENDS the
+            // location list — the variable reads as unavailable until the
+            // real replacement value's range begins. Integer zero stays a
+            // real anchor (0 is a legitimate scalar value).
+            let anchor_ref = match value {
+                BasicValueEnum::PointerValue(p) if p.is_null() => {
+                    p.get_type().get_undef().as_value_ref()
+                }
+                other => other.as_value_ref(),
+            };
             // SAFETY: every wrapper belongs to this module's live context and
             // DIBuilder; the call inserts one new-format dbg.value record
             // before `next` and returns a handle we discard.
             unsafe {
                 LLVMDIBuilderInsertDbgValueRecordBefore(
                     dctx.di_builder.as_mut_ptr(),
-                    value.as_value_ref(),
+                    anchor_ref,
                     local.di_var.as_mut_ptr(),
                     empty_expr.as_mut_ptr(),
                     local.debug_loc.as_mut_ptr(),

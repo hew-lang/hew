@@ -52,6 +52,7 @@ command_timeout_floor() {
         "make checked-mir-run") echo 420 ;;
         "make ll-diff") echo 45 ;;
         "make hew-check-all") echo 300 ;;
+        "make test-leak-oracle-selftest") echo 60 ;;
         *) echo 0 ;;
     esac
 }
@@ -117,6 +118,7 @@ CI_REQUIRED_CHECKS=(
     "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
     "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
     "Corpus floors have live call sites (ci.yml: make corpus-floor-check)	make corpus-floor-check"
+    "Leak-oracle harness selftest (ci.yml: make test-leak-oracle-selftest)	make test-leak-oracle-selftest"
     "Pinned structural lint (ci.yml: make structural-lint)	make structural-lint"
     "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
     "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
@@ -872,6 +874,7 @@ case "$LANE" in
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
         add_command "make corpus-floor-check"
+        add_command "make test-leak-oracle-selftest"
         add_command "make test-ux-examples"
         add_command "make test-surface-examples"
         add_command "make test-package-install"

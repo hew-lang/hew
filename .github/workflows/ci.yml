@@ -568,6 +568,15 @@ jobs:
         # hosted suite exercise the same fresh artifacts as local preflight.
         run: make test
 
+      - name: Run leak-oracle harness selftest
+        if: env.RUN_CODE_PATH == 'true'
+        # Platform-independent teeth for the leak harness and the macOS
+        # runner's inventory contract (fail-closed counterfactuals + corpus
+        # floor cross-check). Requires nextest, which this job already has;
+        # the `lint` job does not, so this does not belong there. Keep this
+        # explicit edge so the selftest cannot become local-only.
+        run: make test-leak-oracle-selftest
+
       - name: Run compiler pipeline and local opaque-resource lifecycle evidence
         if: env.RUN_CODE_PATH == 'true'
         # The focused compiler ladder owns the source-derived lifecycle matrix;

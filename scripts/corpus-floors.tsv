@@ -31,8 +31,8 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	58	-	golden-MIR fixtures under examples/v05/checked-mir
-ci-parity-marked-steps	exact	33	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
-ci-required-checks	exact	36	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
+ci-parity-marked-steps	exact	34	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
+ci-required-checks	exact	37	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
 corpus-floor-registry	exact	26	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	exact	70	-	examples/*.hew programs (filter-discovered: category exclusions, `fn main` required) the runtime coverage execution proof builds and runs
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec

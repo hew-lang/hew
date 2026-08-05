@@ -27,17 +27,59 @@ use crate::ast::{Block, Expr, Stmt};
 /// direction: it would cause an infinite loop to be mis-typed as `Never`.
 #[must_use]
 pub fn loop_body_has_break(body: &Block, self_label: Option<&str>) -> bool {
-    ast_block_has_break(body, self_label, 0)
+    ast_block_has_break(body, BreakQuery::TargetsLoop(self_label), 0)
 }
 
-fn ast_block_has_break(block: &Block, self_label: Option<&str>, depth: usize) -> bool {
+/// What a walk is looking for.
+#[derive(Clone, Copy)]
+enum BreakQuery<'a> {
+    /// A `break` that exits the loop identified by this label — the question
+    /// [`loop_body_has_break`] asks.
+    TargetsLoop(Option<&'a str>),
+    /// Any `break` or `continue` that transfers control OUT of the region being
+    /// walked, to a loop written outside it.
+    LeavesRegion,
+}
+
+/// Returns `true` if `expr` can transfer control to a loop written OUTSIDE it,
+/// through a `break` or `continue` that no loop inside `expr` captures.
+///
+/// This is the question a branch join must ask about an arm that types `Never`:
+/// divergence alone does not mean the arm skips the join. A `return` leaves the
+/// function and never reaches the code below the branch, but a `break` leaves
+/// only the enclosing LOOP and rejoins immediately after it — so whatever that
+/// arm consumed is live again below the loop, and its state must be merged.
+///
+/// Conservative in the same direction as [`loop_body_has_break`]: it answers
+/// `true` whenever it cannot prove no escape exists, so a caller treating
+/// `true` as "this arm reaches the join" can only over-approximate the set of
+/// reaching paths, never under-approximate it.
+#[must_use]
+pub fn expr_leaves_enclosing_loop(expr: &Expr) -> bool {
+    ast_expr_has_break(expr, BreakQuery::LeavesRegion, 0)
+}
+
+/// Block-valued counterpart of [`expr_leaves_enclosing_loop`].
+#[must_use]
+pub fn block_leaves_enclosing_loop(block: &Block) -> bool {
+    ast_block_has_break(block, BreakQuery::LeavesRegion, 0)
+}
+
+/// Statement-valued counterpart of [`expr_leaves_enclosing_loop`], for the
+/// `else if` link of a statement-position chain.
+#[must_use]
+pub fn stmt_leaves_enclosing_loop(stmt: &Stmt) -> bool {
+    ast_stmt_has_break(stmt, BreakQuery::LeavesRegion, 0)
+}
+
+fn ast_block_has_break(block: &Block, query: BreakQuery<'_>, depth: usize) -> bool {
     for (stmt, _) in &block.stmts {
-        if ast_stmt_has_break(stmt, self_label, depth) {
+        if ast_stmt_has_break(stmt, query, depth) {
             return true;
         }
     }
     if let Some(trailing) = &block.trailing_expr {
-        return ast_expr_has_break(&trailing.0, self_label, depth);
+        return ast_expr_has_break(&trailing.0, query, depth);
     }
     false
 }
@@ -46,17 +88,27 @@ fn ast_block_has_break(block: &Block, self_label: Option<&str>, depth: usize) ->
     clippy::too_many_lines,
     reason = "exhaustive walker over every Stmt variant; splitting would hide completeness guarantees"
 )]
-fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bool {
+fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool {
     match stmt {
         Stmt::Break { label, value } => {
-            // Does THIS break target the loop under analysis?
-            let targets_self = if depth == 0 {
-                // An unlabeled break, or a break with our own label, exits this loop.
-                label.is_none() || label.as_deref() == self_label
-            } else {
-                // Inside an inner loop, only a break that explicitly names OUR
-                // label escapes to the outer loop.
-                label.as_deref() == self_label && self_label.is_some()
+            // Does THIS break leave the region under analysis?
+            let targets_self = match query {
+                BreakQuery::TargetsLoop(self_label) => {
+                    if depth == 0 {
+                        // An unlabeled break, or a break with our own label, exits this loop.
+                        label.is_none() || label.as_deref() == self_label
+                    } else {
+                        // Inside an inner loop, only a break that explicitly names OUR
+                        // label escapes to the outer loop.
+                        label.as_deref() == self_label && self_label.is_some()
+                    }
+                }
+                // A break written directly in the region targets a loop outside
+                // it. A LABELLED break may name a loop inside the region or one
+                // outside it; resolving that needs the label environment, so
+                // treat every labelled break as escaping — over-reporting an
+                // escape only costs a false positive upstream.
+                BreakQuery::LeavesRegion => depth == 0 || label.is_some(),
             };
             // The break VALUE (`break (… break @L …)`) is evaluated in the same
             // scope before the break fires, so a nested break targeting our loop
@@ -64,11 +116,11 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
             targets_self
                 || value
                     .as_ref()
-                    .is_some_and(|v| ast_expr_has_break(&v.0, self_label, depth))
+                    .is_some_and(|v| ast_expr_has_break(&v.0, query, depth))
         }
         // Inner loop: increase depth so an unlabeled break inside the inner
         // loop's body does not count as exiting the outer loop.
-        Stmt::Loop { body, .. } => ast_block_has_break(body, self_label, depth + 1),
+        Stmt::Loop { body, .. } => ast_block_has_break(body, query, depth + 1),
         Stmt::For { iterable, body, .. } => {
             // A loop HEADER expression (`for` iterable, `while`/`while let`
             // condition) is evaluated in the ENCLOSING scope, not inside the
@@ -77,22 +129,21 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
             // one exists. So a break in a block-expr header targets the enclosing
             // loop — analyse the header at the CURRENT depth; only the body gets
             // `depth + 1`.
-            ast_expr_has_break(&iterable.0, self_label, depth)
-                || ast_block_has_break(body, self_label, depth + 1)
+            ast_expr_has_break(&iterable.0, query, depth)
+                || ast_block_has_break(body, query, depth + 1)
         }
         Stmt::While {
             condition, body, ..
         } => {
             // Header (condition) at current depth, body at `depth + 1` — see the
             // `For` arm for the header-scoping rationale.
-            ast_expr_has_break(&condition.0, self_label, depth)
-                || ast_block_has_break(body, self_label, depth + 1)
+            ast_expr_has_break(&condition.0, query, depth)
+                || ast_block_has_break(body, query, depth + 1)
         }
         Stmt::WhileLet { expr, body, .. } => {
             // Header (scrutinee) at current depth, body at `depth + 1` — see the
             // `For` arm for the header-scoping rationale.
-            ast_expr_has_break(&expr.0, self_label, depth)
-                || ast_block_has_break(body, self_label, depth + 1)
+            ast_expr_has_break(&expr.0, query, depth) || ast_block_has_break(body, query, depth + 1)
         }
         Stmt::If {
             then_block,
@@ -102,20 +153,20 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
             // The condition is evaluated in the enclosing scope (an `if` is not a
             // loop), so a break inside a block-expr condition targets the outer
             // loop — check it at the current depth, before the branches.
-            if ast_expr_has_break(&condition.0, self_label, depth) {
+            if ast_expr_has_break(&condition.0, query, depth) {
                 return true;
             }
-            if ast_block_has_break(then_block, self_label, depth) {
+            if ast_block_has_break(then_block, query, depth) {
                 return true;
             }
             if let Some(eb) = else_block {
                 if let Some(block) = &eb.block {
-                    if ast_block_has_break(block, self_label, depth) {
+                    if ast_block_has_break(block, query, depth) {
                         return true;
                     }
                 }
                 if let Some(if_stmt) = &eb.if_stmt {
-                    if ast_stmt_has_break(&if_stmt.0, self_label, depth) {
+                    if ast_stmt_has_break(&if_stmt.0, query, depth) {
                         return true;
                     }
                 }
@@ -129,14 +180,14 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
             ..
         } => {
             // Scrutinee is evaluated in the enclosing scope (not a loop).
-            if ast_expr_has_break(&expr.0, self_label, depth) {
+            if ast_expr_has_break(&expr.0, query, depth) {
                 return true;
             }
-            if ast_block_has_break(body, self_label, depth) {
+            if ast_block_has_break(body, query, depth) {
                 return true;
             }
             if let Some(eb) = else_body {
-                if ast_block_has_break(eb, self_label, depth) {
+                if ast_block_has_break(eb, query, depth) {
                     return true;
                 }
             }
@@ -145,24 +196,24 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
         Stmt::Match { scrutinee, arms } => {
             // Scrutinee and each arm's guard are evaluated in the enclosing
             // scope, alongside the arm bodies.
-            ast_expr_has_break(&scrutinee.0, self_label, depth)
+            ast_expr_has_break(&scrutinee.0, query, depth)
                 || arms.iter().any(|arm| {
                     arm.guard
                         .as_ref()
-                        .is_some_and(|g| ast_expr_has_break(&g.0, self_label, depth))
-                        || ast_expr_has_break(&arm.body.0, self_label, depth)
+                        .is_some_and(|g| ast_expr_has_break(&g.0, query, depth))
+                        || ast_expr_has_break(&arm.body.0, query, depth)
                 })
         }
         Stmt::Let {
             value, else_block, ..
         } => {
             if let Some(val) = value {
-                if ast_expr_has_break(&val.0, self_label, depth) {
+                if ast_expr_has_break(&val.0, query, depth) {
                     return true;
                 }
             }
             if let Some(eb) = else_block {
-                if ast_block_has_break(eb, self_label, depth) {
+                if ast_block_has_break(eb, query, depth) {
                     return true;
                 }
             }
@@ -170,22 +221,29 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
         }
         Stmt::Var {
             value: Some(val), ..
-        } => ast_expr_has_break(&val.0, self_label, depth),
-        // `None`-value Var and `continue` have no nested expressions.
-        Stmt::Var { value: None, .. } | Stmt::Continue { .. } => false,
+        } => ast_expr_has_break(&val.0, query, depth),
+        // `continue` never exits a loop, so it is invisible to the
+        // break-targeting query; it DOES leave the analysed region, jumping to
+        // an enclosing loop's next iteration.
+        Stmt::Continue { label } => match query {
+            BreakQuery::TargetsLoop(_) => false,
+            BreakQuery::LeavesRegion => depth == 0 || label.is_some(),
+        },
+        // A `None`-value Var has no nested expressions.
+        Stmt::Var { value: None, .. } => false,
         Stmt::Assign { target, value, .. } => {
             // Both the assignment target (e.g. `arr[idx]`, `obj.field`) and the
             // value are evaluated in the enclosing scope.
-            ast_expr_has_break(&target.0, self_label, depth)
-                || ast_expr_has_break(&value.0, self_label, depth)
+            ast_expr_has_break(&target.0, query, depth)
+                || ast_expr_has_break(&value.0, query, depth)
         }
-        Stmt::Defer(expr) => ast_expr_has_break(&expr.0, self_label, depth),
-        Stmt::Expression(expr) => ast_expr_has_break(&expr.0, self_label, depth),
+        Stmt::Defer(expr) => ast_expr_has_break(&expr.0, query, depth),
+        Stmt::Expression(expr) => ast_expr_has_break(&expr.0, query, depth),
         // A `return` expression value is evaluated in the outer loop's scope;
         // a `break` inside `return unsafe { break; }` exits the outer loop.
         Stmt::Return(opt) => opt
             .as_ref()
-            .is_some_and(|e| ast_expr_has_break(&e.0, self_label, depth)),
+            .is_some_and(|e| ast_expr_has_break(&e.0, query, depth)),
     }
 }
 
@@ -193,20 +251,17 @@ fn ast_stmt_has_break(stmt: &Stmt, self_label: Option<&str>, depth: usize) -> bo
     clippy::too_many_lines,
     reason = "exhaustive walker over every Expr variant; splitting would hide completeness guarantees"
 )]
-fn ast_expr_has_break(expr: &Expr, self_label: Option<&str>, depth: usize) -> bool {
+fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool {
     match expr {
         // ── Structural forms with direct block/statement children ─────────
-        Expr::Block(block) => ast_block_has_break(block, self_label, depth),
-        Expr::UnsafeBlock(block) => ast_block_has_break(block, self_label, depth),
+        Expr::Block(block) => ast_block_has_break(block, query, depth),
+        Expr::UnsafeBlock(block) => ast_block_has_break(block, query, depth),
         // `scope { }` and `fork { }` are conservatively propagated: a break
         // inside them counts for the outer loop (safe direction — types loop
         // Unit rather than Never).
-        Expr::Scope { body } | Expr::ForkBlock { body } => {
-            ast_block_has_break(body, self_label, depth)
-        }
+        Expr::Scope { body } | Expr::ForkBlock { body } => ast_block_has_break(body, query, depth),
         Expr::ScopeDeadline { duration, body } => {
-            ast_expr_has_break(&duration.0, self_label, depth)
-                || ast_block_has_break(body, self_label, depth)
+            ast_expr_has_break(&duration.0, query, depth) || ast_block_has_break(body, query, depth)
         }
         Expr::GenBlock { body } => {
             // Generator block: `gen { … }` introduces a coroutine scope that
@@ -223,14 +278,14 @@ fn ast_expr_has_break(expr: &Expr, self_label: Option<&str>, depth: usize) -> bo
             else_block,
         } => {
             // Condition is evaluated in the enclosing scope (an `if` is not a loop).
-            if ast_expr_has_break(&condition.0, self_label, depth) {
+            if ast_expr_has_break(&condition.0, query, depth) {
                 return true;
             }
-            if ast_expr_has_break(&then_block.0, self_label, depth) {
+            if ast_expr_has_break(&then_block.0, query, depth) {
                 return true;
             }
             if let Some(eb) = else_block {
-                return ast_expr_has_break(&eb.0, self_label, depth);
+                return ast_expr_has_break(&eb.0, query, depth);
             }
             false
         }
@@ -241,100 +296,96 @@ fn ast_expr_has_break(expr: &Expr, self_label: Option<&str>, depth: usize) -> bo
             ..
         } => {
             // Scrutinee is evaluated in the enclosing scope (not a loop).
-            if ast_expr_has_break(&expr.0, self_label, depth) {
+            if ast_expr_has_break(&expr.0, query, depth) {
                 return true;
             }
-            if ast_block_has_break(body, self_label, depth) {
+            if ast_block_has_break(body, query, depth) {
                 return true;
             }
             if let Some(eb) = else_body {
-                return ast_block_has_break(eb, self_label, depth);
+                return ast_block_has_break(eb, query, depth);
             }
             false
         }
         Expr::Match { scrutinee, arms } => {
             // Scrutinee and each arm's guard are evaluated in the enclosing
             // scope, alongside the arm bodies.
-            ast_expr_has_break(&scrutinee.0, self_label, depth)
+            ast_expr_has_break(&scrutinee.0, query, depth)
                 || arms.iter().any(|arm| {
                     arm.guard
                         .as_ref()
-                        .is_some_and(|g| ast_expr_has_break(&g.0, self_label, depth))
-                        || ast_expr_has_break(&arm.body.0, self_label, depth)
+                        .is_some_and(|g| ast_expr_has_break(&g.0, query, depth))
+                        || ast_expr_has_break(&arm.body.0, query, depth)
                 })
         }
 
         // ── Arithmetic / logical operators ────────────────────────────────
         Expr::Binary { left, right, .. } => {
-            ast_expr_has_break(&left.0, self_label, depth)
-                || ast_expr_has_break(&right.0, self_label, depth)
+            ast_expr_has_break(&left.0, query, depth) || ast_expr_has_break(&right.0, query, depth)
         }
         Expr::Unary { operand, .. } | Expr::Clone(operand) => {
-            ast_expr_has_break(&operand.0, self_label, depth)
+            ast_expr_has_break(&operand.0, query, depth)
         }
         Expr::Is { lhs, rhs } => {
-            ast_expr_has_break(&lhs.0, self_label, depth)
-                || ast_expr_has_break(&rhs.0, self_label, depth)
+            ast_expr_has_break(&lhs.0, query, depth) || ast_expr_has_break(&rhs.0, query, depth)
         }
 
         // ── Aggregate constructors ────────────────────────────────────────
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => exprs
-            .iter()
-            .any(|e| ast_expr_has_break(&e.0, self_label, depth)),
+        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+            exprs.iter().any(|e| ast_expr_has_break(&e.0, query, depth))
+        }
         Expr::ArrayRepeat { value, count } => {
-            ast_expr_has_break(&value.0, self_label, depth)
-                || ast_expr_has_break(&count.0, self_label, depth)
+            ast_expr_has_break(&value.0, query, depth) || ast_expr_has_break(&count.0, query, depth)
         }
         Expr::MapLiteral { entries } => entries.iter().any(|(k, v)| {
-            ast_expr_has_break(&k.0, self_label, depth)
-                || ast_expr_has_break(&v.0, self_label, depth)
+            ast_expr_has_break(&k.0, query, depth) || ast_expr_has_break(&v.0, query, depth)
         }),
         Expr::StructInit { fields, base, .. } => {
             if fields
                 .iter()
-                .any(|(_, v)| ast_expr_has_break(&v.0, self_label, depth))
+                .any(|(_, v)| ast_expr_has_break(&v.0, query, depth))
             {
                 return true;
             }
             if let Some(b) = base {
-                return ast_expr_has_break(&b.0, self_label, depth);
+                return ast_expr_has_break(&b.0, query, depth);
             }
             false
         }
         Expr::MachineEmit { fields, .. } => fields
             .iter()
-            .any(|(_, v)| ast_expr_has_break(&v.0, self_label, depth)),
+            .any(|(_, v)| ast_expr_has_break(&v.0, query, depth)),
         Expr::InterpolatedString(parts) => parts.iter().any(|p| match p {
             crate::ast::StringPart::Literal(_) => false,
-            crate::ast::StringPart::Expr(e) => ast_expr_has_break(&e.0, self_label, depth),
+            crate::ast::StringPart::Expr(e) => ast_expr_has_break(&e.0, query, depth),
         }),
 
         // ── Call / field / index ──────────────────────────────────────────
         Expr::Call { function, args, .. } => {
-            if ast_expr_has_break(&function.0, self_label, depth) {
+            if ast_expr_has_break(&function.0, query, depth) {
                 return true;
             }
             args.iter()
-                .any(|a| ast_expr_has_break(&a.expr().0, self_label, depth))
+                .any(|a| ast_expr_has_break(&a.expr().0, query, depth))
         }
         Expr::MethodCall { receiver, args, .. } => {
-            if ast_expr_has_break(&receiver.0, self_label, depth) {
+            if ast_expr_has_break(&receiver.0, query, depth) {
                 return true;
             }
             args.iter()
-                .any(|a| ast_expr_has_break(&a.expr().0, self_label, depth))
+                .any(|a| ast_expr_has_break(&a.expr().0, query, depth))
         }
         Expr::Spawn { target, args, .. } => {
-            if ast_expr_has_break(&target.0, self_label, depth) {
+            if ast_expr_has_break(&target.0, query, depth) {
                 return true;
             }
             args.iter()
-                .any(|(_, v)| ast_expr_has_break(&v.0, self_label, depth))
+                .any(|(_, v)| ast_expr_has_break(&v.0, query, depth))
         }
-        Expr::FieldAccess { object, .. } => ast_expr_has_break(&object.0, self_label, depth),
+        Expr::FieldAccess { object, .. } => ast_expr_has_break(&object.0, query, depth),
         Expr::Index { object, index } => {
-            ast_expr_has_break(&object.0, self_label, depth)
-                || ast_expr_has_break(&index.0, self_label, depth)
+            ast_expr_has_break(&object.0, query, depth)
+                || ast_expr_has_break(&index.0, query, depth)
         }
         // Single-operand wrappers: cast, postfix-try, await, await_restart,
         // fork-child expr.
@@ -342,42 +393,42 @@ fn ast_expr_has_break(expr: &Expr, self_label: Option<&str>, depth: usize) -> bo
         | Expr::PostfixTry(expr)
         | Expr::Await(expr)
         | Expr::AwaitRestart(expr)
-        | Expr::ForkChild { expr, .. } => ast_expr_has_break(&expr.0, self_label, depth),
+        | Expr::ForkChild { expr, .. } => ast_expr_has_break(&expr.0, query, depth),
 
         // ── Range ─────────────────────────────────────────────────────────
         Expr::Range { start, end, .. } => {
             start
                 .as_ref()
-                .is_some_and(|e| ast_expr_has_break(&e.0, self_label, depth))
+                .is_some_and(|e| ast_expr_has_break(&e.0, query, depth))
                 || end
                     .as_ref()
-                    .is_some_and(|e| ast_expr_has_break(&e.0, self_label, depth))
+                    .is_some_and(|e| ast_expr_has_break(&e.0, query, depth))
         }
 
         // ── Concurrency selectors ─────────────────────────────────────────
         Expr::Select { arms, timeout } => {
             if arms.iter().any(|arm| {
-                ast_expr_has_break(&arm.source.0, self_label, depth)
-                    || ast_expr_has_break(&arm.body.0, self_label, depth)
+                ast_expr_has_break(&arm.source.0, query, depth)
+                    || ast_expr_has_break(&arm.body.0, query, depth)
             }) {
                 return true;
             }
             if let Some(tc) = timeout {
-                return ast_expr_has_break(&tc.duration.0, self_label, depth)
-                    || ast_expr_has_break(&tc.body.0, self_label, depth);
+                return ast_expr_has_break(&tc.duration.0, query, depth)
+                    || ast_expr_has_break(&tc.body.0, query, depth);
             }
             false
         }
         Expr::Timeout { expr, duration } => {
-            ast_expr_has_break(&expr.0, self_label, depth)
-                || ast_expr_has_break(&duration.0, self_label, depth)
+            ast_expr_has_break(&expr.0, query, depth)
+                || ast_expr_has_break(&duration.0, query, depth)
         }
 
         // ── Control-flow expressions ──────────────────────────────────────
         // `return` and `yield` both carry an optional value expression.
         Expr::Return(opt) | Expr::Yield(opt) => opt
             .as_ref()
-            .is_some_and(|e| ast_expr_has_break(&e.0, self_label, depth)),
+            .is_some_and(|e| ast_expr_has_break(&e.0, query, depth)),
 
         // ── New scope boundaries and leaf forms (no break can escape) ────────
         //

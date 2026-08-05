@@ -230,7 +230,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "target/nextest/ci/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Release Gate Test Results (Linux x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -582,12 +582,12 @@ jobs:
         # runner after the guest `run:` script exits (proven by release.yml's
         # build-freebsd-aarch64 job, which packages a tarball entirely inside
         # the VM's run block and then reads it from a host-side
-        # actions/upload-artifact step) — so the two junit.xml reports
-        # written by the guest's nextest runs are present here.
+        # actions/upload-artifact step) — so the reports written by the
+        # guest's nextest and hew-suite-ratchet runs are present here.
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Release Gate Test Results (FreeBSD x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -690,5 +690,5 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Release Gate Test Results (FreeBSD aarch64)

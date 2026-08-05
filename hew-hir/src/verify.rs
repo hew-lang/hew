@@ -463,6 +463,35 @@ fn resolve_aggregate_facts(
     changed
 }
 
+/// The return-value ownership each declaration publishes to its call sites.
+///
+/// # A returned sole-use local is a MOVE-OUT, not a borrow
+///
+/// A binding reference only carries an explicit `Consume` intent at a marked
+/// transfer, so `fn mkOuter() -> Outer { let o = Outer { .. }; o }` records its
+/// tail as a plain reference and its fact settles at `Borrowed` — even though
+/// the local dies with the frame and its storage is precisely what the caller
+/// receives. Reporting that as `Borrowed` tells every call site the result is
+/// someone else's, so a fresh composite handed to a borrowing callee acquires no
+/// caller-side drop and LEAKS one payload set per call.
+///
+/// A return-position reference is promoted to `Owned { MoveOut }` under exactly
+/// [`call_argument_is_proven_owned`]'s conditions — the binding has ONE
+/// definition, that definition is itself proven owned and is not another bare
+/// reference, and the whole function references the binding ONCE (this return).
+/// Sole use is what makes the promotion a move rather than a second claim: no
+/// other site can still be reading the storage the caller is now told it owns.
+///
+/// Sharing that predicate is deliberate. It already encodes the sole-use and
+/// single-definition reasoning this needs, and a second hand-rolled copy is
+/// exactly how the two sides drift apart.
+///
+/// The shapes it must NOT promote, and what refuses them: a bare parameter
+/// forwarder (`fn f(h: Holder) -> Holder { h }`) — a parameter has no defining
+/// site, so the single-definition test fails; a `let`-of-parameter re-binding
+/// (`let x = h; x`) — the definition is a reference whose own fact is
+/// `Borrowed`; a `var` reassigned from a parameter — two definitions; a field
+/// projection of a parameter (`w.h`) — not a binding reference at all.
 fn function_return_ownership_summaries(
     verifier: &Verifier,
     facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
@@ -473,10 +502,19 @@ fn function_return_ownership_summaries(
         .map(|(declaration, sites)| {
             let ownership = sites.iter().filter_map(|site| {
                 facts.get(site).map(|fact| {
-                    if matches!(fact.ownership, ProducedValueOwnership::Borrowed)
-                        && verifier.site_types.get(site) == Some(&ResolvedTy::String)
-                    {
+                    if !matches!(fact.ownership, ProducedValueOwnership::Borrowed) {
+                        fact.ownership
+                    } else if verifier.site_types.get(site) == Some(&ResolvedTy::String) {
                         ProducedValueOwnership::owned(ProducedValueAcquisition::Retained)
+                    } else if fact.producer == crate::node::HirProducedValueProducer::BindingRef
+                        && call_argument_is_proven_owned(
+                            *site,
+                            verifier,
+                            facts,
+                            &mut HashSet::new(),
+                        )
+                    {
+                        ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
                     } else {
                         fact.ownership
                     }

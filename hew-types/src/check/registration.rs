@@ -9947,9 +9947,27 @@ impl Checker {
 
                     // Register opaque handles and fielded resource wrappers so
                     // registry-only imports can use either in type annotations.
-                    for type_name in handle_types.iter().chain(&resource_wrapper_types) {
-                        self.known_types.insert(type_name.clone());
-                    }
+                    //
+                    // Under the loaded module's CANONICAL owner, never the
+                    // extracted short spelling (rc1-F1 stage D, registry
+                    // producer). Publishing `stream.Sink` beside the source
+                    // module's `std.stream.Sink` puts two owners on one
+                    // declaration, and every later unique-owner resolution then
+                    // reads that as an ambiguity and leaves the name as written.
+                    let canonical_known_types = handle_types
+                        .iter()
+                        .chain(&resource_wrapper_types)
+                        .map(|type_name| {
+                            self.resolve_nominal_declaration(
+                                NominalOrigin::RegistrySignature {
+                                    canonical_owner: &canonical_owner,
+                                },
+                                type_name,
+                            )
+                            .unwrap_or_else(|| type_name.clone())
+                        })
+                        .collect::<Vec<_>>();
+                    self.known_types.extend(canonical_known_types);
 
                     // Populate TraitRegistry with handle/drop types
                     for ht in &handle_types {

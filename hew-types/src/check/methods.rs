@@ -2622,10 +2622,26 @@ impl Checker {
             .or_else(|| {
                 self.module_registry
                     .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type, _canonical_owner)| FnSig {
-                        params,
-                        return_type,
-                        ..FnSig::default()
+                    .map(|(_c_symbol, params, return_type, canonical_owner)| {
+                        // The registry's own projection sees only the loaded
+                        // module and its imports, so a nominal that module
+                        // neither declares nor imports (`stream.Sink` reached
+                        // from `std.net.http`) comes back at the legacy short
+                        // owner while source resolution mints the complete one.
+                        // Re-resolve through the shared ladder so a method
+                        // signature and the source around it name one owner
+                        // (rc1-F1 stage D, registry producer).
+                        FnSig {
+                            params: params
+                                .iter()
+                                .map(|ty| {
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: self
+                                .canonicalize_registry_signature(&return_type, &canonical_owner),
+                            ..FnSig::default()
+                        }
                     })
             })
     }

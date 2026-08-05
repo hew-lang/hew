@@ -12,11 +12,33 @@
 //!   after the join, so a conditional consume followed by a use still rejects.
 //!   The false positive this replaces never came from the merge direction; it
 //!   came from an arm starting where its sibling ended.
-//! * **Divergence exclusion.** An arm that ends in `Ty::Never` never reaches the
-//!   join, so its consumes cannot be observed by the code below it. An arm that
-//!   diverges by leaving the enclosing loop rather than the function does rejoin
-//!   later, and that edge belongs to the checked-MIR dataflow pass, which is
-//!   flow-sensitive over the whole CFG.
+//! * **Function-exit exclusion, not divergence exclusion.** An arm is dropped
+//!   from the union only when control leaves the FUNCTION, because only then can
+//!   the code below the branch never observe what the arm consumed. `Ty::Never`
+//!   alone does not establish that: `break` and `continue` type `Never` too, and
+//!   they rejoin right after the enclosing loop. An arm that can escape to an
+//!   enclosing loop is treated as reaching the join.
+//!
+//! # Which operands are sequential and which are branched
+//!
+//! An operand may be branch-scoped only if the branch is already decided by the
+//! time it runs. Everything else threads sequentially.
+//!
+//! | construct | sequential setup | branched |
+//! |---|---|---|
+//! | `match` | scrutinee; each arm's pattern test and guard, threaded through the fall-through state | arm bodies |
+//! | `if` / `else if` | each link's condition, threaded through the fall-through state | the block after each condition |
+//! | `if let` | scrutinee | then-block, else-block |
+//! | `let … else` | the bound value | the else block |
+//! | `select` | EVERY arm's source and the timeout duration — all prepared before a winner exists | arm bodies and the timeout body |
+//!
+//! Two consequences worth stating outright, because both were wrong once. A
+//! `select` source runs before dispatch picks a winner, so the sources are not
+//! alternatives and the same handle handed to two of them is a real double
+//! transfer. A guard runs only after every earlier arm failed to match, so it
+//! belongs to the fall-through chain rather than restarting from the branch
+//! entry — otherwise a guard's consume and a later arm's consume look disjoint
+//! when they happen on one execution.
 //!
 //! Loops are deliberately not join sites. The env checker walks a loop body
 //! once, and because the ownership flags are monotone within a path, the body's
@@ -32,16 +54,46 @@
 use super::types::Checker;
 use crate::env::OwnershipSnapshot;
 use crate::ty::Ty;
+use hew_parser::ast::{Block, Expr, Stmt};
 
 /// What one branch arm left behind.
 pub(super) struct BranchArmExit {
     /// Ownership state at the end of the arm.
     pub(super) ownership: OwnershipSnapshot,
-    /// Whether the arm ends without reaching the join (`Ty::Never`).
+    /// Whether control leaves the enclosing function without ever reaching the
+    /// code below this branch.
+    ///
+    /// This is NOT the same question as `arm_ty == Ty::Never`. A `break` or a
+    /// `continue` also types `Never`, but it leaves only the enclosing LOOP and
+    /// rejoins immediately after it, so everything the arm consumed is live
+    /// again below the loop and its state must be merged. Build this field with
+    /// [`Checker::arm_skips_join_expr`] and friends, never from the type alone.
     pub(super) diverges: bool,
 }
 
 impl Checker {
+    /// Whether an expression-bodied arm leaves the function without reaching the
+    /// join below its branch.
+    ///
+    /// Requires BOTH that the arm diverges and that no `break` or `continue`
+    /// inside it can escape to an enclosing loop. The second condition is what
+    /// separates a `return` (never comes back) from a `break` (comes back just
+    /// past the loop). Getting it wrong in this direction drops a live path from
+    /// the union and admits a genuine double consume.
+    pub(super) fn arm_skips_join_expr(body: &Expr, arm_ty: &Ty) -> bool {
+        matches!(arm_ty, Ty::Never) && !hew_parser::expr_leaves_enclosing_loop(body)
+    }
+
+    /// Block-bodied counterpart of [`Self::arm_skips_join_expr`].
+    pub(super) fn arm_skips_join_block(body: &Block, arm_ty: &Ty) -> bool {
+        matches!(arm_ty, Ty::Never) && !hew_parser::block_leaves_enclosing_loop(body)
+    }
+
+    /// Statement-bodied counterpart, for the `else if` link of a chain.
+    pub(super) fn arm_skips_join_stmt(body: &Stmt, arm_ty: &Ty) -> bool {
+        matches!(arm_ty, Ty::Never) && !hew_parser::stmt_leaves_enclosing_loop(body)
+    }
+
     /// Merge the arms of an alternative-execution construct back into one state.
     ///
     /// `entry` is the snapshot taken immediately before the first arm. Callers
@@ -71,16 +123,17 @@ impl Checker {
     /// Join a two-armed branch whose second arm has just finished checking.
     ///
     /// `taken` is the already-captured exit of the first arm; the second arm's
-    /// exit is read from the environment and classified by `other_ty`.
+    /// exit is read from the environment. `other_skips_join` must come from one
+    /// of the `arm_skips_join_*` classifiers, never from the arm's type alone.
     pub(super) fn join_two_way(
         &mut self,
         entry: &OwnershipSnapshot,
         taken: BranchArmExit,
-        other_ty: &Ty,
+        other_skips_join: bool,
     ) {
         let other = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
-            diverges: matches!(other_ty, Ty::Never),
+            diverges: other_skips_join,
         };
         self.join_branch_ownership(entry, &[taken, other]);
     }

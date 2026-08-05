@@ -1,11 +1,45 @@
-// A `break` arm diverges out of the branch but rejoins after the loop, so its
-// consume DOES reach the code below the loop. The env checker excludes every
-// diverging arm from the join it sits in and does not model the loop-exit
-// edge, so this rejection belongs to the checked-MIR dataflow pass
-// (`E_MIR_CHECK: UseAfterConsume`).
+// A `break` arm leaves the LOOP, not the function, so its consume reaches the
+// code below the loop. An arm that merely types `Never` therefore cannot be
+// dropped from a branch join — only an arm that leaves the FUNCTION can.
 //
-// The fixture exists to prove the backstop actually covers the escape edge the
-// env layer gives up on.
+// The primary cases here are deliberately `BitCopy`-classed, because that is
+// the class where the env checker is the ONLY authority. The checked-MIR
+// dataflow pass transitions a binding to consumed only for non-`BitCopy` values
+// (or channel handles), so a record wrapping an `#[opaque]` handle, and an
+// all-scalar record with a consuming method, are invisible to it. If the env
+// checker stops rejecting `double_free` below, nothing else does, and the
+// emitted binary calls `Wrapper::release` twice on one handle.
+//
+// A `#[resource]`-typed variant is kept last for coverage, but it is `Linear`
+// and MIR catches it on its own — it cannot detect a regression here.
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+    fn hew_handle_free(consume h: Handle) -> i32;
+}
+
+type Wrapper {
+    h: Handle,
+}
+
+impl Wrapper {
+    fn release(consuming self) {
+        unsafe { hew_handle_free(self.h) };
+    }
+}
+
+type Scalars {
+    a: i64,
+}
+
+impl Scalars {
+    fn take(consuming self) -> i64 {
+        self.a
+    }
+}
+
 #[resource]
 type Conn {
     fd: i64
@@ -18,7 +52,48 @@ impl Conn {
     }
 }
 
-fn break_escape(n: i64) -> i64 {
+// Record wrapping an opaque FFI handle: `BitCopy`, so the env checker is the
+// only authority. Releasing on the break path and again after the loop frees
+// the same handle twice.
+fn double_free(n: i64) {
+    let w = Wrapper { h: unsafe { hew_handle_create() } };
+    for i in 0..3 {
+        if i == n {
+            w.release();
+            break;
+        }
+    }
+    w.release();
+}
+
+// All-scalar record: same class, same blind spot. No memory unsafety here
+// because the value is bit-copyable, but the affine contract is still violated.
+fn scalar_double_consume(n: i64) -> i64 {
+    let s = Scalars { a: 7 };
+    for i in 0..3 {
+        if i == n {
+            let _ = s.take();
+            break;
+        }
+    }
+    s.take()
+}
+
+// `continue` rejoins at the loop head rather than after the loop, and still
+// reaches the code below once the loop runs out.
+fn continue_escape(n: i64) -> i64 {
+    let s = Scalars { a: 9 };
+    for i in 0..3 {
+        if i == n {
+            let _ = s.take();
+            continue;
+        }
+    }
+    s.take()
+}
+
+// `#[resource]` variant: Linear, so MIR would also catch this one.
+fn linear_break_escape(n: i64) -> i64 {
     let held = Conn { fd: 1 };
     for i in 0..3 {
         if i == n {
@@ -30,5 +105,8 @@ fn break_escape(n: i64) -> i64 {
 }
 
 fn main() {
-    print(break_escape(1));
+    double_free(1);
+    let _ = scalar_double_consume(1);
+    let _ = continue_escape(1);
+    let _ = linear_break_escape(1);
 }

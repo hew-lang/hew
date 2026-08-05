@@ -311,6 +311,135 @@ fn consume_after_a_join_where_only_a_diverging_arm_stayed_live_is_rejected() {
     );
 }
 
+// --- Loop escape: `Never` is not the same as "leaves the function" --------
+
+#[test]
+fn a_break_arm_consume_still_rejects_a_use_below_the_loop() {
+    // `break` types `Never` but rejoins immediately after the loop, so the
+    // consume on the break path reaches the code below it. Excluding the arm
+    // because it "diverges" admits a genuine double consume.
+    assert_rejects(
+        "break escapes to below the loop",
+        r"
+        fn probe(n: i64) -> i64 {
+            let held = Socket { fd: 1 };
+            for i in 0..3 {
+                if i == n {
+                    let _ = held.detach();
+                    break;
+                }
+            }
+            held.detach()
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_continue_arm_consume_still_rejects_a_use_below_the_loop() {
+    assert_rejects(
+        "continue rejoins at the loop head",
+        r"
+        fn probe(n: i64) -> i64 {
+            let held = Socket { fd: 1 };
+            for i in 0..3 {
+                if i == n {
+                    let _ = held.detach();
+                    continue;
+                }
+            }
+            held.detach()
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_labelled_break_arm_consume_still_rejects_a_use_below_the_loop() {
+    // The break sits inside an inner loop, so nesting depth alone would say it
+    // cannot escape the arm. The label is what carries it out to `@outer`.
+    assert_rejects(
+        "labelled break escapes two loops",
+        r"
+        fn probe(n: i64) -> i64 {
+            let held = Socket { fd: 1 };
+            @outer: for i in 0 .. 3 {
+                for j in 0 .. 3 {
+                    if i + j == n {
+                        let _ = held.detach();
+                        break @outer;
+                    }
+                }
+            }
+            held.detach()
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_return_arm_containing_an_inner_loop_break_still_skips_the_join() {
+    // The break belongs to a loop written INSIDE the arm, so it cannot carry
+    // the consume past the branch; the arm still leaves the function.
+    assert_accepts(
+        "inner-loop break does not make a returning arm reachable",
+        r"
+        fn probe(flag: bool, n: i64) -> i64 {
+            let held = Socket { fd: 1 };
+            if flag {
+                for i in 0..3 {
+                    if i == n {
+                        break;
+                    }
+                }
+                return held.detach();
+            }
+            held.detach()
+        }
+        ",
+    );
+}
+
+// --- Operand scoping: sequential setup vs branched alternatives -----------
+
+#[test]
+fn a_guard_consume_still_rejects_a_consume_in_a_later_arm() {
+    // A guard runs whenever its pattern matched and every earlier arm did not,
+    // so guard 1 and body 2 both execute on one path. Guards thread through the
+    // fall-through state rather than restarting from the branch entry.
+    assert_rejects(
+        "guard consume then sibling arm consume",
+        r"
+        fn probe(r: Result<i64, string>) -> i64 {
+            let held = Socket { fd: 1 };
+            match r {
+                Ok(_) if held.detach() > 0 => { 10 },
+                Err(_) => { held.detach() },
+                Ok(_) => { 20 },
+            }
+        }
+        ",
+    );
+}
+
+#[test]
+fn an_else_if_condition_consume_still_rejects_a_use_after_the_chain() {
+    assert_rejects(
+        "else-if condition consume",
+        r"
+        fn probe(n: i64) -> i64 {
+            let held = Socket { fd: 1 };
+            if n == 0 {
+                let _ = 1;
+            } else if held.detach() > 0 {
+                let _ = 2;
+            }
+            held.detach()
+        }
+        ",
+    );
+}
+
 // --- R2: the snapshot must not carry lint state ---------------------------
 
 #[test]

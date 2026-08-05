@@ -294,8 +294,23 @@ impl Checker {
     /// aliased opt-in) carry the same owner here as in an extern contract or a
     /// registry signature.
     pub(super) fn source_nominal_declaration(&self, name: &str) -> Option<String> {
-        self.published_bare_type_qualified(name)
-            .or_else(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, name))
+        if let Some(published) = self.published_bare_type_qualified(name) {
+            return Some(published);
+        }
+        let declaration = self.resolve_nominal_declaration(NominalOrigin::Lexical, name)?;
+        // Compiler catalog nominals keep their own namespace. `Location`,
+        // `NodeId` and the other entries the compiler declares in
+        // `std.builtins` ARE their catalog discriminator; the downstream
+        // value-class and layout tables know them by that bare spelling alone,
+        // so qualifying one to `std.builtins.Location` renames a type nothing
+        // downstream can look up. Leave it as written.
+        if declaration
+            .strip_prefix("std.builtins.")
+            .is_some_and(|leaf| leaf == name)
+        {
+            return None;
+        }
+        Some(declaration)
     }
 
     pub(super) fn published_bare_type_qualified(&self, name: &str) -> Option<String> {

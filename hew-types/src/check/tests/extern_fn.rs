@@ -780,3 +780,82 @@ fn one_peer_declaration_through_two_routes_resolves_one_contract() {
         output.errors
     );
 }
+
+/// Third-collision oracle: three peer files whose stems all sanitize to one
+/// render (`a-b`, `a+b`, `a.b` -> `a_b`), where the SECOND and THIRD declare
+/// structurally different `Tok`s against one C symbol. A single-application
+/// render disambiguator hands the third file the second's suffixed render,
+/// merging two distinct nominals and silently accepting the divergent ABI.
+#[test]
+fn third_render_collision_keeps_peer_nominals_distinct() {
+    use std::path::PathBuf;
+    let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
+    let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
+    let two_field_source =
+        "type Tok {\n    a: i64;\n    b: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let three_field_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let primary_file = PathBuf::from("/nonexistent/tri/pkg/pkg.hew");
+    let inert_file = PathBuf::from("/nonexistent/tri/pkg/a-b.hew");
+    let two_field_file = PathBuf::from("/nonexistent/tri/pkg/a+b.hew");
+    let three_field_file = PathBuf::from("/nonexistent/tri/pkg/a.b.hew");
+
+    let parsed = |source: &str| {
+        let out = hew_parser::parse(source);
+        assert!(out.errors.is_empty(), "parse: {:?}", out.errors);
+        out.program.items
+    };
+    let primary_items = parsed(primary_source);
+    let inert_items = parsed(inert_source);
+    let two_field_items = parsed(two_field_source);
+    let three_field_items = parsed(three_field_source);
+
+    let root_id = ModuleId::root();
+    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+
+    let mut items = primary_items.clone();
+    let mut item_sources: Vec<PathBuf> =
+        std::iter::repeat_n(primary_file.clone(), primary_items.len()).collect();
+    for (file, file_items) in [
+        (&inert_file, &inert_items),
+        (&two_field_file, &two_field_items),
+        (&three_field_file, &three_field_items),
+    ] {
+        item_sources.extend(std::iter::repeat_n(file.clone(), file_items.len()));
+        items.extend(file_items.iter().cloned());
+    }
+    mg.item_sources.insert("pkg".to_string(), item_sources);
+    mg.add_module(Module {
+        id: pkg_id.clone(),
+        items,
+        imports: vec![],
+        source_paths: vec![primary_file, inert_file, two_field_file, three_field_file],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![pkg_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    });
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("conflicting declarations")),
+        "divergent same-named nominals in the second and third colliding \
+         files must conflict on one C symbol; errors: {:#?}",
+        output.errors
+    );
+}

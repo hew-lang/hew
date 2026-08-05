@@ -141,8 +141,10 @@ impl IdentityTable {
     /// already a minted module's primary source, its render is
     /// `{assembler}.{stem}` — exactly the identity the file carries when
     /// imported directly. A render collision with a DIFFERENT module's path
-    /// is disambiguated fail-closed (`#file` suffix): a false split
-    /// diagnoses loudly, a false merge would equate two declarations.
+    /// is disambiguated fail-closed (`#file` suffix, appended until the
+    /// render is genuinely unique — a THIRD colliding file must not
+    /// re-derive the second's suffixed render): a false split diagnoses
+    /// loudly, a false merge would equate two declarations.
     pub fn mint_source_file_module(&mut self, assembler: &str, source: &Path) -> ModuleId {
         let source_key = Self::intern_source_key(source);
         if let Some(existing) = self.by_source.get(&source_key) {
@@ -161,12 +163,10 @@ impl IdentityTable {
                 }
             })
             .collect();
-        let render = format!("{assembler}.{stem}");
-        let render = if self.by_path.contains_key(&render) {
-            format!("{render}#file")
-        } else {
-            render
-        };
+        let mut render = format!("{assembler}.{stem}");
+        while self.by_path.contains_key(&render) {
+            render.push_str("#file");
+        }
         self.insert(render, Some(source_key))
     }
 
@@ -258,6 +258,40 @@ mod tests {
             "pkg.aaa#file",
             "distinct sources must never merge under one render"
         );
+    }
+
+    /// Three distinct files whose stems sanitize to ONE render must mint
+    /// three DISTINCT identities. A single-application disambiguator
+    /// re-derives the same suffixed string for the third file and silently
+    /// overwrites the second's `by_path` slot — a false merge on the very
+    /// axis this table exists to make injective.
+    #[test]
+    fn repeated_render_collisions_mint_distinct_identities() {
+        let mut table = IdentityTable::new();
+        let a = table.mint_source_file_module("pkg", &PathBuf::from("/nonexistent/pkg/a-b.hew"));
+        let b = table.mint_source_file_module("pkg", &PathBuf::from("/nonexistent/pkg/a+b.hew"));
+        let c = table.mint_source_file_module("pkg", &PathBuf::from("/nonexistent/pkg/a.b.hew"));
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        let renders = [
+            table.module_path(a).to_string(),
+            table.module_path(b).to_string(),
+            table.module_path(c).to_string(),
+        ];
+        let unique: std::collections::HashSet<&String> = renders.iter().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "every colliding file must keep its own render, got {renders:?}"
+        );
+        for (id, render) in [(a, &renders[0]), (b, &renders[1]), (c, &renders[2])] {
+            assert_eq!(
+                table.module_path(id),
+                render,
+                "render lookup must stay stable after later mints"
+            );
+        }
     }
 
     #[test]

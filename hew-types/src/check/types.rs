@@ -413,8 +413,9 @@ pub struct TypeCheckOutput {
     /// re-rendered to the legacy bare spelling because HIR
     /// (`hew-hir/src/lower.rs` `fn_sigs` clone) and hew-analysis still
     /// resolve root functions by source spelling.
-    /// WHEN OBSOLETE: stage C/D of the identity lane re-key consumers by
-    /// `DefId`; the render then disappears and canonical keys publish as-is.
+    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
+    /// stage re-keys consumers by `DefId`; the render then disappears and
+    /// canonical keys publish as-is.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.

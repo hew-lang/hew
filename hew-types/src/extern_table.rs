@@ -40,6 +40,8 @@
 //! WHEN OBSOLETE (`declaration_only`): when registry imports resolve through
 //! compiled source surfaces carrying real contracts, and the channel witness
 //! ABI is expressible in an extern block, fold both into minted contracts.
+//! Both are design-maturity prerequisites, so this lands in the rc2 identity
+//! continuation, not in rc1.
 
 use std::collections::{HashMap, HashSet};
 

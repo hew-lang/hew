@@ -348,8 +348,9 @@ impl Checker {
     /// root declarations at publication boundaries (published `CallTarget`
     /// `DefId`s, published `fn_sigs` keys, diagnostics), where downstream
     /// consumers still resolve root items by bare spelling.
-    /// WHEN OBSOLETE: stage C/D of the identity lane re-key those consumers by
-    /// `DefId`; the render half of this helper is deleted with them.
+    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
+    /// stage re-keys those consumers by `DefId`; the render half of this helper
+    /// is deleted with them. The detection half stays until then.
     pub(super) fn root_owned_fn_leaf<'k>(&self, key: &'k str) -> Option<&'k str> {
         if key.contains("::") {
             return None;
@@ -870,8 +871,10 @@ impl Checker {
         // reproduces the legacy registration semantics (a root declaration
         // shadows a builtin's bare slot). The canonical identity remains
         // published through `TypeCheckOutput::identity`.
-        // WHEN OBSOLETE: stage C/D re-key downstream consumers by `DefId`;
-        // this render is deleted and canonical keys publish unchanged.
+        // WHEN OBSOLETE: the rc2 identity continuation's
+        // render-canonicalization stage re-keys downstream consumers by
+        // `DefId`; this render is deleted and canonical keys publish
+        // unchanged. That is the commit that renames every root symbol.
         if let Some(root) = self.identity.root_module_path() {
             let prefix = format!("{root}.");
             let root_keys: Vec<String> = resolved_fn_sigs

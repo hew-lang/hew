@@ -1087,8 +1087,10 @@ impl Checker {
     /// downstream. The stored declaring module (`None` = root) selects the
     /// render: root declarations publish their bare leaf, module
     /// declarations publish `{module}.{leaf}`.
-    /// WHEN OBSOLETE: stage C/D re-key downstream consumers by canonical
-    /// `DefId`; this render then publishes the canonical key unchanged.
+    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
+    /// stage re-keys downstream consumers by canonical `DefId`; this render
+    /// then publishes the canonical key unchanged. rc1 stages D and E
+    /// deliberately do NOT delete it — doing so renames every root symbol.
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
@@ -1130,7 +1132,9 @@ impl Checker {
             // publication): a root extern declaration is keyed canonically
             // inside the checker but publishes its bare leaf, because HIR
             // still resolves root declarations by source spelling.
-            // WHEN OBSOLETE: stage C/D re-key downstream consumers by DefId.
+            // WHEN OBSOLETE: the rc2 identity continuation's
+            // render-canonicalization stage re-keys downstream consumers by
+            // DefId.
             let declaration = self
                 .root_owned_fn_leaf(signature_key)
                 .unwrap_or(signature_key)

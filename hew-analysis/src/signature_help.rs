@@ -62,11 +62,43 @@ fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
         return Some(sig);
     }
 
+    // A module-qualified free call (`unicode.is_upper(cp)`) reaches here: it is
+    // not the exact key, and its prefix is an import binding rather than a
+    // value, so it has no receiver type. Resolve the binding to the module it
+    // names and ask for the canonical identity. Ordered AFTER the receiver path
+    // so a local value shadowing an import binding still resolves as the method
+    // call it is.
+    if let Some(sig) = find_module_qualified_fn_sig(&context.callee, tc) {
+        return Some(sig);
+    }
+
     if context.receiver_end.is_none() {
         return find_fallback_fn_sig(&context.callee, tc);
     }
 
     None
+}
+
+/// Resolve `<binding>.<fn>` through the importer's own binding table.
+///
+/// `fn_sigs` is keyed by the declaring module's canonical path
+/// (`std.text.unicode.is_upper`), while the source spells the lexical import
+/// binding (`unicode.is_upper`). `module_import_bindings` is the checker's
+/// record of exactly which module each binding names, so the surface spelling
+/// resolves to one identity without the LSP inventing an owner or scanning
+/// `fn_sigs` for a matching leaf.
+///
+/// Keyed on the root importer (`None`): the analyzed document is the
+/// compilation root. A miss returns `None`; no owner is guessed.
+fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    let (binding, leaf) = callee.rsplit_once('.')?;
+    if binding.is_empty() || leaf.is_empty() {
+        return None;
+    }
+    let owner = tc
+        .module_import_bindings
+        .get(&(None, binding.to_string()))?;
+    tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
 }
 
 /// Find the function name and active parameter index at the cursor offset.

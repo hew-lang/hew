@@ -545,6 +545,19 @@ impl Checker {
                     resolved_expected.clone()
                 };
                 self.record_type(span, &result_ty);
+                // The ELEMENT type is deferred here; the CALLEE identity is not.
+                // `Vec::new` resolves to one runtime family whatever `T` turns
+                // out to be, and HIR treats an ordinary call that reaches
+                // lowering without a `direct_call_targets` entry as a hard
+                // boundary violation. Deferring the fact alongside the element
+                // type is what made a generic record-literal field initializer
+                // (`Bag { items: Vec::new() }`, `T` seeded from the field) fail
+                // closed at the HIR boundary while its annotated sibling
+                // (`let b: Bag<i64> = …`) compiled.
+                self.record_direct_call_target(
+                    span,
+                    CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::VecNew),
+                );
                 return Some(result_ty);
             }
             if matches!(elem_ty, Ty::Error) {

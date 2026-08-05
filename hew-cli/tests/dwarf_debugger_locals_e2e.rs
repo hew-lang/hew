@@ -6,8 +6,9 @@
 //! shadowed inner `let first` whose breakpoint reported the OUTER binding's
 //! value, and an `optnone`-less `-O0` body whose slot lagged its value.
 //!
-//! Skips (no-op, not fail-open) when no debugger is on the host — a missing
-//! `lldb`/`gdb` is not a Hew defect, but a present one must see the right value.
+//! A missing debugger is a HARD FAILURE, not a skip: a skip silently passed
+//! for as long as no CI runner shipped gdb/lldb, reporting success while
+//! proving nothing.
 //!
 //! # Platform scope
 //!
@@ -192,12 +193,13 @@ fn build_debug_fixture(slug: &str, source: &str) -> DebugFixture {
     }
 }
 
-/// First available batch debugger. `lldb -b -o ...` and `gdb --batch -ex ...`
-/// both run a script non-interactively.
+/// First available batch debugger, preferring each platform's native one.
+/// `lldb -b -o ...` and `gdb --batch -ex ...` both run a script
+/// non-interactively.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
     #[cfg(target_os = "linux")]
-    let candidates = ["gdb"];
+    let candidates = ["gdb", "lldb"];
     #[cfg(target_os = "freebsd")]
     let candidates = ["gdb", "lldb"];
     #[cfg(target_os = "macos")]
@@ -207,6 +209,24 @@ fn debugger() -> Option<&'static str> {
             .arg("--version")
             .output()
             .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// A missing debugger is a hard failure, not a skip. A skip here silently
+/// passed for as long as no CI runner shipped gdb/lldb — reporting success
+/// while proving nothing, the same failure class as debug info that prints a
+/// wrong value. Every platform this suite compiles on must provide a debugger
+/// (CI installs gdb on Linux and FreeBSD; macOS runners ship lldb with the
+/// Xcode command-line tools).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn require_debugger() -> &'static str {
+    debugger().unwrap_or_else(|| {
+        panic!(
+            "no debugger found on {}: install gdb (Linux/FreeBSD) or lldb \
+             (macOS, via the Xcode command-line tools) — this live-debugger \
+             proof must run, a skip would report success while proving nothing",
+            std::env::consts::OS
+        )
     })
 }
 
@@ -274,22 +294,7 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
 #[test]
 fn debugger_reads_shadowed_local_by_innermost_binding() {
     require_codegen();
-    let dbg = debugger().unwrap_or_else(|| {
-        #[cfg(target_os = "linux")]
-        panic!("no gdb found on Linux CI; install the gdb package");
-        #[cfg(target_os = "freebsd")]
-        panic!(
-            "no gdb or lldb found on FreeBSD CI; install the gdb package or LLVM's lldb package"
-        );
-        #[cfg(target_os = "macos")]
-        {
-            eprintln!("skip: no lldb/gdb on host");
-            ""
-        }
-    });
-    if dbg.is_empty() {
-        return;
-    }
+    let dbg = require_debugger();
 
     let dir = workspace();
     let src = dir.path().join("shadow.hew");
@@ -341,10 +346,7 @@ fn debugger_reads_shadowed_local_by_innermost_binding() {
 #[test]
 fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
     require_codegen();
-    let Some(dbg) = debugger() else {
-        eprintln!("skip: no lldb/gdb on host");
-        return;
-    };
+    let dbg = require_debugger();
     let fixture = build_debug_fixture("await-locals", AWAIT_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
@@ -418,10 +420,7 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
 #[test]
 fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     require_codegen();
-    let Some(dbg) = debugger() else {
-        eprintln!("skip: no lldb/gdb on host");
-        return;
-    };
+    let dbg = require_debugger();
     let fixture = build_debug_fixture("sleep-honest-locals", SLEEP_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
@@ -521,10 +520,7 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
 #[test]
 fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
     require_codegen();
-    let Some(dbg) = debugger() else {
-        eprintln!("skip: no lldb/gdb on host");
-        return;
-    };
+    let dbg = require_debugger();
     let fixture = build_debug_fixture("handler-backtrace", HANDLER_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
@@ -579,10 +575,7 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
 #[test]
 fn debugger_renders_only_active_enum_variant_payload() {
     require_codegen();
-    let Some(dbg) = debugger() else {
-        eprintln!("skip: no lldb/gdb on host");
-        return;
-    };
+    let dbg = require_debugger();
     let fixture = build_debug_fixture("enum-render", ENUM_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");

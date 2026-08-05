@@ -5702,6 +5702,11 @@ impl Checker {
                         .iter()
                         .map(|import| import.target.path.join("."))
                         .collect();
+                    self.current_module_direct_import_bindings = module
+                        .imports
+                        .iter()
+                        .map(|import| (import.target.path.join("."), import.spec.clone()))
+                        .collect();
                     // Temporarily scope local_type_defs to this module so
                     // that register_channel_recv_builtins (called from
                     // register_extern_block) can detect module-local types
@@ -5779,10 +5784,22 @@ impl Checker {
                     .collect()
             })
             .unwrap_or_default();
+        self.current_module_direct_import_bindings = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| (import.target.path.join("."), import.spec.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         for (item, span) in &program.items {
             self.collect_function_item(item, span);
         }
         self.current_module_direct_imports.clear();
+        self.current_module_direct_import_bindings.clear();
     }
 
     #[expect(
@@ -9198,8 +9215,112 @@ impl Checker {
         // authority joining those two representations of one loaded
         // declaration: it refuses bare leaves and ambiguous spellings, so it
         // can never recover an owner from text alone.
-        self.module_registry
+        if let Some(identity) = self
+            .module_registry
             .canonical_method_receiver_identity(name)
+        {
+            return Some(identity);
+        }
+        // Import-lexical fallback, LAST: it recovers only what the proven
+        // canonical/registry authorities could not, never pre-empts them.
+        if !name.contains('.') {
+            if let Some(owner) = self.extern_nominal_imported_owner(name) {
+                return Some(owner);
+            }
+        }
+        None
+    }
+
+    /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
+    /// declaring file does not itself declare resolves through the declaring
+    /// module's DIRECT imports — through the names each import actually
+    /// BINDS. A whole-module or glob import makes the target's declarations
+    /// visible under their own bare spellings (`std.net` writing `Sink`
+    /// under `import std::stream`); a named item import binds exactly its
+    /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
+    /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
+    /// declaration across the import set mints its declaring file's
+    /// identity; zero or several → `None`: the spelling stays as written and
+    /// the contract compare fails closed — ambiguity never picks a winner on
+    /// the C-ABI axis.
+    fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
+        // (declaring file, source-declared name) pairs the bound spelling
+        // denotes. Deduped: two import edges to one declaration are one
+        // meaning, not an ambiguity.
+        let mut declarations = self
+            .current_module_direct_import_bindings
+            .iter()
+            .filter_map(|(module, spec)| {
+                // Which SOURCE name does the bound spelling `name` denote
+                // under this import? None = this import does not bind it.
+                let source_name = match spec {
+                    None | Some(ImportSpec::Glob) => name.to_string(),
+                    Some(ImportSpec::Names(names)) => names
+                        .iter()
+                        .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
+                        .name
+                        .clone(),
+                };
+                Some((module, source_name))
+            })
+            .flat_map(|(module, source_name)| {
+                self.module_source_paths
+                    .get(module)
+                    .into_iter()
+                    .flatten()
+                    .filter(|source| {
+                        self.file_type_decls
+                            .get(*source)
+                            .is_some_and(|declared| declared.contains(&source_name))
+                    })
+                    .map(|source| (source, source_name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        declarations.sort_unstable();
+        declarations.dedup();
+        match declarations.as_slice() {
+            [(single, source_name)] => Some(format!(
+                "{}.{source_name}",
+                self.identity.module_path_for_source(single)?
+            )),
+            _ => None,
+        }
+    }
+
+    /// Rewrite bare IMPORTED nominals in an extern declaration's stored
+    /// signature to their import-lexical identity, so call sites type
+    /// against the same resolved nominal the extern contract compares
+    /// (rc1-F1 stage C). Only a bare name the declaring file/module does
+    /// NOT itself claim is rewritten; a locally declared bare spelling
+    /// keeps its body-facing form, and an unresolvable name stays as
+    /// written (the contract compare fails closed on it).
+    fn resolve_extern_sig_imported_nominals(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                // Mirror the contract ladder's order: the import-lexical
+                // fallback applies only to a bare name neither the file rule
+                // nor the canonical authority resolves.
+                let resolved = (!name.contains('.')
+                    && self.extern_nominal_file_owner(name).is_none()
+                    && self.canonical_nominal_name(name).is_none())
+                .then(|| self.extern_nominal_imported_owner(name))
+                .flatten();
+                Ty::Named {
+                    name: resolved.unwrap_or_else(|| name.clone()),
+                    args: args
+                        .iter()
+                        .map(|arg| self.resolve_extern_sig_imported_nominals(arg))
+                        .collect(),
+                    builtin: *builtin,
+                }
+            }
+            _ => ty.map_children_pub(&|child| self.resolve_extern_sig_imported_nominals(child)),
+        }
     }
 
     /// FILE-lexical nominal authority: the item's own declaring file first,
@@ -9480,7 +9601,7 @@ impl Checker {
                     TypeResolutionContext::ExternSignature,
                 )
             });
-            let sig = FnSig {
+            let mut sig = FnSig {
                 param_names,
                 params,
                 return_type,
@@ -9502,6 +9623,20 @@ impl Checker {
                 .as_ref()
                 .filter(|spec| !spec.template.is_monomorphic())
                 .map(|spec| spec.template.clone());
+            // The STORED signature is what call sites type against; give it
+            // the same import-lexical nominal resolution the contract
+            // receives, so an imported bare nominal (`Sink` under
+            // `import std::stream`) means one identity at the ABI boundary
+            // and in bodies. Template declarations carry signature type
+            // holes, not concrete nominals — leave them untouched.
+            if !source_symbol.is_empty() {
+                sig.params = sig
+                    .params
+                    .iter()
+                    .map(|ty| self.resolve_extern_sig_imported_nominals(ty))
+                    .collect();
+                sig.return_type = self.resolve_extern_sig_imported_nominals(&sig.return_type);
+            }
             // rc1-F1 stage B: extern declarations mint their key through the
             // canonical owner chokepoint, exactly like ordinary free
             // functions — a root extern fn keys `{root_module}.{name}` inside

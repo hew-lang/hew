@@ -7,7 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
-    Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+    ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2525,6 +2525,11 @@ pub struct Checker {
     /// Direct resolved import targets for the module whose declarations are
     /// currently being registered. Cleared between module-graph nodes.
     pub(super) current_module_direct_imports: BTreeSet<String>,
+    /// Direct resolved import EDGES (target module, import spec) for the
+    /// module whose declarations are currently being registered. The spec is
+    /// what decides which names an import binds bare — an aliased item
+    /// import binds only its alias. Cleared between module-graph nodes.
+    pub(super) current_module_direct_import_bindings: Vec<(String, Option<ImportSpec>)>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -3507,6 +3512,7 @@ impl Checker {
             method_call_preserves_receiver_identity: HashSet::new(),
             source_extern_declarations: Vec::new(),
             current_module_direct_imports: BTreeSet::new(),
+            current_module_direct_import_bindings: Vec::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),

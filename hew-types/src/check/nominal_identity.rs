@@ -119,11 +119,43 @@ impl Checker {
         // Import-lexical fallback, LAST: it recovers only what the proven
         // canonical/registry authorities could not, never pre-empts them.
         if !name.contains('.') {
-            if let Some(owner) = self.extern_nominal_imported_owner(name) {
+            if let Some(owner) = self.imported_binding_declaration(name) {
                 return Some(owner);
             }
         }
         None
+    }
+
+    /// IMPORT-lexical declaration authority for a bare spelling: the identity
+    /// an import statement actually BOUND under that spelling in this module.
+    ///
+    /// Two tables back one rung. `import_type_name_aliases` is the durable
+    /// published record — keyed by the BOUND (possibly aliased) spelling and
+    /// holding the owner-qualified SOURCE identity, so
+    /// `import m::{ Tok as ForeignTok }` resolves `ForeignTok` to `m.Tok` and
+    /// never to a reconstructed `m.ForeignTok`. It is consulted first because
+    /// it outlives registration, and source type expressions resolve after
+    /// registration has finished. `extern_nominal_imported_owner` is the
+    /// registration-frame view of the same rung, used while the durable record
+    /// is still being built.
+    ///
+    /// Declaration-proven, like every other rung: a published identity is
+    /// authority only when it names a registered declaration, a known type, or
+    /// a compiler-owned source lifecycle nominal. Anything else falls through
+    /// and the ladder keeps failing closed.
+    fn imported_binding_declaration(&self, name: &str) -> Option<String> {
+        if let Some(identity) = self
+            .import_type_name_aliases
+            .get(&(self.current_module.clone(), name.to_string()))
+        {
+            if self.type_defs.contains_key(identity)
+                || self.known_types.contains(identity)
+                || crate::lookup_source_owned_lifecycle_type(identity).is_some()
+            {
+                return Some(identity.clone());
+            }
+        }
+        self.extern_nominal_imported_owner(name)
     }
 
     /// Resolve EVERY nominal in a registry-extracted signature through the

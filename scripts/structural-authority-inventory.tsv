@@ -72,10 +72,10 @@ semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	6	stage-1	reviewed unique imported constructor surface compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified-variant surface split resolved through expected-nominal identity
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	7	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	10	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	11	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ffi_contracts.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam

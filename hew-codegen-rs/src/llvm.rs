@@ -32815,7 +32815,13 @@ struct PendingCoroLocalDbg<'ctx> {
 ///   full-fidelity pass, which must scope aggregate availability via
 ///   per-field location lists (DW_OP_LLVM_fragment anchored at each field
 ///   write) or an explicit init-complete marker; until then aggregates keep
-///   the pre-A305 whole-scope declare shape.
+///   the pre-A305 whole-scope declare shape. The same follow-on owns
+///   recovering availability for CONDITIONALLY reassigned locals: a value
+///   anchored before the suspend dies with its range at the suspend point,
+///   so on a resume path where the reassigning branch is not taken the local
+///   reads unavailable even though its value is live in the coro frame —
+///   honest absence today, recoverable by describing the frame slot across
+///   the suspend once slot reads are provably fresh.
 fn emit_honest_coroutine_local_locations<'ctx>(
     dctx: &ModuleDebugCtx<'_, 'ctx>,
     llvm_mod: &LlvmModule<'ctx>,

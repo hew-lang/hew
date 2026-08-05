@@ -860,7 +860,15 @@ fn replace_delimited_section(
         .find(begin_marker)
         .expect("marker count validated before replacement");
     let after_begin = begin + begin_marker.len();
-    let content_start = after_begin + source[after_begin..].strip_prefix('\n').map_or(0, |_| 1);
+    let rest = &source[after_begin..];
+    let content_start = after_begin
+        + if let Some(stripped) = rest.strip_prefix("\r\n") {
+            rest.len() - stripped.len()
+        } else if let Some(stripped) = rest.strip_prefix('\n') {
+            rest.len() - stripped.len()
+        } else {
+            0
+        };
     if content_start == after_begin {
         return Err(format!(
             "{MATRIX_OUTPUT}: `{begin_marker}` must end its own line"
@@ -949,4 +957,32 @@ fn json_string(value: &str) -> String {
     }
     out.push('\"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_delimited_section;
+
+    // A checkout with core.autocrlf enabled (the default on Windows CI
+    // runners) rewrites `\n` to `\r\n` in any tracked file without an
+    // `eol=lf` .gitattributes rule. docs/wasm-capability-matrix.md had no
+    // such rule, so the BEGIN/END markers arrive as `\r\n`-terminated on
+    // Windows. The parser must treat `\r\n` and `\n` identically rather
+    // than asserting a specific checkout line ending.
+    const BEGIN: &str = "<!-- BEGIN -->";
+    const END: &str = "<!-- END -->";
+
+    #[test]
+    fn lf_and_crlf_markers_parse_identically() {
+        let lf = format!("prefix\n{BEGIN}\nold\n{END}\nsuffix\n");
+        let crlf = format!("prefix\r\n{BEGIN}\r\nold\r\n{END}\r\nsuffix\r\n");
+
+        let lf_result = replace_delimited_section(&lf, BEGIN, END, "new\n")
+            .expect("LF-delimited source must parse");
+        let crlf_result = replace_delimited_section(&crlf, BEGIN, END, "new\n")
+            .expect("CRLF-delimited source must parse");
+
+        assert!(lf_result.contains("new\n"));
+        assert!(crlf_result.contains("new\n"));
+    }
 }

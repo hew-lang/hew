@@ -423,6 +423,46 @@ fn a_guard_consume_still_rejects_a_consume_in_a_later_arm() {
 }
 
 #[test]
+fn a_returning_guard_does_not_move_the_binding_for_later_arms() {
+    // The `Err` arm is reached only when the FIRST pattern failed to match, and
+    // then the first guard never ran. A guard that leaves the function must
+    // contribute nothing to the fall-through the later arms start from.
+    assert_accepts(
+        "diverging guard, later arm consume",
+        r"
+        fn probe(r: Result<i64, string>) -> i64 {
+            let held = Socket { fd: 1 };
+            match r {
+                Ok(_) if { return held.detach(); } => 10,
+                Err(_) => held.detach(),
+                Ok(_) => 20,
+            }
+        }
+        ",
+    );
+}
+
+#[test]
+fn a_panicking_guard_keeps_its_unreachable_body_out_of_the_join() {
+    // The body runs only if the guard returned true, and this guard never
+    // returns at all, so the body's consume must not reach the code after the
+    // match.
+    assert_accepts(
+        "diverging guard, unreachable body consume",
+        r#"
+        fn probe(r: Result<i64, string>) -> i64 {
+            let held = Socket { fd: 1 };
+            match r {
+                Ok(_) if panic("stop") => held.detach(),
+                _ => 20,
+            }
+            held.detach()
+        }
+        "#,
+    );
+}
+
+#[test]
 fn an_else_if_condition_consume_still_rejects_a_use_after_the_chain() {
     assert_rejects(
         "else-if condition consume",

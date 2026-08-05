@@ -6102,6 +6102,12 @@ impl Checker {
         // path. Guards therefore thread through a running fall-through state —
         // the same treatment an `else if` chain's conditions get — and each body
         // starts from the fall-through its own guard produced.
+        //
+        // A guard that DIVERGES is the exception, and it cuts both ways. A later
+        // arm is reached only when this arm's pattern failed, and then the guard
+        // never ran at all — so a diverging guard contributes nothing to the
+        // fall-through. Its own body is unreachable for the same reason, so the
+        // body's exit must stay out of the join no matter what the body does.
         let ownership_entry = self.env.ownership_snapshot();
         let mut fall_through = ownership_entry.clone();
         let mut arm_exits = Vec::with_capacity(arms.len());
@@ -6111,10 +6117,18 @@ impl Checker {
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
+            let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
-                self.check_against(guard, gs, &Ty::Bool);
-                // The guard ran; later arms are reached only through it.
-                fall_through = self.env.ownership_snapshot();
+                let guard_ty = self.check_against(guard, gs, &Ty::Bool);
+                if Self::arm_skips_join_expr(guard, &guard_ty) {
+                    guard_diverges = true;
+                    // Rewind the guard's consumes: neither the unreachable body
+                    // below nor any later arm ever observes them.
+                    self.env.restore_ownership(&fall_through);
+                } else {
+                    // The guard ran and returned false; later arms see its state.
+                    fall_through = self.env.ownership_snapshot();
+                }
             }
 
             self.tail_ok_armed = tail_ok_armed;
@@ -6125,7 +6139,7 @@ impl Checker {
             };
             arm_exits.push(BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
-                diverges: Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
+                diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
             });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.

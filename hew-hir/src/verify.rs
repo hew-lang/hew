@@ -496,6 +496,27 @@ fn function_return_ownership_summaries(
 /// occurrence. This shim joins the already-published callee return facts and,
 /// for a borrowed forwarder, requires every actual argument to be proven owned.
 ///
+/// # `Retained` is a `string`-only licence
+///
+/// The borrowed-forwarder upgrade below promotes a `Borrowed` call result to
+/// `Owned { Retained }`. `Retained` means the value ALIASES its source and holds
+/// one INDEPENDENT refcount share, so exactly one extra drop is legal. Only
+/// `string` satisfies that: codegen `hew_string_clone`s a string field load, so
+/// the projection owns a fresh `+1`. Every other heap type does not — an inline
+/// aggregate field load is a byte-copy interior alias whose original the source's
+/// composite drop already frees (hew-mir's `FieldLoadClass::ByteCopyAlias`), and
+/// a single-pointer leaf load transfers one handle with no second share. Promoting
+/// either to `Retained` mints a caller-side drop over storage the argument
+/// binding still owns — a DOUBLE FREE, which is exactly what
+/// `fn getself(w: Wrap) -> Holder { w.h }` produced through a live `let w`.
+///
+/// So the upgrade is gated on the result type being `string`, matching the same
+/// restriction its sibling [`function_return_ownership_summaries`] already
+/// carries, MIR's `string`-only retained-join branch, and the deliberately
+/// named `callee_returns_retained_string_owner` authority. A non-`string`
+/// borrowed forwarder stays `Borrowed`: at worst a missed drop, never a second
+/// claim.
+///
 /// WHEN OBSOLETE: remove this closure once lowering projects the checker's total
 /// post-resolution result fact onto every HIR call occurrence.
 ///
@@ -539,7 +560,9 @@ fn resolve_user_call_facts(
         } else {
             summary
         };
-        let summary = if matches!(summary, Ownership::Borrowed) {
+        let summary = if matches!(summary, Ownership::Borrowed)
+            && verifier.site_types.get(site) == Some(&ResolvedTy::String)
+        {
             let arguments = verifier.user_call_arguments.get(site);
             if arguments.is_some_and(|arguments| {
                 !arguments.is_empty()

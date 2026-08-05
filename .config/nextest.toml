@@ -350,6 +350,37 @@ test-group = "real-timing"
 [profile.ci.junit]
 path = "junit.xml"
 
+[profile.ci-cabi]
+# `make test-cabi` runs hew-cabi on its own (see that target's comment on why
+# it is excluded from every workspace-wide nextest invocation) after the
+# workspace run has already completed in the same job. Reusing `profile.ci`
+# here previously meant both runs wrote to the same
+# target/nextest/ci/junit.xml — the cabi run's ~80-test report silently
+# overwrote the workspace run's ~13,000-test report before the upload step
+# read it, so the PR checks UI showed only hew-cabi's results. Nextest scopes
+# JUnit output by profile name (target/nextest/<profile>/junit.xml), so a
+# distinct profile name is sufficient to give this run its own report; no
+# other ci behaviour needs duplicating for a single small crate.
+default-filter = "all()"
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[profile.ci-cabi.junit]
+path = "junit.xml"
+
+[profile.ci-focused]
+# For a narrow supplementary nextest invocation (a single crate/binary/test)
+# that a job runs AFTER its main `--profile ci` workspace pass, in the same
+# job. Reusing `profile.ci` for that follow-up run is the same
+# overwrite bug `profile.ci-cabi` exists to prevent: both invocations would
+# write target/nextest/ci/junit.xml, and the later one wins silently. First
+# use: freebsd.yml's/gate-freebsd's dedicated dwarf_debugger_locals_e2e run,
+# which follows the workspace and hew-cabi passes in the same FreeBSD job.
+default-filter = "all()"
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[profile.ci-focused.junit]
+path = "junit.xml"
+
 [profile.smoke]
 # Smoke profile: curated deterministic in-process oracle only.  Designed to
 # give a pass/fail signal before committing to the full Rust workspace body.

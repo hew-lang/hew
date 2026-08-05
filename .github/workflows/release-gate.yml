@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 env:
   LLVM_VERSION: "22"
@@ -225,6 +226,13 @@ jobs:
       - name: Browser-analysis playground gate
         run: make playground-check
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Release Gate Test Results (Linux x86_64)
+
   # ─────────────────────────────────────────────────────────────────────────
   # Linux aarch64 — full Rust build + workspace tests + WASM
   # ─────────────────────────────────────────────────────────────────────────
@@ -316,6 +324,13 @@ jobs:
         # classification — excluded here, tracked for investigation.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)'
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Release Gate Test Results (Linux aarch64)
+
   # ─────────────────────────────────────────────────────────────────────────
   # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
@@ -399,6 +414,13 @@ jobs:
         # their memory coverage is the Linux ASan job; exclude them here.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle)'
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
+
   # ─────────────────────────────────────────────────────────────────────────
   # Windows x86_64 — Rust workspace tests
   # ─────────────────────────────────────────────────────────────────────────
@@ -458,6 +480,13 @@ jobs:
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         run: make test-cabi
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Release Gate Test Results (Windows x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD x86_64 — full build + workspace tests
@@ -543,10 +572,23 @@ jobs:
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi
+            cargo nextest run --profile ci-cabi -p hew-cabi
 
             gmake test-vertical-slice
             gmake test-hew-ratchet
+
+      - name: Upload test reports
+        # vmactions/freebsd-vm syncs the working directory back to this host
+        # runner after the guest `run:` script exits (proven by release.yml's
+        # build-freebsd-aarch64 job, which packages a tarball entirely inside
+        # the VM's run block and then reads it from a host-side
+        # actions/upload-artifact step) — so the reports written by the
+        # guest's nextest and hew-suite-ratchet runs are present here.
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Release Gate Test Results (FreeBSD x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — full build + workspace tests
@@ -637,7 +679,16 @@ jobs:
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi
+            cargo nextest run --profile ci-cabi -p hew-cabi
 
             gmake test-vertical-slice
             gmake test-hew-ratchet
+
+      - name: Upload test reports
+        # See gate-freebsd-x86_64's identical step for why the guest-written
+        # reports are visible to this host-side step.
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Release Gate Test Results (FreeBSD aarch64)

@@ -719,11 +719,11 @@ test-rust: wasm-runtime runtime $(LIBHEW_READY)
 		set -e; \
 		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
 		test -f "$(LIBHEW)"; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci; \
+		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
 		echo "         Install with: cargo install cargo-nextest" >&2; \
-		cargo test --workspace --exclude hew-cabi; \
+		cargo test --workspace --exclude hew-cabi --no-fail-fast; \
 	fi
 
 test-parser:
@@ -763,7 +763,7 @@ test-leak-oracle-selftest:
 # developer machines only. This target is that missing half; every job carrying
 # an `--exclude hew-cabi` runs it.
 test-cabi:
-	cargo nextest run --profile ci -p hew-cabi
+	cargo nextest run --profile ci-cabi -p hew-cabi
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -1187,7 +1187,7 @@ test-structural-lint-bootstrap:
 # enumerates a corpus and then compares over it proves nothing when the
 # enumeration is empty; scripts/corpus-floors.tsv is where each such gate
 # records the size it expects to find.
-corpus-floor-check: test-leak-oracle-selftest
+corpus-floor-check:
 	bash scripts/tests/test_corpus_floor.sh
 	bash scripts/check-corpus-floors.sh
 

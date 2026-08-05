@@ -1,3 +1,4 @@
+use super::branch_join::BranchArmExit;
 use super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 use super::types::GenericLambdaSig;
 #[allow(
@@ -343,11 +344,25 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                };
                 if let Some(eb) = else_block {
+                    self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&eb.0, &eb.1);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&eb.0, &else_ty),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    // No `else`: the implicit fall-through arm runs with the
+                    // state the condition left behind and never consumes.
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -1055,6 +1070,7 @@ impl Checker {
         if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
             return Ty::Error;
         }
+        let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
         // Record the pattern resolution so HIR lowering can consume
@@ -1062,11 +1078,22 @@ impl Checker {
         // `WhileLet` and `Match` lowering.
         self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
         let then_ty = self.check_block(body, None);
+        let then_exit = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join_block(body, &then_ty),
+        };
         self.env.pop_scope();
         if let Some(block) = else_body {
+            self.env.restore_ownership(&entry);
             let else_ty = self.check_block(block, None);
+            let else_exit = BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: Self::arm_skips_join_block(block, &else_ty),
+            };
+            self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
+            self.join_fall_through(&entry, then_exit);
             Ty::Unit
         }
     }
@@ -2385,33 +2412,62 @@ impl Checker {
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
+                // Only the BODIES of a select are alternatives. Every arm's
+                // source is prepared before dispatch chooses a winner — all the
+                // asks are issued, all the receivers polled — so the sources run
+                // on one execution, in order, and handing the same affine value
+                // to two of them is a real double transfer. They thread
+                // sequentially; the same goes for the timeout duration, which
+                // arms the deadline before any arm fires.
+                let mut source_tys = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    let source_ty = self.synthesize_actor_concurrency_source(
+                    source_tys.push(self.synthesize_actor_concurrency_source(
                         &arm.source.0,
                         &arm.source.1,
                         "select arm source",
-                    );
-                    self.bind_pattern(&arm.binding.0, &source_ty, false, &arm.binding.1);
+                    ));
+                    self.env.pop_scope();
+                }
+                if let Some(tc) = timeout {
+                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+                }
+
+                // Dispatch happens here: from this state exactly one body runs.
+                let entry = self.env.ownership_snapshot();
+                let mut arm_exits = Vec::with_capacity(arms.len() + 1);
+                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                    self.env.push_scope();
+                    self.env.restore_ownership(&entry);
+                    self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)
                     } else {
                         self.synthesize(&arm.body.0, &arm.body.1)
                     };
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&arm.body.0, &body_ty),
+                    });
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
                     }
                     self.env.pop_scope();
                 }
                 if let Some(tc) = timeout {
-                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+                    self.env.restore_ownership(&entry);
                     let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&tc.body.0, &timeout_ty),
+                    });
                     if let Some(expected) = &result_ty {
                         self.expect_type(expected, &timeout_ty, &tc.body.1);
                     } else {
                         result_ty = Some(timeout_ty);
                     }
                 }
+                self.join_branch_ownership(&entry, &arm_exits);
                 result_ty.unwrap_or(Ty::Unit)
             }
             Expr::Join(exprs) => {
@@ -2670,11 +2726,22 @@ impl Checker {
                 // so they inherit this expression's armed state; the condition
                 // (checked above against `Bool`) does not.
                 self.tail_ok_armed = tail_ok_armed;
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                };
                 let actual = if let Some(else_block) = else_block {
                     self.tail_ok_armed = tail_ok_armed;
+                    self.env.restore_ownership(&entry);
                     let else_ty =
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&else_block.0, &else_ty),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
                         Ty::Error
                     } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
@@ -2683,6 +2750,7 @@ impl Checker {
                         self.subst.resolve(expected)
                     }
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 };
                 if matches!(actual, Ty::Never | Ty::Error) {
@@ -6024,14 +6092,43 @@ impl Checker {
         // the per-arm guard check and pattern binding are not tail positions, so
         // re-arm immediately before each arm body.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        // Exactly one arm BODY runs, so each body starts from the ownership
+        // state at the match's entry rather than from whatever the previous arm
+        // left behind, and the state after the match is the union over the arms
+        // that actually reach the join.
+        //
+        // Guards are not bodies. A guard runs whenever its pattern matched and
+        // every earlier arm did not, so guard N and body N+1 both execute on one
+        // path. Guards therefore thread through a running fall-through state —
+        // the same treatment an `else if` chain's conditions get — and each body
+        // starts from the fall-through its own guard produced.
+        //
+        // A guard that DIVERGES is the exception, and it cuts both ways. A later
+        // arm is reached only when this arm's pattern failed, and then the guard
+        // never ran at all — so a diverging guard contributes nothing to the
+        // fall-through. Its own body is unreachable for the same reason, so the
+        // body's exit must stay out of the join no matter what the body does.
+        let ownership_entry = self.env.ownership_snapshot();
+        let mut fall_through = ownership_entry.clone();
+        let mut arm_exits = Vec::with_capacity(arms.len());
         for arm in arms {
             self.env.push_scope();
+            self.env.restore_ownership(&fall_through);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
-            // Check guard if present
+            let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
-                self.check_against(guard, gs, &Ty::Bool);
+                let guard_ty = self.check_against(guard, gs, &Ty::Bool);
+                if Self::arm_skips_join_expr(guard, &guard_ty) {
+                    guard_diverges = true;
+                    // Rewind the guard's consumes: neither the unreachable body
+                    // below nor any later arm ever observes them.
+                    self.env.restore_ownership(&fall_through);
+                } else {
+                    // The guard ran and returned false; later arms see its state.
+                    fall_through = self.env.ownership_snapshot();
+                }
             }
 
             self.tail_ok_armed = tail_ok_armed;
@@ -6040,6 +6137,10 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            arm_exits.push(BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
+            });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
             if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
@@ -6048,6 +6149,7 @@ impl Checker {
 
             self.env.pop_scope();
         }
+        self.join_branch_ownership(&ownership_entry, &arm_exits);
         // Leave the flag disarmed: the arm loop set it per-arm, and the
         // exhaustiveness check below is not a tail position.
         self.tail_ok_armed = false;

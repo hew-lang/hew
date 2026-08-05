@@ -1,0 +1,46 @@
+// Double-close teeth for the branch join. A close reached on only one path
+// still discharges the obligation on that path, so a close after the join
+// closes twice whenever that path ran.
+//
+// Rejected by the env checker with `resource ... cannot be closed more than
+// once` — the discharge diagnostic, distinct from the plain move diagnostic.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {}
+}
+
+fn close_after_conditional_close(flag: bool) {
+    let held = Conn { fd: 1 };
+    if flag {
+        held.close();
+    }
+    held.close();
+}
+
+fn close_twice_inside_one_arm(flag: bool) {
+    let held = Conn { fd: 2 };
+    if flag {
+        held.close();
+        held.close();
+    } else {
+        held.close();
+    }
+}
+
+fn close_before_the_branch_and_inside_it(flag: bool) {
+    let held = Conn { fd: 3 };
+    held.close();
+    if flag {
+        held.close();
+    }
+}
+
+fn main() {
+    close_after_conditional_close(true);
+    close_twice_inside_one_arm(true);
+    close_before_the_branch_and_inside_it(true);
+}

@@ -20,6 +20,7 @@ use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::OnceLock;
 
 pub(crate) mod admissibility;
+mod branch_join;
 mod calls;
 mod closure_inference;
 mod coerce;

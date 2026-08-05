@@ -3236,6 +3236,126 @@ fi
 # diagnostic's pretty-printed `pat` binding name.
 grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}"
 
+# ---------------------------------------------------------------------------
+# Move/release tracking across branch joins.
+#
+# The ownership rule is one consume per PATH, not one consume per function
+# body. These fixtures pin both directions of that rule, and which of the two
+# use-after-consume authorities owns each verdict: the env checker reports
+# `use of moved value` / `cannot be closed more than once`, while the
+# checked-MIR dataflow pass reports `E_MIR_CHECK: UseAfterConsume` for the loop
+# shapes the env checker deliberately does not walk.
+# ---------------------------------------------------------------------------
+
+# Accept: consuming once in every arm. The close bodies print, so stdout is the
+# drop oracle — one close per call down either path, never zero and never two.
+run_accept_expect_stdout "branch_join_close_both_arms"
+run_accept_expect_stdout "branch_join_diverging_arm"
+# A guard that leaves the function contributes nothing to the fall-through the
+# later arms start from, and its own body is unreachable so it stays out of the
+# join. An ordinary guard in the same fixture still threads into the arms below.
+run_accept_expect_stdout "branch_join_diverging_guard"
+
+# Reject: whichever arm ran, the handle is gone after the join.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_use_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_use_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_use_after_join_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
+if [[ "${branch_join_use_after_join_count}" -ne 4 ]]; then
+  echo "expected 4 post-join use diagnostics, got ${branch_join_use_after_join_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# The two shapes whose arms closed also carry the discharge diagnostic; the two
+# that merely moved do not.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_released_count="$(grep -c 'cannot consume released resource `held`' "${reject_output}")"
+if [[ "${branch_join_released_count}" -ne 2 ]]; then
+  echo "expected 2 post-join released-resource diagnostics, got ${branch_join_released_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: a close reached on one path still discharges on that path.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_double_close_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_double_close_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_double_close_count="$(grep -c 'resource `held` cannot be closed more than once' "${reject_output}")"
+if [[ "${branch_join_double_close_count}" -ne 3 ]]; then
+  echo "expected 3 double-close diagnostics, got ${branch_join_double_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: consuming across a loop back edge. This one is the checked-MIR pass's
+# verdict, and the env checker must stay silent on it — if the env layer ever
+# starts reporting here the shape is being double-diagnosed.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_move_in_loop.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_move_in_loop fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'E_MIR_CHECK: binding `held` is used after it was consumed' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+if grep -qF 'use of moved value `held`' "${reject_output}"; then
+  echo "env checker must not duplicate the checked-MIR loop verdict" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: a `break` or `continue` arm leaves the LOOP, not the function, so its
+# consume reaches the code below the loop and the arm must stay in the join.
+# Three of the four cases are `BitCopy`-classed (a record wrapping an
+# `#[opaque]` handle, and all-scalar records), which the checked-MIR dataflow
+# pass does not track — the env checker is the only authority there, and
+# `double_free` becomes a real double free in the emitted binary if it stops
+# reporting. The count is exact so a partial regression cannot hide.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_break_escape.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_break_escape fixture to fail" >&2
+  exit 1
+fi
+branch_join_escape_count="$(grep -c 'use of moved value' "${reject_output}")"
+if [[ "${branch_join_escape_count}" -ne 4 ]]; then
+  echo "expected 4 loop-escape consume diagnostics, got ${branch_join_escape_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# The opaque-handle wrapper is the case with no backstop; name it explicitly so
+# a future change that drops only that one is still caught.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'use of moved value `w`' "${reject_output}"
+
+# Reject: only the BODIES of a `select` are alternatives. Consuming the handle
+# in every body is one consume per path and must NOT be reported — the absence
+# of a diagnostic inside the select is half of what this fixture pins. The
+# single diagnostic after the select is the other half: whichever body ran, the
+# handle is gone by the time control reaches the code below.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_select_use_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_select_use_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_select_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
+if [[ "${branch_join_select_count}" -ne 1 ]]; then
+  echo "expected exactly 1 post-select use diagnostic, got ${branch_join_select_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
 # B-1 safe stdlib resource migration: every migrated handle surface resolves
 # `close(self)` through its wrapper impl, including the same-short-name Message
 # wrappers that must be compiled in separate importer fixtures.

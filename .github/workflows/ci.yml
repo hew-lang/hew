@@ -568,6 +568,15 @@ jobs:
         # hosted suite exercise the same fresh artifacts as local preflight.
         run: make test
 
+      - name: Run leak-oracle harness selftest
+        if: env.RUN_CODE_PATH == 'true'
+        # Platform-independent teeth for the leak harness and the macOS
+        # runner's inventory contract (fail-closed counterfactuals + corpus
+        # floor cross-check). Requires nextest, which this job already has;
+        # the `lint` job does not, so this does not belong there. Keep this
+        # explicit edge so the selftest cannot become local-only.
+        run: make test-leak-oracle-selftest
+
       - name: Run compiler pipeline and local opaque-resource lifecycle evidence
         if: env.RUN_CODE_PATH == 'true'
         # The focused compiler ladder owns the source-derived lifecycle matrix;
@@ -610,7 +619,10 @@ jobs:
 
       - name: Run Hew language test suite (ratcheted)
         if: env.RUN_CODE_PATH == 'true'
-        # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
+        # Runs tests/hew/ through scripts/hew-suite-ratchet.sh, which runs
+        # `hew test --format junit` and writes
+        # target/hew-test-reports/hew-suite-ratchet.xml (read by the "Upload
+        # test reports" step below).
         # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
         # When all entries in the expected-failures file are cleared, this step
@@ -789,7 +801,7 @@ jobs:
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Test Results (Linux)
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
@@ -992,6 +1004,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
@@ -1004,7 +1017,7 @@ jobs:
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Windows)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -1146,6 +1159,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
           -E 'not binary(~oracle)'
 
       - name: Run C-ABI crate tests
@@ -1154,3 +1168,14 @@ jobs:
         # even when the full workspace nextest is deduped off this job.
         if: env.RUN_CODE_PATH == 'true'
         run: make test-cabi
+
+      - name: Upload test reports
+        # The Linux and Windows jobs already publish the same two reports
+        # as inline PR annotations; this job produces them too but never
+        # surfaced them — a macOS-only failure was readable only by
+        # scrolling raw step logs.
+        if: always() && env.RUN_CODE_PATH == 'true'
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Test Results (macOS)

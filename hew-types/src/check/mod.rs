@@ -39,6 +39,7 @@ pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintS
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
+use self::nominal_identity::NominalOrigin;
 mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;

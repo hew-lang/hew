@@ -2636,7 +2636,7 @@ impl Checker {
                 // so a user-backed `std.failure::{CrashNotification}` cannot
                 // mint the lifecycle ABI identity.
                 let published_lifecycle = (!is_local && !name.contains('.'))
-                    .then(|| self.published_bare_type_qualified(name))
+                    .then(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, name))
                     .flatten()
                     .filter(|canonical| {
                         crate::lookup_source_owned_lifecycle_type(canonical).is_some()
@@ -2698,6 +2698,15 @@ impl Checker {
                     // onto one last-write-wins bare key downstream (the MIR
                     // record-layout / field-order registry is keyed by identity).
                     qualified
+                } else if let Some(declaration) =
+                    self.resolve_nominal_declaration(NominalOrigin::Lexical, name)
+                {
+                    // rc1-F1 stage D: the source producer mints its owner from
+                    // the SAME ladder every other producer uses, so a spelling
+                    // an import bound (`CrashNotification`, or `ExitNote` for an
+                    // aliased opt-in) carries its declaring owner here exactly as
+                    // it does in an extern contract or a registry signature.
+                    declaration
                 } else {
                     match handle_matches.as_slice() {
                         // Exactly one importing module exports this name: bind to

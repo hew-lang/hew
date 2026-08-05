@@ -11125,6 +11125,17 @@ impl Checker {
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
+                        // The enclosing impl's self type, as every other
+                        // registration path publishes it. `register_impl_method`
+                        // reads it to tell `impl Render for Box<i64>` from
+                        // `impl<T> Render for Box<T>`: without it a flat-file
+                        // import's specialisation looks generic, so it claims the
+                        // shared `Box::render` dispatch key the generic
+                        // declaration owns instead of taking only its own
+                        // mangled key.
+                        let prev_self_type = self
+                            .current_self_type
+                            .replace((type_name.clone(), self_type_args.clone()));
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;
@@ -11153,6 +11164,7 @@ impl Checker {
                                 );
                             }
                         }
+                        self.current_self_type = prev_self_type;
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
                             self.mark_imported_trait_used(None, &tb.name);

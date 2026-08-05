@@ -2500,6 +2500,88 @@ fn main() {
         }
     }
 
+    /// A flat-imported concrete specialisation must not claim the shared
+    /// dispatch key its generic sibling owns.
+    ///
+    /// Which impl is a specialisation is decided from the enclosing impl's self
+    /// type. Flat-file import registration was the one registration path that
+    /// never published one, so `impl Render for Box<i64>` was classified as
+    /// generic and took `Box::render` — the key a call on `impl<T> Render for
+    /// Box<T>` resolves through — instead of taking only its own mangled key.
+    ///
+    /// Both source orders are asserted because the two keys fail in opposite
+    /// orders: the shared key is first-write-wins and the module-canonical key
+    /// is last-write-wins, so either order alone leaves half the collision
+    /// looking correct.
+    #[test]
+    fn flat_imported_specialisation_does_not_claim_the_generic_dispatch_key() {
+        const GENERIC_IMPL: &str = "impl<T> Render for Box<T> {\n    \
+             pub fn render(value: Box<T>) -> string { \"generic\" }\n}\n";
+        const SPECIALISED_IMPL: &str = "impl Render for Box<i64> {\n    \
+             pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
+        const DECLARATIONS: &str = "pub trait Render {\n    \
+             fn render(value: Self) -> string;\n}\n\n\
+             pub type Box<T> {\n    value: T;\n}\n\n";
+
+        let mut mismatches: Vec<String> = Vec::new();
+        for (order, first, second) in [
+            ("generic first", GENERIC_IMPL, SPECIALISED_IMPL),
+            ("specialisation first", SPECIALISED_IMPL, GENERIC_IMPL),
+        ] {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            write_source(
+                dir.path(),
+                "lib.hew",
+                &format!("{DECLARATIONS}{first}\n{second}"),
+            );
+            let input = write_source(
+                dir.path(),
+                "main.hew",
+                "import \"lib.hew\";\n\nfn main() {}\n",
+            );
+            let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+                .unwrap_or_else(|e| panic!("{order}: fixture must type-check: {e:?}"));
+            let tco = state
+                .typecheck_result
+                .tco
+                .as_ref()
+                .expect("type checking was enabled");
+            let declaration_for = |key: &str| -> Option<String> {
+                tco.impl_method_declaration_ids
+                    .get(key)
+                    .map(|declaration| declaration.full_path().to_string())
+            };
+            // The shared key and the module-canonical key both name the
+            // generic declaration; the specialisation owns only its mangled
+            // keys. The rendered receiver's type argument — `Box<T>` against
+            // `Box<i64>` — is what tells the two declarations apart; the owner
+            // prefix on that receiver is deliberately not asserted here (the
+            // flat-import path still renders it two ways, tracked separately).
+            for (key, expected_receiver) in [
+                ("Box::render", "Box<T>"),
+                ("lib.Box::render", "Box<T>"),
+                ("Box$$i64::render", "Box<i64>"),
+                ("lib.Box$$i64::render", "Box<i64>"),
+            ] {
+                match declaration_for(key) {
+                    Some(declaration)
+                        if declaration.ends_with(&format!("{expected_receiver}>::render")) => {}
+                    Some(declaration) => mismatches.push(format!(
+                        "{order}: `{key}` must name the `{expected_receiver}` implementation, got `{declaration}`"
+                    )),
+                    None => mismatches.push(format!(
+                        "{order}: nothing published under `{key}`"
+                    )),
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "flat-import dispatch keys are not exclusive:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,

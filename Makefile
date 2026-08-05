@@ -763,7 +763,7 @@ test-leak-oracle-selftest:
 # developer machines only. This target is that missing half; every job carrying
 # an `--exclude hew-cabi` runs it.
 test-cabi:
-	cargo nextest run --profile ci -p hew-cabi
+	cargo nextest run --profile ci-cabi -p hew-cabi
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests

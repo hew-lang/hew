@@ -3309,18 +3309,48 @@ if grep -qF 'use of moved value `held`' "${reject_output}"; then
   exit 1
 fi
 
-# Reject: a `break` arm diverges out of its branch but rejoins after the loop,
-# so its consume does reach the code below. The env checker excludes every
-# diverging arm from the join it sits in and does not model the loop-exit edge,
-# so the checked-MIR pass is what catches this.
+# Reject: a `break` or `continue` arm leaves the LOOP, not the function, so its
+# consume reaches the code below the loop and the arm must stay in the join.
+# Three of the four cases are `BitCopy`-classed (a record wrapping an
+# `#[opaque]` handle, and all-scalar records), which the checked-MIR dataflow
+# pass does not track — the env checker is the only authority there, and
+# `double_free` becomes a real double free in the emitted binary if it stops
+# reporting. The count is exact so a partial regression cannot hide.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/branch_join_break_escape.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected branch_join_break_escape fixture to fail" >&2
   exit 1
 fi
+branch_join_escape_count="$(grep -c 'use of moved value' "${reject_output}")"
+if [[ "${branch_join_escape_count}" -ne 4 ]]; then
+  echo "expected 4 loop-escape consume diagnostics, got ${branch_join_escape_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# The opaque-handle wrapper is the case with no backstop; name it explicitly so
+# a future change that drops only that one is still caught.
 # shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'E_MIR_CHECK: binding `held` is used after it was consumed' "${reject_output}"
+grep -qF 'use of moved value `w`' "${reject_output}"
+
+# Reject: only the BODIES of a `select` are alternatives. Consuming the handle
+# in every body is one consume per path and must NOT be reported — the absence
+# of a diagnostic inside the select is half of what this fixture pins. The
+# single diagnostic after the select is the other half: whichever body ran, the
+# handle is gone by the time control reaches the code below.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_select_use_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_select_use_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_select_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
+if [[ "${branch_join_select_count}" -ne 1 ]]; then
+  echo "expected exactly 1 post-select use diagnostic, got ${branch_join_select_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
 
 # B-1 safe stdlib resource migration: every migrated handle surface resolves
 # `close(self)` through its wrapper impl, including the same-short-name Message

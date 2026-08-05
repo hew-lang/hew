@@ -786,12 +786,30 @@ pub(super) fn register_builtin_record_layouts(
     }
 }
 
+/// The declaring module of every synthetic lifecycle shape below, read from
+/// the checker's owner table rather than restated here — one owner set, one
+/// place, so a moved declaration cannot key MIR's layouts differently from the
+/// identity the checker minted.
+fn link_monitor_owner() -> &'static str {
+    hew_types::SOURCE_OWNED_LIFECYCLE_OWNERS
+        .iter()
+        .find(|owner| owner.declares.contains(&hew_types::BuiltinType::MonitorId))
+        .map_or("std.link_monitor", |owner| owner.canonical_path)
+}
+
 /// Register the source-owned shapes that synthetic lifecycle hooks reconstruct
 /// from the fixed mailbox ABI.  These declarations normally arrive through an
 /// imported `std.link_monitor` HIR item; direct compilation of that stdlib
 /// source has no importing program item, yet can still exercise the same
-/// synthetic hook path.  Publish both the direct-source spelling and the
-/// exact source identity so neither route falls back to a leaf-name guess.
+/// synthetic hook path.
+///
+/// Registration is under the DECLARATION OWNER only.  The leaf spelling was
+/// published alongside it so a root compile of `std/link_monitor.hew` could
+/// find the shapes under its own bare rendering; that second key put two
+/// identities for one declaration into the global layout tables, where a user
+/// `MonitorId` and the runtime one differ only by which was registered first.
+/// Synthetic hook bodies construct through the owner-qualified identity, so
+/// the leaf key had no remaining consumer.
 #[expect(
     clippy::too_many_lines,
     reason = "the source-owned lifecycle layout catalog is one atomic mailbox ABI boundary"
@@ -917,10 +935,9 @@ pub(super) fn register_lifecycle_hook_layouts(
             });
         }
     };
-    for prefix in ["", "std.link_monitor"] {
-        register_records(prefix, record_layouts, record_field_orders);
-        register_enums(prefix, enum_layouts);
-    }
+    let owner = link_monitor_owner();
+    register_records(owner, record_layouts, record_field_orders);
+    register_enums(owner, enum_layouts);
 }
 /// Register `EnumLayout` entries for monomorphic builtin enums declared
 /// in `std/builtins.hew` (e.g. `LookupError`).
@@ -1482,6 +1499,59 @@ pub(super) fn runtime_symbol_for_call_expr(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod lifecycle_layout_identity_tests {
+    use super::*;
+
+    /// One declaration publishes ONE layout key.
+    ///
+    /// The synthetic hook catalog used to publish each shape twice — under its
+    /// declaration owner AND under its bare leaf — so the global layout tables
+    /// held two identities for one declaration, and which one a lookup found
+    /// depended on registration order against any user type sharing the leaf.
+    #[test]
+    fn synthetic_lifecycle_shapes_publish_only_their_declaration_owner() {
+        let mut record_layouts = Vec::new();
+        let mut record_field_orders = HashMap::new();
+        let mut enum_layouts = Vec::new();
+        register_lifecycle_hook_layouts(
+            &mut record_layouts,
+            &mut record_field_orders,
+            &mut enum_layouts,
+        );
+        let owner = link_monitor_owner();
+        let published: Vec<&str> = record_field_orders
+            .keys()
+            .map(String::as_str)
+            .chain(enum_layouts.iter().map(|layout| layout.name.as_str()))
+            .collect();
+        assert!(
+            !published.is_empty(),
+            "the synthetic hook catalog must publish its shapes"
+        );
+        for name in published {
+            assert!(
+                name.strip_prefix(owner)
+                    .and_then(|leaf| leaf.strip_prefix('.'))
+                    .is_some_and(|leaf| !leaf.contains('.')),
+                "`{name}` is not published under the declaration owner `{owner}`"
+            );
+        }
+    }
+
+    /// The MIR catalog's owner and the checker's owner are the same identity.
+    #[test]
+    fn the_synthetic_catalog_owner_is_the_checker_owner() {
+        assert_eq!(
+            hew_types::lookup_source_owned_lifecycle_type(&format!(
+                "{}.MonitorId",
+                link_monitor_owner()
+            )),
+            Some(hew_types::BuiltinType::MonitorId)
+        );
+    }
 }
 
 #[cfg(test)]

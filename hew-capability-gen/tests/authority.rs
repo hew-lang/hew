@@ -14,8 +14,15 @@ fn repo_root() -> PathBuf {
 }
 
 fn manifest_source() -> String {
+    // Normalize to `\n`: on a Windows checkout with core.autocrlf enabled,
+    // wasm-capability-manifest.toml (no `eol=lf` pin) checks out with
+    // `\r\n`, and the mutation patterns below match a literal trailing
+    // `\n`. Without normalizing here those `replacen` calls silently miss,
+    // leaving the mutated source identical to the original and turning a
+    // fail-closed assertion into a false pass.
     std::fs::read_to_string(repo_root().join("wasm-capability-manifest.toml"))
         .expect("read manifest")
+        .replace("\r\n", "\n")
 }
 
 fn parsed() -> Manifest {
@@ -257,6 +264,51 @@ fn every_checked_output_gate_detects_mutation() {
         std::fs::write(&output, contents).expect("mutate generated output");
         let stale = stale_outputs(temp.path(), &manifest).expect("mutated check");
         assert_eq!(stale, vec![output], "{path} mutation must turn gate red");
+    }
+}
+
+// A Windows checkout with core.autocrlf enabled rewrites `\n` to `\r\n` for
+// any tracked file without an `eol=lf` rule. Neither RUST_OUTPUT nor
+// PLAYGROUND_OUTPUT had one, so identical content read back CRLF-rendered
+// and a byte-exact comparison against the freshly generated (always `\n`)
+// content reported a false stale. The freshness check must treat CRLF and
+// LF renderings of identical content as fresh, while still catching a real
+// content mutation.
+#[test]
+fn crlf_rendered_generated_outputs_stay_fresh_but_mutation_still_turns_gate_red() {
+    let manifest = parsed();
+    let temp = tempfile::tempdir().expect("tempdir");
+    seed_checked_outputs(temp.path(), &manifest);
+
+    for path in [RUST_OUTPUT, PLAYGROUND_OUTPUT] {
+        write_outputs(temp.path(), &manifest).expect("restore outputs");
+        let output = temp.path().join(path);
+        let contents = std::fs::read_to_string(&output).expect("read generated output");
+
+        // Simulate a Windows checkout: identical content, CRLF-rendered.
+        let crlf_contents = contents.replace('\n', "\r\n");
+        assert_ne!(
+            crlf_contents, contents,
+            "{path} fixture must actually contain newlines to simulate CRLF"
+        );
+        std::fs::write(&output, &crlf_contents).expect("write CRLF-rendered copy");
+        assert!(
+            stale_outputs(temp.path(), &manifest)
+                .expect("check CRLF-rendered output")
+                .is_empty(),
+            "{path} CRLF rendering of identical content must stay fresh"
+        );
+
+        // A real content mutation on top of the CRLF rendering must still
+        // turn the gate red — CRLF tolerance must not mask genuine drift.
+        let mutated = format!("{crlf_contents}MUTATION\r\n");
+        std::fs::write(&output, mutated).expect("write mutated CRLF output");
+        let stale = stale_outputs(temp.path(), &manifest).expect("check mutated CRLF output");
+        assert_eq!(
+            stale,
+            vec![output],
+            "{path} content mutation must turn gate red even under CRLF rendering"
+        );
     }
 }
 

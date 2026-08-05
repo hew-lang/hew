@@ -1,0 +1,70 @@
+// A match guard that never returns cuts both ways at the join.
+//
+// A guard runs when its pattern matched and every earlier arm did not, so an
+// ordinary guard threads into the arms below it. A guard that LEAVES THE
+// FUNCTION is different in two ways at once: a later arm is reached only when
+// this arm's pattern failed, and then the guard never ran at all; and this
+// arm's own body runs only if the guard returned true, which it never does. So
+// a diverging guard contributes nothing to the fall-through AND its body stays
+// out of the join.
+//
+// Only the `return`-guard shape is compiled here. The `panic`-guard shape is
+// equally valid and the env checker accepts it, but the checked-MIR pass still
+// refuses it because a panic call keeps a successor edge — a pre-existing
+// divergence gap in that authority, unrelated to this join handling. It is
+// pinned at the env layer in the hew-types `branch_join` tests instead.
+//
+// The close body prints, so stdout is the drop oracle: each call closes its
+// handle exactly once, on whichever path it really took.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {
+        print(self.fd);
+        println(" closed");
+    }
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+// The guard returns. Reaching the `Err` arm means the `Ok` pattern did not
+// match, so the guard never ran and the handle is untouched there.
+fn returning_guard(r: Result<i64, string>) -> i64 {
+    let held = Conn { fd: 1 };
+    match r {
+        Ok(_) if { return held.detach(); } => 10,
+        Err(_) => held.detach(),
+        Ok(_) => 20,
+    }
+}
+
+// An ordinary guard still threads: this one consumes nothing, and the handle is
+// closed exactly once on the arm that runs.
+fn plain_guard(n: i64) -> i64 {
+    let held = Conn { fd: 2 };
+    match n {
+        0 if n < 1 => {
+            held.close();
+            10
+        },
+        _ => {
+            held.close();
+            20
+        },
+    }
+}
+
+fn main() {
+    print(returning_guard(Ok(7)));
+    println("");
+    print(returning_guard(Err("boom")));
+    println("");
+    print(plain_guard(0));
+    println("");
+    print(plain_guard(5));
+    println("");
+}

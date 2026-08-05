@@ -3251,6 +3251,10 @@ grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}"
 # drop oracle — one close per call down either path, never zero and never two.
 run_accept_expect_stdout "branch_join_close_both_arms"
 run_accept_expect_stdout "branch_join_diverging_arm"
+# A guard that leaves the function contributes nothing to the fall-through the
+# later arms start from, and its own body is unreachable so it stays out of the
+# join. An ordinary guard in the same fixture still threads into the arms below.
+run_accept_expect_stdout "branch_join_diverging_guard"
 
 # Reject: whichever arm ran, the handle is gone after the join.
 if "${HEW}" check \

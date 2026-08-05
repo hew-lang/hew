@@ -1001,6 +1001,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
@@ -1155,6 +1156,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
           -E 'not binary(~oracle)'
 
       - name: Run C-ABI crate tests

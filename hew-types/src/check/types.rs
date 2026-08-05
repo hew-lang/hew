@@ -2493,6 +2493,14 @@ pub struct Checker {
     /// enclosing module recorded per-item attribution. `None` for the root
     /// unit and for hand-built module graphs.
     pub(super) current_item_source: Option<std::path::PathBuf>,
+    /// Type names declared per source FILE (populated during type
+    /// collection from per-item attribution). This is the lexical authority
+    /// behind extern-signature nominal identity: a bare name in an extern
+    /// signature declared in the item's own file — or in exactly one sibling
+    /// file of its module — resolves to that FILE's minted identity, so the
+    /// same declaration reached through peer assembly and through a direct
+    /// submodule import compares equal by identity (rc1-F1 stage C).
+    pub(super) file_type_decls: HashMap<std::path::PathBuf, HashSet<String>>,
     /// Canonical stdlib owners compiled as the root source unit itself. This
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
@@ -3487,6 +3495,7 @@ impl Checker {
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
             current_item_source: None,
+            file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),

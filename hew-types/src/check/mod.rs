@@ -397,6 +397,28 @@ impl Checker {
             );
             self.identity.mint_module(&canonical, &module.source_paths);
         }
+        // Second pass — per-file identities for directory modules' peer
+        // files (rc1-F1 stage C): a peer file's declarations carry the
+        // FILE's identity, so one declaration reached through peer assembly
+        // and through a direct submodule import mints one owner. This runs
+        // AFTER every graph module minted its primary source, so a peer
+        // mint can never claim (and mis-render) another module's primary.
+        for mod_id in &module_graph.topo_order {
+            if *mod_id == module_graph.root {
+                continue;
+            }
+            let Some(module) = module_graph.modules.get(mod_id) else {
+                continue;
+            };
+            let dotted = mod_id.path.join(".");
+            let canonical = crate::module_registry::canonical_source_module_identity(
+                &dotted,
+                &module.source_paths,
+            );
+            for source in module.source_paths.iter().skip(1) {
+                self.identity.mint_source_file_module(&canonical, source);
+            }
+        }
         if !self.repl_fragment {
             if let Some(root) = module_graph.modules.get(&module_graph.root) {
                 self.identity.mint_root_module(&root.source_paths);
@@ -433,6 +455,7 @@ impl Checker {
         self.module_source_paths.clear();
         self.module_item_sources.clear();
         self.current_item_source = None;
+        self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
             self.module_item_sources
                 .clone_from(&module_graph.item_sources);

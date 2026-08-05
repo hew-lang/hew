@@ -67,171 +67,41 @@ fn extern_signature_description(
     format!("fn({}) -> {}", params.join(", "), return_type.user_facing())
 }
 
-/// Complete a canonical stdlib owner that a module reached through the prelude
-/// rather than an import.
+/// Canonical nominal identity of an extern signature type, resolved AT
+/// REGISTRATION in the declaring item's own lexical context and STORED on
+/// the symbol's contract, so the single-owner comparison is plain identity
+/// equality of already-resolved signatures (rc1-F1 stage C).
 ///
-/// `canonical_nominal_name` widens a partial owner only through an import
-/// binding of the declaring module. A module can name a shipped type without
-/// importing its owner — `std/net/http/http.hew` returns `Sink<string>`, which
-/// the prelude resolves to `stream.Sink` while `std/stream.hew` declares the
-/// same extern against its own `std.stream.Sink`. Comparing those spellings
-/// rejects one type as two.
+/// Resolution authority, in order:
+/// 1. The declaring FILE: a bare name declared in the item's own source
+///    file resolves to that file's minted module identity, so the same
+///    declaration reached through directory peer assembly and through a
+///    direct submodule import mints one owner — and two same-named
+///    declarations in different peer files mint two (a false merge would
+///    equate distinct layouts on one C symbol; a false split diagnoses
+///    loudly and is correctable at the declaration).
+/// 2. Exactly one sibling file of the declaring module: lexically visible,
+///    single declaration — its file identity.
+/// 3. The checker's canonical resolution for imported/prelude spellings
+///    (`canonical_nominal_name`), which refuses ambiguity.
 ///
-/// WHY this is scoped to the extern-contract comparison: it widens a NAME, and
-/// nominal identity feeds layout, dispatch and ownership routing. Only the
-/// duplicate-declaration check needs it, so only that check gets it.
-///
-/// WHEN OBSOLETE: when prelude-resolved nominals carry their canonical owner at
-/// resolution, so nothing downstream ever sees a partial one.
-///
-/// The trust gates are the same ones `canonical_nominal_name` uses. A partial
-/// owner must be one bare segment and identify exactly one canonical stdlib
-/// source. An owner-less name must not shadow a local declaration and must
-/// identify exactly one known type across the canonical stdlib sources. An
-/// ambiguous or unknown completion proves nothing and is left alone.
-fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
-    if let Some((owner, short)) = name.rsplit_once('.') {
-        if owner.contains('.') {
-            return None;
-        }
-        let suffix = format!(".{owner}");
-        let mut sources = checker
-            .canonical_std_module_sources
-            .iter()
-            .filter(|source| source.ends_with(&suffix));
-        let full_owner = sources.next()?;
-        if sources.next().is_some() {
-            return None;
-        }
-        let completed = format!("{full_owner}.{short}");
-        return (checker.type_defs.contains_key(&completed)
-            || checker.known_types.contains(&completed))
-        .then_some(completed);
-    }
-
-    let shadows_local_declaration = checker.current_module.as_ref().map_or_else(
-        || checker.local_type_defs.contains(name),
-        |module| checker.type_defs.contains_key(&format!("{module}.{name}")),
-    );
-    if shadows_local_declaration {
-        return None;
-    }
-    let mut completions = checker
-        .canonical_std_module_sources
-        .iter()
-        .map(|source| format!("{source}.{name}"))
-        .filter(|completed| {
-            checker.type_defs.contains_key(completed) || checker.known_types.contains(completed)
-        });
-    let completed = completions.next()?;
-    completions.next().is_none().then_some(completed)
-}
-
-/// Carry a uniquely proven owner-less prelude nominal into the stored extern
-/// signature, not only the duplicate-contract comparison.
-///
-/// Leaving the accepted declaration bare would merely postpone the same
-/// identity loss until MIR/codegen, where a generic user nominal named `Sink`
-/// is not a legal runtime carrier. Partial owners already retain enough source
-/// identity for downstream canonicalisation; this rewrite is deliberately
-/// limited to owner-less names.
-fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
+/// The `builtin` marker is checker metadata and can legitimately differ
+/// when one module spells a nominal through an import qualifier, so it is
+/// erased rather than compared.
+fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
     match ty {
-        Ty::Named {
-            name,
-            args,
-            builtin,
-        } => Ty::Named {
-            name: (!name.contains('.'))
-                .then(|| complete_prelude_std_owner(checker, name))
-                .flatten()
+        Ty::Named { name, args, .. } => Ty::Named {
+            name: checker
+                .extern_signature_nominal_owner(name)
                 .unwrap_or_else(|| name.clone()),
             args: args
                 .iter()
-                .map(|arg| complete_ownerless_prelude_std_types(checker, arg))
+                .map(|arg| extern_contract_nominal_identity(checker, arg))
                 .collect(),
-            builtin: *builtin,
+            builtin: None,
         },
-        _ => ty.map_children_pub(&|child| complete_ownerless_prelude_std_types(checker, child)),
+        _ => ty.map_children_pub(&|child| extern_contract_nominal_identity(checker, child)),
     }
-}
-
-/// Fold a peer-assembled submodule owner into the directory module that also
-/// assembles it.
-///
-/// A directory module is its primary file plus every peer `.hew` file in that
-/// directory (hew-compile's `resolve_completed_import_internal`). Importing
-/// both `std::net::http` and its `std::net::http::http_client` peer registers
-/// the one declaration in `http_client.hew` under both owners, so the
-/// duplicate-extern compare sees the module disagree with itself purely on
-/// nominal-owner spelling.
-///
-/// The relation is read off the module graph, not the two spellings: an owner
-/// folds only when it is assembled from exactly one source file AND some other
-/// module assembles that same file among its own. Two modules sharing a source
-/// file share its declarations, so this cannot equate distinct ones. The fold
-/// normalizes NOMINAL OWNERS ONLY — arity, types, ownership modes, and
-/// variadicity are still compared structurally by the caller.
-///
-/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
-/// direct submodule import aliases the assembled module instead of registering
-/// a second copy.
-fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
-    let (owner, short) = name.rsplit_once('.')?;
-    let sources = checker.module_source_paths.get(owner)?;
-    let [source] = sources.as_slice() else {
-        return None;
-    };
-    let mut assemblers = checker
-        .module_source_paths
-        .iter()
-        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
-        .map(|(other, _)| other);
-    let assembler = assemblers.next()?;
-    if assemblers.next().is_some() {
-        return None;
-    }
-    Some(format!("{assembler}.{short}"))
-}
-
-/// Canonical nominal identity of an extern signature type, for the
-/// single-owner contract comparison.
-///
-/// Two declarations of one C symbol may legitimately spell one nominal
-/// differently (alias qualifier, prelude-bare name, peer-assembled owner);
-/// the compare must map both spellings to the declaration's source identity
-/// before an EXACT structural compare. Every further declaration of an
-/// established symbol goes through this compare — there is no
-/// same-declaration-site shortcut (a byte-offset span carries no file
-/// identity, so "same site" cannot be recognized soundly; owner
-/// normalization plus the structural compare handles the peer-assembly
-/// duplicate registration while still comparing arity, types, ownership
-/// modes, and variadicity).
-///
-/// WHEN OBSOLETE: stage C of the identity lane, when extern signatures are
-/// stored `NominalId`-resolved at registration — the contract compare becomes
-/// plain ID equality and this spelling canonicalization is deleted with the
-/// `complete_prelude_std_owner` / `fold_peer_assembled_owner` heuristics it
-/// rides on.
-fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
-    fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
-        match ty {
-            Ty::Named { name, args, .. } => Ty::Named {
-                name: complete_prelude_std_owner(checker, name)
-                    .or_else(|| fold_peer_assembled_owner(checker, name))
-                    .unwrap_or_else(|| name.clone()),
-                args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
-                // The builtin marker is checker metadata and can legitimately
-                // differ when one module spells that nominal through an import
-                // qualifier, so it is erased rather than compared.
-                builtin: None,
-            },
-            _ => ty.map_children_pub(&|child| rewrite(checker, child)),
-        }
-    }
-
-    // The owner-qualified nominal name is the source contract identity.
-    rewrite(checker, &checker.canonicalize_nominal_identity(ty))
 }
 
 impl super::lints::NodeVisitor for ExplicitReturnFinder {
@@ -2473,6 +2343,29 @@ impl Checker {
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
+                    // Per-file lexical type authority (rc1-F1 stage C):
+                    // record which FILE declares each type name, so
+                    // extern-signature nominal identity can resolve a bare
+                    // name to its declaring file's minted identity.
+                    let item_sources = self.module_item_sources.get(&module_name).cloned();
+                    for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                        let declared = match item {
+                            Item::TypeDecl(td) => Some(td.name.clone()),
+                            Item::Machine(md) => Some(md.name.clone()),
+                            _ => None,
+                        };
+                        if let (Some(name), Some(source)) = (
+                            declared,
+                            item_sources
+                                .as_ref()
+                                .and_then(|sources| sources.get(item_idx)),
+                        ) {
+                            self.file_type_decls
+                                .entry(source.clone())
+                                .or_default()
+                                .insert(name);
+                        }
+                    }
                     for (item, item_span) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
@@ -9266,6 +9159,78 @@ impl Checker {
     /// further declaration of an established symbol (no span-based
     /// same-site shortcut: a byte-offset span carries no file identity, and
     /// peer files of one directory module can align spans exactly).
+    /// The canonical owner a nominal name in an extern signature denotes,
+    /// per the authority order documented on
+    /// [`extern_contract_nominal_identity`]. `None` = unresolvable here;
+    /// the spelling stays as written and the structural compare fails
+    /// closed on genuine ambiguity.
+    fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
+        // Signature resolution has usually already qualified a module-local
+        // type with the CURRENT module's owner — which is route-dependent
+        // for a peer-assembled file (`pkg.Tok` via `import pkg`,
+        // `pkg.aaa.Tok` via `import pkg::aaa`, for one declaration in
+        // `pkg/aaa.hew`). Strip the current module's own qualifier back to
+        // the source leaf so the FILE rule decides the owner; every route
+        // then mints the declaring file's identity.
+        let module_local_leaf = self.current_module.as_deref().and_then(|module| {
+            name.strip_prefix(module)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .filter(|leaf| !leaf.contains('.') && !leaf.contains("::"))
+        });
+        if let Some(leaf) = module_local_leaf {
+            if let Some(owner) = self.extern_nominal_file_owner(leaf) {
+                return Some(owner);
+            }
+            return Some(name.to_string());
+        }
+        if !name.contains('.') {
+            if let Some(owner) = self.extern_nominal_file_owner(name) {
+                return Some(owner);
+            }
+        }
+        if let Some(canonical) = self.canonical_nominal_name(name) {
+            return Some(canonical);
+        }
+        // Registry-loaded stdlib signatures present nominal owners as the
+        // loaded module's SHORT spelling (`stream.Sink`), while the same
+        // declaration's source module registers the complete owner
+        // (`std.stream.Sink`). The module registry is the declaration-proven
+        // authority joining those two representations of one loaded
+        // declaration: it refuses bare leaves and ambiguous spellings, so it
+        // can never recover an owner from text alone.
+        self.module_registry
+            .canonical_method_receiver_identity(name)
+    }
+
+    /// FILE-lexical nominal authority: the item's own declaring file first,
+    /// then exactly one sibling file of the declaring module.
+    fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
+        let file = self.current_item_source.as_ref()?;
+        let declares = |source: &std::path::PathBuf| {
+            self.file_type_decls
+                .get(source)
+                .is_some_and(|declared| declared.contains(name))
+        };
+        if declares(file) {
+            return Some(format!(
+                "{}.{name}",
+                self.identity.module_path_for_source(file)?
+            ));
+        }
+        let sources = self
+            .module_source_paths
+            .get(self.current_module.as_deref()?)?;
+        let mut declaring = sources.iter().filter(|source| declares(source));
+        let single = declaring.next()?;
+        if declaring.next().is_some() {
+            return None;
+        }
+        Some(format!(
+            "{}.{name}",
+            self.identity.module_path_for_source(single)?
+        ))
+    }
+
     /// Diagnostic routing token for an item declared in `file` under
     /// `module`: the file's own path when it is NOT the module's primary
     /// source (a peer file of a directory module), else `None` (the module
@@ -9302,6 +9267,17 @@ impl Checker {
             );
             return;
         }
+        // Resolve the candidate signature's nominal identities NOW, in the
+        // declaring item's own lexical context (rc1-F1 stage C). The
+        // contract stores resolved signatures, so every later comparison is
+        // identity equality — no compare-time spelling repair, whose context
+        // would be the SECOND declaration's, not the declarer's.
+        let resolved_params = sig
+            .params
+            .iter()
+            .map(|ty| extern_contract_nominal_identity(self, ty))
+            .collect::<Vec<_>>();
+        let resolved_return = extern_contract_nominal_identity(self, &sig.return_type);
         let Some((established_id, established)) = self
             .extern_table
             .established(source_symbol)
@@ -9310,8 +9286,8 @@ impl Checker {
             self.extern_table.mint(crate::extern_table::ExternContract {
                 owner: declaration,
                 symbol: source_symbol.to_string(),
-                params: sig.params.clone(),
-                return_type: sig.return_type.clone(),
+                params: resolved_params,
+                return_type: resolved_return,
                 consuming_params: consuming_params.to_vec(),
                 is_variadic: f.is_variadic,
                 span: f.span.clone(),
@@ -9320,28 +9296,10 @@ impl Checker {
             });
             return;
         };
-        // Peer-assembled owner spellings are normalized inside
-        // `extern_contract_type_identity` (fold_peer_assembled_owner), so the
-        // one-declaration-registered-under-two-owners case agrees here while
-        // arity, types, ownership modes, and variadicity are still compared.
-        let agrees = {
-            let established_params = established
-                .params
-                .iter()
-                .map(|ty| extern_contract_type_identity(self, ty))
-                .collect::<Vec<_>>();
-            let candidate_params = sig
-                .params
-                .iter()
-                .map(|ty| extern_contract_type_identity(self, ty))
-                .collect::<Vec<_>>();
-            let established_return = extern_contract_type_identity(self, &established.return_type);
-            let candidate_return = extern_contract_type_identity(self, &sig.return_type);
-            established_params == candidate_params
-                && established_return == candidate_return
-                && established.consuming_params == consuming_params
-                && established.is_variadic == f.is_variadic
-        };
+        let agrees = established.params == resolved_params
+            && established.return_type == resolved_return
+            && established.consuming_params == consuming_params
+            && established.is_variadic == f.is_variadic;
         if agrees {
             // Single-owner property: a further agreeing declaration becomes
             // another name of the ONE established ABI contract, keeping its
@@ -9365,7 +9323,8 @@ impl Checker {
             self.report_extern_contract_conflict(
                 source_symbol,
                 &established,
-                sig,
+                &resolved_params,
+                &resolved_return,
                 consuming_params,
                 f,
             );
@@ -9378,7 +9337,8 @@ impl Checker {
         &mut self,
         source_symbol: &str,
         established: &crate::extern_table::ExternContract,
-        sig: &FnSig,
+        resolved_params: &[Ty],
+        resolved_return: &Ty,
         consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
     ) {
@@ -9388,9 +9348,13 @@ impl Checker {
             &established.consuming_params,
             established.is_variadic,
         );
+        // Describe the RESOLVED identities — the things actually compared —
+        // so two same-leaf nominals from different declaring files render
+        // distinguishably (`pkg.Tok` vs `pkg.aaa.Tok`), never as one
+        // spelling conflicting with itself.
         let conflicting = extern_signature_description(
-            &sig.params,
-            &sig.return_type,
+            resolved_params,
+            resolved_return,
             consuming_params,
             f.is_variadic,
         );
@@ -9516,19 +9480,13 @@ impl Checker {
                     TypeResolutionContext::ExternSignature,
                 )
             });
-            let mut sig = FnSig {
+            let sig = FnSig {
                 param_names,
                 params,
                 return_type,
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
-            sig.params = sig
-                .params
-                .iter()
-                .map(|ty| complete_ownerless_prelude_std_types(self, ty))
-                .collect();
-            sig.return_type = complete_ownerless_prelude_std_types(self, &sig.return_type);
             let source_symbol = sig.extern_symbol.as_ref().map_or_else(
                 || f.name.clone(),
                 |spec| {

@@ -3292,3 +3292,78 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
 // accepted only inside a designated stdlib-floor module; anywhere else —
 // including the user's root module — is a hard `E_INTRINSIC_OUTSIDE_FLOOR`
 // error so no user-reachable path can wire itself to a compiler intrinsic.
+
+/// A `Vec::new()` whose element type is still an unbound inference variable at
+/// check time — the shape a generic record-literal field initializer produces
+/// (`Bag { items: Vec::new() }` with `type Bag<T> { items: Vec<T> }`) — must
+/// still publish its canonical `VecNew` runtime target.
+///
+/// The expected-type constructor path defers the element type here, but the
+/// callee identity does not depend on it: HIR treats a call reaching ordinary
+/// lowering with no `direct_call_targets` entry as a checker boundary
+/// violation, so deferring the fact along with the element type turns a
+/// well-typed program into `E_HIR: checker admitted an ordinary call without
+/// its canonical target`.
+#[test]
+fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
+    let output = check_source(
+        r"
+        type Bag<T> { items: Vec<T>; }
+
+        fn main() {
+            let b = Bag { items: Vec::new() };
+            b.items.push(7);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "generic record field seeded from `Vec::new()` must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::VecNew
+            )
+        )),
+        "deferred-element `Vec::new()` must publish its canonical target: {:#?}",
+        output.direct_call_targets
+    );
+}
+
+/// Same property one level of nesting deeper: the inner record literal's field
+/// initializer is checked against `Vec<?T>` exactly as the outer one is, so it
+/// shares the deferral and must share the fact.
+#[test]
+fn nested_generic_record_vec_new_publishes_its_runtime_target() {
+    let output = check_source(
+        r"
+        type Inner<T> { xs: Vec<T>; }
+        type Outer<T> { inner: Inner<T>; }
+
+        fn main() {
+            let o = Outer { inner: Inner { xs: Vec::new() } };
+            o.inner.xs.push(3);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "nested generic record field seeded from `Vec::new()` must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::VecNew
+            )
+        )),
+        "nested deferred-element `Vec::new()` must publish its canonical target: {:#?}",
+        output.direct_call_targets
+    );
+}

@@ -669,3 +669,114 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
         .expect("expected InvalidExternSymbolTemplate diagnostic");
     assert_eq!(reason, "empty template");
 }
+
+/// Build the fold fixture as a module graph with per-item source
+/// attribution: directory module `pkg` assembles `pkg/pkg.hew` plus peer
+/// `pkg/aaa.hew`, and `pkg.aaa` is also imported directly. `divergent`
+/// selects whether the two files declare two DIFFERENT same-named types
+/// with one shared C symbol (must conflict), or the peer file alone
+/// declares the symbol (must resolve to ONE contract through both routes).
+fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
+    use std::path::PathBuf;
+    let pkg_source = if divergent {
+        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
+    } else {
+        "pub fn unrelated() -> i64 {\n    0\n}\n"
+    };
+    let aaa_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let pkg_file = PathBuf::from("/nonexistent/oracle/pkg/pkg.hew");
+    let aaa_file = PathBuf::from("/nonexistent/oracle/pkg/aaa.hew");
+
+    let pkg_items = hew_parser::parse(pkg_source);
+    assert!(pkg_items.errors.is_empty(), "parse: {:?}", pkg_items.errors);
+    let aaa_items = hew_parser::parse(aaa_source);
+    assert!(aaa_items.errors.is_empty(), "parse: {:?}", aaa_items.errors);
+
+    let root_id = ModuleId::root();
+    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let aaa_id = ModuleId::new(vec!["pkg".to_string(), "aaa".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+
+    // Module `pkg` = pkg.hew items + aaa.hew items (peer assembly).
+    let mut pkg_module_items = pkg_items.program.items.clone();
+    let pkg_item_sources: Vec<PathBuf> =
+        std::iter::repeat_n(pkg_file.clone(), pkg_module_items.len())
+            .chain(std::iter::repeat_n(
+                aaa_file.clone(),
+                aaa_items.program.items.len(),
+            ))
+            .collect();
+    pkg_module_items.extend(aaa_items.program.items.clone());
+    mg.item_sources.insert("pkg".to_string(), pkg_item_sources);
+    mg.add_module(Module {
+        id: pkg_id.clone(),
+        items: pkg_module_items,
+        imports: vec![],
+        source_paths: vec![pkg_file.clone(), aaa_file.clone()],
+        doc: None,
+    })
+    .unwrap();
+
+    // Module `pkg.aaa` = aaa.hew alone (direct submodule import).
+    mg.item_sources.insert(
+        "pkg.aaa".to_string(),
+        vec![aaa_file.clone(); aaa_items.program.items.len()],
+    );
+    mg.add_module(Module {
+        id: aaa_id.clone(),
+        items: aaa_items.program.items,
+        imports: vec![],
+        source_paths: vec![aaa_file],
+        doc: None,
+    })
+    .unwrap();
+
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![pkg_id, aaa_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    })
+}
+
+/// Single-owner nominal identity oracle (rc1-F1 stage C): two same-named,
+/// layout-divergent type declarations in different peer files of one
+/// directory module declare one C symbol — the contract compare must see
+/// two DISTINCT nominal identities and reject. The legacy peer-owner fold
+/// rewrote the owner spelling off the module graph without checking the
+/// short name resolved to the same declaration, and accepted this.
+#[test]
+fn peer_files_with_divergent_same_named_types_conflict_on_one_symbol() {
+    let output = check_peer_assembled_extern(true);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("conflicting declarations")),
+        "layout-divergent same-named nominals on one C symbol must conflict; errors: {:#?}",
+        output.errors
+    );
+}
+
+/// Control: ONE declaration (in the peer file) reached through both
+/// assembly routes mints one file-backed nominal identity and therefore
+/// one contract — no self-conflict.
+#[test]
+fn one_peer_declaration_through_two_routes_resolves_one_contract() {
+    let output = check_peer_assembled_extern(false);
+    assert!(
+        output.errors.is_empty(),
+        "one declaration, two routes, one identity; errors: {:#?}",
+        output.errors
+    );
+}

@@ -311,6 +311,121 @@ impl Checker {
         }
     }
 
+    /// The canonical module identity that owns items registered/checked in the
+    /// current context (rc1-F1 stage A): the current graph module, or the ROOT
+    /// unit's minted identity. This is the fn-sig mint chokepoint — root free
+    /// functions key `{root_module}.{name}` exactly as they would when their
+    /// module is imported (`scoped_module_item_name`'s bare-for-root behaviour
+    /// is dead for the fn-sig family). `None` only for bare-by-design roots
+    /// (REPL fragments, source-less roots).
+    pub(super) fn canonical_fn_owner(&self) -> Option<&str> {
+        self.current_module
+            .as_deref()
+            .or_else(|| self.identity.root_module_path())
+    }
+
+    /// Canonical-first `fn_sigs` key for a bare free-fn spelling written in
+    /// ROOT context. Returns the root-canonical key only when it is actually
+    /// registered, so bare builtin/extern registrations keep resolving
+    /// unchanged (the bare rung is the builtin/extern floor, not a root
+    /// fallback).
+    pub(super) fn root_canonical_fn_sig_key(&self, name: &str) -> Option<String> {
+        if self.current_module.is_some() {
+            return None;
+        }
+        let scoped = scoped_module_item_name(self.identity.root_module_path(), name)?;
+        self.fn_sigs.contains_key(&scoped).then_some(scoped)
+    }
+
+    /// When `key` is a ROOT-owned canonical free-fn key (`{root}.{leaf}`),
+    /// return its bare leaf; with no minted root identity, a bare free-fn key
+    /// IS root-owned and returns itself. `None` for module/method keys.
+    ///
+    /// Two consumers: root-fn detection where the legacy code tested "key has
+    /// no dot" (dead-code entry points and warn set), and the LEGACY RENDER of
+    /// root declarations at publication boundaries (published `CallTarget`
+    /// `DefId`s, published `fn_sigs` keys, diagnostics), where downstream
+    /// consumers still resolve root items by bare spelling.
+    /// WHEN OBSOLETE: stage C/D of the identity lane re-key those consumers by
+    /// `DefId`; the render half of this helper is deleted with them.
+    pub(super) fn root_owned_fn_leaf<'k>(&self, key: &'k str) -> Option<&'k str> {
+        if key.contains("::") {
+            return None;
+        }
+        match self.identity.root_module_path() {
+            Some(root) => key
+                .strip_prefix(root)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .filter(|leaf| !leaf.contains('.')),
+            None => (!key.contains('.')).then_some(key),
+        }
+    }
+
+    /// Mint the compile's module identities (rc1-F1 stage A).
+    ///
+    /// One minting authority, run once at `check_program` entry: every graph
+    /// module is interned under its canonical dotted identity (deduped by
+    /// canonical source, so dual-import/peer-assembly spellings of one source
+    /// resolve to one `ModuleId`), then the ROOT compilation unit is minted
+    /// from its canonical source — reusing a graph module's identity when the
+    /// root IS an importable source (root-vs-import provenance invariance).
+    ///
+    /// Bare-by-design exclusions:
+    /// * REPL fragments — their functions are re-declared across fragments
+    ///   and have no stable source module; the fragment keeps the legacy bare
+    ///   namespace.
+    /// * Source-less roots (synthetic stdlib floor roots from
+    ///   `rewrite_direct_stdlib_module_root`, unit-test programs without
+    ///   source paths) — nothing canonical exists to mint from.
+    fn mint_module_identities(&mut self, program: &Program) {
+        self.identity = crate::identity::IdentityTable::new();
+        let Some(module_graph) = &program.module_graph else {
+            return;
+        };
+        // Deterministic mint order: the topo order, root last.
+        for mod_id in &module_graph.topo_order {
+            if *mod_id == module_graph.root {
+                continue;
+            }
+            let Some(module) = module_graph.modules.get(mod_id) else {
+                continue;
+            };
+            let dotted = mod_id.path.join(".");
+            let canonical = crate::module_registry::canonical_source_module_identity(
+                &dotted,
+                &module.source_paths,
+            );
+            self.identity.mint_module(&canonical, &module.source_paths);
+        }
+        // Second pass — per-file identities for directory modules' peer
+        // files (rc1-F1 stage C): a peer file's declarations carry the
+        // FILE's identity, so one declaration reached through peer assembly
+        // and through a direct submodule import mints one owner. This runs
+        // AFTER every graph module minted its primary source, so a peer
+        // mint can never claim (and mis-render) another module's primary.
+        for mod_id in &module_graph.topo_order {
+            if *mod_id == module_graph.root {
+                continue;
+            }
+            let Some(module) = module_graph.modules.get(mod_id) else {
+                continue;
+            };
+            let dotted = mod_id.path.join(".");
+            let canonical = crate::module_registry::canonical_source_module_identity(
+                &dotted,
+                &module.source_paths,
+            );
+            for source in module.source_paths.iter().skip(1) {
+                self.identity.mint_source_file_module(&canonical, source);
+            }
+        }
+        if !self.repl_fragment {
+            if let Some(root) = module_graph.modules.get(&module_graph.root) {
+                self.identity.mint_root_module(&root.source_paths);
+            }
+        }
+    }
+
     /// Pass 3: Check all bodies
     #[expect(
         clippy::too_many_lines,
@@ -321,6 +436,14 @@ impl Checker {
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.root_value_bindings.clear();
+        // Mint the compile's module identities FIRST (rc1-F1 stage A): every
+        // registration pass below resolves declaration identity through this
+        // table, so it must be complete before any key is minted.
+        self.mint_module_identities(program);
+        // Fresh extern authority per compile (rc1-F1 stage B): contracts are
+        // minted by the registration passes below; a stale table would leak
+        // symbol ownership across `check_program` runs.
+        self.extern_table = crate::extern_table::ExternTable::new();
         // Record concrete stdlib source provenance once, before registration
         // manufactures any compiler-recognised carrier signatures. Module
         // spelling is not authority: a user package may imitate the legacy
@@ -330,7 +453,12 @@ impl Checker {
         self.canonical_std_module_sources.clear();
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
+        self.module_item_sources.clear();
+        self.current_item_source = None;
+        self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
+            self.module_item_sources
+                .clone_from(&module_graph.item_sources);
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
             // source-less floor module and promotes the shipped file to its
             // canonical `std.foo` identity. In a normal user program the root
@@ -730,6 +858,34 @@ impl Checker {
                 (name, resolved)
             })
             .collect();
+
+        // LEGACY ROOT RENDER (rc1-F1 stage A): inside the checker, root free
+        // functions are keyed canonically (`{root}.{name}`). At this
+        // publication boundary they re-render to the legacy bare spelling,
+        // because HIR (`hew-hir/src/lower.rs` fn_sigs clone) and hew-analysis
+        // still resolve root functions by source spelling and stage A must be
+        // byte-identical downstream. Overwriting a same-named bare entry
+        // reproduces the legacy registration semantics (a root declaration
+        // shadows a builtin's bare slot). The canonical identity remains
+        // published through `TypeCheckOutput::identity`.
+        // WHEN OBSOLETE: stage C/D re-key downstream consumers by `DefId`;
+        // this render is deleted and canonical keys publish unchanged.
+        if let Some(root) = self.identity.root_module_path() {
+            let prefix = format!("{root}.");
+            let root_keys: Vec<String> = resolved_fn_sigs
+                .keys()
+                .filter(|key| {
+                    key.strip_prefix(&prefix)
+                        .is_some_and(|leaf| !leaf.contains('.') && !leaf.contains("::"))
+                })
+                .cloned()
+                .collect();
+            for key in root_keys {
+                if let Some(sig) = resolved_fn_sigs.remove(&key) {
+                    resolved_fn_sigs.insert(key[prefix.len()..].to_string(), sig);
+                }
+            }
+        }
 
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
@@ -1183,6 +1339,8 @@ impl Checker {
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
+            identity: std::mem::take(&mut self.identity),
+            extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),

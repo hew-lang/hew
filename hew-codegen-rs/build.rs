@@ -4,6 +4,11 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/llvm_debug_info_shim.cpp");
+    // llvm-sys re-resolves its LLVM install when this changes; the shim must
+    // re-compile against the SAME install, or a cached shim object built from
+    // the old headers links into a compiler using the new libLLVM — a C++
+    // struct-layout mismatch inside DIBuilder.
+    println!("cargo:rerun-if-env-changed=LLVM_SYS_221_PREFIX");
 
     let llvm_config = llvm_config_path();
     assert_llvm_22(&llvm_config);
@@ -22,23 +27,21 @@ fn main() {
         .compile("hew_llvm_debug_info_shim");
 }
 
+/// The `llvm-config` llvm-sys itself used, threaded through Cargo's
+/// links-metadata (`links = "llvm-22"` + `cargo:config_path=` ⇒
+/// `DEP_LLVM_22_CONFIG_PATH`). One source of truth: an independent probe here
+/// could land on a DIFFERENT LLVM 22 install than the one llvm-sys links —
+/// same major, different `LLVM_ENABLE_ABI_BREAKING_CHECKS` layout — and the
+/// major-version gate below would not catch it.
 fn llvm_config_path() -> PathBuf {
-    if let Some(prefix) = env::var_os("LLVM_SYS_221_PREFIX") {
-        return PathBuf::from(prefix)
-            .join("bin")
-            .join(executable("llvm-config"));
-    }
-
-    [
-        PathBuf::from("llvm-config-22"),
-        PathBuf::from("/opt/homebrew/opt/llvm/bin/llvm-config"),
-        PathBuf::from("/usr/local/opt/llvm/bin/llvm-config"),
-        PathBuf::from("/usr/lib/llvm-22/bin/llvm-config"),
-        PathBuf::from("llvm-config"),
-    ]
-    .into_iter()
-    .find(|candidate| command_works(candidate))
-    .unwrap_or_else(|| panic!("LLVM 22 llvm-config is not available; set LLVM_SYS_221_PREFIX"))
+    let path = env::var_os("DEP_LLVM_22_CONFIG_PATH").unwrap_or_else(|| {
+        panic!(
+            "DEP_LLVM_22_CONFIG_PATH is not set; hew-codegen-rs must declare a \
+             direct `llvm-sys` dependency so the debug-info shim compiles \
+             against the exact LLVM install llvm-sys links"
+        )
+    });
+    PathBuf::from(path)
 }
 
 fn llvm_config_arg(llvm_config: &Path, arg: &str) -> PathBuf {
@@ -74,15 +77,4 @@ fn assert_llvm_22(llvm_config: &Path) {
         "{} reports LLVM {version}; hew-codegen-rs requires LLVM major 22",
         llvm_config.display()
     );
-}
-
-fn command_works(command: &Path) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn executable(name: &str) -> String {
-    format!("{name}{}", env::consts::EXE_SUFFIX)
 }

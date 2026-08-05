@@ -38,9 +38,6 @@
 # deferred-nyi: distributed / net NYI features
 
 # deferred-nyi: lambda actor syntax not yet supported
-examples/lambda_actor_factory.hew
-examples/lambda_actor_pipeline.hew
-examples/lambda_actors.hew
 
 # deferred-nyi: machine select/transition watch NYI
 examples/machine/bounded_resource.hew
@@ -52,7 +49,6 @@ examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
 
 # deferred-nyi: net/await NYI
-examples/net/probe_opaque_actor_state.hew
 
 # deferred-nyi: observe-related NYI
 
@@ -62,10 +58,8 @@ examples/net/probe_opaque_actor_state.hew
 examples/quic_mesh/selector_smoke.hew
 
 # deferred-nyi: advanced actor patterns NYI
-examples/test_actors_messaging.hew
 
 # deferred-nyi: v05 examples using NYI features
-examples/v05/cancellation_is_cancelled_observation.hew
 examples/v05/channel_vec_element_fails.hew
 
 # deferred-nyi: checked-mir v05 examples using NYI features
@@ -123,7 +117,6 @@ hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
 # helpers (e.g. `empty()`) — these test AST round-trip only, not compilation
 hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew
 hew-parser/tests/fmt_roundtrip_corpus/assoc_types/impl_assoc_ordering.hew
-hew-parser/tests/fmt_roundtrip_corpus/assoc_types/impl_assoc_vec_binding.hew
 hew-parser/tests/fmt_roundtrip_corpus/assoc_types/self_projection_signatures.hew
 
 # ── hew-sandbox-vm/ ──────────────────────────────────────────────────────────
@@ -220,6 +213,8 @@ tests/pkg-import/aliased_trait_sig.hew
 tests/pkg-import/aliased_trait_source_name_collision_accept.hew
 tests/pkg-import/bare_import_alias_accept.hew
 tests/pkg-import/callee_frame_bare_alias_accept.hew
+tests/pkg-import/canonical_same_leaf_nested.hew
+tests/pkg-import/canonical_same_leaf_nested_generic_enum.hew
 tests/pkg-import/generic_freefn_direct_call.hew
 tests/pkg-import/generic_freefn_lambda_wrap.hew
 tests/pkg-import/generic_freefn_owned_element.hew
@@ -285,6 +280,19 @@ tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
 tests/pkg-import/reexport_chain_inline_supermethods_accept.hew
 tests/pkg-import/reexport_super_inline_supermethod_accept.hew
 tests/pkg-import/root_shadow_actor_ask.hew
+tests/pkg-import/sameleaf_glob_actor_ambiguous.hew
+tests/pkg-import/sameleaf_glob_const_ambiguous.hew
+tests/pkg-import/sameleaf_glob_function_ambiguous.hew
+tests/pkg-import/sameleaf_glob_machine_ambiguous.hew
+tests/pkg-import/sameleaf_glob_trait_ambiguous.hew
+tests/pkg-import/sameleaf_glob_type_ambiguous.hew
+tests/pkg-import/sameleaf_named_actor_ambiguous.hew
+tests/pkg-import/sameleaf_named_const_ambiguous.hew
+tests/pkg-import/sameleaf_named_function_ambiguous.hew
+tests/pkg-import/sameleaf_named_machine_ambiguous.hew
+tests/pkg-import/sameleaf_named_trait_ambiguous.hew
+tests/pkg-import/sameleaf_named_type_ambiguous.hew
+tests/pkg-import/sameleaf_qualified_alias_accept.hew
 tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
 
@@ -298,6 +306,12 @@ tests/pkg-import/self_qualified_type_identity.hew
 # deferred-nyi: await deadline NYI
 
 # deferred-nyi: actor crash context diagnostic NYI
+
+# deferred-nyi: MIR lowering for named function used as a value (only
+# non-generic named functions are currently supported) is not implemented
+# yet; generic named functions as values are not yet implemented in the
+# current spine
+tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew
 
 # deferred-nyi: hashmap/hashset for-in NYI
 

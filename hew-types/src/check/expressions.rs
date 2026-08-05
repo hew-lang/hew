@@ -1353,7 +1353,13 @@ impl Checker {
                 }
             }
             ty
-        } else if self.fn_sigs.contains_key(name) {
+        } else if let Some(fn_sig_key) = self
+            // rc1-F1 stage A: canonical-first — a root fn used as a value
+            // resolves under its canonical `{root_module}.{name}` fn_sigs
+            // key; bare registrations (builtins, externs) resolve unchanged.
+            .root_canonical_fn_sig_key(name)
+            .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
+        {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -1366,12 +1372,14 @@ impl Checker {
                 }
             }
             if let Some(caller) = &self.current_function {
+                // The callee edge records the RESOLVED key so dead-code
+                // reachability stays aligned with canonical `fn_def_spans`.
                 self.call_graph
                     .entry(caller.clone())
                     .or_default()
-                    .insert(name.to_string());
+                    .insert(fn_sig_key.clone());
             }
-            let sig = self.fn_sigs[name].clone();
+            let sig = self.fn_sigs[&fn_sig_key].clone();
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the
             // same name (e.g. user `enum AppError { NotFound(string); }` shadows
@@ -3616,10 +3624,31 @@ impl Checker {
                     ..
                 },
             ) => {
+                // Qualified unit-variant identifier (`SplitMode::SplitWords`)
+                // under a known expected nominal: the expected type's resolved
+                // identity is the resolution authority for its own source-leaf
+                // qualifier, exactly as pattern position already resolves a
+                // qualified variant against its scrutinee's nominal
+                // (`variant_surface_owner_matches`). This is identity-based:
+                // the prefix must canonicalize to the expected declaration's
+                // exact nominal — a local/source declaration claims the bare
+                // spelling first and a foreign owner never folds in — so two
+                // same-leaf enums cannot merge here; a mismatched owner falls
+                // through to synthesize-and-diagnose.
+                let variant_after_owner = name
+                    .rsplit_once("::")
+                    .filter(|(prefix, _)| !prefix.contains('.'))
+                    .filter(|_| self.variant_surface_owner_matches(name, expected))
+                    .map(|(_, variant)| variant.to_string());
                 let is_unit_variant = self
                     .lookup_type_def(expected_type_name)
-                    .and_then(|td| td.variants.get(name.as_str()).cloned())
-                    .is_some_and(|v| matches!(v, VariantDef::Unit));
+                    .and_then(|td| {
+                        td.variants
+                            .get(variant_after_owner.as_deref().unwrap_or(name.as_str()))
+                            .cloned()
+                    })
+                    .is_some_and(|v| matches!(v, VariantDef::Unit))
+                    && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,
@@ -4579,9 +4608,15 @@ impl Checker {
     }
 
     pub(super) fn require_unsafe(&mut self, name: &str, span: &Span) {
-        let scoped_unsafe = scoped_module_item_name(self.current_module.as_deref(), name)
-            .is_some_and(|qualified| self.unsafe_functions.contains(&qualified));
-        if !self.in_unsafe && (scoped_unsafe || self.unsafe_functions.contains(name)) {
+        // rc1-F1 stage B: `unsafe` gating is derived from the extern table's
+        // declaration index — a call requires `unsafe` exactly when its
+        // resolved declaration key names a registered extern declaration.
+        // The canonical-owner probe covers root extern declarations, which
+        // key `{root_module}.{name}` inside the checker while root call
+        // sites spell the bare leaf.
+        let scoped_unsafe = scoped_module_item_name(self.canonical_fn_owner(), name)
+            .is_some_and(|qualified| self.extern_table.requires_unsafe(&qualified));
+        if !self.in_unsafe && (scoped_unsafe || self.extern_table.requires_unsafe(name)) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

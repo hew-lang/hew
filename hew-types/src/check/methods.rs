@@ -1619,16 +1619,21 @@ impl Checker {
         let Some((owner_module, _)) = receiver_name.rsplit_once('.') else {
             return false;
         };
-        let Some(declaration) = self.source_extern_declarations.iter().find(|declaration| {
-            declaration.symbol == c_symbol
-                && declaration.declaring_module.as_deref() == Some(owner_module)
-        }) else {
+        // rc1-F1 stage B: resolve through the extern table's declaration
+        // index — the receiver's canonical owner must ITSELF declare the
+        // symbol, and the published identity is THAT declaration (its own
+        // key, its own provenance), never whichever declaration happened to
+        // mint the symbol's ABI contract.
+        let Some((declaration_key, declaration)) = self
+            .extern_table
+            .declaration_by_symbol_and_module(&c_symbol, owner_module)
+        else {
             return false;
         };
 
         let extern_identity = ExternMethodCallIdentity {
             endpoint: declaration.symbol.clone(),
-            signature_key: declaration.signature_key.clone(),
+            signature_key: declaration_key.full_path().to_string(),
             declaring_module: declaration.declaring_module.clone(),
             trusted_compiled_stdlib: self.canonical_std_module_sources.contains(owner_module),
         };

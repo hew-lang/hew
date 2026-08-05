@@ -777,7 +777,17 @@ pub fn stale_outputs(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>, S
     for output in manifest.generated_outputs() {
         let path = root.join(output.path);
         match std::fs::read_to_string(&path) {
-            Ok(existing) if existing == output.contents => {}
+            // A checkout with core.autocrlf enabled (the Windows CI
+            // default) rewrites `\n` to `\r\n` for any tracked file
+            // without an `eol=lf` rule. Neither generated output has one,
+            // so the checked-in bytes carry `\r\n` on Windows while the
+            // freshly rendered content is always `\n`-terminated. Compare
+            // normalized text so the gate asserts semantic freshness, not
+            // checkout line-ending encoding — the same choice made for
+            // the matrix BEGIN/END markers (see replace_delimited_section).
+            Ok(existing)
+                if normalize_line_endings(&existing)
+                    == normalize_line_endings(&output.contents) => {}
             Ok(_) => stale.push(path),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => stale.push(path),
             Err(err) => return Err(format!("read {}: {err}", path.display())),
@@ -797,6 +807,12 @@ pub fn stale_outputs(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>, S
         Err(err) => return Err(format!("read {}: {err}", matrix_path.display())),
     }
     Ok(stale)
+}
+
+/// Normalize `\r\n` to `\n` so freshness comparisons are checkout-encoding
+/// independent. See `stale_outputs` for the rationale.
+fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 fn replace_matrix_generated_sections(

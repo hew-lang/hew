@@ -672,6 +672,179 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     );
 }
 
+/// Regression pin (rc1-F1 stage B revision): adoption shares the ABI
+/// contract, never provenance. An agreeing re-declaration in a second module
+/// resolves to the minter's contract while its declaration record keeps its
+/// OWN declaring module — call-site authority derivation
+/// (`trusted_compiled_stdlib`, lifecycle joins) reads the record, so a user
+/// re-declaration of a stdlib-minted symbol cannot inherit stdlib
+/// provenance in either registration order.
+#[test]
+fn adopting_declaration_keeps_its_own_provenance() {
+    let i64_ty = TypeExpr::Named {
+        name: "i64".to_string(),
+        type_args: None,
+    };
+    let declaration = |fn_name: &str, span: Span| ExternBlock {
+        abi: "C".to_string(),
+        functions: vec![ExternFnDecl {
+            attributes: Vec::new(),
+            name: fn_name.to_string(),
+            params: vec![hew_parser::ast::Param {
+                name: "x".to_string(),
+                ty: (i64_ty.clone(), 0..3),
+                is_mutable: false,
+                is_consume: false,
+            }],
+            return_type: Some((i64_ty.clone(), 6..9)),
+            is_variadic: false,
+            span,
+        }],
+    };
+
+    let root_id = ModuleId::root();
+    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
+    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: alpha_id.clone(),
+        items: vec![(Item::ExternBlock(declaration("shared_raw", 0..30)), 0..30)],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: beta_id.clone(),
+        items: vec![(Item::ExternBlock(declaration("shared_raw", 40..70)), 40..70)],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    });
+    assert!(
+        !output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { .. }
+        )),
+        "identical contracts must adopt, not conflict: {:#?}",
+        output.errors
+    );
+    let (_, contract) = output
+        .extern_contracts
+        .established("shared_raw")
+        .expect("one contract for the symbol");
+    assert_eq!(contract.owner.full_path(), "alpha.shared_raw");
+    assert_eq!(contract.declaring_module.as_deref(), Some("alpha"));
+    let adopter = output
+        .extern_contracts
+        .declaration("beta.shared_raw")
+        .expect("adopting declaration registers its own record");
+    assert!(
+        adopter.contract.is_some(),
+        "adopter shares the ABI contract"
+    );
+    assert_eq!(
+        adopter.declaring_module.as_deref(),
+        Some("beta"),
+        "adoption must not launder the declaring module"
+    );
+}
+
+/// Regression pin (rc1-F1 stage B revision): a byte-offset span carries no
+/// file identity, and one directory module assembles many peer files, so two
+/// DIFFERENT declarations of one symbol inside one module can carry
+/// byte-identical spans. The ABI compare must run regardless — a span-based
+/// "same declaration site" shortcut silently adopted a `string`-vs-`i64`
+/// parameter drift whenever the spans aligned.
+#[test]
+fn same_module_span_colliding_drifting_declarations_conflict() {
+    let string_ty = TypeExpr::Named {
+        name: "string".to_string(),
+        type_args: None,
+    };
+    let i64_ty = TypeExpr::Named {
+        name: "i64".to_string(),
+        type_args: None,
+    };
+    let declaration = |param_ty: TypeExpr| ExternBlock {
+        abi: "C".to_string(),
+        functions: vec![ExternFnDecl {
+            attributes: Vec::new(),
+            name: "hew_bytes_from_str".to_string(),
+            params: vec![hew_parser::ast::Param {
+                name: "s".to_string(),
+                ty: (param_ty, 0..6),
+                is_mutable: false,
+                is_consume: false,
+            }],
+            return_type: Some((
+                TypeExpr::Named {
+                    name: "bytes".to_string(),
+                    type_args: None,
+                },
+                10..15,
+            )),
+            is_variadic: false,
+            span: 0..40,
+        }],
+    };
+
+    let root_id = ModuleId::root();
+    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: pkg_id.clone(),
+        items: vec![
+            (Item::ExternBlock(declaration(string_ty)), 0..40),
+            (Item::ExternBlock(declaration(i64_ty)), 0..40),
+        ],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![pkg_id, root_id];
+
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&Program {
+        items: vec![],
+        module_graph: Some(mg),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                if symbol_name == "hew_bytes_from_str"
+        )),
+        "span-colliding drifting declarations in one module must conflict: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -789,10 +962,53 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
-    assert!(
-        output.errors.is_empty(),
-        "same-module private extern should win over another module's bare extern name; errors: {:?}",
+    // Single-owner extern identity (rc1-F1 stage B): one C symbol carries ONE
+    // contract program-wide, so beta's drifting re-declaration of alpha's
+    // symbol is a conflict — the linker binds both call sites to one
+    // implementation, and a second signature is an ABI hazard, not a private
+    // convenience. The original regression half still holds: alpha's body
+    // call resolves against alpha's own `-> i64` declaration (any resolution
+    // through beta's `-> string` copy would surface as an additional type
+    // mismatch alongside the conflict).
+    let (conflicts, other): (Vec<_>, Vec<_>) = output.errors.iter().partition(|error| {
+        matches!(
+            &error.kind,
+            TypeErrorKind::ConflictingExternDeclaration { symbol_name }
+                if symbol_name == "hew_test_raw"
+        )
+    });
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "one symbol, one contract: beta's drifting re-declaration must conflict; errors: {:?}",
         output.errors
+    );
+    assert_eq!(
+        conflicts[0].source_module.as_deref(),
+        Some("beta"),
+        "the conflict is reported at the re-declaring module"
+    );
+    assert!(
+        other.is_empty(),
+        "same-module private extern still wins body resolution; unexpected extra errors: {other:?}"
+    );
+    // Direct resolution-preference assertions: alpha's declaration owns the
+    // symbol's contract with ITS `-> i64` signature, and beta's conflicting
+    // re-declaration is registered detached (indexed, no contract slot) —
+    // alpha's body call can only have resolved through alpha's declaration.
+    let (_, contract) = output
+        .extern_contracts
+        .established("hew_test_raw")
+        .expect("the symbol carries one established contract");
+    assert_eq!(contract.owner.full_path(), "alpha.hew_test_raw");
+    assert_eq!(contract.return_type, Ty::I64);
+    let beta_declaration = output
+        .extern_contracts
+        .declaration("beta.hew_test_raw")
+        .expect("a conflicting declaration still registers (unsafe gate, call target)");
+    assert!(
+        beta_declaration.contract.is_none(),
+        "a conflicting declaration must not share the established contract"
     );
 }
 
@@ -2500,4 +2716,119 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
             );
         }
     }
+}
+
+/// rc1-F1 stage A oracle — the fn-sig ROOT AXIS.
+///
+/// One source file must mint ONE fn-sig identity whether it is checked as
+/// the root compilation unit or reached through an import. Before stage A,
+/// the root compile registered `shared_helper` under the BARE key while an
+/// import registered `oracle_mod.shared_helper` — the same declaration had
+/// two identities depending on how the file was handed to the compiler.
+#[test]
+fn root_and_imported_compiles_mint_one_fn_sig_identity() {
+    let shared_helper = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        name: "shared_helper".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+        consumes_self: false,
+    };
+    let source = std::path::PathBuf::from("/hew-oracle-fixture/oracle_mod.hew");
+
+    // Import axis: the file participates as module `oracle_mod`.
+    let root_id = ModuleId::root();
+    let oracle_id = ModuleId::new(vec!["oracle_mod".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(Module {
+        id: root_id.clone(),
+        items: vec![],
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: oracle_id.clone(),
+        items: vec![(Item::Function(shared_helper.clone()), 0..10)],
+        imports: vec![],
+        source_paths: vec![source.clone()],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![oracle_id, root_id.clone()];
+    let import_program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut import_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let import_out = import_checker.check_program(&import_program);
+    assert!(
+        import_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        "import axis registers the canonical module-qualified identity"
+    );
+
+    // Root axis: the SAME file is the root compilation unit.
+    let mut root_mg = ModuleGraph::new(root_id.clone());
+    root_mg
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![source],
+            doc: None,
+        })
+        .unwrap();
+    root_mg.topo_order = vec![root_id];
+    let root_program = Program {
+        module_graph: Some(root_mg),
+        items: vec![(Item::Function(shared_helper), 0..10)],
+        module_doc: None,
+    };
+    let mut root_checker = Checker::new(ModuleRegistry::new(vec![]));
+    let root_out = root_checker.check_program(&root_program);
+
+    // THE invariance: the root compile minted the declaration under the
+    // import-equal canonical identity (fails pre-stage-A: bare key only).
+    assert!(
+        root_checker
+            .fn_def_spans
+            .contains_key("oracle_mod.shared_helper"),
+        "root axis must mint the import-equal canonical declaration identity; keys: {:?}",
+        root_checker.fn_def_spans.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        root_out
+            .identity
+            .root_fn_identity("shared_helper")
+            .as_deref(),
+        Some("oracle_mod.shared_helper"),
+        "the identity table publishes the canonical root fn identity"
+    );
+    // Stage-A boundary render contract: published fn_sigs keeps the legacy
+    // bare spelling for root declarations (HIR/hew-analysis still resolve by
+    // source spelling). This assertion FLIPS to the canonical key when stage
+    // C/D re-key downstream consumers by DefId.
+    assert!(
+        root_out.fn_sigs.contains_key("shared_helper"),
+        "stage-A publication renders the root declaration to its bare leaf"
+    );
+    assert!(
+        !root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        "the canonical key must not publish as a SECOND authority beside the render"
+    );
 }

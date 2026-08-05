@@ -12,40 +12,7 @@
 #
 # Format: <test_function_name>  # <class>: <root cause>
 #
-# Total: 33 unique failing test function names.
-
-# unresolved-module-type (31)
-test_collect_after_partial_advance  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_collect_exhausted_scanner_returns_empty  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_collect_from_fresh_scanner_scans_all  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_from_file_missing_path_returns_io_error  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_from_file_scans_real_empty_line_and_eof  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_blank_lines_preserved  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_crlf_endings_stripped  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_crlf_trailing  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_empty_input_returns_empty_vec  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_multiple_trailing_newlines  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_only_newline  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_single_line_no_newline  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_single_line_with_trailing_newline  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_trailing_newline_no_extra_element  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_lines_two_lines  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_next_line_returns_some_for_real_empty_line_only  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_next_line_uses_line_mode_without_changing_split  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_blank_lines_emitted  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_crlf_stripped  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_empty_input_no_tokens  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_iterate_three_lines  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_single_line_without_newline  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_scan_trailing_newline_no_extra_token  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_with_split_resets_position  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_with_split_switches_to_words_mode  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_empty_input_returns_empty_vec  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_leading_trailing_whitespace_ignored  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_only_whitespace_returns_empty  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_single_word  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_tab_and_newline_as_separator  # unresolved-module-type: unresolved module-owned type at the import boundary
-test_words_two_words_single_space  # unresolved-module-type: unresolved module-owned type at the import boundary
+# Total: 2 unique failing test function names.
 
 # checker-target-gap (2)
 test_generic_record_of_vec_clone  # checker-target-gap: ordinary call admitted with no canonical target

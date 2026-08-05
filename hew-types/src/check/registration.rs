@@ -44,12 +44,12 @@ struct ExplicitReturnFinder {
 }
 
 fn extern_signature_description(
-    signature: &FnSig,
+    signature_params: &[Ty],
+    return_type: &Ty,
     consuming_params: &[bool],
     is_variadic: bool,
 ) -> String {
-    let mut params = signature
-        .params
+    let mut params = signature_params
         .iter()
         .enumerate()
         .map(|(index, ty)| {
@@ -64,158 +64,44 @@ fn extern_signature_description(
     if is_variadic {
         params.push("...".to_string());
     }
-    format!(
-        "fn({}) -> {}",
-        params.join(", "),
-        signature.return_type.user_facing()
-    )
+    format!("fn({}) -> {}", params.join(", "), return_type.user_facing())
 }
 
-/// Complete a canonical stdlib owner that a module reached through the prelude
-/// rather than an import.
+/// Canonical nominal identity of an extern signature type, resolved AT
+/// REGISTRATION in the declaring item's own lexical context and STORED on
+/// the symbol's contract, so the single-owner comparison is plain identity
+/// equality of already-resolved signatures (rc1-F1 stage C).
 ///
-/// `canonical_nominal_name` widens a partial owner only through an import
-/// binding of the declaring module. A module can name a shipped type without
-/// importing its owner — `std/net/http/http.hew` returns `Sink<string>`, which
-/// the prelude resolves to `stream.Sink` while `std/stream.hew` declares the
-/// same extern against its own `std.stream.Sink`. Comparing those spellings
-/// rejects one type as two.
+/// Resolution authority, in order:
+/// 1. The declaring FILE: a bare name declared in the item's own source
+///    file resolves to that file's minted module identity, so the same
+///    declaration reached through directory peer assembly and through a
+///    direct submodule import mints one owner — and two same-named
+///    declarations in different peer files mint two (a false merge would
+///    equate distinct layouts on one C symbol; a false split diagnoses
+///    loudly and is correctable at the declaration).
+/// 2. Exactly one sibling file of the declaring module: lexically visible,
+///    single declaration — its file identity.
+/// 3. The checker's canonical resolution for imported/prelude spellings
+///    (`canonical_nominal_name`), which refuses ambiguity.
 ///
-/// WHY this is scoped to the extern-contract comparison: it widens a NAME, and
-/// nominal identity feeds layout, dispatch and ownership routing. Only the
-/// duplicate-declaration check needs it, so only that check gets it.
-///
-/// WHEN OBSOLETE: when prelude-resolved nominals carry their canonical owner at
-/// resolution, so nothing downstream ever sees a partial one.
-///
-/// The trust gates are the same ones `canonical_nominal_name` uses. A partial
-/// owner must be one bare segment and identify exactly one canonical stdlib
-/// source. An owner-less name must not shadow a local declaration and must
-/// identify exactly one known type across the canonical stdlib sources. An
-/// ambiguous or unknown completion proves nothing and is left alone.
-fn complete_prelude_std_owner(checker: &Checker, name: &str) -> Option<String> {
-    if let Some((owner, short)) = name.rsplit_once('.') {
-        if owner.contains('.') {
-            return None;
-        }
-        let suffix = format!(".{owner}");
-        let mut sources = checker
-            .canonical_std_module_sources
-            .iter()
-            .filter(|source| source.ends_with(&suffix));
-        let full_owner = sources.next()?;
-        if sources.next().is_some() {
-            return None;
-        }
-        let completed = format!("{full_owner}.{short}");
-        return (checker.type_defs.contains_key(&completed)
-            || checker.known_types.contains(&completed))
-        .then_some(completed);
-    }
-
-    let shadows_local_declaration = checker.current_module.as_ref().map_or_else(
-        || checker.local_type_defs.contains(name),
-        |module| checker.type_defs.contains_key(&format!("{module}.{name}")),
-    );
-    if shadows_local_declaration {
-        return None;
-    }
-    let mut completions = checker
-        .canonical_std_module_sources
-        .iter()
-        .map(|source| format!("{source}.{name}"))
-        .filter(|completed| {
-            checker.type_defs.contains_key(completed) || checker.known_types.contains(completed)
-        });
-    let completed = completions.next()?;
-    completions.next().is_none().then_some(completed)
-}
-
-/// Carry a uniquely proven owner-less prelude nominal into the stored extern
-/// signature, not only the duplicate-contract comparison.
-///
-/// Leaving the accepted declaration bare would merely postpone the same
-/// identity loss until MIR/codegen, where a generic user nominal named `Sink`
-/// is not a legal runtime carrier. Partial owners already retain enough source
-/// identity for downstream canonicalisation; this rewrite is deliberately
-/// limited to owner-less names.
-fn complete_ownerless_prelude_std_types(checker: &Checker, ty: &Ty) -> Ty {
+/// The `builtin` marker is checker metadata and can legitimately differ
+/// when one module spells a nominal through an import qualifier, so it is
+/// erased rather than compared.
+fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
     match ty {
-        Ty::Named {
-            name,
-            args,
-            builtin,
-        } => Ty::Named {
-            name: (!name.contains('.'))
-                .then(|| complete_prelude_std_owner(checker, name))
-                .flatten()
+        Ty::Named { name, args, .. } => Ty::Named {
+            name: checker
+                .extern_signature_nominal_owner(name)
                 .unwrap_or_else(|| name.clone()),
             args: args
                 .iter()
-                .map(|arg| complete_ownerless_prelude_std_types(checker, arg))
+                .map(|arg| extern_contract_nominal_identity(checker, arg))
                 .collect(),
-            builtin: *builtin,
+            builtin: None,
         },
-        _ => ty.map_children_pub(&|child| complete_ownerless_prelude_std_types(checker, child)),
+        _ => ty.map_children_pub(&|child| extern_contract_nominal_identity(checker, child)),
     }
-}
-
-/// Fold a peer-assembled submodule owner into the directory module that also
-/// assembles it.
-///
-/// A directory module is its primary file plus every peer `.hew` file in that
-/// directory (hew-compile's `resolve_completed_import_internal`). Importing
-/// both `std::net::http` and its `std::net::http::http_client` peer registers
-/// the one declaration in `http_client.hew` under both owners, so the
-/// duplicate-extern check sees the module disagree with itself — that is what
-/// `hew_http_response_*` hit, with the reported "first declaration" spans
-/// landing in `http.hew`, which declares none of them.
-///
-/// The relation is read off the module graph, not the two spellings: an owner
-/// folds only when it is assembled from exactly one source file AND some other
-/// module assembles that same file among its own. Two modules sharing a source
-/// file share its declarations, so this cannot equate distinct ones.
-///
-/// WHEN OBSOLETE: when a peer file's declarations carry a single owner and a
-/// direct submodule import aliases the assembled module instead of registering
-/// a second copy.
-fn fold_peer_assembled_owner(checker: &Checker, name: &str) -> Option<String> {
-    let (owner, short) = name.rsplit_once('.')?;
-    let sources = checker.module_source_paths.get(owner)?;
-    let [source] = sources.as_slice() else {
-        return None;
-    };
-    let mut assemblers = checker
-        .module_source_paths
-        .iter()
-        .filter(|(other, paths)| other.as_str() != owner && paths.contains(source))
-        .map(|(other, _)| other);
-    let assembler = assemblers.next()?;
-    if assemblers.next().is_some() {
-        return None;
-    }
-    Some(format!("{assembler}.{short}"))
-}
-
-fn extern_contract_type_identity(checker: &Checker, ty: &Ty) -> Ty {
-    fn rewrite(checker: &Checker, ty: &Ty) -> Ty {
-        match ty {
-            Ty::Named { name, args, .. } => Ty::Named {
-                name: complete_prelude_std_owner(checker, name)
-                    .or_else(|| fold_peer_assembled_owner(checker, name))
-                    .unwrap_or_else(|| name.clone()),
-                args: args.iter().map(|arg| rewrite(checker, arg)).collect(),
-                // The builtin marker is checker metadata and can legitimately
-                // differ when one module spells that nominal through an import
-                // qualifier, so it is erased rather than compared.
-                builtin: None,
-            },
-            _ => ty.map_children_pub(&|child| rewrite(checker, child)),
-        }
-    }
-
-    // The owner-qualified nominal name is the source contract identity.
-    rewrite(checker, &checker.canonicalize_nominal_identity(ty))
 }
 
 impl super::lints::NodeVisitor for ExplicitReturnFinder {
@@ -2457,6 +2343,29 @@ impl Checker {
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
+                    // Per-file lexical type authority (rc1-F1 stage C):
+                    // record which FILE declares each type name, so
+                    // extern-signature nominal identity can resolve a bare
+                    // name to its declaring file's minted identity.
+                    let item_sources = self.module_item_sources.get(&module_name).cloned();
+                    for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                        let declared = match item {
+                            Item::TypeDecl(td) => Some(td.name.clone()),
+                            Item::Machine(md) => Some(md.name.clone()),
+                            _ => None,
+                        };
+                        if let (Some(name), Some(source)) = (
+                            declared,
+                            item_sources
+                                .as_ref()
+                                .and_then(|sources| sources.get(item_idx)),
+                        ) {
+                            self.file_type_decls
+                                .entry(source.clone())
+                                .or_default()
+                                .insert(name);
+                        }
+                    }
                     for (item, item_span) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
@@ -5793,6 +5702,11 @@ impl Checker {
                         .iter()
                         .map(|import| import.target.path.join("."))
                         .collect();
+                    self.current_module_direct_import_bindings = module
+                        .imports
+                        .iter()
+                        .map(|import| (import.target.path.join("."), import.spec.clone()))
+                        .collect();
                     // Temporarily scope local_type_defs to this module so
                     // that register_channel_recv_builtins (called from
                     // register_extern_block) can detect module-local types
@@ -5825,9 +5739,19 @@ impl Checker {
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
 
-                    for (item, span) in &module.items {
+                    let item_sources = self.module_item_sources.get(&module_name).cloned();
+                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        // Per-item defining-file identity (rc1-F1 stage C):
+                        // registration-time facts (extern contracts, their
+                        // conflict diagnostics) attribute to the item's own
+                        // source file, not the assembled module's primary.
+                        self.current_item_source = item_sources
+                            .as_ref()
+                            .and_then(|sources| sources.get(item_idx))
+                            .cloned();
                         self.collect_function_item(item, span);
                     }
+                    self.current_item_source = None;
 
                     for e in &mut self.errors[err_before..] {
                         if e.source_module.is_none() {
@@ -5860,10 +5784,22 @@ impl Checker {
                     .collect()
             })
             .unwrap_or_default();
+        self.current_module_direct_import_bindings = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| (import.target.path.join("."), import.spec.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         for (item, span) in &program.items {
             self.collect_function_item(item, span);
         }
         self.current_module_direct_imports.clear();
+        self.current_module_direct_import_bindings.clear();
     }
 
     #[expect(
@@ -5873,14 +5809,25 @@ impl Checker {
     pub(super) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
-                let scoped_name = match &self.current_module {
-                    Some(m) => format!("{m}.{}", fd.name),
-                    None => fd.name.clone(),
-                };
+                // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
+                // CANONICALIZED with `fn_sigs` — one key shape per
+                // declaration, so declaration-authority probes never miss on
+                // key misalignment. The stored declaring module stays
+                // `current_module` (None = root): it is the display/provenance
+                // axis, and the legacy root render at publication boundaries
+                // derives from it.
+                let scoped_name = scoped_module_item_name(self.canonical_fn_owner(), &fd.name)
+                    .unwrap_or_else(|| fd.name.clone());
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
+                    // Root diagnostics render the bare leaf, exactly as the
+                    // declaration is spelled in source.
+                    let display_name = self
+                        .root_owned_fn_leaf(&scoped_name)
+                        .unwrap_or(&scoped_name)
+                        .to_string();
                     self.errors.push(TypeError::duplicate_definition(
                         span.clone(),
-                        &scoped_name,
+                        &display_name,
                         prev_span.clone(),
                     ));
                 } else {
@@ -6907,7 +6854,13 @@ impl Checker {
             ..FnSig::default()
         };
 
-        let key = scoped_module_item_name(self.current_module.as_deref(), name)
+        // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
+        // module — a root free function keys `{root_module}.{name}`,
+        // identical to the key the same declaration mints when its module is
+        // imported. The side registries (`fn_param_ownership`,
+        // `fn_type_param_assoc_bindings`, `fn_sig_inference_holes`,
+        // `intrinsic_declarations`) are co-minted under this same key.
+        let key = scoped_module_item_name(self.canonical_fn_owner(), name)
             .unwrap_or_else(|| name.to_string());
         let param_ownership = fd
             .params
@@ -9216,6 +9169,358 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
+    /// Resolve one extern declaration against the single-owner table
+    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
+    /// structural compare against the established one — adopt on agreement,
+    /// register-then-report on conflict. The compare ALWAYS runs for a
+    /// further declaration of an established symbol (no span-based
+    /// same-site shortcut: a byte-offset span carries no file identity, and
+    /// peer files of one directory module can align spans exactly).
+    /// The canonical owner a nominal name in an extern signature denotes,
+    /// per the authority order documented on
+    /// [`extern_contract_nominal_identity`]. `None` = unresolvable here;
+    /// the spelling stays as written and the structural compare fails
+    /// closed on genuine ambiguity.
+    fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
+        // Signature resolution has usually already qualified a module-local
+        // type with the CURRENT module's owner — which is route-dependent
+        // for a peer-assembled file (`pkg.Tok` via `import pkg`,
+        // `pkg.aaa.Tok` via `import pkg::aaa`, for one declaration in
+        // `pkg/aaa.hew`). Strip the current module's own qualifier back to
+        // the source leaf so the FILE rule decides the owner; every route
+        // then mints the declaring file's identity.
+        let module_local_leaf = self.current_module.as_deref().and_then(|module| {
+            name.strip_prefix(module)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .filter(|leaf| !leaf.contains('.') && !leaf.contains("::"))
+        });
+        if let Some(leaf) = module_local_leaf {
+            if let Some(owner) = self.extern_nominal_file_owner(leaf) {
+                return Some(owner);
+            }
+            return Some(name.to_string());
+        }
+        if !name.contains('.') {
+            if let Some(owner) = self.extern_nominal_file_owner(name) {
+                return Some(owner);
+            }
+        }
+        if let Some(canonical) = self.canonical_nominal_name(name) {
+            return Some(canonical);
+        }
+        // Registry-loaded stdlib signatures present nominal owners as the
+        // loaded module's SHORT spelling (`stream.Sink`), while the same
+        // declaration's source module registers the complete owner
+        // (`std.stream.Sink`). The module registry is the declaration-proven
+        // authority joining those two representations of one loaded
+        // declaration: it refuses bare leaves and ambiguous spellings, so it
+        // can never recover an owner from text alone.
+        if let Some(identity) = self
+            .module_registry
+            .canonical_method_receiver_identity(name)
+        {
+            return Some(identity);
+        }
+        // Import-lexical fallback, LAST: it recovers only what the proven
+        // canonical/registry authorities could not, never pre-empts them.
+        if !name.contains('.') {
+            if let Some(owner) = self.extern_nominal_imported_owner(name) {
+                return Some(owner);
+            }
+        }
+        None
+    }
+
+    /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
+    /// declaring file does not itself declare resolves through the declaring
+    /// module's DIRECT imports — through the names each import actually
+    /// BINDS. A whole-module or glob import makes the target's declarations
+    /// visible under their own bare spellings (`std.net` writing `Sink`
+    /// under `import std::stream`); a named item import binds exactly its
+    /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
+    /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
+    /// declaration across the import set mints its declaring file's
+    /// identity; zero or several → `None`: the spelling stays as written and
+    /// the contract compare fails closed — ambiguity never picks a winner on
+    /// the C-ABI axis.
+    fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
+        // (declaring file, source-declared name) pairs the bound spelling
+        // denotes. Deduped: two import edges to one declaration are one
+        // meaning, not an ambiguity.
+        let mut declarations = self
+            .current_module_direct_import_bindings
+            .iter()
+            .filter_map(|(module, spec)| {
+                // Which SOURCE name does the bound spelling `name` denote
+                // under this import? None = this import does not bind it.
+                let source_name = match spec {
+                    None | Some(ImportSpec::Glob) => name.to_string(),
+                    Some(ImportSpec::Names(names)) => names
+                        .iter()
+                        .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
+                        .name
+                        .clone(),
+                };
+                Some((module, source_name))
+            })
+            .flat_map(|(module, source_name)| {
+                self.module_source_paths
+                    .get(module)
+                    .into_iter()
+                    .flatten()
+                    .filter(|source| {
+                        self.file_type_decls
+                            .get(*source)
+                            .is_some_and(|declared| declared.contains(&source_name))
+                    })
+                    .map(|source| (source, source_name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        declarations.sort_unstable();
+        declarations.dedup();
+        match declarations.as_slice() {
+            [(single, source_name)] => Some(format!(
+                "{}.{source_name}",
+                self.identity.module_path_for_source(single)?
+            )),
+            _ => None,
+        }
+    }
+
+    /// Rewrite bare IMPORTED nominals in an extern declaration's stored
+    /// signature to their import-lexical identity, so call sites type
+    /// against the same resolved nominal the extern contract compares
+    /// (rc1-F1 stage C). Only a bare name the declaring file/module does
+    /// NOT itself claim is rewritten; a locally declared bare spelling
+    /// keeps its body-facing form, and an unresolvable name stays as
+    /// written (the contract compare fails closed on it).
+    fn resolve_extern_sig_imported_nominals(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                // Mirror the contract ladder's order: the import-lexical
+                // fallback applies only to a bare name neither the file rule
+                // nor the canonical authority resolves.
+                let resolved = (!name.contains('.')
+                    && self.extern_nominal_file_owner(name).is_none()
+                    && self.canonical_nominal_name(name).is_none())
+                .then(|| self.extern_nominal_imported_owner(name))
+                .flatten();
+                Ty::Named {
+                    name: resolved.unwrap_or_else(|| name.clone()),
+                    args: args
+                        .iter()
+                        .map(|arg| self.resolve_extern_sig_imported_nominals(arg))
+                        .collect(),
+                    builtin: *builtin,
+                }
+            }
+            _ => ty.map_children_pub(&|child| self.resolve_extern_sig_imported_nominals(child)),
+        }
+    }
+
+    /// FILE-lexical nominal authority: the item's own declaring file first,
+    /// then exactly one sibling file of the declaring module.
+    fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
+        let file = self.current_item_source.as_ref()?;
+        let declares = |source: &std::path::PathBuf| {
+            self.file_type_decls
+                .get(source)
+                .is_some_and(|declared| declared.contains(name))
+        };
+        if declares(file) {
+            return Some(format!(
+                "{}.{name}",
+                self.identity.module_path_for_source(file)?
+            ));
+        }
+        let sources = self
+            .module_source_paths
+            .get(self.current_module.as_deref()?)?;
+        let mut declaring = sources.iter().filter(|source| declares(source));
+        let single = declaring.next()?;
+        if declaring.next().is_some() {
+            return None;
+        }
+        Some(format!(
+            "{}.{name}",
+            self.identity.module_path_for_source(single)?
+        ))
+    }
+
+    /// Diagnostic routing token for an item declared in `file` under
+    /// `module`: the file's own path when it is NOT the module's primary
+    /// source (a peer file of a directory module), else `None` (the module
+    /// identity routes as before). The CLI/LSP source maps carry an entry per
+    /// source file keyed by this exact rendering.
+    fn item_file_routing_token(
+        &self,
+        module: Option<&str>,
+        file: Option<&std::path::PathBuf>,
+    ) -> Option<String> {
+        let file = file?;
+        let primary = self.module_source_paths.get(module?)?.first()?;
+        (file != primary).then(|| file.display().to_string())
+    }
+
+    fn resolve_extern_contract(
+        &mut self,
+        key: &str,
+        source_symbol: &str,
+        sig: &FnSig,
+        consuming_params: &[bool],
+        f: &hew_parser::ast::ExternFnDecl,
+    ) {
+        let declaration = crate::DefId::new(key.to_string());
+        if source_symbol.is_empty() {
+            // Template declarations (`#[extern_symbol("…{T}…")]`) have no
+            // call-independent symbol and therefore no symbol-keyed contract
+            // slot; they still register as extern declarations (call-target
+            // resolution, `unsafe` gating).
+            self.extern_table.register_detached_declaration(
+                declaration,
+                String::new(),
+                self.current_module.clone(),
+            );
+            return;
+        }
+        // Resolve the candidate signature's nominal identities NOW, in the
+        // declaring item's own lexical context (rc1-F1 stage C). The
+        // contract stores resolved signatures, so every later comparison is
+        // identity equality — no compare-time spelling repair, whose context
+        // would be the SECOND declaration's, not the declarer's.
+        let resolved_params = sig
+            .params
+            .iter()
+            .map(|ty| extern_contract_nominal_identity(self, ty))
+            .collect::<Vec<_>>();
+        let resolved_return = extern_contract_nominal_identity(self, &sig.return_type);
+        let Some((established_id, established)) = self
+            .extern_table
+            .established(source_symbol)
+            .map(|(id, contract)| (id, contract.clone()))
+        else {
+            self.extern_table.mint(crate::extern_table::ExternContract {
+                owner: declaration,
+                symbol: source_symbol.to_string(),
+                params: resolved_params,
+                return_type: resolved_return,
+                consuming_params: consuming_params.to_vec(),
+                is_variadic: f.is_variadic,
+                span: f.span.clone(),
+                declaring_module: self.current_module.clone(),
+                declaring_source: self.current_item_source.clone(),
+            });
+            return;
+        };
+        let agrees = established.params == resolved_params
+            && established.return_type == resolved_return
+            && established.consuming_params == consuming_params
+            && established.is_variadic == f.is_variadic;
+        if agrees {
+            // Single-owner property: a further agreeing declaration becomes
+            // another name of the ONE established ABI contract, keeping its
+            // OWN provenance (declaring module, endpoint).
+            self.extern_table.adopt_declaration(
+                declaration,
+                source_symbol.to_string(),
+                self.current_module.clone(),
+                established_id,
+            );
+        } else {
+            // Register FIRST, report second: the conflicting declaration
+            // must keep its `unsafe` gate and call-target endpoint while the
+            // hard error propagates (the unsafe registry is not conditional
+            // on ABI agreement).
+            self.extern_table.register_detached_declaration(
+                declaration,
+                source_symbol.to_string(),
+                self.current_module.clone(),
+            );
+            self.report_extern_contract_conflict(
+                source_symbol,
+                &established,
+                &resolved_params,
+                &resolved_return,
+                consuming_params,
+                f,
+            );
+        }
+    }
+
+    /// Report a declaration whose signature disagrees with the symbol's
+    /// established contract, attributing both sides to their declaring FILES.
+    fn report_extern_contract_conflict(
+        &mut self,
+        source_symbol: &str,
+        established: &crate::extern_table::ExternContract,
+        resolved_params: &[Ty],
+        resolved_return: &Ty,
+        consuming_params: &[bool],
+        f: &hew_parser::ast::ExternFnDecl,
+    ) {
+        let established_description = extern_signature_description(
+            &established.params,
+            &established.return_type,
+            &established.consuming_params,
+            established.is_variadic,
+        );
+        // Describe the RESOLVED identities — the things actually compared —
+        // so two same-leaf nominals from different declaring files render
+        // distinguishably (`pkg.Tok` vs `pkg.aaa.Tok`), never as one
+        // spelling conflicting with itself.
+        let conflicting = extern_signature_description(
+            resolved_params,
+            resolved_return,
+            consuming_params,
+            f.is_variadic,
+        );
+        // File-accurate attribution (rc1-F1 stage C): item spans are
+        // file-relative byte offsets, so a declaration living in a peer
+        // file of a directory module must route to THAT file, never the
+        // module's primary source. The routing token is the declaring
+        // file itself when it differs from the module's primary file;
+        // otherwise the module identity routes as before.
+        let error_token = self
+            .item_file_routing_token(
+                self.current_module.as_deref(),
+                self.current_item_source.as_ref(),
+            )
+            .or_else(|| self.current_module.clone());
+        let note_token = self
+            .item_file_routing_token(
+                established.declaring_module.as_deref(),
+                established.declaring_source.as_ref(),
+            )
+            .or_else(|| established.declaring_module.clone());
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::ConflictingExternDeclaration {
+                symbol_name: source_symbol.to_string(),
+            },
+            span: f.span.clone(),
+            message: format!(
+                "extern symbol `{source_symbol}` has conflicting declarations: \
+                 `{conflicting}` does not match the established `{established_description}`"
+            ),
+            notes: vec![(
+                established.span.clone(),
+                format!(
+                    "the first declaration of `{source_symbol}` established `{established_description}`"
+                ),
+                note_token,
+            )],
+            suggestions: vec![format!(
+                "make every declaration of `{source_symbol}` use exactly `{established_description}`"
+            )],
+            source_module: error_token,
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "extern registration validates ABI authority and records lifecycle provenance"
@@ -9303,12 +9608,6 @@ impl Checker {
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
-            sig.params = sig
-                .params
-                .iter()
-                .map(|ty| complete_ownerless_prelude_std_types(self, ty))
-                .collect();
-            sig.return_type = complete_ownerless_prelude_std_types(self, &sig.return_type);
             let source_symbol = sig.extern_symbol.as_ref().map_or_else(
                 || f.name.clone(),
                 |spec| {
@@ -9324,97 +9623,33 @@ impl Checker {
                 .as_ref()
                 .filter(|spec| !spec.template.is_monomorphic())
                 .map(|spec| spec.template.clone());
-            let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
+            // The STORED signature is what call sites type against; give it
+            // the same import-lexical nominal resolution the contract
+            // receives, so an imported bare nominal (`Sink` under
+            // `import std::stream`) means one identity at the ABI boundary
+            // and in bodies. Template declarations carry signature type
+            // holes, not concrete nominals — leave them untouched.
+            if !source_symbol.is_empty() {
+                sig.params = sig
+                    .params
+                    .iter()
+                    .map(|ty| self.resolve_extern_sig_imported_nominals(ty))
+                    .collect();
+                sig.return_type = self.resolve_extern_sig_imported_nominals(&sig.return_type);
+            }
+            // rc1-F1 stage B: extern declarations mint their key through the
+            // canonical owner chokepoint, exactly like ordinary free
+            // functions — a root extern fn keys `{root_module}.{name}` inside
+            // the checker (the publication boundary re-renders root entries
+            // to their legacy bare spelling).
+            let key = scoped_module_item_name(self.canonical_fn_owner(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
             let consuming_params = f
                 .params
                 .iter()
                 .map(|param| param.is_consume)
                 .collect::<Vec<_>>();
-            if !source_symbol.is_empty() {
-                let conflict = self.source_extern_declarations.iter().find_map(|existing| {
-                    if existing.symbol != source_symbol || existing.symbol_template.is_some() {
-                        return None;
-                    }
-                    // Extern declarations are module-private. A bare
-                    // compatibility binding published while collecting an
-                    // unrelated module cannot turn that module's declaration
-                    // into an ABI contract visible here: the current module's
-                    // private declaration wins. Compare declarations within
-                    // one module, or across the direct import edge that makes
-                    // the established declaration visible to this module.
-                    let established_is_directly_imported =
-                        existing.declaring_module.as_ref().is_some_and(|module| {
-                            self.current_module_direct_imports.contains(module)
-                                || (!module.contains('.')
-                                    && self.current_module_direct_imports.iter().any(|imported| {
-                                        self.canonical_std_module_sources.contains(imported)
-                                            && imported.ends_with(&format!(".{module}"))
-                                    }))
-                        });
-                    let established_is_visible = existing.declaring_module == self.current_module
-                        || established_is_directly_imported;
-                    if !established_is_visible {
-                        return None;
-                    }
-                    let established = self.fn_sigs.get(&existing.signature_key)?;
-                    let established_params = established
-                        .params
-                        .iter()
-                        .map(|ty| extern_contract_type_identity(self, ty))
-                        .collect::<Vec<_>>();
-                    let candidate_params = sig
-                        .params
-                        .iter()
-                        .map(|ty| extern_contract_type_identity(self, ty))
-                        .collect::<Vec<_>>();
-                    let established_return =
-                        extern_contract_type_identity(self, &established.return_type);
-                    let candidate_return = extern_contract_type_identity(self, &sig.return_type);
-                    let disagrees = established_params != candidate_params
-                        || established_return != candidate_return
-                        || existing.consuming_params != consuming_params
-                        || existing.is_variadic != f.is_variadic;
-                    disagrees.then(|| {
-                        (
-                            existing.span.clone(),
-                            existing.declaring_module.clone(),
-                            extern_signature_description(
-                                established,
-                                &existing.consuming_params,
-                                existing.is_variadic,
-                            ),
-                            extern_signature_description(&sig, &consuming_params, f.is_variadic),
-                        )
-                    })
-                });
-                if let Some((established_span, established_module, established, conflicting)) =
-                    conflict
-                {
-                    self.errors.push(TypeError {
-                        severity: crate::error::Severity::Error,
-                        kind: TypeErrorKind::ConflictingExternDeclaration {
-                            symbol_name: source_symbol.clone(),
-                        },
-                        span: f.span.clone(),
-                        message: format!(
-                            "extern symbol `{source_symbol}` has conflicting declarations: \
-                             `{conflicting}` does not match the established `{established}`"
-                        ),
-                        notes: vec![(
-                            established_span,
-                            format!(
-                                "the first declaration of `{source_symbol}` established `{established}`"
-                            ),
-                            established_module,
-                        )],
-                        suggestions: vec![format!(
-                            "make every declaration of `{source_symbol}` use exactly `{established}`"
-                        )],
-                        source_module: self.current_module.clone(),
-                    });
-                }
-            }
+            self.resolve_extern_contract(&key, &source_symbol, &sig, &consuming_params, f);
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
@@ -9423,8 +9658,6 @@ impl Checker {
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
-                    span: f.span.clone(),
-                    is_variadic: f.is_variadic,
                     declaring_module: self.current_module.clone(),
                     direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params,
@@ -9442,7 +9675,6 @@ impl Checker {
                     })
                     .collect(),
             );
-            self.unsafe_functions.insert(key);
             self.record_root_value_binding(&f.name);
         }
 
@@ -9577,7 +9809,8 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
-            self.unsafe_functions.insert(key);
+            self.extern_table
+                .register_declaration_only(crate::DefId::new(key));
         }
 
         // The typed-serialise send takes the value by reference plus the
@@ -9594,7 +9827,8 @@ impl Checker {
                 ..FnSig::default()
             };
             self.fn_sigs.insert(send_key.clone(), sig);
-            self.unsafe_functions.insert(send_key);
+            self.extern_table
+                .register_declaration_only(crate::DefId::new(send_key));
         }
     }
 
@@ -9675,7 +9909,8 @@ impl Checker {
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.unsafe_functions.insert(func.name.clone());
+                        self.extern_table
+                            .register_declaration_only(crate::DefId::new(func.name.clone()));
                         self.fn_sigs.insert(func.name, sig);
                     }
 
@@ -9748,7 +9983,8 @@ impl Checker {
                             // canonical slot from the wrapper/extern registry.
                             self.fn_sigs.entry(key.clone()).or_insert(sig);
                             if !source_sig_exists && wrapper_sig.is_none() {
-                                self.unsafe_functions.insert(key);
+                                self.extern_table
+                                    .register_declaration_only(crate::DefId::new(key));
                             }
                         }
                     }

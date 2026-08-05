@@ -4,7 +4,7 @@
 group	form	path	count	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-hir/src/lower.rs	30	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/calls.rs	25	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/calls.rs	24	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/methods.rs	20	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	10	stage-4	exact checker-selected executable identity carrier
@@ -22,7 +22,7 @@ checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	2	stage-2	real c
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	19	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	61	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	63	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	2	stage-2	RC1 syntax-node authority inventory
@@ -72,10 +72,10 @@ semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	
 semantic-leaf-name	leaf-rsplit-once-field	hew-analysis/src/completions.rs	1	stage-1	reviewed module-qualified actor completion compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	6	stage-1	reviewed unique imported constructor surface compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified-variant surface split resolved through expected-nominal identity
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	7	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	10	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	11	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ffi_contracts.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam

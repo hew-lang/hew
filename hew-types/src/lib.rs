@@ -15,8 +15,10 @@ pub mod env;
 pub(crate) mod eq_eligibility;
 pub mod error;
 pub mod extern_symbol;
+pub mod extern_table;
 pub mod ffi_contracts;
 pub(crate) mod hash_eligibility;
+pub mod identity;
 pub mod jit_symbols;
 pub mod lang_items;
 pub mod lowering_facts;
@@ -67,6 +69,7 @@ pub use extern_symbol::{
     ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateExpansionError,
     TemplateSegment,
 };
+pub use identity::{IdentityTable, ModuleId};
 pub use lang_items::{
     LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
 };

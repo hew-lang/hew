@@ -7,7 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
-    Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+    ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -159,8 +159,6 @@ pub(super) struct SourceExternDeclaration {
     /// exact resolved expansion.
     pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
     pub(super) signature_key: String,
-    pub(super) span: Span,
-    pub(super) is_variadic: bool,
     pub(super) declaring_module: Option<String>,
     /// Exact direct module-graph targets imported by the declaring module.
     ///
@@ -392,6 +390,31 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
+    /// The compile's identity interner (rc1-F1 stage A): module identities
+    /// minted once at `check_program` entry, provenance-invariant (root vs
+    /// import vs dual-import of one source resolve to one `ModuleId`). The
+    /// canonical fn-sig identity of a root free function is
+    /// [`crate::identity::IdentityTable::root_fn_identity`]; later stages key
+    /// declaration registries by IDs minted here.
+    pub identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B):
+    /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
+    /// minted at the first declaration; later declarations must agree and
+    /// adopt the established contract. Also the `unsafe`-gating declaration
+    /// index (replaces the former `unsafe_functions` side registry).
+    pub extern_contracts: crate::extern_table::ExternTable,
+    /// Function signatures keyed by declaration identity.
+    ///
+    /// Key shapes: `{module}.{name}` for module free functions,
+    /// `Type::method` for methods, bare names for builtins/externs and for
+    /// legacy-rendered root free functions. Inside the checker the root
+    /// unit's free functions are keyed CANONICALLY (`{root_module}.{name}`,
+    /// minted through `identity`); at this publication boundary they are
+    /// re-rendered to the legacy bare spelling because HIR
+    /// (`hew-hir/src/lower.rs` `fn_sigs` clone) and hew-analysis still
+    /// resolve root functions by source spelling.
+    /// WHEN OBSOLETE: stage C/D of the identity lane re-key consumers by
+    /// `DefId`; the render then disappears and canonical keys publish as-is.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -1264,6 +1287,8 @@ impl Default for TypeCheckOutput {
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
+            identity: crate::identity::IdentityTable::new(),
+            extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -2458,6 +2483,24 @@ pub struct Checker {
     /// is what lets a consumer prove that relation from the graph rather than
     /// guessing it from the two owner spellings.
     pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Per-item defining source file for each graph module (parallel to the
+    /// module's items), captured from `ModuleGraph::item_sources` at
+    /// `check_program` entry. Item spans are file-relative byte offsets with
+    /// no file identity, so this table is the sole sound authority for "which
+    /// file declared item N of directory module M" (rc1-F1 stage C).
+    pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Defining source file of the item currently being registered, when the
+    /// enclosing module recorded per-item attribution. `None` for the root
+    /// unit and for hand-built module graphs.
+    pub(super) current_item_source: Option<std::path::PathBuf>,
+    /// Type names declared per source FILE (populated during type
+    /// collection from per-item attribution). This is the lexical authority
+    /// behind extern-signature nominal identity: a bare name in an extern
+    /// signature declared in the item's own file — or in exactly one sibling
+    /// file of its module — resolves to that FILE's minted identity, so the
+    /// same declaration reached through peer assembly and through a direct
+    /// submodule import compares equal by identity (rc1-F1 stage C).
+    pub(super) file_type_decls: HashMap<std::path::PathBuf, HashSet<String>>,
     /// Canonical stdlib owners compiled as the root source unit itself. This
     /// is narrower than `canonical_std_module_sources`, which also contains
     /// imported stdlib modules in an ordinary user program.
@@ -2482,6 +2525,11 @@ pub struct Checker {
     /// Direct resolved import targets for the module whose declarations are
     /// currently being registered. Cleared between module-graph nodes.
     pub(super) current_module_direct_imports: BTreeSet<String>,
+    /// Direct resolved import EDGES (target module, import spec) for the
+    /// module whose declarations are currently being registered. The spec is
+    /// what decides which names an import binds bare — an aliased item
+    /// import binds only its alias. Cleared between module-graph nodes.
+    pub(super) current_module_direct_import_bindings: Vec<(String, Option<ImportSpec>)>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -2649,11 +2697,21 @@ pub struct Checker {
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — keyed by
+    /// the canonical declaration identity (`{module}.{name}`, root included
+    /// via the minted root identity), so declaration-authority probes share
+    /// one key shape with the signature registry and never miss on
+    /// alignment. The stored module (`None` = root) remains the
+    /// display/provenance axis for diagnostics and the legacy root render.
     pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
     /// Declared visibility for each function, keyed by the same registry key used
-    /// in `fn_def_spans` (scoped name: `{module}.{name}` or bare for root).
+    /// in `fn_def_spans`.
     /// Populated alongside `fn_def_spans` during `collect_function_item` and when
     /// cross-module functions are registered in the import-surface passes.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` (co-minted
+    /// with `fn_def_spans` under the canonical declaration key).
     pub(super) fn_visibility: HashMap<String, Visibility>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
@@ -3028,6 +3086,13 @@ pub struct Checker {
     pub(super) published_bare_trait_owners:
         HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — caller
+    /// keys are `current_function` (a canonical fn-sig key) and callee keys
+    /// are the resolved fn-sig keys, so dead-code reachability joins against
+    /// canonical `fn_def_spans` without a bare/scoped rewrite. Bare callee
+    /// entries remain for builtins/externs, which have no declaration span
+    /// and never participate in dead-code findings.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,
@@ -3079,6 +3144,20 @@ pub struct Checker {
     pub(super) task_scope_depth: u32,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
+    /// The compile's identity interner (rc1-F1 stage A). Minted once in
+    /// `check_program` from the module graph before any registration pass;
+    /// moved into [`TypeCheckOutput::identity`] at publication. The root
+    /// compilation unit's canonical identity (when it has a source) lives
+    /// here — `identity.root_module_path()` — and is the authority the
+    /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
+    pub(super) identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B).
+    /// The ONE authority for extern symbol identity and `unsafe` gating:
+    /// contracts are minted at `register_extern_block`, contract-less extern
+    /// declarations (registry imports, layout-witness builtins) register as
+    /// declaration-only entries. Moved into
+    /// [`TypeCheckOutput::extern_contracts`] at publication.
+    pub(super) extern_table: crate::extern_table::ExternTable,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3148,8 +3227,6 @@ pub struct Checker {
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
-    /// Names of functions that require an unsafe block to call.
-    pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -3253,6 +3330,11 @@ pub struct Checker {
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
     /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
+    ///
+    /// rc1-F1 stage A classification: CANONICAL-BY-CONSTRUCTION — the
+    /// `E_INTRINSIC_OUTSIDE_FLOOR` module-axis gate restricts declarations
+    /// to stdlib-floor modules, so every key is already a module-qualified
+    /// `std.*` path; the root unit cannot mint an entry. No re-keying needed.
     pub(super) intrinsic_declarations: HashMap<String, String>,
     /// Per-arm pattern resolutions accumulated during match checking.
     ///
@@ -3416,6 +3498,9 @@ impl Checker {
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
+            module_item_sources: HashMap::new(),
+            current_item_source: None,
+            file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),
@@ -3427,6 +3512,7 @@ impl Checker {
             method_call_preserves_receiver_identity: HashSet::new(),
             source_extern_declarations: Vec::new(),
             current_module_direct_imports: BTreeSet::new(),
+            current_module_direct_import_bindings: Vec::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
@@ -3555,6 +3641,8 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
+            identity: crate::identity::IdentityTable::new(),
+            extern_table: crate::extern_table::ExternTable::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),
@@ -3570,7 +3658,6 @@ impl Checker {
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
-            unsafe_functions: HashSet::new(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,

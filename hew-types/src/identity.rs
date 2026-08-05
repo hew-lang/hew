@@ -132,6 +132,60 @@ impl IdentityTable {
         id
     }
 
+    /// Mint (or resolve) the identity of one SOURCE FILE of a directory
+    /// module (rc1-F1 stage C). A directory module assembles its primary
+    /// file plus every peer `.hew` file, and one file can be reached both as
+    /// a peer and as its own imported module (`pkg/aaa.hew` via `import pkg`
+    /// and via `import pkg::aaa`); the dedupe axis is the canonical source,
+    /// so every route mints ONE identity for the file. When the file is not
+    /// already a minted module's primary source, its render is
+    /// `{assembler}.{stem}` — exactly the identity the file carries when
+    /// imported directly. A render collision with a DIFFERENT module's path
+    /// is disambiguated fail-closed (`#file` suffix): a false split
+    /// diagnoses loudly, a false merge would equate two declarations.
+    pub fn mint_source_file_module(&mut self, assembler: &str, source: &Path) -> ModuleId {
+        let source_key = Self::intern_source_key(source);
+        if let Some(existing) = self.by_source.get(&source_key) {
+            return *existing;
+        }
+        let stem: String = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("file")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let render = format!("{assembler}.{stem}");
+        let render = if self.by_path.contains_key(&render) {
+            format!("{render}#file")
+        } else {
+            render
+        };
+        self.insert(render, Some(source_key))
+    }
+
+    /// The minted module identity of a canonical source file, when any mint
+    /// recorded that source.
+    #[must_use]
+    pub fn module_for_source(&self, source: &Path) -> Option<ModuleId> {
+        self.by_source
+            .get(&Self::intern_source_key(source))
+            .copied()
+    }
+
+    /// Canonical dotted render of a source file's minted identity.
+    #[must_use]
+    pub fn module_path_for_source(&self, source: &Path) -> Option<&str> {
+        self.module_for_source(source)
+            .map(|id| self.module_path(id))
+    }
+
     /// Canonical dotted render of a minted module.
     #[must_use]
     pub fn module_path(&self, id: ModuleId) -> &str {
@@ -178,6 +232,32 @@ mod tests {
             .expect("root with a source mints an identity");
         assert_eq!(module, root, "one source = one identity, however reached");
         assert_eq!(table.module_path(root), "oracle_mod");
+    }
+
+    #[test]
+    fn peer_file_mints_one_identity_across_assembly_routes() {
+        let mut table = IdentityTable::new();
+        let pkg_hew = PathBuf::from("/nonexistent/pkg/pkg.hew");
+        let aaa_hew = PathBuf::from("/nonexistent/pkg/aaa.hew");
+        table.mint_module("pkg", &[pkg_hew.clone(), aaa_hew.clone()]);
+        let as_peer = table.mint_source_file_module("pkg", &aaa_hew);
+        let as_module = table.mint_module("pkg.aaa", std::slice::from_ref(&aaa_hew));
+        assert_eq!(as_peer, as_module, "one file = one identity, either route");
+        assert_eq!(table.module_path(as_peer), "pkg.aaa");
+        assert_eq!(table.module_path_for_source(&pkg_hew), Some("pkg"));
+        assert_eq!(table.module_path_for_source(&aaa_hew), Some("pkg.aaa"));
+    }
+
+    #[test]
+    fn source_file_render_colliding_with_distinct_module_is_disambiguated() {
+        let mut table = IdentityTable::new();
+        table.mint_module("pkg.aaa", &[PathBuf::from("/elsewhere/aaa.hew")]);
+        let peer = table.mint_source_file_module("pkg", &PathBuf::from("/nonexistent/pkg/aaa.hew"));
+        assert_eq!(
+            table.module_path(peer),
+            "pkg.aaa#file",
+            "distinct sources must never merge under one render"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ fn main() -> () [conv=default]
     _0 = const.i64 2
     _1 = call std$stream$pipe(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sink<string>, Stream<string>) intent=Read
     stmt: bind BindingId(2) sink site=SiteId(4) ty=Sink<string>
@@ -362,6 +363,7 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _4 = icmp.eq _2 _3
     branch _4 ? bb2 : bb9
   bb1:
+    stmt: bind BindingId(4294967219) __hew_produced_value site=SiteId(99) ty=string
     stmt: return site=Some(SiteId(99)) ty=string
     ret = move _1
     return
@@ -424,7 +426,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _14 = icmp.eq _2 _13
     branch _14 ? bb7 : bb8
   bb14:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(101) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(105) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(101) ty=string
     _18 = call_rt hew_string_concat(_16, _17)
     drop _17 ty=string fn=release(hew_string_drop)
     _19 = string_lit ")"
@@ -433,7 +436,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _1 = move _20
     goto bb1
   bb15:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(111) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(115) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(111) ty=string
     _24 = call_rt hew_string_concat(_22, _23)
     drop _23 ty=string fn=release(hew_string_drop)
     _25 = string_lit ")"
@@ -442,7 +446,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _1 = move _26
     goto bb1
   bb16:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(121) ty=string
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(125) ty=string
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(121) ty=string
     _30 = call_rt hew_string_concat(_28, _29)
     drop _29 ty=string fn=release(hew_string_drop)
     _31 = string_lit ")"
@@ -451,7 +456,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _1 = move _32
     goto bb1
   bb17:
-    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(131) ty=string
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(135) ty=string
+    stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(131) ty=string
     _36 = call_rt hew_string_concat(_34, _35)
     drop _35 ty=string fn=release(hew_string_drop)
     _37 = string_lit ")"
@@ -460,7 +466,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _1 = move _38
     goto bb1
   bb18:
-    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(141) ty=string
+    stmt: bind BindingId(4294967223) __hew_produced_value site=SiteId(145) ty=string
+    stmt: bind BindingId(4294967222) __hew_produced_value site=SiteId(141) ty=string
     _42 = call_rt hew_string_concat(_40, _41)
     drop _41 ty=string fn=release(hew_string_drop)
     _43 = string_lit ")"
@@ -469,7 +476,8 @@ fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
     _1 = move _44
     goto bb1
   bb19:
-    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(151) ty=string
+    stmt: bind BindingId(4294967221) __hew_produced_value site=SiteId(155) ty=string
+    stmt: bind BindingId(4294967220) __hew_produced_value site=SiteId(151) ty=string
     _48 = call_rt hew_string_concat(_46, _47)
     drop _47 ty=string fn=release(hew_string_drop)
     _49 = string_lit ")"
@@ -485,10 +493,10 @@ fn std$fs$io_error_timed_out() -> std.fs.IoError [conv=default]
     _2: i64
   bb0:
     stmt: return site=Some(SiteId(161)) ty=std.fs.IoError
-    _1 = const.i64 3
-    mtag0 = move _1
-    _2 = const.i64 0
-    mvar0.3.0 = move _2
+    _1 = const.i64 0
+    _2 = const.i64 3
+    mtag0 = move _2
+    mvar0.3.0 = move _1
     ret = move _0
     return
 
@@ -499,10 +507,10 @@ fn std$fs$io_error_cancelled() -> std.fs.IoError [conv=default]
     _2: i64
   bb0:
     stmt: return site=Some(SiteId(163)) ty=std.fs.IoError
-    _1 = const.i64 4
-    mtag0 = move _1
-    _2 = const.i64 0
-    mvar0.4.0 = move _2
+    _1 = const.i64 0
+    _2 = const.i64 4
+    mtag0 = move _2
+    mvar0.4.0 = move _1
     ret = move _0
     return
 
@@ -541,6 +549,7 @@ fn std$fs$last_io_error() -> std.fs.IoError [conv=default]
     _5 = move _4
     _6 = call hew_stream_last_error() -> bb3
   bb3:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(172) ty=string
     stmt: eval site=SiteId(172) ty=string
     stmt: use BindingId(15) errno site=SiteId(177) ty=i64 intent=Read
     drop _6 ty=string fn=release(hew_string_drop)
@@ -558,9 +567,9 @@ fn std$fs$last_io_error() -> std.fs.IoError [conv=default]
     branch _8 ? bb6 : bb7
   bb6:
     _14 = const.i64 5
-    mtag13 = move _14
     _15 = const.i64 5
-    mvar13.5.0 = move _15
+    mtag13 = move _15
+    mvar13.5.0 = move _14
     _16 = move _13
     _7 = move _16
     goto bb8
@@ -617,6 +626,7 @@ fn std$fs$read(string) -> string [conv=default]
     stmt: use BindingId(16) path site=SiteId(192) ty=string intent=Read
     _1 = call hew_file_read(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(191) ty=string
     stmt: bind BindingId(17) contents site=SiteId(191) ty=string
     _2 = move _1
     _3 = call hew_stream_last_errno() -> bb2
@@ -639,6 +649,7 @@ fn std$fs$read(string) -> string [conv=default]
     ret = move _32
     return
   bb6:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(199) ty=string
     stmt: bind BindingId(19) detail site=SiteId(199) ty=string
     stmt: use BindingId(19) detail site=SiteId(204) ty=string intent=Read
     _9 = move _8
@@ -659,8 +670,10 @@ fn std$fs$read(string) -> string [conv=default]
     _31 = move _10
     goto bb5
   bb11:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(213) ty=string
     stmt: use BindingId(18) errno site=SiteId(218) ty=i32 intent=Read
     _16 = call_rt hew_string_concat(_14, _15)
+    drop _15 ty=string fn=release(hew_string_drop)
     _17 = string_lit "`: "
     _18 = call_rt hew_string_concat(_16, _17)
     drop _16 ty=string fn=release(hew_string_drop)
@@ -669,26 +682,33 @@ fn std$fs$read(string) -> string [conv=default]
   bb12:
     _21 = call std$fs$io_error_message(_20) -> bb13
   bb13:
-    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(215) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(215) ty=string
     _22 = call to_string_str(_21) -> bb14
   bb14:
-    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(209) ty=string
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(222) ty=string
+    stmt: bind BindingId(4294967226) __hew_temp_arg site=SiteId(209) ty=string
+    drop _21 ty=string fn=release(hew_string_drop)
     _23 = call_rt hew_string_concat(_18, _22)
+    drop _22 ty=string fn=release(hew_string_drop)
     drop _18 ty=string fn=release(hew_string_drop)
     call hew_panic_msg(_23) -> bb15
   bb15:
     stmt: eval site=SiteId(208) ty=!
     goto bb10
   bb16:
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(236) ty=string
     stmt: use BindingId(19) detail site=SiteId(238) ty=string intent=Read
     _26 = call_rt hew_string_concat(_24, _25)
+    drop _25 ty=string fn=release(hew_string_drop)
     _27 = string_lit "`: "
     _28 = call_rt hew_string_concat(_26, _27)
     drop _26 ty=string fn=release(hew_string_drop)
     _29 = call to_string_str(_9) -> bb17
   bb17:
-    stmt: bind BindingId(4294967229) __hew_temp_arg site=SiteId(232) ty=string
+    stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(240) ty=string
+    stmt: bind BindingId(4294967223) __hew_temp_arg site=SiteId(232) ty=string
     _30 = call_rt hew_string_concat(_28, _29)
+    drop _29 ty=string fn=release(hew_string_drop)
     drop _28 ty=string fn=release(hew_string_drop)
     call hew_panic_msg(_30) -> bb18
   bb18:
@@ -719,13 +739,13 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _19: Result<string, std.fs.IoError>
     _20: Result<string, std.fs.IoError>
     _21: i64
-    _22: i64
-    _23: std.fs.IoError
+    _22: std.fs.IoError
+    _23: i64
     _24: Result<string, std.fs.IoError>
     _25: Result<string, std.fs.IoError>
     _26: Result<string, std.fs.IoError>
-    _27: i64
-    _28: std.fs.IoError
+    _27: std.fs.IoError
+    _28: i64
     _29: Result<string, std.fs.IoError>
     _30: Result<string, std.fs.IoError>
   bb0:
@@ -743,17 +763,17 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
   bb3:
     stmt: use BindingId(21) file site=SiteId(261) ty=std.fs.FileReadStream intent=Consume
     _3 = const.i64 1
-    _6 = call hew_stream_collect_string(_2) -> bb6
+    _6 = call hew_file_read_stream_collect_string(_2) -> bb6
   bb4:
-    _27 = const.i64 1
-    mtag26 = move _27
-    _28 = call std$fs$last_io_error() -> bb14
+    _27 = call std$fs$last_io_error() -> bb14
   bb5:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(255) ty=Result<string, std.fs.IoError>
     stmt: return site=Some(SiteId(251)) ty=Result<string, std.fs.IoError>
     _30 = move _4
     ret = move _30
     return
   bb6:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(260) ty=string
     stmt: bind BindingId(22) contents site=SiteId(260) ty=string
     _7 = move _6
     _8 = call hew_stream_last_error_kind() -> bb7
@@ -767,6 +787,7 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb9
   bb9:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(268) ty=string
     stmt: eval site=SiteId(268) ty=string
     stmt: use BindingId(24) errno site=SiteId(272) ty=i32 intent=Read
     drop _13 ty=string fn=release(hew_string_drop)
@@ -775,6 +796,7 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
     branch _16 ? bb10 : bb11
   bb10:
     stmt: use BindingId(22) contents site=SiteId(276) ty=string intent=Read
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(275) ty=Result<string, std.fs.IoError>
     _18 = const.i64 0
     mtag17 = move _18
     mvar17.0.0 = move _7
@@ -784,21 +806,24 @@ fn std$fs$try_read(string) -> Result<string, std.fs.IoError> [conv=default]
   bb11:
     stmt: use BindingId(23) kind site=SiteId(280) ty=i64 intent=Read
     stmt: use BindingId(24) errno site=SiteId(282) ty=i32 intent=Read
-    _21 = const.i64 1
-    mtag20 = move _21
-    _22 = cast _12 i32 -> i64
-    _23 = call std$fs$io_error_from_kind(_10, _22) -> bb13
+    _21 = cast _12 i32 -> i64
+    _22 = call std$fs$io_error_from_kind(_10, _21) -> bb13
   bb12:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(270) ty=Result<string, std.fs.IoError>
     _25 = move _14
     _4 = move _25
     goto bb5
   bb13:
-    mvar20.1.0 = move _23
+    _23 = const.i64 1
+    mtag20 = move _23
+    mvar20.1.0 = move _22
     _24 = move _20
     _14 = move _24
     goto bb12
   bb14:
-    mvar26.1.0 = move _28
+    _28 = const.i64 1
+    mtag26 = move _28
+    mvar26.1.0 = move _27
     _29 = move _26
     _4 = move _29
     goto bb5
@@ -834,8 +859,8 @@ fn std$fs$try_write(string, string) -> Result<i64, std.fs.IoError> [conv=default
     _8: i64
     _9: i64
     _10: Result<i64, std.fs.IoError>
-    _11: i64
-    _12: std.fs.IoError
+    _11: std.fs.IoError
+    _12: i64
   bb0:
     stmt: use BindingId(27) file_path site=SiteId(297) ty=string intent=Read
     stmt: use BindingId(28) content site=SiteId(298) ty=string intent=Read
@@ -852,20 +877,20 @@ fn std$fs$try_write(string, string) -> Result<i64, std.fs.IoError> [conv=default
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    _11 = const.i64 1
-    mtag10 = move _11
-    _12 = call std$fs$last_io_error() -> bb7
+    _11 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
-    mtag7 = move _8
     _9 = const.i64 0
-    mvar7.0.0 = move _9
+    mtag7 = move _9
+    mvar7.0.0 = move _8
     _2 = move _7
     goto bb2
   bb7:
-    mvar10.1.0 = move _12
+    _12 = const.i64 1
+    mtag10 = move _12
+    mvar10.1.0 = move _11
     _2 = move _10
     goto bb2
 
@@ -900,8 +925,8 @@ fn std$fs$try_append(string, string) -> Result<i64, std.fs.IoError> [conv=defaul
     _8: i64
     _9: i64
     _10: Result<i64, std.fs.IoError>
-    _11: i64
-    _12: std.fs.IoError
+    _11: std.fs.IoError
+    _12: i64
   bb0:
     stmt: use BindingId(31) file_path site=SiteId(314) ty=string intent=Read
     stmt: use BindingId(32) content site=SiteId(315) ty=string intent=Read
@@ -918,20 +943,20 @@ fn std$fs$try_append(string, string) -> Result<i64, std.fs.IoError> [conv=defaul
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    _11 = const.i64 1
-    mtag10 = move _11
-    _12 = call std$fs$last_io_error() -> bb7
+    _11 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
-    mtag7 = move _8
     _9 = const.i64 0
-    mvar7.0.0 = move _9
+    mtag7 = move _9
+    mvar7.0.0 = move _8
     _2 = move _7
     goto bb2
   bb7:
-    mvar10.1.0 = move _12
+    _12 = const.i64 1
+    mtag10 = move _12
+    mvar10.1.0 = move _11
     _2 = move _10
     goto bb2
 
@@ -977,8 +1002,8 @@ fn std$fs$try_delete(string) -> Result<i64, std.fs.IoError> [conv=default]
     _7: i64
     _8: i64
     _9: Result<i64, std.fs.IoError>
-    _10: i64
-    _11: std.fs.IoError
+    _10: std.fs.IoError
+    _11: i64
   bb0:
     stmt: use BindingId(35) file_path site=SiteId(334) ty=string intent=Read
     _2 = call hew_file_delete(_0) -> bb1
@@ -994,20 +1019,20 @@ fn std$fs$try_delete(string) -> Result<i64, std.fs.IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    _10 = const.i64 1
-    mtag9 = move _10
-    _11 = call std$fs$last_io_error() -> bb7
+    _10 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
-    mtag6 = move _7
     _8 = const.i64 0
-    mvar6.0.0 = move _8
+    mtag6 = move _8
+    mvar6.0.0 = move _7
     _1 = move _6
     goto bb2
   bb7:
-    mvar9.1.0 = move _11
+    _11 = const.i64 1
+    mtag9 = move _11
+    mvar9.1.0 = move _10
     _1 = move _9
     goto bb2
 
@@ -1034,6 +1059,7 @@ fn std$fs$read_bytes(string) -> bytes [conv=default]
     stmt: use BindingId(37) path site=SiteId(347) ty=string intent=Read
     _1 = call hew_file_read_bytes(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(346) ty=bytes
     stmt: return site=Some(SiteId(345)) ty=bytes
     _2 = move _1
     ret = move _2
@@ -1055,8 +1081,8 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     _11: string
     _12: Result<bytes, std.fs.IoError>
     _13: i64
-    _14: i64
-    _15: std.fs.IoError
+    _14: std.fs.IoError
+    _15: i64
     _16: Result<bytes, std.fs.IoError>
     _17: Result<bytes, std.fs.IoError>
     _18: i64
@@ -1066,6 +1092,7 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     stmt: use BindingId(38) file_path site=SiteId(351) ty=string intent=Read
     _1 = call hew_file_read_bytes(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(350) ty=bytes
     stmt: bind BindingId(39) data site=SiteId(350) ty=bytes
     _2 = move _1
     _3 = call hew_stream_last_error_kind() -> bb2
@@ -1085,6 +1112,7 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     _11 = call hew_stream_last_error() -> bb7
   bb5:
     stmt: use BindingId(39) data site=SiteId(373) ty=bytes intent=Read
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(372) ty=Result<bytes, std.fs.IoError>
     _18 = const.i64 0
     mtag17 = move _18
     mvar17.0.0 = move _2
@@ -1092,21 +1120,23 @@ fn std$fs$try_read_bytes(string) -> Result<bytes, std.fs.IoError> [conv=default]
     _8 = move _19
     goto bb6
   bb6:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(358) ty=Result<bytes, std.fs.IoError>
     stmt: return site=Some(SiteId(349)) ty=Result<bytes, std.fs.IoError>
     _20 = move _8
     ret = move _20
     return
   bb7:
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(363) ty=string
     stmt: eval site=SiteId(363) ty=string
     stmt: use BindingId(40) kind site=SiteId(367) ty=i64 intent=Read
     stmt: use BindingId(41) errno site=SiteId(369) ty=i32 intent=Read
     drop _11 ty=string fn=release(hew_string_drop)
-    _13 = const.i64 1
-    mtag12 = move _13
-    _14 = cast _7 i32 -> i64
-    _15 = call std$fs$io_error_from_kind(_5, _14) -> bb8
+    _13 = cast _7 i32 -> i64
+    _14 = call std$fs$io_error_from_kind(_5, _13) -> bb8
   bb8:
-    mvar12.1.0 = move _15
+    _15 = const.i64 1
+    mtag12 = move _15
+    mvar12.1.0 = move _14
     _16 = move _12
     _8 = move _16
     goto bb6
@@ -1142,8 +1172,8 @@ fn std$fs$try_write_bytes(string, bytes) -> Result<i64, std.fs.IoError> [conv=de
     _8: i64
     _9: i64
     _10: Result<i64, std.fs.IoError>
-    _11: i64
-    _12: std.fs.IoError
+    _11: std.fs.IoError
+    _12: i64
   bb0:
     stmt: use BindingId(44) file_path site=SiteId(383) ty=string intent=Read
     stmt: use BindingId(45) data site=SiteId(384) ty=bytes intent=Read
@@ -1160,20 +1190,20 @@ fn std$fs$try_write_bytes(string, bytes) -> Result<i64, std.fs.IoError> [conv=de
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    _11 = const.i64 1
-    mtag10 = move _11
-    _12 = call std$fs$last_io_error() -> bb7
+    _11 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
-    mtag7 = move _8
     _9 = const.i64 0
-    mvar7.0.0 = move _9
+    mtag7 = move _9
+    mvar7.0.0 = move _8
     _2 = move _7
     goto bb2
   bb7:
-    mvar10.1.0 = move _12
+    _12 = const.i64 1
+    mtag10 = move _12
+    mvar10.1.0 = move _11
     _2 = move _10
     goto bb2
 
@@ -1205,8 +1235,8 @@ fn std$fs$try_mkdir(string) -> Result<i64, std.fs.IoError> [conv=default]
     _7: i64
     _8: i64
     _9: Result<i64, std.fs.IoError>
-    _10: i64
-    _11: std.fs.IoError
+    _10: std.fs.IoError
+    _11: i64
   bb0:
     stmt: use BindingId(47) dir_path site=SiteId(399) ty=string intent=Read
     _2 = call hew_fs_mkdir(_0) -> bb1
@@ -1222,20 +1252,20 @@ fn std$fs$try_mkdir(string) -> Result<i64, std.fs.IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    _10 = const.i64 1
-    mtag9 = move _10
-    _11 = call std$fs$last_io_error() -> bb7
+    _10 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
-    mtag6 = move _7
     _8 = const.i64 0
-    mvar6.0.0 = move _8
+    mtag6 = move _8
+    mvar6.0.0 = move _7
     _1 = move _6
     goto bb2
   bb7:
-    mvar9.1.0 = move _11
+    _11 = const.i64 1
+    mtag9 = move _11
+    mvar9.1.0 = move _10
     _1 = move _9
     goto bb2
 
@@ -1267,8 +1297,8 @@ fn std$fs$try_mkdir_all(string) -> Result<i64, std.fs.IoError> [conv=default]
     _7: i64
     _8: i64
     _9: Result<i64, std.fs.IoError>
-    _10: i64
-    _11: std.fs.IoError
+    _10: std.fs.IoError
+    _11: i64
   bb0:
     stmt: use BindingId(49) dir_path site=SiteId(414) ty=string intent=Read
     _2 = call hew_fs_mkdir_all(_0) -> bb1
@@ -1284,20 +1314,20 @@ fn std$fs$try_mkdir_all(string) -> Result<i64, std.fs.IoError> [conv=default]
     _5 = icmp.eq _3 _4
     branch _5 ? bb6 : bb4
   bb4:
-    _10 = const.i64 1
-    mtag9 = move _10
-    _11 = call std$fs$last_io_error() -> bb7
+    _10 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _7 = const.i64 0
-    mtag6 = move _7
     _8 = const.i64 0
-    mvar6.0.0 = move _8
+    mtag6 = move _8
+    mvar6.0.0 = move _7
     _1 = move _6
     goto bb2
   bb7:
-    mvar9.1.0 = move _11
+    _11 = const.i64 1
+    mtag9 = move _11
+    mvar9.1.0 = move _10
     _1 = move _9
     goto bb2
 
@@ -1334,8 +1364,8 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
     _14: Result<Vec<string>, std.fs.IoError>
     _15: Result<Vec<string>, std.fs.IoError>
     _16: i64
-    _17: i64
-    _18: std.fs.IoError
+    _17: std.fs.IoError
+    _18: i64
     _19: Result<Vec<string>, std.fs.IoError>
     _20: Result<Vec<string>, std.fs.IoError>
   bb0:
@@ -1355,6 +1385,7 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
     _7 = move _6
     _8 = call hew_stream_last_error() -> bb4
   bb4:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(434) ty=string
     stmt: eval site=SiteId(434) ty=string
     stmt: use BindingId(54) errno site=SiteId(438) ty=i32 intent=Read
     drop _8 ty=string fn=release(hew_string_drop)
@@ -1373,17 +1404,17 @@ fn std$fs$try_list_dir(string) -> Result<Vec<string>, std.fs.IoError> [conv=defa
   bb6:
     stmt: use BindingId(53) kind site=SiteId(446) ty=i64 intent=Read
     stmt: use BindingId(54) errno site=SiteId(448) ty=i32 intent=Read
-    _16 = const.i64 1
-    mtag15 = move _16
-    _17 = cast _7 i32 -> i64
-    _18 = call std$fs$io_error_from_kind(_5, _17) -> bb8
+    _16 = cast _7 i32 -> i64
+    _17 = call std$fs$io_error_from_kind(_5, _16) -> bb8
   bb7:
     stmt: return site=Some(SiteId(425)) ty=Result<Vec<string>, std.fs.IoError>
     _20 = move _9
     ret = move _20
     return
   bb8:
-    mvar15.1.0 = move _18
+    _18 = const.i64 1
+    mtag15 = move _18
+    mvar15.1.0 = move _17
     _19 = move _15
     _9 = move _19
     goto bb7
@@ -1419,8 +1450,8 @@ fn std$fs$try_rename(string, string) -> Result<i64, std.fs.IoError> [conv=defaul
     _8: i64
     _9: i64
     _10: Result<i64, std.fs.IoError>
-    _11: i64
-    _12: std.fs.IoError
+    _11: std.fs.IoError
+    _12: i64
   bb0:
     stmt: use BindingId(57) from site=SiteId(459) ty=string intent=Read
     stmt: use BindingId(58) to site=SiteId(460) ty=string intent=Read
@@ -1437,20 +1468,20 @@ fn std$fs$try_rename(string, string) -> Result<i64, std.fs.IoError> [conv=defaul
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    _11 = const.i64 1
-    mtag10 = move _11
-    _12 = call std$fs$last_io_error() -> bb7
+    _11 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
-    mtag7 = move _8
     _9 = const.i64 0
-    mvar7.0.0 = move _9
+    mtag7 = move _9
+    mvar7.0.0 = move _8
     _2 = move _7
     goto bb2
   bb7:
-    mvar10.1.0 = move _12
+    _12 = const.i64 1
+    mtag10 = move _12
+    mvar10.1.0 = move _11
     _2 = move _10
     goto bb2
 
@@ -1485,8 +1516,8 @@ fn std$fs$try_copy(string, string) -> Result<i64, std.fs.IoError> [conv=default]
     _8: i64
     _9: i64
     _10: Result<i64, std.fs.IoError>
-    _11: i64
-    _12: std.fs.IoError
+    _11: std.fs.IoError
+    _12: i64
   bb0:
     stmt: use BindingId(61) from site=SiteId(476) ty=string intent=Read
     stmt: use BindingId(62) to site=SiteId(477) ty=string intent=Read
@@ -1503,20 +1534,20 @@ fn std$fs$try_copy(string, string) -> Result<i64, std.fs.IoError> [conv=default]
     _6 = icmp.eq _4 _5
     branch _6 ? bb6 : bb4
   bb4:
-    _11 = const.i64 1
-    mtag10 = move _11
-    _12 = call std$fs$last_io_error() -> bb7
+    _11 = call std$fs$last_io_error() -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
     _8 = const.i64 0
-    mtag7 = move _8
     _9 = const.i64 0
-    mvar7.0.0 = move _9
+    mtag7 = move _9
+    mvar7.0.0 = move _8
     _2 = move _7
     goto bb2
   bb7:
-    mvar10.1.0 = move _12
+    _12 = const.i64 1
+    mtag10 = move _12
+    mvar10.1.0 = move _11
     _2 = move _10
     goto bb2
 
@@ -1563,6 +1594,7 @@ fn std$stream$pipe(i64) -> (Sink<string>, Stream<string>) [conv=default]
     stmt: use BindingId(65) capacity site=SiteId(494) ty=i64 intent=Read
     _2 = call std$stream$try_pipe(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(493) ty=Result<(Sink<string>, Stream<string>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4
@@ -1598,12 +1630,12 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _2: i64
     _3: bool
     _4: Result<(Sink<string>, Stream<string>), string>
-    _5: i64
+    _5: string
     _6: string
     _7: string
     _8: string
     _9: string
-    _10: string
+    _10: i64
     _11: i64
     _12: std.stream.StreamPair
     _13: std.stream.StreamPair
@@ -1617,8 +1649,8 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _21: string
     _22: bool
     _23: Result<(Sink<string>, Stream<string>), string>
-    _24: i64
-    _25: string
+    _24: string
+    _25: i64
     _26: Result<(Sink<string>, Stream<string>), string>
     _27: i64
     _28: Sink<string>
@@ -1626,8 +1658,8 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _30: Stream<string>
     _31: Stream<string>
     _32: Result<(Sink<string>, Stream<string>), string>
-    _33: i64
-    _34: (Sink<string>, Stream<string>)
+    _33: (Sink<string>, Stream<string>)
+    _34: i64
     _35: Result<(Sink<string>, Stream<string>), string>
   bb0:
     stmt: use BindingId(68) capacity site=SiteId(501) ty=i64 intent=Read
@@ -1636,10 +1668,8 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     branch _3 ? bb1 : bb2
   bb1:
     stmt: use BindingId(68) capacity site=SiteId(506) ty=i64 intent=Read
-    _5 = const.i64 1
-    mtag4 = move _5
-    _6 = string_lit "stream.pipe: invalid capacity "
-    _7 = call hew_i64_to_string(_0) -> bb4
+    _5 = string_lit "stream.pipe: invalid capacity "
+    _6 = call hew_i64_to_string(_0) -> bb4
   bb2:
     goto bb3
   bb3:
@@ -1648,20 +1678,24 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _11 = cast _0 i64 -> i64
     _12 = call hew_stream_channel(_11) -> bb6
   bb4:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(504) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(508) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(504) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(503) ty=Result<(Sink<string>, Stream<string>), string>
     stmt: return site=Some(SiteId(503)) ty=Result<(Sink<string>, Stream<string>), string>
-    _8 = call_rt hew_string_concat(_6, _7)
+    _7 = call_rt hew_string_concat(_5, _6)
+    drop _6 ty=string fn=release(hew_string_drop)
+    _8 = string_lit " (must be >= 0)"
+    _9 = call_rt hew_string_concat(_7, _8)
     drop _7 ty=string fn=release(hew_string_drop)
-    _9 = string_lit " (must be >= 0)"
-    _10 = call_rt hew_string_concat(_8, _9)
-    drop _8 ty=string fn=release(hew_string_drop)
-    mvar4.1.0 = move _10
+    _10 = const.i64 1
+    mtag4 = move _10
+    mvar4.1.0 = move _9
     ret = move _4
     return
   bb5:
     goto bb3
   bb6:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(517) ty=std.stream.StreamPair
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(517) ty=std.stream.StreamPair
     stmt: bind BindingId(69) pair site=SiteId(517) ty=std.stream.StreamPair
     stmt: use BindingId(69) pair site=SiteId(523) ty=std.stream.StreamPair intent=Read
     _13 = move _12
@@ -1679,6 +1713,7 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     stmt: use BindingId(69) pair site=SiteId(539) ty=std.stream.StreamPair intent=Read
     _28 = call hew_stream_pair_sink(_13) -> bb17
   bb11:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(525) ty=string
     stmt: bind BindingId(70) detail site=SiteId(525) ty=string
     stmt: use BindingId(70) detail site=SiteId(528) ty=string intent=Read
     _19 = move _18
@@ -1686,11 +1721,12 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     _22 = icmp.eq _19 _21
     branch _22 ? bb12 : bb13
   bb12:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(530) ty=Result<(Sink<string>, Stream<string>), string>
     stmt: return site=Some(SiteId(530)) ty=Result<(Sink<string>, Stream<string>), string>
-    _24 = const.i64 1
-    mtag23 = move _24
-    _25 = string_lit "stream.pipe: stream allocation failed"
-    mvar23.1.0 = move _25
+    _24 = string_lit "stream.pipe: stream allocation failed"
+    _25 = const.i64 1
+    mtag23 = move _25
+    mvar23.1.0 = move _24
     ret = move _23
     return
   bb13:
@@ -1698,6 +1734,7 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
   bb14:
     stmt: eval site=SiteId(533) ty=()
     stmt: use BindingId(70) detail site=SiteId(535) ty=string intent=Read
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(534) ty=Result<(Sink<string>, Stream<string>), string>
     stmt: return site=Some(SiteId(534)) ty=Result<(Sink<string>, Stream<string>), string>
     _27 = const.i64 1
     mtag26 = move _27
@@ -1709,11 +1746,13 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
   bb16:
     goto bb10
   bb17:
+    stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(538) ty=Sink<string>
     stmt: bind BindingId(71) sink site=SiteId(538) ty=Sink<string>
     stmt: use BindingId(69) pair site=SiteId(542) ty=std.stream.StreamPair intent=Read
     _29 = move _28
     _30 = call hew_stream_pair_stream(_13) -> bb18
   bb18:
+    stmt: bind BindingId(4294967223) __hew_produced_value site=SiteId(541) ty=Stream<string>
     stmt: bind BindingId(72) input site=SiteId(541) ty=Stream<string>
     stmt: use BindingId(69) pair site=SiteId(545) ty=std.stream.StreamPair intent=Consume
     _31 = move _30
@@ -1725,12 +1764,15 @@ fn std$stream$try_pipe(i64) -> Result<(Sink<string>, Stream<string>), string> [c
     stmt: use BindingId(72) input site=SiteId(550) ty=Stream<string> intent=Read
     stmt: agg_alias BindingId(71) sink site=SiteId(549) ty=Sink<string>
     stmt: agg_alias BindingId(72) input site=SiteId(550) ty=Stream<string>
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(548) ty=(Sink<string>, Stream<string>)
+    stmt: bind BindingId(4294967222) __hew_produced_value site=SiteId(548) ty=(Sink<string>, Stream<string>)
+    stmt: bind BindingId(4294967221) __hew_produced_value site=SiteId(547) ty=Result<(Sink<string>, Stream<string>), string>
     stmt: return site=Some(SiteId(516)) ty=Result<(Sink<string>, Stream<string>), string>
-    _33 = const.i64 0
-    mtag32 = move _33
-    _34 = tuple (_29, _31)
-    mvar32.0.0 = move _34
+    _33 = tuple (_29, _31)
+    neutralize_payload _29 -> _33 [ReturnedAggregateMemberConsume]
+    neutralize_payload _31 -> _33 [ReturnedAggregateMemberConsume]
+    _34 = const.i64 0
+    mtag32 = move _34
+    mvar32.0.0 = move _33
     _35 = move _32
     ret = move _35
     return
@@ -1751,6 +1793,7 @@ fn std$stream$bytes_pipe(i64) -> (Sink<bytes>, Stream<bytes>) [conv=default]
     stmt: use BindingId(73) capacity site=SiteId(553) ty=i64 intent=Read
     _2 = call std$stream$try_bytes_pipe(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(552) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4
@@ -1786,12 +1829,12 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _2: i64
     _3: bool
     _4: Result<(Sink<bytes>, Stream<bytes>), string>
-    _5: i64
+    _5: string
     _6: string
     _7: string
     _8: string
     _9: string
-    _10: string
+    _10: i64
     _11: i64
     _12: std.stream.StreamPair
     _13: std.stream.StreamPair
@@ -1805,8 +1848,8 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _21: string
     _22: bool
     _23: Result<(Sink<bytes>, Stream<bytes>), string>
-    _24: i64
-    _25: string
+    _24: string
+    _25: i64
     _26: Result<(Sink<bytes>, Stream<bytes>), string>
     _27: i64
     _28: Sink<bytes>
@@ -1814,8 +1857,8 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _30: Stream<bytes>
     _31: Stream<bytes>
     _32: Result<(Sink<bytes>, Stream<bytes>), string>
-    _33: i64
-    _34: (Sink<bytes>, Stream<bytes>)
+    _33: (Sink<bytes>, Stream<bytes>)
+    _34: i64
     _35: Result<(Sink<bytes>, Stream<bytes>), string>
   bb0:
     stmt: use BindingId(76) capacity site=SiteId(560) ty=i64 intent=Read
@@ -1824,10 +1867,8 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     branch _3 ? bb1 : bb2
   bb1:
     stmt: use BindingId(76) capacity site=SiteId(565) ty=i64 intent=Read
-    _5 = const.i64 1
-    mtag4 = move _5
-    _6 = string_lit "stream.bytes_pipe: invalid capacity "
-    _7 = call hew_i64_to_string(_0) -> bb4
+    _5 = string_lit "stream.bytes_pipe: invalid capacity "
+    _6 = call hew_i64_to_string(_0) -> bb4
   bb2:
     goto bb3
   bb3:
@@ -1836,20 +1877,24 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _11 = cast _0 i64 -> i64
     _12 = call hew_stream_channel(_11) -> bb6
   bb4:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(563) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(567) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(563) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(562) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     stmt: return site=Some(SiteId(562)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
-    _8 = call_rt hew_string_concat(_6, _7)
+    _7 = call_rt hew_string_concat(_5, _6)
+    drop _6 ty=string fn=release(hew_string_drop)
+    _8 = string_lit " (must be >= 0)"
+    _9 = call_rt hew_string_concat(_7, _8)
     drop _7 ty=string fn=release(hew_string_drop)
-    _9 = string_lit " (must be >= 0)"
-    _10 = call_rt hew_string_concat(_8, _9)
-    drop _8 ty=string fn=release(hew_string_drop)
-    mvar4.1.0 = move _10
+    _10 = const.i64 1
+    mtag4 = move _10
+    mvar4.1.0 = move _9
     ret = move _4
     return
   bb5:
     goto bb3
   bb6:
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(576) ty=std.stream.StreamPair
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(576) ty=std.stream.StreamPair
     stmt: bind BindingId(77) pair site=SiteId(576) ty=std.stream.StreamPair
     stmt: use BindingId(77) pair site=SiteId(582) ty=std.stream.StreamPair intent=Read
     _13 = move _12
@@ -1867,6 +1912,7 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     stmt: use BindingId(77) pair site=SiteId(598) ty=std.stream.StreamPair intent=Read
     _28 = call hew_stream_pair_sink_bytes(_13) -> bb17
   bb11:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(584) ty=string
     stmt: bind BindingId(78) detail site=SiteId(584) ty=string
     stmt: use BindingId(78) detail site=SiteId(587) ty=string intent=Read
     _19 = move _18
@@ -1874,11 +1920,12 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     _22 = icmp.eq _19 _21
     branch _22 ? bb12 : bb13
   bb12:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(589) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     stmt: return site=Some(SiteId(589)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
-    _24 = const.i64 1
-    mtag23 = move _24
-    _25 = string_lit "stream.bytes_pipe: stream allocation failed"
-    mvar23.1.0 = move _25
+    _24 = string_lit "stream.bytes_pipe: stream allocation failed"
+    _25 = const.i64 1
+    mtag23 = move _25
+    mvar23.1.0 = move _24
     ret = move _23
     return
   bb13:
@@ -1886,6 +1933,7 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
   bb14:
     stmt: eval site=SiteId(592) ty=()
     stmt: use BindingId(78) detail site=SiteId(594) ty=string intent=Read
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(593) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     stmt: return site=Some(SiteId(593)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     _27 = const.i64 1
     mtag26 = move _27
@@ -1897,11 +1945,13 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
   bb16:
     goto bb10
   bb17:
+    stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(597) ty=Sink<bytes>
     stmt: bind BindingId(79) sink site=SiteId(597) ty=Sink<bytes>
     stmt: use BindingId(77) pair site=SiteId(601) ty=std.stream.StreamPair intent=Read
     _29 = move _28
     _30 = call hew_stream_pair_stream_bytes(_13) -> bb18
   bb18:
+    stmt: bind BindingId(4294967223) __hew_produced_value site=SiteId(600) ty=Stream<bytes>
     stmt: bind BindingId(80) input site=SiteId(600) ty=Stream<bytes>
     stmt: use BindingId(77) pair site=SiteId(604) ty=std.stream.StreamPair intent=Consume
     _31 = move _30
@@ -1913,12 +1963,15 @@ fn std$stream$try_bytes_pipe(i64) -> Result<(Sink<bytes>, Stream<bytes>), string
     stmt: use BindingId(80) input site=SiteId(609) ty=Stream<bytes> intent=Read
     stmt: agg_alias BindingId(79) sink site=SiteId(608) ty=Sink<bytes>
     stmt: agg_alias BindingId(80) input site=SiteId(609) ty=Stream<bytes>
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(607) ty=(Sink<bytes>, Stream<bytes>)
+    stmt: bind BindingId(4294967222) __hew_produced_value site=SiteId(607) ty=(Sink<bytes>, Stream<bytes>)
+    stmt: bind BindingId(4294967221) __hew_produced_value site=SiteId(606) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     stmt: return site=Some(SiteId(575)) ty=Result<(Sink<bytes>, Stream<bytes>), string>
-    _33 = const.i64 0
-    mtag32 = move _33
-    _34 = tuple (_29, _31)
-    mvar32.0.0 = move _34
+    _33 = tuple (_29, _31)
+    neutralize_payload _29 -> _33 [ReturnedAggregateMemberConsume]
+    neutralize_payload _31 -> _33 [ReturnedAggregateMemberConsume]
+    _34 = const.i64 0
+    mtag32 = move _34
+    mvar32.0.0 = move _33
     _35 = move _32
     ret = move _35
     return
@@ -1934,14 +1987,15 @@ fn std$stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     _6: i64
     _7: Result<Stream<string>, string>
     _8: Result<Stream<string>, string>
-    _9: i64
-    _10: string
+    _9: string
+    _10: i64
     _11: Result<Stream<string>, string>
     _12: Result<Stream<string>, string>
   bb0:
     stmt: use BindingId(81) path site=SiteId(612) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(611) ty=Stream<string>
     stmt: bind BindingId(82) s site=SiteId(611) ty=Stream<string>
     stmt: use BindingId(82) s site=SiteId(616) ty=Stream<string> intent=Read
     _2 = move _1
@@ -1951,6 +2005,7 @@ fn std$stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
   bb3:
     stmt: use BindingId(82) s site=SiteId(620) ty=Stream<string> intent=Read
     stmt: agg_alias BindingId(82) s site=SiteId(620) ty=Stream<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(619) ty=Result<Stream<string>, string>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -1958,16 +2013,19 @@ fn std$stream$from_file(string) -> Result<Stream<string>, string> [conv=default]
     _3 = move _7
     goto bb5
   bb4:
-    _9 = const.i64 1
-    mtag8 = move _9
-    _10 = call hew_stream_last_error() -> bb6
+    _9 = call hew_stream_last_error() -> bb6
   bb5:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(614) ty=Result<Stream<string>, string>
     stmt: return site=Some(SiteId(610)) ty=Result<Stream<string>, string>
     _12 = move _3
     ret = move _12
     return
   bb6:
-    mvar8.1.0 = move _10
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(623) ty=string
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(622) ty=Result<Stream<string>, string>
+    _10 = const.i64 1
+    mtag8 = move _10
+    mvar8.1.0 = move _9
     _11 = move _8
     _3 = move _11
     goto bb5
@@ -1990,14 +2048,15 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
     _13: string
     _14: Result<Stream<string>, std.fs.IoError>
     _15: i64
-    _16: i64
-    _17: std.fs.IoError
+    _16: std.fs.IoError
+    _17: i64
     _18: Result<Stream<string>, std.fs.IoError>
     _19: Result<Stream<string>, std.fs.IoError>
   bb0:
     stmt: use BindingId(83) path site=SiteId(627) ty=string intent=Read
     _1 = call hew_stream_from_file_read(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(626) ty=Stream<string>
     stmt: bind BindingId(84) s site=SiteId(626) ty=Stream<string>
     stmt: use BindingId(84) s site=SiteId(631) ty=Stream<string> intent=Read
     _2 = move _1
@@ -2007,6 +2066,7 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
   bb3:
     stmt: use BindingId(84) s site=SiteId(635) ty=Stream<string> intent=Read
     stmt: agg_alias BindingId(84) s site=SiteId(635) ty=Stream<string>
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(634) ty=Result<Stream<string>, std.fs.IoError>
     _6 = const.i64 0
     mtag5 = move _6
     mvar5.0.0 = move _2
@@ -2016,6 +2076,7 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
   bb4:
     _8 = call hew_stream_last_error_kind() -> bb6
   bb5:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(629) ty=Result<Stream<string>, std.fs.IoError>
     stmt: return site=Some(SiteId(625)) ty=Result<Stream<string>, std.fs.IoError>
     _19 = move _3
     ret = move _19
@@ -2030,16 +2091,17 @@ fn std$stream$try_from_file(string) -> Result<Stream<string>, std.fs.IoError> [c
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb8
   bb8:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(642) ty=string
     stmt: eval site=SiteId(642) ty=string
     stmt: use BindingId(85) kind site=SiteId(646) ty=i64 intent=Read
     stmt: use BindingId(86) errno site=SiteId(648) ty=i32 intent=Read
     drop _13 ty=string fn=release(hew_string_drop)
-    _15 = const.i64 1
-    mtag14 = move _15
-    _16 = cast _12 i32 -> i64
-    _17 = call std$fs$io_error_from_kind(_10, _16) -> bb9
+    _15 = cast _12 i32 -> i64
+    _16 = call std$fs$io_error_from_kind(_10, _15) -> bb9
   bb9:
-    mvar14.1.0 = move _17
+    _17 = const.i64 1
+    mtag14 = move _17
+    mvar14.1.0 = move _16
     _18 = move _14
     _3 = move _18
     goto bb5
@@ -2055,8 +2117,8 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     _6: i64
     _7: Result<Sink<string>, string>
     _8: Result<Sink<string>, string>
-    _9: i64
-    _10: string
+    _9: string
+    _10: i64
     _11: Result<Sink<string>, string>
     _12: Result<Sink<string>, string>
   bb0:
@@ -2079,16 +2141,19 @@ fn std$stream$to_file(string) -> Result<Sink<string>, string> [conv=default]
     _3 = move _7
     goto bb5
   bb4:
-    _9 = const.i64 1
-    mtag8 = move _9
-    _10 = call hew_stream_last_error() -> bb6
+    _9 = call hew_stream_last_error() -> bb6
   bb5:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(654) ty=Result<Sink<string>, string>
     stmt: return site=Some(SiteId(650)) ty=Result<Sink<string>, string>
     _12 = move _3
     ret = move _12
     return
   bb6:
-    mvar8.1.0 = move _10
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(663) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(662) ty=Result<Sink<string>, string>
+    _10 = const.i64 1
+    mtag8 = move _10
+    mvar8.1.0 = move _9
     _11 = move _8
     _3 = move _11
     goto bb5
@@ -2111,8 +2176,8 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     _13: string
     _14: Result<Sink<string>, std.fs.IoError>
     _15: i64
-    _16: i64
-    _17: std.fs.IoError
+    _16: std.fs.IoError
+    _17: i64
     _18: Result<Sink<string>, std.fs.IoError>
     _19: Result<Sink<string>, std.fs.IoError>
   bb0:
@@ -2151,16 +2216,17 @@ fn std$stream$try_to_file(string) -> Result<Sink<string>, std.fs.IoError> [conv=
     _12 = move _11
     _13 = call hew_stream_last_error() -> bb8
   bb8:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(682) ty=string
     stmt: eval site=SiteId(682) ty=string
     stmt: use BindingId(91) kind site=SiteId(686) ty=i64 intent=Read
     stmt: use BindingId(92) errno site=SiteId(688) ty=i32 intent=Read
     drop _13 ty=string fn=release(hew_string_drop)
-    _15 = const.i64 1
-    mtag14 = move _15
-    _16 = cast _12 i32 -> i64
-    _17 = call std$fs$io_error_from_kind(_10, _16) -> bb9
+    _15 = cast _12 i32 -> i64
+    _16 = call std$fs$io_error_from_kind(_10, _15) -> bb9
   bb9:
-    mvar14.1.0 = move _17
+    _17 = const.i64 1
+    mtag14 = move _17
+    mvar14.1.0 = move _16
     _18 = move _14
     _3 = move _18
     goto bb5
@@ -2200,6 +2266,7 @@ fn i8::fmt(i8) -> string [conv=default]
     _1 = cast _0 i8 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(767) ty=string
     stmt: return site=Some(SiteId(767)) ty=string
     ret = move _2
     return
@@ -2214,6 +2281,7 @@ fn i16::fmt(i16) -> string [conv=default]
     _1 = cast _0 i16 -> i32
     _2 = call hew_int_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(771) ty=string
     stmt: return site=Some(SiteId(771)) ty=string
     ret = move _2
     return
@@ -2226,6 +2294,7 @@ fn i32::fmt(i32) -> string [conv=default]
     stmt: use BindingId(106) val site=SiteId(776) ty=i32 intent=Read
     _1 = call hew_int_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(775) ty=string
     stmt: return site=Some(SiteId(775)) ty=string
     ret = move _1
     return
@@ -2238,6 +2307,7 @@ fn i64::fmt(i64) -> string [conv=default]
     stmt: use BindingId(107) val site=SiteId(779) ty=i64 intent=Read
     _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(778) ty=string
     stmt: return site=Some(SiteId(778)) ty=string
     ret = move _1
     return
@@ -2250,6 +2320,7 @@ fn u8::fmt(u8) -> string [conv=default]
     stmt: use BindingId(108) val site=SiteId(782) ty=u8 intent=Read
     _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(781) ty=string
     stmt: return site=Some(SiteId(781)) ty=string
     ret = move _1
     return
@@ -2262,6 +2333,7 @@ fn u16::fmt(u16) -> string [conv=default]
     stmt: use BindingId(109) val site=SiteId(785) ty=u16 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(784) ty=string
     stmt: return site=Some(SiteId(784)) ty=string
     ret = move _1
     return
@@ -2274,6 +2346,7 @@ fn u32::fmt(u32) -> string [conv=default]
     stmt: use BindingId(110) val site=SiteId(788) ty=u32 intent=Read
     _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(787) ty=string
     stmt: return site=Some(SiteId(787)) ty=string
     ret = move _1
     return
@@ -2286,6 +2359,7 @@ fn u64::fmt(u64) -> string [conv=default]
     stmt: use BindingId(111) val site=SiteId(791) ty=u64 intent=Read
     _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(790) ty=string
     stmt: return site=Some(SiteId(790)) ty=string
     ret = move _1
     return
@@ -2300,6 +2374,7 @@ fn isize::fmt(isize) -> string [conv=default]
     _1 = cast _0 isize -> i64
     _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(793) ty=string
     stmt: return site=Some(SiteId(793)) ty=string
     ret = move _2
     return
@@ -2314,6 +2389,7 @@ fn usize::fmt(usize) -> string [conv=default]
     _1 = cast _0 usize -> u64
     _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(797) ty=string
     stmt: return site=Some(SiteId(797)) ty=string
     ret = move _2
     return
@@ -2326,6 +2402,7 @@ fn bool::fmt(bool) -> string [conv=default]
     stmt: use BindingId(114) val site=SiteId(802) ty=bool intent=Read
     _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(801) ty=string
     stmt: return site=Some(SiteId(801)) ty=string
     ret = move _1
     return
@@ -2338,6 +2415,7 @@ fn char::fmt(char) -> string [conv=default]
     stmt: use BindingId(115) val site=SiteId(805) ty=char intent=Read
     _1 = call hew_char_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(804) ty=string
     stmt: return site=Some(SiteId(804)) ty=string
     ret = move _1
     return
@@ -2350,6 +2428,7 @@ fn f64::fmt(f64) -> string [conv=default]
     stmt: use BindingId(116) val site=SiteId(808) ty=f64 intent=Read
     _1 = call hew_float_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(807) ty=string
     stmt: return site=Some(SiteId(807)) ty=string
     ret = move _1
     return
@@ -2364,6 +2443,7 @@ fn f32::fmt(f32) -> string [conv=default]
     _1 = cast _0 f32 -> f64
     _2 = call hew_float_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(810) ty=string
     stmt: return site=Some(SiteId(810)) ty=string
     ret = move _2
     return
@@ -2463,7 +2543,8 @@ fn duration::fmt(duration) -> string [conv=default]
   bb1:
     _2 = call hew_i64_to_string(_1) -> bb2
   bb2:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(827) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(828) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(827) ty=string
     stmt: return site=Some(SiteId(827)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

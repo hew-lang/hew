@@ -248,6 +248,42 @@ impl BuiltinType {
         )
     }
 
+    /// Whether a value of this builtin type transfers SOLE ownership when it
+    /// crosses an actor message boundary (ask argument, tell argument, spawn
+    /// argument, `Duplex::send` payload).
+    ///
+    /// This is deliberately narrower than [`Self::marker`]'s `Resource` class.
+    /// An actor reference (`LocalPid`, `BoxedActor`, `LambdaPid`,
+    /// `LambdaActorHandle`, `MonitorRef`) is a shareable address: sending one
+    /// copies the reference and the sender keeps a live handle of its own, so
+    /// the caller binding must stay usable. The types listed here have exactly
+    /// one live owner — the mailbox hand-off moves the value out of the caller
+    /// frame and mints the delivered copy a scope-exit owner in the handler —
+    /// so the caller binding is consumed.
+    ///
+    /// This is the SINGLE list; both the env checker
+    /// (`enforce_actor_boundary_send`) and HIR intent stamping read it, so the
+    /// two ownership authorities cannot drift apart.
+    #[must_use]
+    pub const fn transfers_ownership_across_actor_boundary(self) -> bool {
+        matches!(
+            self,
+            Self::Sender
+                | Self::Receiver
+                | Self::Stream
+                | Self::Sink
+                | Self::Duplex
+                | Self::SendHalf
+                | Self::RecvHalf
+                | Self::HewDuplex
+                | Self::HewSendHalf
+                | Self::HewRecvHalf
+                | Self::Generator
+                | Self::AsyncGenerator
+                | Self::CancellationToken
+        )
+    }
+
     #[must_use]
     pub const fn marker(self) -> BuiltinTypeMarker {
         match self {

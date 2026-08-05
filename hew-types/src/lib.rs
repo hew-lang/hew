@@ -43,8 +43,9 @@ pub use actor_protocol::{
     ActorProtocolCollision, ActorProtocolDescriptor,
 };
 pub use builtin_type::{
-    builtin_types, lookup_builtin_type, lookup_source_owned_lifecycle_type, BuiltinType,
-    BuiltinTypeInfo,
+    builtin_types, lookup_builtin_type, lookup_source_owned_lifecycle_type,
+    source_owned_lifecycle_owner, BuiltinType, BuiltinTypeInfo, SourceOwnedLifecycleOwner,
+    SOURCE_OWNED_LIFECYCLE_OWNERS,
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,

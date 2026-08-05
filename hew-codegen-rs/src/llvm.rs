@@ -22547,8 +22547,22 @@ fn initialize_helper_crash_cleanup_guards(
 ) -> CodegenResult<()> {
     let parameter_count = u32::try_from(parameter_count)
         .map_err(|_| CodegenError::FailClosed("parameter count exceeds u32::MAX".into()))?;
+    // Owner order decides two things: the emission order of these guard stores,
+    // and — when several owners share one guard — which owner's local answers
+    // the parameter test below, so whether the guard starts live or consumed.
+    // `helper_crash_cleanup_owners` is a `HashMap`, so iterating it directly
+    // made both depend on hash order: the same compiler emitted a different
+    // instruction sequence on consecutive runs of the same input, which is a
+    // reproducibility break and left the byte-identity oracle unable to hold a
+    // golden for any fixture reaching this path. Order by the owning local so
+    // one program has one lowering.
+    let mut owners: Vec<_> = fn_ctx.helper_crash_cleanup_owners.iter().collect();
+    owners.sort_by_key(|(place, _)| match place {
+        Place::Local(local) => *local,
+        _ => u32::MAX,
+    });
     let mut initialized = HashSet::new();
-    for (owner_place, owner) in &fn_ctx.helper_crash_cleanup_owners {
+    for (owner_place, owner) in owners {
         let Some(guard) = owner.descriptor.guard else {
             continue;
         };

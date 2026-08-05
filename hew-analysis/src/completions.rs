@@ -181,7 +181,12 @@ fn try_dot_completions(
     }
     let receiver_end = dot_pos - 1;
     let tc = type_output?;
-    let receiver_ty = find_receiver_type(tc, receiver_end)?;
+    let Some(receiver_ty) = find_receiver_type(tc, receiver_end) else {
+        // No receiver TYPE: the token before the dot may name an imported
+        // module rather than a value. Offer that module's members. Tried only
+        // after the typed-receiver lookup, so a value always wins the dot.
+        return module_member_completions(source, receiver_end, tc);
+    };
 
     let mut items = Vec::new();
     if let Some(type_def) = lookup_type_def_for_receiver(tc, receiver_ty) {
@@ -203,6 +208,94 @@ fn try_dot_completions(
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
+}
+
+/// Completions after `<module binding>.` — the members of the module that
+/// binding names.
+///
+/// The checker keys `fn_sigs` and `type_defs` by the declaring module's
+/// canonical path (`std.io.scanner.from_string`), while the editor buffer holds
+/// the lexical import binding (`scanner.`). `module_import_bindings` is the
+/// checker's record of which module each binding names, so the member set is
+/// selected by declaration owner and offered under the leaf the user actually
+/// types next — the same owner/binding relation `imported_actor_spawn_labels`
+/// already applies to spawn candidates.
+///
+/// Before this, a module dot fell through to the global identifier list, whose
+/// entries are canonical keys: the buffer offered `std.io.scanner.from_string`
+/// after the user had already typed `scanner.`, which is not spellable there.
+fn module_member_completions(
+    source: &str,
+    receiver_end: usize,
+    tc: &TypeCheckOutput,
+) -> Option<Vec<CompletionItem>> {
+    // `receiver_end` is the index OF the dot, so slice up to it exclusively.
+    let binding = trailing_identifier(source.get(..receiver_end)?)?;
+    let owner = tc
+        .module_import_bindings
+        .get(&(None, binding.to_string()))?;
+    let prefix = format!("{owner}.");
+    // A member is a DIRECT child of the owner: `std.io.scanner.from_string`
+    // belongs to `scanner`, `std.io.scanner.inner.helper` does not.
+    let direct_leaf = |key: &str| -> Option<String> {
+        let leaf = key.strip_prefix(&prefix)?;
+        (!leaf.is_empty() && !leaf.contains('.')).then(|| leaf.to_string())
+    };
+
+    let mut items = Vec::new();
+    for (key, sig) in &tc.fn_sigs {
+        if let Some(leaf) = direct_leaf(key) {
+            items.push(fn_sig_completion(&leaf, sig));
+        }
+    }
+    for (key, definition) in &tc.type_defs {
+        let Some(leaf) = direct_leaf(key) else {
+            continue;
+        };
+        items.push(CompletionItem {
+            label: leaf,
+            kind: CompletionKind::Type,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        });
+        // An exported enum's variants are spellable through the same binding.
+        for variant in definition.variants.keys() {
+            items.push(CompletionItem {
+                label: variant.clone(),
+                kind: CompletionKind::Type,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                insert_text_is_snippet: false,
+                sort_text: None,
+            });
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert(item.label.clone()));
+    Some(items)
+}
+
+/// The identifier ending at the end of `text`, if any.
+fn trailing_identifier(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let end = bytes.len();
+    let mut start = end;
+    while start > 0 {
+        let ch = bytes[start - 1];
+        if ch.is_ascii_alphanumeric() || ch == b'_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    (start < end).then(|| &text[start..end])
 }
 
 fn try_struct_init_completions(

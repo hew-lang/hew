@@ -66,6 +66,13 @@ fn duplicate_extern_symbol_rejects_type_and_ownership_drift() {
     assert_eq!(conflicts.len(), 1, "errors: {:#?}", output.errors);
     assert!(conflicts[0].message.contains("consume string"));
     assert!(conflicts[0].message.contains("bytes"));
+    assert!(
+        conflicts[0].notes.iter().any(|note| note
+            .1
+            .contains("extern \"C\" symbol declarations are program-wide unique")),
+        "notes: {:#?}",
+        conflicts[0].notes
+    );
 }
 
 #[test]
@@ -80,16 +87,23 @@ fn duplicate_extern_symbol_rejects_ownership_only_drift() {
         }
         "#,
     );
-    assert!(
-        output.errors.iter().any(|error| {
+    let conflict = output
+        .errors
+        .iter()
+        .find(|error| {
             matches!(
                 &error.kind,
                 TypeErrorKind::ConflictingExternDeclaration { symbol_name }
                     if symbol_name == "hew_duplicate_mode"
             )
-        }),
-        "errors: {:#?}",
-        output.errors
+        })
+        .unwrap_or_else(|| panic!("errors: {:#?}", output.errors));
+    assert!(
+        conflict.notes.iter().any(|note| note
+            .1
+            .contains("extern \"C\" symbol declarations are program-wide unique")),
+        "notes: {:#?}",
+        conflict.notes
     );
 }
 

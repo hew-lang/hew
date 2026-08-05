@@ -38,6 +38,21 @@ pub(super) struct PrimarySigScope {
     pushed_frame: bool,
 }
 
+/// Every key one impl method's declaration identity is published under.
+///
+/// Ownership is exclusive: a generic declaration holds `shared` + `canonical`
+/// and no mangled key; a concrete specialisation holds only `mangled`. The two
+/// sets never overlap, so `impl Render for Box<i64>` cannot claim the identity
+/// `impl<T> Render for Box<T>` published.
+struct ImplMethodDeclarationKeys {
+    /// `Type::method` — the cross-module compatibility dispatch key.
+    shared: Option<String>,
+    /// `module.Type::method` — the declaring module's own dispatch key.
+    canonical: Option<String>,
+    /// `Type$$i64::method` and its module-owned form.
+    mangled: Vec<String>,
+}
+
 #[derive(Default)]
 struct ExplicitReturnFinder {
     saw_return: bool,
@@ -1752,11 +1767,19 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `CrashInfo` / `CrashAction` surface so
-    /// `#[on(crash)]` lifecycle hooks can name them in their signatures
-    /// without `import std::failure;`.  Inline tests (no stdlib search
-    /// path) rely on this; on-disk programs reach the same types via
-    /// the module graph.
+    /// Register the built-in `std::failure` surface so lifecycle hooks can
+    /// name its payload types in their signatures without
+    /// `import std::failure;`.  Inline tests (no stdlib search path) rely on
+    /// this; on-disk programs reach the same types via the module graph.
+    ///
+    /// The whole shipped source registers, not a two-name subset (rc1-F1
+    /// stage D). Publishing `CrashNotification` / `CrashKind` as bindings while
+    /// declaring only `CrashInfo` / `CrashAction` left the binding tables
+    /// naming `std.failure.CrashNotification` and the declaration tables
+    /// knowing no such type — one declaration with two answers, which is what
+    /// made an `#[on(exit)]` payload fail the hook ABI compare and a
+    /// whole-module alias fail its exported-type lookup. `std::link_monitor`
+    /// registers its full projection for the same reason.
     fn register_builtin_failure_surface(&mut self) {
         let identity = "module:std::failure";
         if self.registered_stdlib_hew_sources.contains(identity) {
@@ -1771,30 +1794,30 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed
-                .program
-                .items
-                .into_iter()
-                .filter(|(item, _)| {
-                    matches!(
-                        item,
-                        Item::TypeDecl(decl)
-                            if matches!(decl.name.as_str(), "CrashInfo" | "CrashAction")
-                    )
-                })
-                .collect();
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
             self.register_stdlib_hew_items(
                 "failure",
                 "std.failure",
                 &items,
                 StdlibBarePublication::Prelude,
             );
+            // `CrashInfo` / `CrashAction` are genuine prelude: a
+            // `#[on(crash)]` signature names them with no import, always.
             for source_name in ["CrashInfo", "CrashAction"] {
                 self.canonical_lifecycle_import_authority.insert((
                     None,
                     source_name.to_string(),
                     format!("std.failure.{source_name}"),
                 ));
+            }
+            // The linked-actor payloads (`CrashNotification` / `CrashKind`)
+            // require an explicit `import std::failure` whenever the module
+            // graph can supply that source. With no stdlib search path there
+            // is no import to write — this compiled-in projection IS the
+            // source — so the bootstrap carries the same source-path-proven
+            // authority the import would have granted.
+            if !self.module_registry.has_search_paths() {
+                self.record_canonical_lifecycle_prelude_authority("std.failure");
             }
         }
     }
@@ -6076,13 +6099,18 @@ impl Checker {
                                         },
                                         &m.name,
                                     );
-                                    let symbol = format!("{type_name}::{}", m.name);
-                                    self.impl_method_declaration_ids
-                                        .insert(symbol.clone(), declaration.clone());
-                                    if let Some(module) = self.current_module.as_deref() {
-                                        self.impl_method_declaration_ids
-                                            .insert(format!("{module}.{symbol}"), declaration);
-                                    }
+                                    // A materialized default is keyed exactly
+                                    // like an explicit impl method: the
+                                    // `Box<i64>` specialisation takes its own
+                                    // mangled keys and leaves the generic
+                                    // `impl<T> … Box<T>` default owning the
+                                    // shared dispatch key.
+                                    let keys = self.impl_method_declaration_keys(
+                                        type_name,
+                                        &m.name,
+                                        id.type_params.as_deref(),
+                                    );
+                                    self.publish_impl_method_declaration_id(&keys, &declaration);
                                 }
                                 if let Some(td) = self.lookup_type_def_mut(type_name) {
                                     td.methods.insert(
@@ -7353,102 +7381,134 @@ impl Checker {
         // second call clobbers the first in `fn_sigs`, and codegen later emits two
         // LLVM functions under the same name → linkage crash.
         //
-        // Detection: no impl-level type params (concrete impl, not `impl<T>`),
-        // AND the enclosing impl's self-type has non-empty concrete type args
-        // (from `current_self_type`).  For such impls we ALSO register a
-        // mangled-key entry (`"Wrapper$$i64::describe"`), and that mangled key is
-        // what method-call dispatch and HIR will actually use.  The bare key entry
-        // in `fn_sigs` is kept as a fallback for lookup paths that have not yet
-        // been updated (e.g. method-set validation, external lookup).
-        let is_concrete_specialised_impl = impl_type_params.is_none_or(Vec::is_empty); // None → no impl type params → concrete
-        let has_concrete_receiver_args = self
-            .current_self_type
-            .as_ref()
-            .is_some_and(|(self_type_name, args)| self_type_name == type_name && !args.is_empty());
-        let canonical_method_key = if type_name.contains('.') {
-            method_key.clone()
-        } else {
-            self.current_module.as_ref().map_or_else(
-                || method_key.clone(),
-                |module| format!("{module}.{type_name}::{}", method.name),
-            )
-        };
-        // A generic declaration owns the bare dispatch key. Concrete
-        // specialisations only own their mangled key, so they cannot overwrite
-        // the generic declaration's identity for other receiver instances.
-        if !(is_concrete_specialised_impl && has_concrete_receiver_args) {
-            if self.registration_is_flat_file_import {
-                // File-import items are lowered as root items after checking.
-                // Their bare dispatch entry therefore outranks any package
-                // module's compatibility alias, independent of graph/import
-                // traversal order.
-                self.impl_method_declaration_ids
-                    .insert(method_key.clone(), declaration_id.clone());
-            } else {
-                self.impl_method_declaration_ids
-                    .entry(method_key.clone())
-                    .or_insert_with(|| declaration_id.clone());
-            }
-            self.impl_method_declaration_ids
-                .insert(canonical_method_key, declaration_id.clone());
-        }
-        if is_concrete_specialised_impl {
-            if let Some((self_type_name, self_type_args)) = &self.current_self_type.clone() {
-                if self_type_name == type_name && !self_type_args.is_empty() {
-                    // Try to resolve each type arg to a concrete `ResolvedTy` and
-                    // compute the mangled self-type name.  Fails gracefully if any
-                    // arg contains an inference variable or error node (which cannot
-                    // appear for a concrete specialised impl, but we are defensive).
-                    let resolved_args: Option<Vec<ResolvedTy>> = self_type_args
-                        .iter()
-                        .map(|ty| ResolvedTy::from_ty(ty).ok())
-                        .collect();
-                    if let Some(resolved_args) = resolved_args {
-                        if let Some(mangled_self) = crate::resolved_ty::mangle_impl_self_name(
-                            self_type_name,
-                            &resolved_args,
-                        ) {
-                            let mangled_method_key = format!("{mangled_self}::{}", method.name);
-                            // `scoped_module_item_name` deliberately rejects
-                            // presentation names containing `::`; an impl
-                            // method key necessarily has that separator. Build
-                            // the exact source-owned emitted symbol directly,
-                            // just as the non-specialised key above does.
-                            let canonical_mangled_method_key = if mangled_self.contains('.') {
-                                mangled_method_key.clone()
-                            } else {
-                                self.current_module.as_ref().map_or_else(
-                                    || mangled_method_key.clone(),
-                                    |module| format!("{module}.{mangled_method_key}"),
-                                )
-                            };
-                            // Register the full sig under the mangled key.  A
-                            // previous concrete-impl registration may already be
-                            // present; overwriting is correct because each impl
-                            // block processes its own concrete args in sequence.
-                            self.fn_sigs.insert(mangled_method_key.clone(), sig.clone());
-                            self.fn_sigs
-                                .insert(canonical_mangled_method_key.clone(), sig.clone());
-                            self.impl_method_declaration_ids
-                                .insert(mangled_method_key.clone(), declaration_id.clone());
-                            self.impl_method_declaration_ids.insert(
-                                canonical_mangled_method_key.clone(),
-                                declaration_id.clone(),
-                            );
-                            // Propagate consume-receiver membership to the mangled key
-                            // so HIR dispatch does not lose the move contract.
-                            if method.consumes_self {
-                                self.consume_receiver_methods.insert(mangled_method_key);
-                                self.consume_receiver_methods
-                                    .insert(canonical_mangled_method_key);
-                            }
-                        }
-                    }
-                }
+        // `impl_method_declaration_keys` owns the whole decision: a generic
+        // declaration keeps the shared dispatch key, a concrete specialisation
+        // takes only its mangled `"Wrapper$$i64::describe"` keys.  The bare key
+        // entry in `fn_sigs` is kept as a fallback for lookup paths that have
+        // not yet been updated (e.g. method-set validation, external lookup).
+        let keys = self.impl_method_declaration_keys(
+            type_name,
+            &method.name,
+            impl_type_params.map(Vec::as_slice),
+        );
+        self.publish_impl_method_declaration_id(&keys, &declaration_id);
+        for mangled_key in &keys.mangled {
+            // Register the full sig under the mangled key.  A previous
+            // concrete-impl registration may already be present; overwriting is
+            // correct because each impl block processes its own concrete args
+            // in sequence.
+            self.fn_sigs.insert(mangled_key.clone(), sig.clone());
+            // Propagate consume-receiver membership to the mangled key
+            // so HIR dispatch does not lose the move contract.
+            if method.consumes_self {
+                self.consume_receiver_methods.insert(mangled_key.clone());
             }
         }
 
         sig
+    }
+
+    /// Derive every key one impl method's declaration identity is published
+    /// under, from the shape of the enclosing impl block.
+    ///
+    /// A generic declaration (`impl<T> Render for Box<T>`) owns the shared
+    /// `Type::method` dispatch key and its module-canonical form. A concrete
+    /// specialisation (`impl Render for Box<i64>`) owns ONLY the mangled
+    /// `Type$$i64::method` keys, so it cannot overwrite the generic
+    /// declaration's identity for a different receiver instance.
+    ///
+    /// Explicit impl methods and materialized trait defaults both publish
+    /// through this one derivation. When the two producers keyed the same
+    /// declaration differently, a specialisation's materialized default
+    /// overwrote the generic impl's entry under the shared key, HIR's impl
+    /// block then advertised a declaration its emitted body did not carry, and
+    /// the generic default lost its monomorphisation entirely.
+    fn impl_method_declaration_keys(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        impl_type_params: Option<&[TypeParam]>,
+    ) -> ImplMethodDeclarationKeys {
+        let shared = format!("{type_name}::{method_name}");
+        // `scoped_module_item_name` deliberately rejects presentation names
+        // containing `::`; an impl method key necessarily has that separator.
+        // Build the module-owned form directly.
+        let module_owned = |key: &str, owner: &str| -> String {
+            if owner.contains('.') {
+                key.to_string()
+            } else {
+                self.current_module
+                    .as_ref()
+                    .map_or_else(|| key.to_string(), |module| format!("{module}.{key}"))
+            }
+        };
+        let canonical = module_owned(&shared, type_name);
+        // No impl-level type params means this impl block is concrete; it is a
+        // specialisation only when its self type also carries concrete args.
+        let is_concrete_specialised_impl = impl_type_params.is_none_or(<[TypeParam]>::is_empty);
+        let concrete_receiver_args = self
+            .current_self_type
+            .as_ref()
+            .filter(|(self_type_name, args)| self_type_name == type_name && !args.is_empty())
+            .map(|(_, args)| args.clone());
+        let Some(self_type_args) = concrete_receiver_args.filter(|_| is_concrete_specialised_impl)
+        else {
+            return ImplMethodDeclarationKeys {
+                shared: Some(shared),
+                canonical: Some(canonical),
+                mangled: Vec::new(),
+            };
+        };
+        // Resolve each type arg to a concrete `ResolvedTy` before mangling.
+        // An arg carrying an inference variable or error node cannot appear for
+        // a concrete specialised impl; if one does, the specialisation
+        // publishes nothing rather than falling back onto the generic
+        // declaration's shared key.
+        let mangled = self_type_args
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(ty).ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|resolved_args| {
+                crate::resolved_ty::mangle_impl_self_name(type_name, &resolved_args)
+            })
+            .map(|mangled_self| {
+                let key = format!("{mangled_self}::{method_name}");
+                let canonical_key = module_owned(&key, &mangled_self);
+                vec![key, canonical_key]
+            })
+            .unwrap_or_default();
+        ImplMethodDeclarationKeys {
+            shared: None,
+            canonical: None,
+            mangled,
+        }
+    }
+
+    /// Publish one impl method's declaration identity under the keys
+    /// [`Self::impl_method_declaration_keys`] derived for it.
+    fn publish_impl_method_declaration_id(
+        &mut self,
+        keys: &ImplMethodDeclarationKeys,
+        declaration_id: &crate::DefId,
+    ) {
+        if let Some(shared) = &keys.shared {
+            if self.registration_is_flat_file_import {
+                // File-import items are lowered as root items after checking.
+                // Their shared dispatch entry therefore outranks any package
+                // module's compatibility alias, independent of graph/import
+                // traversal order.
+                self.impl_method_declaration_ids
+                    .insert(shared.clone(), declaration_id.clone());
+            } else {
+                self.impl_method_declaration_ids
+                    .entry(shared.clone())
+                    .or_insert_with(|| declaration_id.clone());
+            }
+        }
+        for key in keys.canonical.iter().chain(&keys.mangled) {
+            self.impl_method_declaration_ids
+                .insert(key.clone(), declaration_id.clone());
+        }
     }
 
     /// Allocate an implementation-method declaration identity while its source
@@ -9169,68 +9229,6 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
-    /// Resolve one extern declaration against the single-owner table
-    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
-    /// structural compare against the established one — adopt on agreement,
-    /// register-then-report on conflict. The compare ALWAYS runs for a
-    /// further declaration of an established symbol (no span-based
-    /// same-site shortcut: a byte-offset span carries no file identity, and
-    /// peer files of one directory module can align spans exactly).
-    /// The canonical owner a nominal name in an extern signature denotes,
-    /// per the authority order documented on
-    /// [`extern_contract_nominal_identity`]. `None` = unresolvable here;
-    /// the spelling stays as written and the structural compare fails
-    /// closed on genuine ambiguity.
-    fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
-        // Signature resolution has usually already qualified a module-local
-        // type with the CURRENT module's owner — which is route-dependent
-        // for a peer-assembled file (`pkg.Tok` via `import pkg`,
-        // `pkg.aaa.Tok` via `import pkg::aaa`, for one declaration in
-        // `pkg/aaa.hew`). Strip the current module's own qualifier back to
-        // the source leaf so the FILE rule decides the owner; every route
-        // then mints the declaring file's identity.
-        let module_local_leaf = self.current_module.as_deref().and_then(|module| {
-            name.strip_prefix(module)
-                .and_then(|rest| rest.strip_prefix('.'))
-                .filter(|leaf| !leaf.contains('.') && !leaf.contains("::"))
-        });
-        if let Some(leaf) = module_local_leaf {
-            if let Some(owner) = self.extern_nominal_file_owner(leaf) {
-                return Some(owner);
-            }
-            return Some(name.to_string());
-        }
-        if !name.contains('.') {
-            if let Some(owner) = self.extern_nominal_file_owner(name) {
-                return Some(owner);
-            }
-        }
-        if let Some(canonical) = self.canonical_nominal_name(name) {
-            return Some(canonical);
-        }
-        // Registry-loaded stdlib signatures present nominal owners as the
-        // loaded module's SHORT spelling (`stream.Sink`), while the same
-        // declaration's source module registers the complete owner
-        // (`std.stream.Sink`). The module registry is the declaration-proven
-        // authority joining those two representations of one loaded
-        // declaration: it refuses bare leaves and ambiguous spellings, so it
-        // can never recover an owner from text alone.
-        if let Some(identity) = self
-            .module_registry
-            .canonical_method_receiver_identity(name)
-        {
-            return Some(identity);
-        }
-        // Import-lexical fallback, LAST: it recovers only what the proven
-        // canonical/registry authorities could not, never pre-empts them.
-        if !name.contains('.') {
-            if let Some(owner) = self.extern_nominal_imported_owner(name) {
-                return Some(owner);
-            }
-        }
-        None
-    }
-
     /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
     /// declaring file does not itself declare resolves through the declaring
     /// module's DIRECT imports — through the names each import actually
@@ -9243,7 +9241,7 @@ impl Checker {
     /// identity; zero or several → `None`: the spelling stays as written and
     /// the contract compare fails closed — ambiguity never picks a winner on
     /// the C-ABI axis.
-    fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
+    pub(super) fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
         // (declaring file, source-declared name) pairs the bound spelling
         // denotes. Deduped: two import edges to one declaration are one
         // meaning, not an ambiguity.
@@ -9325,18 +9323,23 @@ impl Checker {
 
     /// FILE-lexical nominal authority: the item's own declaring file first,
     /// then exactly one sibling file of the declaring module.
-    fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
-        let file = self.current_item_source.as_ref()?;
+    ///
+    /// The item's own file is known only inside the per-item registration
+    /// frame; outside it the sibling rule alone still decides, which is what
+    /// lets source type expressions ask the same question extern signatures do.
+    pub(super) fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
         let declares = |source: &std::path::PathBuf| {
             self.file_type_decls
                 .get(source)
                 .is_some_and(|declared| declared.contains(name))
         };
-        if declares(file) {
-            return Some(format!(
-                "{}.{name}",
-                self.identity.module_path_for_source(file)?
-            ));
+        if let Some(file) = self.current_item_source.as_ref() {
+            if declares(file) {
+                return Some(format!(
+                    "{}.{name}",
+                    self.identity.module_path_for_source(file)?
+                ));
+            }
         }
         let sources = self
             .module_source_paths
@@ -9367,6 +9370,13 @@ impl Checker {
         (file != primary).then(|| file.display().to_string())
     }
 
+    /// Resolve one extern declaration against the single-owner table
+    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
+    /// structural compare against the established one — adopt on agreement,
+    /// register-then-report on conflict. The compare ALWAYS runs for a
+    /// further declaration of an established symbol (no span-based
+    /// same-site shortcut: a byte-offset span carries no file identity, and
+    /// peer files of one directory module can align spans exactly).
     fn resolve_extern_contract(
         &mut self,
         key: &str,
@@ -9507,13 +9517,24 @@ impl Checker {
                 "extern symbol `{source_symbol}` has conflicting declarations: \
                  `{conflicting}` does not match the established `{established_description}`"
             ),
-            notes: vec![(
-                established.span.clone(),
-                format!(
-                    "the first declaration of `{source_symbol}` established `{established_description}`"
+            notes: vec![
+                (
+                    established.span.clone(),
+                    format!(
+                        "the first declaration of `{source_symbol}` established `{established_description}`"
+                    ),
+                    note_token,
                 ),
-                note_token,
-            )],
+                (
+                    f.span.clone(),
+                    "extern \"C\" symbol declarations are program-wide unique: the linker \
+                     binds every call site to one implementation, so a redeclaration must \
+                     match the established contract exactly, even if this declaration is \
+                     never called"
+                        .to_string(),
+                    error_token.clone(),
+                ),
+            ],
             suggestions: vec![format!(
                 "make every declaration of `{source_symbol}` use exactly `{established_description}`"
             )],
@@ -9898,11 +9919,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.module_registry
-                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature(
                                 &func.return_type,
                                 &canonical_owner,
                             ),
@@ -9925,11 +9945,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.module_registry
-                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature(
                                 &wfn.return_type,
                                 &canonical_owner,
                             ),
@@ -9991,9 +10010,27 @@ impl Checker {
 
                     // Register opaque handles and fielded resource wrappers so
                     // registry-only imports can use either in type annotations.
-                    for type_name in handle_types.iter().chain(&resource_wrapper_types) {
-                        self.known_types.insert(type_name.clone());
-                    }
+                    //
+                    // Under the loaded module's CANONICAL owner, never the
+                    // extracted short spelling (rc1-F1 stage D, registry
+                    // producer). Publishing `stream.Sink` beside the source
+                    // module's `std.stream.Sink` puts two owners on one
+                    // declaration, and every later unique-owner resolution then
+                    // reads that as an ambiguity and leaves the name as written.
+                    let canonical_known_types = handle_types
+                        .iter()
+                        .chain(&resource_wrapper_types)
+                        .map(|type_name| {
+                            self.resolve_nominal_declaration(
+                                NominalOrigin::RegistrySignature {
+                                    canonical_owner: &canonical_owner,
+                                },
+                                type_name,
+                            )
+                            .unwrap_or_else(|| type_name.clone())
+                        })
+                        .collect::<Vec<_>>();
+                    self.known_types.extend(canonical_known_types);
 
                     // Populate TraitRegistry with handle/drop types
                     for ht in &handle_types {
@@ -10604,14 +10641,10 @@ impl Checker {
                     sig.params = sig
                         .params
                         .iter()
-                        .map(|ty| {
-                            self.module_registry
-                                .canonicalize_registry_signature_ty(ty, module_full_path)
-                        })
+                        .map(|ty| self.canonicalize_registry_signature(ty, module_full_path))
                         .collect();
-                    sig.return_type = self
-                        .module_registry
-                        .canonicalize_registry_signature_ty(&sig.return_type, module_full_path);
+                    sig.return_type =
+                        self.canonicalize_registry_signature(&sig.return_type, module_full_path);
                     // `accepts_kwargs` is transport metadata supplied by the
                     // registry for the log wrapper; it does not carry a type
                     // identity, so retain it while replacing every semantic
@@ -11103,6 +11136,17 @@ impl Checker {
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
+                        // The enclosing impl's self type, as every other
+                        // registration path publishes it. `register_impl_method`
+                        // reads it to tell `impl Render for Box<i64>` from
+                        // `impl<T> Render for Box<T>`: without it a flat-file
+                        // import's specialisation looks generic, so it claims the
+                        // shared `Box::render` dispatch key the generic
+                        // declaration owns instead of taking only its own
+                        // mangled key.
+                        let prev_self_type = self
+                            .current_self_type
+                            .replace((type_name.clone(), self_type_args.clone()));
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;
@@ -11131,6 +11175,7 @@ impl Checker {
                                 );
                             }
                         }
+                        self.current_self_type = prev_self_type;
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
                             self.mark_imported_trait_used(None, &tb.name);

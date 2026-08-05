@@ -6,6 +6,25 @@ use super::coerce::cast_is_valid;
 use super::*;
 use crate::BuiltinType;
 
+/// The canonical lifecycle owner an ALREADY-MINTED identity carries, paired
+/// with the module binding that owner is written as
+/// (`std.failure.CrashKind` → `failure`).
+///
+/// The two owners are enumerated, not derived: an identity the checker minted
+/// is never re-parsed to recover its parts, because reading
+/// `std.failure.CrashKind` as `binding.tail` finds a lexical binding named
+/// `std` and rejects the checker's own canonical spelling (rc1-F1 stage D).
+fn canonical_lifecycle_owner_binding(name: &str) -> Option<&'static str> {
+    let (owner, _) = crate::source_owned_lifecycle_owner(name)?;
+    // Only the CANONICAL spelling is an identity the checker minted. The short
+    // binding form (`failure.CrashKind`) the owner table also accepts is an
+    // older internal fact, and must still go through the ordinary
+    // binding-and-tail resolution below.
+    name.strip_prefix(owner.canonical_path)?
+        .strip_prefix('.')
+        .map(|_| owner.binding)
+}
+
 impl Checker {
     /// Return the generated discriminator only when the exact enum owner is
     /// backed by a selected canonical std source (or the equivalent recorded
@@ -105,6 +124,18 @@ impl Checker {
         &self,
         name: &str,
     ) -> Option<(String, String)> {
+        // An ALREADY-MINTED identity is never re-parsed as `binding.tail`
+        // (rc1-F1 stage D). Once a whole-module alias has been resolved to
+        // `std.failure.CrashKind`, splitting it again reads `std` as a lexical
+        // module binding, finds none, and rejects the checker's own canonical
+        // spelling. Credit the binding that PROVED the identity instead; with no
+        // proof, name the owner leaf so the scope gate below still fails closed.
+        if let Some(owner_binding) = canonical_lifecycle_owner_binding(name) {
+            if crate::lookup_source_owned_lifecycle_type(name).is_some() {
+                let binding = self.lexical_binding_for_lifecycle_identity(name, owner_binding);
+                return Some((name.to_string(), binding));
+            }
+        }
         let (binding, tail) = name.split_once('.')?;
         let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
         let owner = match self
@@ -124,6 +155,26 @@ impl Checker {
         let canonical = format!("{owner}.{bare}");
         crate::lookup_source_owned_lifecycle_type(&canonical)
             .map(|_| (canonical, binding.to_string()))
+    }
+
+    /// The lexical spelling that proves a canonical lifecycle identity in the
+    /// module being checked — the whole-module alias or bound name recorded by
+    /// the source-path-proven import authority. Deterministic when an identity
+    /// was reached through more than one binding. With no proof it falls back to
+    /// the owner's own module binding, which grants nothing on its own, so an
+    /// unproven use stays unauthorized at the scope gate.
+    fn lexical_binding_for_lifecycle_identity(
+        &self,
+        name: &str,
+        owner_binding: &'static str,
+    ) -> String {
+        self.canonical_lifecycle_import_authority
+            .iter()
+            .filter(|(importer, _, identity)| importer == &self.current_module && identity == name)
+            .map(|(_, binding, _)| binding)
+            .min()
+            .cloned()
+            .unwrap_or_else(|| owner_binding.to_string())
     }
 
     /// Whether this source-owned lifecycle identity is available from the
@@ -243,6 +294,42 @@ impl Checker {
     /// last-write-wins bare key in the downstream record-layout / field-order
     /// registry. The C1 layout authority shortens the qualifier back to bare on
     /// a non-colliding lookup, so a single-module reference is unaffected.
+    /// The declaration a SOURCE type spelling mints in the module being
+    /// checked (rc1-F1 stage D, source producer).
+    ///
+    /// One answer, used both by the scope gates that guard the mint and by the
+    /// mint itself, so a gate can never be computed from a different rung than
+    /// the identity it guards — the failure that let an unimported lifecycle
+    /// payload past its source-authority check.
+    ///
+    /// The single-publisher rung comes first: a bare name exactly one imported
+    /// module published binds to that owner's qualified identity, so two
+    /// modules' same-bare-name types cannot collapse onto one last-write-wins
+    /// key in the downstream layout registries. Everything else resolves
+    /// through the shared ladder every other producer uses, which is what makes
+    /// a spelling an import bound (`CrashNotification`, or `ExitNote` for an
+    /// aliased opt-in) carry the same owner here as in an extern contract or a
+    /// registry signature.
+    pub(super) fn source_nominal_declaration(&self, name: &str) -> Option<String> {
+        if let Some(published) = self.published_bare_type_qualified(name) {
+            return Some(published);
+        }
+        let declaration = self.resolve_nominal_declaration(NominalOrigin::Lexical, name)?;
+        // Compiler catalog nominals keep their own namespace. `Location`,
+        // `NodeId` and the other entries the compiler declares in
+        // `std.builtins` ARE their catalog discriminator; the downstream
+        // value-class and layout tables know them by that bare spelling alone,
+        // so qualifying one to `std.builtins.Location` renames a type nothing
+        // downstream can look up. Leave it as written.
+        if declaration
+            .strip_prefix("std.builtins.")
+            .is_some_and(|leaf| leaf == name)
+        {
+            return None;
+        }
+        Some(declaration)
+    }
+
     pub(super) fn published_bare_type_qualified(&self, name: &str) -> Option<String> {
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return None;
@@ -2636,7 +2723,7 @@ impl Checker {
                 // so a user-backed `std.failure::{CrashNotification}` cannot
                 // mint the lifecycle ABI identity.
                 let published_lifecycle = (!is_local && !name.contains('.'))
-                    .then(|| self.published_bare_type_qualified(name))
+                    .then(|| self.source_nominal_declaration(name))
                     .flatten()
                     .filter(|canonical| {
                         crate::lookup_source_owned_lifecycle_type(canonical).is_some()
@@ -2681,6 +2768,19 @@ impl Checker {
                     // below. Canonical registration seeds the full qualified
                     // key; the bare entry may remain only as a compatibility
                     // surface and is never the owner authority here.
+                    //
+                    // KNOWN GAP (rc1-F1, route producer): a file peer-assembled
+                    // into a directory module and ALSO reached as its own
+                    // submodule is one declaration that mints `pkg.Tok` here and
+                    // `pkg.aaa.Tok` on the other route. The identity table
+                    // already answers this (`module_path_for_source` gives one
+                    // path per file, either route), but converging the checker
+                    // alone is not enough: HIR re-derives the owner from the
+                    // module graph and the MIR field-order table is keyed by
+                    // that render, so a checker-only fix trades a type mismatch
+                    // for a missing layout key. Closing it means checker, HIR
+                    // owner derivation and the MIR layout key all reading the
+                    // declaring file's minted identity together.
                     if let Some(module) = self.current_module.as_deref() {
                         let qualified = format!("{module}.{name}");
                         if self.type_defs.contains_key(&qualified) {
@@ -2691,13 +2791,8 @@ impl Checker {
                     } else {
                         name.clone()
                     }
-                } else if let Some(qualified) = self.published_bare_type_qualified(name) {
-                    // Exactly one module published this bare name. Bind to that
-                    // owner's QUALIFIED identity (`owner.Name`) so a sibling
-                    // module exporting the same bare name cannot collapse the two
-                    // onto one last-write-wins bare key downstream (the MIR
-                    // record-layout / field-order registry is keyed by identity).
-                    qualified
+                } else if let Some(declaration) = self.source_nominal_declaration(name) {
+                    declaration
                 } else {
                     match handle_matches.as_slice() {
                         // Exactly one importing module exports this name: bind to

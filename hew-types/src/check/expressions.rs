@@ -1241,6 +1241,12 @@ impl Checker {
         else {
             return Ty::Error;
         };
+        // The lifecycle authority MINTS the canonical identity here; the
+        // lexical spelling stays available for the surfaces that must split a
+        // `module.Type::Variant` path into its parts. Splitting the minted
+        // identity instead would read `std` as a module binding — a rendered
+        // identity is never parsed back into one (rc1-F1 stage D).
+        let surface_name = name;
         let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
         if self.report_bare_const_import_ambiguity(name, span) {
             return Ty::Error;
@@ -1258,9 +1264,9 @@ impl Checker {
         //    (registered module-qualified types like "lifecycle.Lifecycle"
         //    are correctly resolved by resolve_identifier_variant via the
         //    type_defs flat-key path — don't short-circuit that path)
-        if let Some(dot_pos) = name.find('.') {
-            let candidate_module = &name[..dot_pos];
-            let rest = &name[dot_pos + 1..];
+        if let Some(dot_pos) = surface_name.find('.') {
+            let candidate_module = &surface_name[..dot_pos];
+            let rest = &surface_name[dot_pos + 1..];
             if let Some(colon_pos) = rest.find("::") {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];

@@ -34,6 +34,14 @@ than double-free risks.
   required. Stdlib `Child` (`std::process`) and `MonitorRef`
   (`std::link_monitor`) have been migrated to the `#[resource]` close model.
   (#1986)
+- **`extern "C"` symbol declarations are program-wide unique.** A second
+  declaration of an already-declared C symbol must repeat its established
+  parameter types, return type, variadic shape, and `consume` ownership modes
+  exactly; a drifting redeclaration is now a compile error even if it is never
+  called. Previously such a redeclaration was accepted, and codegen would
+  bind every call site to whichever declaration's signature the linker
+  happened to pick. Identical redeclarations of the same symbol still
+  coexist and resolve to the one established contract.
 
 ### Removed — actor system-message symbols (breaking)
 

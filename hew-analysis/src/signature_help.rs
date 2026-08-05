@@ -62,11 +62,43 @@ fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
         return Some(sig);
     }
 
+    // A module-qualified free call (`unicode.is_upper(cp)`) reaches here: it is
+    // not the exact key, and its prefix is an import binding rather than a
+    // value, so it has no receiver type. Resolve the binding to the module it
+    // names and ask for the canonical identity. Ordered AFTER the receiver path
+    // so a local value shadowing an import binding still resolves as the method
+    // call it is.
+    if let Some(sig) = find_module_qualified_fn_sig(&context.callee, tc) {
+        return Some(sig);
+    }
+
     if context.receiver_end.is_none() {
         return find_fallback_fn_sig(&context.callee, tc);
     }
 
     None
+}
+
+/// Resolve `<binding>.<fn>` through the importer's own binding table.
+///
+/// `fn_sigs` is keyed by the declaring module's canonical path
+/// (`std.text.unicode.is_upper`), while the source spells the lexical import
+/// binding (`unicode.is_upper`). `module_import_bindings` is the checker's
+/// record of exactly which module each binding names, so the surface spelling
+/// resolves to one identity without the LSP inventing an owner or scanning
+/// `fn_sigs` for a matching leaf.
+///
+/// Keyed on the root importer (`None`): the analyzed document is the
+/// compilation root. A miss returns `None`; no owner is guessed.
+fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    let (binding, leaf) = callee.rsplit_once('.')?;
+    if binding.is_empty() || leaf.is_empty() {
+        return None;
+    }
+    let owner = tc
+        .module_import_bindings
+        .get(&(None, binding.to_string()))?;
+    tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
 }
 
 /// Find the function name and active parameter index at the cursor offset.
@@ -145,6 +177,20 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     // Try just the last component as a plain function name.
     let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
     if last != name {
+        // rc1-F1 stage F: prefer the leaf's canonical root identity
+        // (published through `TypeCheckOutput::identity`) over the bare
+        // rung below. `tc.fn_sigs` still publishes root free functions
+        // bare-only (the checker's legacy render survives F1 — see
+        // `check/mod.rs`'s "LEGACY ROOT RENDER" comment), so this rung is
+        // inert today; it activates without a further code change once
+        // rc2 deletes that render and publishes the canonical key
+        // directly. WHEN OBSOLETE: rc2 render-canonicalization stage, at
+        // which point the bare/`ends_with` rungs below are deleted.
+        if let Some(canonical) = tc.identity.root_fn_identity(last) {
+            if let Some(sig) = tc.fn_sigs.get(&canonical) {
+                return Some(sig.clone());
+            }
+        }
         if let Some(sig) = tc.fn_sigs.get(last) {
             return Some(sig.clone());
         }
@@ -159,6 +205,13 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
 }
 
 fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    // rc1-F1 stage F: same canonical-first rung as `find_fallback_fn_sig`
+    // above, for the exact (unsplit) spelling.
+    if let Some(canonical) = tc.identity.root_fn_identity(name) {
+        if let Some(sig) = tc.fn_sigs.get(&canonical) {
+            return Some(sig.clone());
+        }
+    }
     tc.fn_sigs.get(name).cloned()
 }
 

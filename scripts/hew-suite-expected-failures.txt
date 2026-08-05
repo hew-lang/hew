@@ -12,8 +12,8 @@
 #
 # Format: <test_function_name>  # <class>: <root cause>
 #
-# Total: 2 unique failing test function names.
-
-# checker-target-gap (2)
-test_generic_record_of_vec_clone  # checker-target-gap: ordinary call admitted with no canonical target
-test_generic_record_of_vec_clone_owned_payload  # checker-target-gap: ordinary call admitted with no canonical target
+# Total: 0 unique failing test function names.
+#
+# The list is EMPTY. Every test in tests/hew/ passes. Keep it that way: a new
+# entry here is a regression being recorded rather than fixed, and the ratchet
+# is the only thing standing between that and silence.

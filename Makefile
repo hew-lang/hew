@@ -1187,7 +1187,7 @@ test-structural-lint-bootstrap:
 # enumerates a corpus and then compares over it proves nothing when the
 # enumeration is empty; scripts/corpus-floors.tsv is where each such gate
 # records the size it expects to find.
-corpus-floor-check: test-leak-oracle-selftest
+corpus-floor-check:
 	bash scripts/tests/test_corpus_floor.sh
 	bash scripts/check-corpus-floors.sh
 

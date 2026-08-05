@@ -307,6 +307,12 @@ tests/pkg-import/self_qualified_type_identity.hew
 
 # deferred-nyi: actor crash context diagnostic NYI
 
+# deferred-nyi: MIR lowering for named function used as a value (only
+# non-generic named functions are currently supported) is not implemented
+# yet; generic named functions as values are not yet implemented in the
+# current spine
+tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew
+
 # deferred-nyi: hashmap/hashset for-in NYI
 
 # deferred-nyi: lambda capture NYI

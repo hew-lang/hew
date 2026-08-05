@@ -1824,6 +1824,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "libc",
+ "llvm-sys",
  "tempfile",
 ]
 

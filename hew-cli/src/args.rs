@@ -449,7 +449,9 @@ pub struct BuildArgs {
     /// Emits DWARF debug info into the native object. gdb and lldb read this
     /// faithfully on Linux (ELF), macOS, and FreeBSD. On `windows-msvc` the
     /// output is COFF with `CodeView` plus a sidecar `.pdb`; `windows-gnu`
-    /// remains the PE/COFF GNU-target path with embedded DWARF.
+    /// remains the PE/COFF GNU-target path with embedded DWARF, which no
+    /// debugger check currently proves (the live-debugger suite is excluded
+    /// on Windows and the PDB check covers only `windows-msvc`).
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or

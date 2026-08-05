@@ -133,6 +133,37 @@ fn main() {
 }
 ";
 
+/// Scalar AND reference locals reassigned AFTER a suspend point. The string
+/// reassignment lowers through the raii-null-after-move sequence (release the
+/// prior value, null the slot, store the replacement), so an anchor that
+/// blindly tracked every store would carry the interior null into the
+/// debugger — `s = 0x0` on the very line a user breaks at. An honesty fixture
+/// must cover the type classes where dishonesty is possible: a scalar-only
+/// fixture missed exactly this.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const SLEEP_REASSIGN_SRC: &str = "\
+actor Worker {
+    receive fn compute(n: i64) -> i64 {
+        var k: i64 = n;
+        var s: string = \"before\";
+        sleep(10ms);
+        k = n + 1;
+        s = \"after\";
+        println(s);
+        println(k);
+        k
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    match await worker.compute(7) {
+        Ok(value) => println(value),
+        Err(_) => println(-1),
+    }
+}
+";
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const ENUM_SRC: &str = "\
 record Payload {
@@ -513,6 +544,122 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     assert!(
         text.contains("y = 42") || text.contains("= 42"),
         "post-store breakpoint must read the stored `y = 42`:\n{text}"
+    );
+}
+
+/// A305, reference/type-class coverage: a string local reassigned after a
+/// suspend point must never read as the raii-null-after-move interior null
+/// (`s = 0x0`) — it reports unavailable until the replacement value's range
+/// begins, then the real value. The reassigned scalar must only ever read its
+/// true post-assignment value or unavailable.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
+    require_codegen();
+    let dbg = require_debugger();
+    let fixture = build_debug_fixture("sleep-reassign-locals", SLEEP_REASSIGN_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+    // Stop 1: `println(s)` (line 8), immediately after both reassignments.
+    // Stop 2: `println(k)` (line 9), where `s`'s replacement range has begun.
+    let cmd = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 8"),
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 9"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable k s",
+            "-o",
+            "breakpoint disable 1",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable k s",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("hbreak {src}:8"),
+            "-ex",
+            &format!("hbreak {src}:9"),
+            "-ex",
+            "run",
+            "-ex",
+            "info locals",
+            "-ex",
+            "disable 1",
+            "-ex",
+            "continue",
+            "-ex",
+            "info locals",
+            bin,
+        ]);
+        command
+    };
+    let out = run_bounded_command(cmd, format!("{dbg} reassigned reference local"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{dbg} failed while debugging reassignment handler:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The interior null must never be presented as `s`'s value.
+    assert!(
+        !text.contains("s = 0x0000000000000000") && !text.contains("s = 0x0\n"),
+        "`s` must never read as the raii interior null:\n{text}"
+    );
+    // `s` is either honestly absent or the real replacement value; the stale
+    // pre-suspend \"before\" after the reassignment line would also be a lie.
+    assert!(
+        text.contains("not available") || text.contains("optimized out") || text.contains("after"),
+        "`s` must be unavailable or the real value at the reassignment stops:\n{text}"
+    );
+    let stale_s = text
+        .lines()
+        .any(|line| line.contains("s = ") && line.contains("before"));
+    assert!(
+        !stale_s,
+        "`s` must never read the released pre-suspend \"before\" after reassignment:\n{text}"
+    );
+    // The second stop reads the real replacement value. Line-scoped so the
+    // program's own `println(s)` output cannot satisfy the assertion.
+    let s_reads_after = text
+        .lines()
+        .any(|line| line.contains("s = ") && line.contains("after"));
+    assert!(
+        s_reads_after,
+        "`s` must read the replacement string once its range begins:\n{text}"
+    );
+    // The reassigned scalar reads its true value (or is honestly absent) —
+    // never any other number.
+    let wrong_k = text.lines().any(|line| {
+        line.split_once("k = ")
+            .map(|(_, v)| v.trim())
+            .is_some_and(|v| {
+                v.chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit() || c == '-')
+                    && v != "8"
+            })
+    });
+    assert!(
+        !wrong_k,
+        "`k` must never read as a value other than its stored 8:\n{text}"
+    );
+    assert!(
+        text.contains("k = 8"),
+        "reassigned `k` must read 8 at the post-assignment stops:\n{text}"
     );
 }
 

@@ -9271,18 +9271,23 @@ impl Checker {
 
     /// FILE-lexical nominal authority: the item's own declaring file first,
     /// then exactly one sibling file of the declaring module.
+    ///
+    /// The item's own file is known only inside the per-item registration
+    /// frame; outside it the sibling rule alone still decides, which is what
+    /// lets source type expressions ask the same question extern signatures do.
     pub(super) fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
-        let file = self.current_item_source.as_ref()?;
         let declares = |source: &std::path::PathBuf| {
             self.file_type_decls
                 .get(source)
                 .is_some_and(|declared| declared.contains(name))
         };
-        if declares(file) {
-            return Some(format!(
-                "{}.{name}",
-                self.identity.module_path_for_source(file)?
-            ));
+        if let Some(file) = self.current_item_source.as_ref() {
+            if declares(file) {
+                return Some(format!(
+                    "{}.{name}",
+                    self.identity.module_path_for_source(file)?
+                ));
+            }
         }
         let sources = self
             .module_source_paths

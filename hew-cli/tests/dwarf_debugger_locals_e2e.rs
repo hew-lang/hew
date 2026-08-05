@@ -412,7 +412,12 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
     let fixture = build_debug_fixture("await-locals", AWAIT_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
-    // Hardware breakpoints avoid patching coroutine code while runtime threads execute it.
+    // lldb uses hardware breakpoints to avoid patching coroutine code while
+    // runtime threads execute it. gdb cannot: the CI Linux runner (and every
+    // Linux host probed) reports "No hardware breakpoint support in the
+    // target" for `hbreak` unconditionally — the debug registers are not
+    // available to gdb's ptrace path there — so the gdb branch uses software
+    // breakpoints instead.
     let cmd = if dbg == "lldb" {
         let mut command = Command::new("lldb");
         command.args([
@@ -439,9 +444,9 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
         command.args([
             "--batch",
             "-ex",
-            &format!("hbreak {src}:10"),
+            &format!("break {src}:10"),
             "-ex",
-            &format!("hbreak {src}:12"),
+            &format!("break {src}:12"),
             "-ex",
             "run",
             "-ex",
@@ -487,8 +492,9 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
     // Stop 1 (line 4, ramp, pre-suspend): `x` stored, `y` not. Stop 2 (line 7,
-    // `.resume`, post-suspend): both stored. Hardware breakpoints avoid
-    // patching coroutine code while runtime threads execute it.
+    // `.resume`, post-suspend): both stored. lldb uses hardware breakpoints
+    // to avoid patching coroutine code while runtime threads execute it; gdb
+    // falls back to software breakpoints (see the await test above for why).
     let cmd = if dbg == "lldb" {
         let mut command = Command::new("lldb");
         command.args([
@@ -519,9 +525,9 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
         command.args([
             "--batch",
             "-ex",
-            &format!("hbreak {src}:4"),
+            &format!("break {src}:4"),
             "-ex",
-            &format!("hbreak {src}:7"),
+            &format!("break {src}:7"),
             "-ex",
             "run",
             "-ex",
@@ -584,6 +590,17 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const STOP_SPLIT: &str = "HEW_STOP_SPLIT";
 
+/// gdb `printf` command for the string local `s`, under `set language c`.
+/// Prints the pointer's raw hex AND its dereferenced content in one line
+/// shaped like lldb's native `s = 0x… "content"` render, so the shared
+/// `s_pointer_reads`/`s_reads_null`/`s_reads_unavailable` helpers below work
+/// unmodified against either debugger's transcript. `printf` flushes the
+/// literal `s = ` prefix before evaluating the arguments, so an unavailable
+/// `s` still yields a line starting with `s = ` (followed by gdb's own
+/// "optimized out" wording) rather than losing the prefix entirely.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const GDB_PRINT_S: &str = "printf \"s = 0x%lx \\\"%s\\\"\\n\", (unsigned long)s, (char*)s";
+
 /// A debugger's read of a pointer variable renders as `s = 0x…` (`frame
 /// variable` and `info locals` both do). Requiring the `0x` is what keeps
 /// these matches meaningful: the debuggee's own stdout AND the source listing
@@ -621,7 +638,8 @@ fn s_reads_unavailable(section: &str) -> bool {
 
 /// Build the two-stop debugger script for the reassignment fixture: stop at
 /// line 8 and line 9, read `k` and `s` at each, with [`STOP_SPLIT`] printed
-/// between the stops.
+/// between the stops. lldb uses hardware breakpoints; gdb falls back to
+/// software breakpoints (see the await test's comment for why).
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
     if dbg == "lldb" {
@@ -654,13 +672,23 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
         command.args([
             "--batch",
             "-ex",
-            &format!("hbreak {src}:8"),
+            &format!("break {src}:8"),
             "-ex",
-            &format!("hbreak {src}:9"),
+            &format!("break {src}:9"),
             "-ex",
             "run",
+            // gdb auto-detects the DWARF source language as Rust from the
+            // producer; in Rust mode `print`/`info locals` render a `*mut u8`
+            // (Hew's string ABI pointer) as a bare address, never dereferenced
+            // into content — unlike lldb, which prints the string. Forcing C
+            // mode lets an explicit `(char*)` cast trigger gdb's string
+            // rendering.
             "-ex",
-            "info locals",
+            "set language c",
+            "-ex",
+            "printf \"k = %ld\\n\", k",
+            "-ex",
+            GDB_PRINT_S,
             "-ex",
             &format!("echo {STOP_SPLIT}\\n"),
             "-ex",
@@ -668,7 +696,9 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-ex",
             "continue",
             "-ex",
-            "info locals",
+            "printf \"k = %ld\\n\", k",
+            "-ex",
+            GDB_PRINT_S,
             bin,
         ]);
         command
@@ -774,6 +804,8 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
     // One stop at `println(n)` (line 8), reached via the untaken branch.
+    // lldb uses hardware breakpoints; gdb falls back to software breakpoints
+    // (see the await test's comment for why).
     let cmd = if dbg == "lldb" {
         let mut command = Command::new("lldb");
         command.args([
@@ -794,13 +826,18 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
         command.args([
             "--batch",
             "-ex",
-            &format!("hbreak {src}:8"),
+            &format!("break {src}:8"),
             "-ex",
             "run",
+            // See `two_stop_reassign_cmd`: force C mode so the `(char*)` cast
+            // in `GDB_PRINT_S` dereferences the string pointer instead of
+            // printing a bare address.
+            "-ex",
+            "set language c",
             "-ex",
             "info args",
             "-ex",
-            "info locals",
+            GDB_PRINT_S,
             bin,
         ]);
         command
@@ -844,6 +881,8 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
     let fixture = build_debug_fixture("handler-backtrace", HANDLER_SRC);
     let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
     let bin = fixture.binary.to_str().expect("bin path utf8");
+    // lldb uses hardware breakpoints; gdb falls back to software breakpoints
+    // (see the await test's comment for why).
     let cmd = if dbg == "lldb" {
         let mut command = Command::new("lldb");
         command.args([
@@ -864,7 +903,7 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         command.args([
             "--batch",
             "-ex",
-            &format!("hbreak {src}:13"),
+            &format!("break {src}:13"),
             "-ex",
             "run",
             "-ex",

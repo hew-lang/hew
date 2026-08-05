@@ -105,6 +105,20 @@ impl Checker {
         &self,
         name: &str,
     ) -> Option<(String, String)> {
+        // An ALREADY-MINTED identity is never re-parsed as `binding.tail`
+        // (rc1-F1 stage D). Once a whole-module alias has been resolved to
+        // `std.failure.CrashKind`, splitting it again reads `std` as a lexical
+        // module binding, finds none, and rejects the checker's own canonical
+        // spelling. Credit the binding that PROVED the identity instead; with no
+        // proof, name the owner leaf so the scope gate below still fails closed.
+        let already_canonical = name
+            .rsplit_once('.')
+            .is_some_and(|(owner, _)| matches!(owner, "std.failure" | "std.link_monitor"))
+            && crate::lookup_source_owned_lifecycle_type(name).is_some();
+        if already_canonical {
+            let binding = self.lexical_binding_for_lifecycle_identity(name);
+            return Some((name.to_string(), binding));
+        }
         let (binding, tail) = name.split_once('.')?;
         let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
         let owner = match self
@@ -124,6 +138,26 @@ impl Checker {
         let canonical = format!("{owner}.{bare}");
         crate::lookup_source_owned_lifecycle_type(&canonical)
             .map(|_| (canonical, binding.to_string()))
+    }
+
+    /// The lexical spelling that proves a canonical lifecycle identity in the
+    /// module being checked — the whole-module alias or bound name recorded by
+    /// the source-path-proven import authority. Deterministic when an identity
+    /// was reached through more than one binding. Falls back to the identity's
+    /// own owner leaf, which no import can bind, so an unproven use stays
+    /// unauthorized.
+    fn lexical_binding_for_lifecycle_identity(&self, name: &str) -> String {
+        self.canonical_lifecycle_import_authority
+            .iter()
+            .filter(|(importer, _, identity)| importer == &self.current_module && identity == name)
+            .map(|(_, binding, _)| binding)
+            .min()
+            .cloned()
+            .unwrap_or_else(|| {
+                name.rsplit_once('.')
+                    .and_then(|(owner, _)| owner.rsplit_once('.'))
+                    .map_or_else(|| name.to_string(), |(_, leaf)| leaf.to_string())
+            })
     }
 
     /// Whether this source-owned lifecycle identity is available from the
@@ -243,6 +277,27 @@ impl Checker {
     /// last-write-wins bare key in the downstream record-layout / field-order
     /// registry. The C1 layout authority shortens the qualifier back to bare on
     /// a non-colliding lookup, so a single-module reference is unaffected.
+    /// The declaration a SOURCE type spelling mints in the module being
+    /// checked (rc1-F1 stage D, source producer).
+    ///
+    /// One answer, used both by the scope gates that guard the mint and by the
+    /// mint itself, so a gate can never be computed from a different rung than
+    /// the identity it guards — the failure that let an unimported lifecycle
+    /// payload past its source-authority check.
+    ///
+    /// The single-publisher rung comes first: a bare name exactly one imported
+    /// module published binds to that owner's qualified identity, so two
+    /// modules' same-bare-name types cannot collapse onto one last-write-wins
+    /// key in the downstream layout registries. Everything else resolves
+    /// through the shared ladder every other producer uses, which is what makes
+    /// a spelling an import bound (`CrashNotification`, or `ExitNote` for an
+    /// aliased opt-in) carry the same owner here as in an extern contract or a
+    /// registry signature.
+    pub(super) fn source_nominal_declaration(&self, name: &str) -> Option<String> {
+        self.published_bare_type_qualified(name)
+            .or_else(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, name))
+    }
+
     pub(super) fn published_bare_type_qualified(&self, name: &str) -> Option<String> {
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return None;
@@ -2636,7 +2691,7 @@ impl Checker {
                 // so a user-backed `std.failure::{CrashNotification}` cannot
                 // mint the lifecycle ABI identity.
                 let published_lifecycle = (!is_local && !name.contains('.'))
-                    .then(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, name))
+                    .then(|| self.source_nominal_declaration(name))
                     .flatten()
                     .filter(|canonical| {
                         crate::lookup_source_owned_lifecycle_type(canonical).is_some()
@@ -2691,21 +2746,7 @@ impl Checker {
                     } else {
                         name.clone()
                     }
-                } else if let Some(qualified) = self.published_bare_type_qualified(name) {
-                    // Exactly one module published this bare name. Bind to that
-                    // owner's QUALIFIED identity (`owner.Name`) so a sibling
-                    // module exporting the same bare name cannot collapse the two
-                    // onto one last-write-wins bare key downstream (the MIR
-                    // record-layout / field-order registry is keyed by identity).
-                    qualified
-                } else if let Some(declaration) =
-                    self.resolve_nominal_declaration(NominalOrigin::Lexical, name)
-                {
-                    // rc1-F1 stage D: the source producer mints its owner from
-                    // the SAME ladder every other producer uses, so a spelling
-                    // an import bound (`CrashNotification`, or `ExitNote` for an
-                    // aliased opt-in) carries its declaring owner here exactly as
-                    // it does in an extern contract or a registry signature.
+                } else if let Some(declaration) = self.source_nominal_declaration(name) {
                     declaration
                 } else {
                     match handle_matches.as_slice() {

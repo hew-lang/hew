@@ -1752,11 +1752,19 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `CrashInfo` / `CrashAction` surface so
-    /// `#[on(crash)]` lifecycle hooks can name them in their signatures
-    /// without `import std::failure;`.  Inline tests (no stdlib search
-    /// path) rely on this; on-disk programs reach the same types via
-    /// the module graph.
+    /// Register the built-in `std::failure` surface so lifecycle hooks can
+    /// name its payload types in their signatures without
+    /// `import std::failure;`.  Inline tests (no stdlib search path) rely on
+    /// this; on-disk programs reach the same types via the module graph.
+    ///
+    /// The whole shipped source registers, not a two-name subset (rc1-F1
+    /// stage D). Publishing `CrashNotification` / `CrashKind` as bindings while
+    /// declaring only `CrashInfo` / `CrashAction` left the binding tables
+    /// naming `std.failure.CrashNotification` and the declaration tables
+    /// knowing no such type — one declaration with two answers, which is what
+    /// made an `#[on(exit)]` payload fail the hook ABI compare and a
+    /// whole-module alias fail its exported-type lookup. `std::link_monitor`
+    /// registers its full projection for the same reason.
     fn register_builtin_failure_surface(&mut self) {
         let identity = "module:std::failure";
         if self.registered_stdlib_hew_sources.contains(identity) {
@@ -1771,30 +1779,30 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed
-                .program
-                .items
-                .into_iter()
-                .filter(|(item, _)| {
-                    matches!(
-                        item,
-                        Item::TypeDecl(decl)
-                            if matches!(decl.name.as_str(), "CrashInfo" | "CrashAction")
-                    )
-                })
-                .collect();
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
             self.register_stdlib_hew_items(
                 "failure",
                 "std.failure",
                 &items,
                 StdlibBarePublication::Prelude,
             );
+            // `CrashInfo` / `CrashAction` are genuine prelude: a
+            // `#[on(crash)]` signature names them with no import, always.
             for source_name in ["CrashInfo", "CrashAction"] {
                 self.canonical_lifecycle_import_authority.insert((
                     None,
                     source_name.to_string(),
                     format!("std.failure.{source_name}"),
                 ));
+            }
+            // The linked-actor payloads (`CrashNotification` / `CrashKind`)
+            // require an explicit `import std::failure` whenever the module
+            // graph can supply that source. With no stdlib search path there
+            // is no import to write — this compiled-in projection IS the
+            // source — so the bootstrap carries the same source-path-proven
+            // authority the import would have granted.
+            if !self.module_registry.has_search_paths() {
+                self.record_canonical_lifecycle_prelude_authority("std.failure");
             }
         }
     }

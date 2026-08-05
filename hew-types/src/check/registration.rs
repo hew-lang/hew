@@ -9517,13 +9517,24 @@ impl Checker {
                 "extern symbol `{source_symbol}` has conflicting declarations: \
                  `{conflicting}` does not match the established `{established_description}`"
             ),
-            notes: vec![(
-                established.span.clone(),
-                format!(
-                    "the first declaration of `{source_symbol}` established `{established_description}`"
+            notes: vec![
+                (
+                    established.span.clone(),
+                    format!(
+                        "the first declaration of `{source_symbol}` established `{established_description}`"
+                    ),
+                    note_token,
                 ),
-                note_token,
-            )],
+                (
+                    f.span.clone(),
+                    "extern \"C\" symbol declarations are program-wide unique: the linker \
+                     binds every call site to one implementation, so a redeclaration must \
+                     match the established contract exactly, even if this declaration is \
+                     never called"
+                        .to_string(),
+                    error_token.clone(),
+                ),
+            ],
             suggestions: vec![format!(
                 "make every declaration of `{source_symbol}` use exactly `{established_description}`"
             )],

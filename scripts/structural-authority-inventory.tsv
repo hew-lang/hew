@@ -4,7 +4,7 @@
 group	form	path	count	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	13	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-hir/src/lower.rs	30	stage-4	exact checker-selected executable identity carrier
-call-target-authority	call-target-use	hew-types/src/check/calls.rs	24	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/calls.rs	25	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	1	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/methods.rs	20	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	10	stage-4	exact checker-selected executable identity carrier

@@ -37,6 +37,7 @@ mod items;
 mod lints;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod methods;
+mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
 mod registration;

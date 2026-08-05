@@ -9169,68 +9169,6 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
-    /// Resolve one extern declaration against the single-owner table
-    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
-    /// structural compare against the established one — adopt on agreement,
-    /// register-then-report on conflict. The compare ALWAYS runs for a
-    /// further declaration of an established symbol (no span-based
-    /// same-site shortcut: a byte-offset span carries no file identity, and
-    /// peer files of one directory module can align spans exactly).
-    /// The canonical owner a nominal name in an extern signature denotes,
-    /// per the authority order documented on
-    /// [`extern_contract_nominal_identity`]. `None` = unresolvable here;
-    /// the spelling stays as written and the structural compare fails
-    /// closed on genuine ambiguity.
-    fn extern_signature_nominal_owner(&self, name: &str) -> Option<String> {
-        // Signature resolution has usually already qualified a module-local
-        // type with the CURRENT module's owner — which is route-dependent
-        // for a peer-assembled file (`pkg.Tok` via `import pkg`,
-        // `pkg.aaa.Tok` via `import pkg::aaa`, for one declaration in
-        // `pkg/aaa.hew`). Strip the current module's own qualifier back to
-        // the source leaf so the FILE rule decides the owner; every route
-        // then mints the declaring file's identity.
-        let module_local_leaf = self.current_module.as_deref().and_then(|module| {
-            name.strip_prefix(module)
-                .and_then(|rest| rest.strip_prefix('.'))
-                .filter(|leaf| !leaf.contains('.') && !leaf.contains("::"))
-        });
-        if let Some(leaf) = module_local_leaf {
-            if let Some(owner) = self.extern_nominal_file_owner(leaf) {
-                return Some(owner);
-            }
-            return Some(name.to_string());
-        }
-        if !name.contains('.') {
-            if let Some(owner) = self.extern_nominal_file_owner(name) {
-                return Some(owner);
-            }
-        }
-        if let Some(canonical) = self.canonical_nominal_name(name) {
-            return Some(canonical);
-        }
-        // Registry-loaded stdlib signatures present nominal owners as the
-        // loaded module's SHORT spelling (`stream.Sink`), while the same
-        // declaration's source module registers the complete owner
-        // (`std.stream.Sink`). The module registry is the declaration-proven
-        // authority joining those two representations of one loaded
-        // declaration: it refuses bare leaves and ambiguous spellings, so it
-        // can never recover an owner from text alone.
-        if let Some(identity) = self
-            .module_registry
-            .canonical_method_receiver_identity(name)
-        {
-            return Some(identity);
-        }
-        // Import-lexical fallback, LAST: it recovers only what the proven
-        // canonical/registry authorities could not, never pre-empts them.
-        if !name.contains('.') {
-            if let Some(owner) = self.extern_nominal_imported_owner(name) {
-                return Some(owner);
-            }
-        }
-        None
-    }
-
     /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
     /// declaring file does not itself declare resolves through the declaring
     /// module's DIRECT imports — through the names each import actually
@@ -9243,7 +9181,7 @@ impl Checker {
     /// identity; zero or several → `None`: the spelling stays as written and
     /// the contract compare fails closed — ambiguity never picks a winner on
     /// the C-ABI axis.
-    fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
+    pub(super) fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
         // (declaring file, source-declared name) pairs the bound spelling
         // denotes. Deduped: two import edges to one declaration are one
         // meaning, not an ambiguity.
@@ -9325,7 +9263,7 @@ impl Checker {
 
     /// FILE-lexical nominal authority: the item's own declaring file first,
     /// then exactly one sibling file of the declaring module.
-    fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
+    pub(super) fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
         let file = self.current_item_source.as_ref()?;
         let declares = |source: &std::path::PathBuf| {
             self.file_type_decls
@@ -9367,6 +9305,13 @@ impl Checker {
         (file != primary).then(|| file.display().to_string())
     }
 
+    /// Resolve one extern declaration against the single-owner table
+    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
+    /// structural compare against the established one — adopt on agreement,
+    /// register-then-report on conflict. The compare ALWAYS runs for a
+    /// further declaration of an established symbol (no span-based
+    /// same-site shortcut: a byte-offset span carries no file identity, and
+    /// peer files of one directory module can align spans exactly).
     fn resolve_extern_contract(
         &mut self,
         key: &str,
@@ -9898,11 +9843,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.module_registry
-                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature(
                                 &func.return_type,
                                 &canonical_owner,
                             ),
@@ -9925,11 +9869,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.module_registry
-                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature(
                                 &wfn.return_type,
                                 &canonical_owner,
                             ),
@@ -10604,14 +10547,10 @@ impl Checker {
                     sig.params = sig
                         .params
                         .iter()
-                        .map(|ty| {
-                            self.module_registry
-                                .canonicalize_registry_signature_ty(ty, module_full_path)
-                        })
+                        .map(|ty| self.canonicalize_registry_signature(ty, module_full_path))
                         .collect();
-                    sig.return_type = self
-                        .module_registry
-                        .canonicalize_registry_signature_ty(&sig.return_type, module_full_path);
+                    sig.return_type =
+                        self.canonicalize_registry_signature(&sig.return_type, module_full_path);
                     // `accepts_kwargs` is transport metadata supplied by the
                     // registry for the log wrapper; it does not carry a type
                     // identity, so retain it while replacing every semantic

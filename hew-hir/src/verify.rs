@@ -214,11 +214,32 @@ fn finalize_resolved_produced_value_facts(
         .saturating_add(verifier.binding_reference_targets.len())
         .saturating_add(1);
     for _ in 0..limit {
-        let relations_changed = propagate_produced_value_relations(facts);
-        let bindings_changed = resolve_binding_transfer_facts(verifier, facts);
-        let aggregates_changed = resolve_aggregate_facts(verifier, facts);
-        let calls_changed = resolve_user_call_facts(verifier, facts);
-        if !relations_changed && !bindings_changed && !aggregates_changed && !calls_changed {
+        // Settle relations, bindings and aggregates to their own fixpoint
+        // BEFORE publishing any call result.
+        //
+        // A user call's result fact is frozen the first time it is anything
+        // other than `Unknown`, and its summary is read from the callee's
+        // return-site facts as they stand at that moment. Interleaving the
+        // passes one round at a time therefore published whichever answer the
+        // round happened to reach: a callee returning a local whose nested
+        // aggregate initializer had not resolved yet froze at `Borrowed`, while
+        // the same source in another process resolved the aggregate first and
+        // froze at `Owned`. Every pass here fills `Unknown` slots and never
+        // retracts, so a group that has stopped changing is complete — and a
+        // call published against a complete world is the same call published in
+        // any iteration order.
+        //
+        // This is not a performance loss: the inner passes ran in the later
+        // outer rounds regardless, and the calls pass now runs fewer times.
+        for _ in 0..limit {
+            let relations_changed = propagate_produced_value_relations(facts);
+            let bindings_changed = resolve_binding_transfer_facts(verifier, facts);
+            let aggregates_changed = resolve_aggregate_facts(verifier, facts);
+            if !relations_changed && !bindings_changed && !aggregates_changed {
+                break;
+            }
+        }
+        if !resolve_user_call_facts(verifier, facts) {
             break;
         }
     }

@@ -2736,6 +2736,19 @@ impl Checker {
                     // below. Canonical registration seeds the full qualified
                     // key; the bare entry may remain only as a compatibility
                     // surface and is never the owner authority here.
+                    //
+                    // KNOWN GAP (rc1-F1, route producer): a file peer-assembled
+                    // into a directory module and ALSO reached as its own
+                    // submodule is one declaration that mints `pkg.Tok` here and
+                    // `pkg.aaa.Tok` on the other route. The identity table
+                    // already answers this (`module_path_for_source` gives one
+                    // path per file, either route), but converging the checker
+                    // alone is not enough: HIR re-derives the owner from the
+                    // module graph and the MIR field-order table is keyed by
+                    // that render, so a checker-only fix trades a type mismatch
+                    // for a missing layout key. Closing it means checker, HIR
+                    // owner derivation and the MIR layout key all reading the
+                    // declaring file's minted identity together.
                     if let Some(module) = self.current_module.as_deref() {
                         let qualified = format!("{module}.{name}");
                         if self.type_defs.contains_key(&qualified) {

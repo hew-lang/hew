@@ -7322,32 +7322,50 @@ impl PendingProducedValueCarrier {
     }
 }
 
-/// True when `ty` is — or transitively carries through generic args, tuples,
-/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+/// Whether `ty` transitively carries a value whose SOLE ownership crosses an
+/// actor message boundary: a substrate handle (the builtin list owned by
+/// [`hew_types::BuiltinType::transfers_ownership_across_actor_boundary`],
+/// which the env checker reads too, so the two ownership authorities cannot
+/// drift), or a user `#[resource]` / `#[linear]` declaration.
 ///
-/// This mirrors `resolved_ty_contains_channel_handle` in `hew-codegen-rs`, which
-/// drives the xnode-codec skip for handle-bearing message types. Both
-/// predicates dispatch on the typed `builtin` discriminant alone — never the
-/// bare source name — so a user `record Sender` / `record Receiver` resolved
-/// with `builtin: None` keeps its normal actor-send and codec treatment. A type
-/// the codegen predicate marks as handle-bearing must also be marked by this
-/// one so HIR's consume decision and codegen's codec decision agree
-/// (`dedup-semantic-boundary` LESSONS invariant).
+/// The nominal arm dispatches on `type_classes`, never on the bare source
+/// name, and only for `builtin: None` types — a user `record Sender` keeps
+/// ordinary copy treatment while the real builtin handle transfers.
+///
+/// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+/// carry the `Resource` MARKER for drop elaboration but are shareable
+/// addresses; sending a pid must not consume the sender's own handle, so they
+/// are excluded on both sides.
 ///
 /// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
-/// handle still reaches the serialiser walk and fails closed there, so we do
-/// not need to recurse into struct fields here.
-fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+/// handle still reaches the serialiser walk and fails closed there.
+fn resolved_ty_transfers_ownership_to_mailbox(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+) -> bool {
     match ty {
-        ResolvedTy::Named { args, builtin, .. } => {
-            matches!(
-                builtin,
-                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
-            ) || args.iter().any(resolved_ty_contains_channel_handle)
+        ResolvedTy::CancellationToken => true,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            builtin.is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+                || (builtin.is_none()
+                    && matches!(
+                        type_classes.get(name).map(|(marker, _)| *marker),
+                        Some(ResourceMarker::Resource | ResourceMarker::Linear)
+                    ))
+                || args
+                    .iter()
+                    .any(|arg| resolved_ty_transfers_ownership_to_mailbox(arg, type_classes))
         }
-        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Tuple(elements) => elements
+            .iter()
+            .any(|element| resolved_ty_transfers_ownership_to_mailbox(element, type_classes)),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_contains_channel_handle(inner)
+            resolved_ty_transfers_ownership_to_mailbox(inner, type_classes)
         }
         _ => false,
     }
@@ -7794,35 +7812,42 @@ impl LowerCtx {
             })
     }
 
-    /// True when the checker typed the expression at `span` as a type that
-    /// transitively contains a channel handle (`Sender<T>` / `Receiver<T>`).
+    /// Whether `ty` transitively carries a value whose SOLE ownership crosses
+    /// an actor message boundary: a substrate handle (the builtin list owned by
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], shared with
+    /// the env checker), or a user `#[resource]` / `#[linear]` declaration.
     ///
-    /// This is the recursive version of `checked_span_is_channel_handle` and
-    /// mirrors `resolved_ty_contains_channel_handle` from codegen. A direct
-    /// handle, a tuple carrying one, or a generic whose type arg is a handle
-    /// all return true. Absent or unconvertible entries answer `false` —
-    /// the conservative no-ownership-transfer default.
+    /// The nominal arm reads `type_classes`, which the item passes populate
+    /// before any function body is lowered, so a `Resource` / `Linear` marker
+    /// is always available here.
     ///
-    /// ## Why this matters at the actor-send boundary
+    /// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+    /// carry the `Resource` MARKER for drop elaboration but are shareable
+    /// addresses, so they are excluded on both sides — sending a pid must not
+    /// consume the sender's own handle.
+    fn resolved_ty_transfers_ownership_to_mailbox(&self, ty: &ResolvedTy) -> bool {
+        resolved_ty_transfers_ownership_to_mailbox(ty, &self.type_classes)
+    }
+
+    /// The [`IntentKind`] an actor message argument at `span` must carry.
     ///
-    /// Channel handles are single-owner on the ownership axis even though they
-    /// are `BitCopy` on the representation axis (`#[opaque]`-only types are
-    /// pointer-width and memcpy'd). The HIR actor-send lowering must issue
-    /// `Consume` intent for any arg whose type transitively carries a handle so
-    /// that the MIR dataflow checker sees a `Use { intent: Consume }` and
-    /// transitions the binding to `Consumed`. Without this, a tuple arg such as
-    /// `(rx, "tag")` is lowered as `Read` (`CowShare` in MIR), the caller binding
-    /// stays live, and a subsequent `rx.close()` is not statically refused —
-    /// producing a double-close at runtime (SIGABRT / SIGSEGV).
-    ///
-    /// Codegen's `resolved_ty_contains_channel_handle` predicate serves the
-    /// same purpose for the xnode-codec skip; the two predicates must stay in
-    /// sync (`dedup-semantic-boundary` LESSONS invariant).
-    fn checked_span_contains_channel_handle(&self, span: &Span) -> bool {
-        self.expr_types
+    /// `Consume` when the mailbox hand-off takes sole ownership (see
+    /// [`Self::resolved_ty_transfers_ownership_to_mailbox`]), `Read` otherwise.
+    /// MIR lowers EVERY message argument through `lower_value_for_move`, so
+    /// this intent is what lets the MIR dataflow checker see the consume and
+    /// refuse a second transfer — the ask/tell/select-arm paths all route
+    /// through here so no argument position is left unowned.
+    fn actor_message_arg_intent(&self, span: &Span) -> IntentKind {
+        let transfers = self
+            .expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .is_some_and(|resolved| resolved_ty_contains_channel_handle(&resolved))
+            .is_some_and(|resolved| self.resolved_ty_transfers_ownership_to_mailbox(&resolved));
+        if transfers {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
     }
 
     /// Construct a `SpanKey` for `span` in the current module context.
@@ -19171,9 +19196,14 @@ impl LowerCtx {
                 .cloned()
             {
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // Join branches are issued together, like select arm sources:
+                // the same owned value in two branches is a double transfer.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 let reply_ty = ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit);
                 return HirJoinBranch {
@@ -19903,9 +19933,17 @@ impl LowerCtx {
                     };
                 }
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // A select arm source is SEQUENTIAL setup: every arm's ask is
+                // issued before dispatch picks a winner, so an owned argument
+                // handed to two arms is a real double transfer. MIR lowers each
+                // arm's args through `lower_value_for_move`; stamp the matching
+                // intent so the dataflow checker sees the consume.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 HirSelectArmKind::ActorAsk {
                     actor: Box::new(actor),
@@ -25347,30 +25385,24 @@ impl LowerCtx {
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .map(|arg| {
-                    // A channel handle (`Sender<T>`/`Receiver<T>`) crossing an
-                    // actor message boundary transfers ownership to the
-                    // receiving handler — the mailbox copies the handle
-                    // pointer, not the channel. Lower such args with
-                    // `IntentKind::Consume` so the move-checker marks the
-                    // caller binding consumed: a later use (`rx.close()`, a
-                    // second send) would race the new owner and double-close
-                    // the underlying channel. Every other arg keeps `Read` —
-                    // the existing boundary copy/clone semantics.
+                    // A single-owner value crossing an actor message boundary
+                    // transfers ownership to the receiving handler — the
+                    // mailbox copies the handle/resource, not the underlying
+                    // thing it owns. Lower such args with `IntentKind::Consume`
+                    // so the move-checker marks the caller binding consumed: a
+                    // later use (`rx.close()`, `s.detach()`, a second send)
+                    // would race the new owner and free the value twice. Every
+                    // other arg keeps `Read` — CoW boundary copy semantics.
                     //
-                    // The predicate is RECURSIVE: a direct `Sender<T>` /
-                    // `Receiver<T>` arg AND any arg whose type transitively
-                    // carries a handle (e.g. a tuple `(Receiver<T>, string)`)
-                    // both transfer the handle pointer. Without the recursive
-                    // check a nested-handle arg is lowered as `Read` (CowShare
-                    // in MIR), the caller binding stays live, and a subsequent
-                    // `rx.close()` silently double-closes the channel.
+                    // The predicate is RECURSIVE: a direct handle/resource arg
+                    // AND any arg whose type transitively carries one (e.g. a
+                    // tuple `(Receiver<T>, string)`) both transfer the owned
+                    // pointer. Without the recursive check a nested-handle arg
+                    // is lowered as `Read` (CowShare in MIR), the caller
+                    // binding stays live, and a subsequent close silently
+                    // double-frees.
                     let spanned = arg.expr();
-                    let intent = if self.checked_span_contains_channel_handle(&spanned.1) {
-                        IntentKind::Consume
-                    } else {
-                        IntentKind::Read
-                    };
-                    self.lower_expr(spanned, intent)
+                    self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
                 })
                 .collect();
             return match dispatch {
@@ -35806,13 +35838,20 @@ fn main() {}
         );
     }
 
-    /// HIR's recursive channel-handle predicate is the consume-decision mirror
-    /// of codegen's xnode-codec-skip predicate. It must dispatch on the typed
-    /// `builtin` discriminant alone so user `record Sender` / `record Receiver`
-    /// messages keep ordinary actor-send treatment while real builtin handles
-    /// still transfer ownership across actor sends.
+    /// HIR's recursive mailbox-transfer predicate is the consume-decision half
+    /// of the actor ownership axis. It must dispatch on the typed `builtin`
+    /// discriminant (and, for nominal types, on the `type_classes` marker)
+    /// alone, so a user `record Sender` / `record Receiver` message keeps
+    /// ordinary actor-send treatment while real builtin handles, `#[resource]`
+    /// declarations, and `#[linear]` declarations transfer ownership.
+    ///
+    /// The negative half matters just as much: a shareable actor reference
+    /// (`LocalPid`) and a copy-on-write value must NOT be consumed, or every
+    /// supervisor that hands one pid to two children stops compiling.
     #[test]
-    fn channel_handle_consume_gate_uses_builtin_discriminant_not_shadowed_name() {
+    fn mailbox_transfer_gate_uses_builtin_discriminant_and_type_class_marker() {
+        use crate::value_class::TypeClassTable;
+
         fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
             ResolvedTy::Named {
                 name: name.to_string(),
@@ -35831,61 +35870,95 @@ fn main() {}
             }
         }
 
+        let mut classes = TypeClassTable::default();
+        classes.insert("Socket".to_string(), (ResourceMarker::Resource, None));
+        classes.insert("Ticket".to_string(), (ResourceMarker::Linear, None));
+        classes.insert("Message".to_string(), (ResourceMarker::None, None));
+        let transfers = |ty: &ResolvedTy| resolved_ty_transfers_ownership_to_mailbox(ty, &classes);
+
+        // Name-shadowing user records are not handles.
         for shadow in ["Sender", "Receiver"] {
             let user_ty = named_record_ty(shadow);
             assert!(
-                !resolved_ty_contains_channel_handle(&user_ty),
+                !transfers(&user_ty),
                 "user type `{shadow}` (builtin: None) must not be consumed as a \
-                 channel-handle transfer"
+                 mailbox ownership transfer"
             );
             assert!(
-                !resolved_ty_contains_channel_handle(&named_record_ty(&format!(
-                    "channel.{shadow}"
-                ))),
+                !transfers(&named_record_ty(&format!("channel.{shadow}"))),
                 "module-qualified user `{shadow}` is still builtin: None"
             );
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, user_ty.clone(),]
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&user_generic_over(
-                user_ty.clone()
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(user_ty.clone()),
-                2
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(user_ty)
-            )));
+            assert!(!transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::I64,
+                user_ty.clone(),
+            ])));
+            assert!(!transfers(&user_generic_over(user_ty.clone())));
+            assert!(!transfers(&ResolvedTy::Array(Box::new(user_ty.clone()), 2)));
+            assert!(!transfers(&ResolvedTy::Slice(Box::new(user_ty))));
         }
 
-        assert!(!resolved_ty_contains_channel_handle(&named_record_ty(
-            "Message"
+        // Unmarked nominal records and copy-on-write values stay shared.
+        assert!(!transfers(&named_record_ty("Message")));
+        assert!(!transfers(&named_record_ty("Unregistered")));
+        assert!(!transfers(&ResolvedTy::String));
+        assert!(!transfers(&ResolvedTy::I64));
+        assert!(!transfers(&ResolvedTy::Tuple(vec![
+            ResolvedTy::String,
+            ResolvedTy::I64,
+        ])));
+
+        // A shareable actor reference must NOT be consumed even though its
+        // builtin marker is `Resource` for drop elaboration.
+        assert!(!transfers(&builtin_handle(
+            "LocalPid",
+            BuiltinType::LocalPid
+        )));
+        assert!(!transfers(&builtin_handle(
+            "BoxedActor",
+            BuiltinType::BoxedActor
+        )));
+        assert!(!transfers(&builtin_handle(
+            "MonitorRef",
+            BuiltinType::MonitorRef
         )));
 
+        // Builtin single-owner handles transfer, directly and nested.
         for (name, kind) in [
             ("Sender", BuiltinType::Sender),
             ("Receiver", BuiltinType::Receiver),
+            ("Stream", BuiltinType::Stream),
+            ("Sink", BuiltinType::Sink),
+            ("Duplex", BuiltinType::Duplex),
         ] {
             let handle = builtin_handle(name, kind);
             assert!(
-                resolved_ty_contains_channel_handle(&handle),
-                "builtin `{name}` (builtin: Some(_)) must still be consumed as \
-                 a channel-handle transfer"
+                transfers(&handle),
+                "builtin `{name}` must be consumed as a mailbox ownership transfer"
             );
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, handle.clone(),]
-            )));
-            assert!(resolved_ty_contains_channel_handle(&user_generic_over(
-                handle.clone()
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(handle.clone()),
-                2
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(handle)
-            )));
+            assert!(transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::I64,
+                handle.clone(),
+            ])));
+            assert!(transfers(&user_generic_over(handle.clone())));
+            assert!(transfers(&ResolvedTy::Array(Box::new(handle.clone()), 2)));
+            assert!(transfers(&ResolvedTy::Slice(Box::new(handle))));
+        }
+
+        // User `#[resource]` / `#[linear]` declarations transfer, directly and
+        // nested — the class the actor-ask hole left unowned.
+        for nominal in ["Socket", "Ticket"] {
+            let ty = named_record_ty(nominal);
+            assert!(
+                transfers(&ty),
+                "`{nominal}` carries a single-owner marker and must be consumed"
+            );
+            assert!(transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::I64,
+                ty.clone(),
+            ])));
+            assert!(transfers(&user_generic_over(ty.clone())));
+            assert!(transfers(&ResolvedTy::Array(Box::new(ty.clone()), 2)));
+            assert!(transfers(&ResolvedTy::Slice(Box::new(ty))));
         }
     }
 

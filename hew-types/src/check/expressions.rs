@@ -1135,29 +1135,42 @@ impl Checker {
         }
     }
 
-    fn ty_contains_affine_actor_transfer(ty: &Ty) -> bool {
+    /// Whether `ty` carries a value whose SOLE ownership crosses an actor
+    /// message boundary — a substrate handle, or a user `#[resource]` /
+    /// `#[linear]` declaration.
+    ///
+    /// The builtin half delegates to
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], the single
+    /// authority HIR's intent stamping also reads. The nominal half is this
+    /// checker's own: `#[resource]` and `#[linear]` types have exactly one
+    /// ownership path, and MIR physically MOVES every message argument out of
+    /// the caller frame (`lower_value_for_move`), so a later use of the caller
+    /// binding is a genuine use-after-move. Without the nominal arm the caller
+    /// kept its binding live and both frames consumed the one value.
+    ///
+    /// Copy-on-write values (`string`, `Vec`, records, tuples of them) are deliberately
+    /// NOT here: the boundary copies them and both frames own their own copy,
+    /// which is the language's default value semantics.
+    fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
         match ty {
             Ty::CancellationToken => true,
-            Ty::Named { args, builtin, .. } => {
-                matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::Sender
-                            | BuiltinType::Receiver
-                            | BuiltinType::Stream
-                            | BuiltinType::Sink
-                            | BuiltinType::Duplex
-                            | BuiltinType::SendHalf
-                            | BuiltinType::RecvHalf
-                            | BuiltinType::Generator
-                            | BuiltinType::AsyncGenerator
-                            | BuiltinType::CancellationToken
-                    )
-                ) || args.iter().any(Self::ty_contains_affine_actor_transfer)
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                    || self.registry.is_resource(name)
+                    || self.registry.is_linear(name)
+                    || args
+                        .iter()
+                        .any(|arg| self.ty_contains_affine_actor_transfer(arg))
             }
-            Ty::Tuple(elements) => elements.iter().any(Self::ty_contains_affine_actor_transfer),
+            Ty::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.ty_contains_affine_actor_transfer(element)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                Self::ty_contains_affine_actor_transfer(element)
+                self.ty_contains_affine_actor_transfer(element)
             }
             _ => false,
         }
@@ -1174,7 +1187,7 @@ impl Checker {
         if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
             self.report_invalid_actor_send(&ty, error_span);
         }
-        if Self::ty_contains_affine_actor_transfer(&ty) {
+        if self.ty_contains_affine_actor_transfer(&ty) {
             self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
         }
     }

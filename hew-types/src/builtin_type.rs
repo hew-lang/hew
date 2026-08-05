@@ -587,6 +587,72 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         .flatten()
 }
 
+/// One stdlib module that declares source-imported lifecycle types.
+///
+/// `binding` is the module binding the owner is written as in Hew source
+/// (`import std::failure` binds `failure`), and is also the short owner
+/// spelling that survives in older internal facts.
+#[derive(Debug)]
+pub struct SourceOwnedLifecycleOwner {
+    /// The canonical declaration owner (`std.failure`).
+    pub canonical_path: &'static str,
+    /// The module binding the owner is written as (`failure`).
+    pub binding: &'static str,
+    /// The closed set of lifecycle builtins this module declares.
+    pub declares: &'static [BuiltinType],
+}
+
+/// The two lifecycle owners, and every declaration each one owns.
+///
+/// This is the SINGLE authority. The owner set was previously restated in the
+/// checker's identity ladder, in this module's membership match, and in MIR's
+/// synthetic-hook layout catalog; three copies of a closed set drift silently
+/// when a declaration moves. Every consumer reads this table, and
+/// `every_source_import_builtin_has_exactly_one_owner` proves the table stays
+/// total against the builtin catalog.
+pub const SOURCE_OWNED_LIFECYCLE_OWNERS: &[SourceOwnedLifecycleOwner] = &[
+    SourceOwnedLifecycleOwner {
+        canonical_path: "std.failure",
+        binding: "failure",
+        declares: &[
+            BuiltinType::CrashInfo,
+            BuiltinType::CrashAction,
+            BuiltinType::CrashNotification,
+            BuiltinType::CrashKind,
+        ],
+    },
+    SourceOwnedLifecycleOwner {
+        canonical_path: "std.link_monitor",
+        binding: "link_monitor",
+        declares: &[
+            BuiltinType::MonitorId,
+            BuiltinType::DownTarget,
+            BuiltinType::DownReason,
+            BuiltinType::DownNotification,
+            BuiltinType::MonitorError,
+            BuiltinType::MonitorRef,
+        ],
+    },
+];
+
+/// The lifecycle owner a qualified spelling names, plus the leaf it qualifies.
+///
+/// Both the canonical path (`std.failure.CrashKind`) and the short binding
+/// form (`failure.CrashKind` — retained only for reading older internal facts)
+/// resolve to the same owner. A deeper path or an unknown owner returns `None`.
+#[must_use]
+pub fn source_owned_lifecycle_owner(
+    name: &str,
+) -> Option<(&'static SourceOwnedLifecycleOwner, &str)> {
+    SOURCE_OWNED_LIFECYCLE_OWNERS.iter().find_map(|owner| {
+        [owner.canonical_path, owner.binding]
+            .into_iter()
+            .find_map(|prefix| name.strip_prefix(prefix)?.strip_prefix('.'))
+            .filter(|leaf| !leaf.contains('.'))
+            .map(|leaf| (owner, leaf))
+    })
+}
+
 /// Look up a source-owned lifecycle builtin by either its bare name or its
 /// canonical source identity (`std.failure.CrashNotification`, for example).
 ///
@@ -595,46 +661,16 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
 /// globally visible.
 #[must_use]
 pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
-    let (owner, bare) = if let Some(bare) = name.strip_prefix("std.failure.") {
-        ("std.failure", bare)
-    } else if let Some(bare) = name.strip_prefix("std.link_monitor.") {
-        ("std.link_monitor", bare)
-    } else if let Some(bare) = name.strip_prefix("failure.") {
-        // Retained only for reading older internal facts while the canonical
-        // producer identity is the full module path.
-        ("failure", bare)
-    } else if let Some(bare) = name.strip_prefix("link_monitor.") {
-        ("link_monitor", bare)
-    } else if name.contains('.') {
-        return None;
-    } else {
-        ("", name)
+    let (owner, bare) = match source_owned_lifecycle_owner(name) {
+        Some((owner, bare)) => (Some(owner), bare),
+        None if name.contains('.') => return None,
+        None => (None, name),
     };
     let builtin = lookup_builtin_type(bare)?;
     builtin
         .requires_source_import()
         .then_some(builtin)
-        .filter(|_| {
-            owner.is_empty()
-                || matches!(
-                    (owner, builtin),
-                    (
-                        "failure" | "std.failure",
-                        BuiltinType::CrashInfo
-                            | BuiltinType::CrashAction
-                            | BuiltinType::CrashNotification
-                            | BuiltinType::CrashKind
-                    ) | (
-                        "link_monitor" | "std.link_monitor",
-                        BuiltinType::MonitorId
-                            | BuiltinType::DownTarget
-                            | BuiltinType::DownReason
-                            | BuiltinType::DownNotification
-                            | BuiltinType::MonitorError
-                            | BuiltinType::MonitorRef
-                    )
-                )
-        })
+        .filter(|_| owner.is_none_or(|owner| owner.declares.contains(&builtin)))
 }
 
 /// Whether `name` and `builtin` jointly identify an exact source-owned
@@ -647,6 +683,41 @@ pub fn has_exact_source_owned_lifecycle_identity(name: &str, builtin: Option<Bui
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_source_import_builtin_has_exactly_one_owner() {
+        // The owner table and `requires_source_import` are two statements of
+        // one closed set. Adding a lifecycle builtin to the catalog without
+        // naming its declaring module leaves it owner-less: the qualified
+        // spelling then resolves through no owner and every downstream layout
+        // and scope gate reads a different answer than the checker.
+        for info in builtin_types()
+            .iter()
+            .filter(|i| i.kind.requires_source_import())
+        {
+            let owners: Vec<_> = SOURCE_OWNED_LIFECYCLE_OWNERS
+                .iter()
+                .filter(|owner| owner.declares.contains(&info.kind))
+                .map(|owner| owner.canonical_path)
+                .collect();
+            assert_eq!(
+                owners.len(),
+                1,
+                "`{}` requires a source import but is declared by {owners:?}",
+                info.canonical_name
+            );
+        }
+        for owner in SOURCE_OWNED_LIFECYCLE_OWNERS {
+            for declared in owner.declares {
+                assert!(
+                    declared.requires_source_import(),
+                    "`{}` is listed under `{}` but does not require a source import",
+                    declared.canonical_name(),
+                    owner.canonical_path
+                );
+            }
+        }
+    }
 
     #[test]
     fn lookup_covers_registered_builtins() {

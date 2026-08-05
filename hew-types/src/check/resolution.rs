@@ -15,16 +15,14 @@ use crate::BuiltinType;
 /// `std.failure.CrashKind` as `binding.tail` finds a lexical binding named
 /// `std` and rejects the checker's own canonical spelling (rc1-F1 stage D).
 fn canonical_lifecycle_owner_binding(name: &str) -> Option<&'static str> {
-    [
-        ("std.failure.", "failure"),
-        ("std.link_monitor.", "link_monitor"),
-    ]
-    .into_iter()
-    .find_map(|(owner, binding)| {
-        name.strip_prefix(owner)
-            .filter(|leaf| !leaf.contains('.'))
-            .map(|_| binding)
-    })
+    let (owner, _) = crate::source_owned_lifecycle_owner(name)?;
+    // Only the CANONICAL spelling is an identity the checker minted. The short
+    // binding form (`failure.CrashKind`) the owner table also accepts is an
+    // older internal fact, and must still go through the ordinary
+    // binding-and-tail resolution below.
+    name.strip_prefix(owner.canonical_path)?
+        .strip_prefix('.')
+        .map(|_| owner.binding)
 }
 
 impl Checker {

@@ -2834,10 +2834,28 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params,
-                        fields,
+                        type_params: type_params.clone(),
+                        fields: fields.clone(),
                     },
                 );
+                // rc1-F1 stage F: publish the root declaration's canonical
+                // `{root}.{name}` identity (via `TypeCheckOutput::identity`,
+                // reused here for a nominal leaf rather than a fn) alongside
+                // the legacy bare key. `canonical_current_module_record_name`
+                // deliberately never rewrites root items today, so this rung
+                // is inert until a consumer resolves canonically; it exists
+                // so no registration-side change is needed there. WHEN
+                // OBSOLETE: rc2 render-canonicalization stage, once the bare
+                // key retires.
+                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
+                    ctx.record_registry
+                        .entry(canonical)
+                        .or_insert_with(|| RecordEntry {
+                            id,
+                            type_params,
+                            fields,
+                        });
+                }
                 ctx.type_classes
                     .insert(decl.name.clone(), (ResourceMarker::None, None));
             }
@@ -2862,10 +2880,22 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params,
-                        fields,
+                        type_params: type_params.clone(),
+                        fields: fields.clone(),
                     },
                 );
+                // rc1-F1 stage F: see the matching comment on the TypeDecl
+                // arm above — same canonical-identity publication, same
+                // inert-until-consumed rationale.
+                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
+                    ctx.record_registry
+                        .entry(canonical)
+                        .or_insert_with(|| RecordEntry {
+                            id,
+                            type_params,
+                            fields,
+                        });
+                }
             }
             // No record shape to register for the variants below. If a new
             // Item variant with field layout is added, the compiler will force

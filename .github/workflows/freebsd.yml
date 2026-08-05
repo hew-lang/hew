@@ -100,7 +100,7 @@ jobs:
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi
+            cargo nextest run --profile ci-cabi -p hew-cabi
 
             # The authenticated exact checkout must also prove compiled Hew,
             # including loopback network and resource surfaces. Workspace

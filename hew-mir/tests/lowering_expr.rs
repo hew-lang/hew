@@ -14,6 +14,8 @@ mod audited_extern_result_provenance;
 mod binder_shape_release_sweep;
 #[path = "lowering_expr/binop_bitwise_logical.rs"]
 mod binop_bitwise_logical;
+#[path = "lowering_expr/borrowed_forwarder_retained_owner_class.rs"]
+mod borrowed_forwarder_retained_owner_class;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]
 mod bytes_literal_lowering;
 #[path = "lowering_expr/closure_env_ownership.rs"]

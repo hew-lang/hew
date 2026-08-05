@@ -38,6 +38,21 @@ pub(super) struct PrimarySigScope {
     pushed_frame: bool,
 }
 
+/// Every key one impl method's declaration identity is published under.
+///
+/// Ownership is exclusive: a generic declaration holds `shared` + `canonical`
+/// and no mangled key; a concrete specialisation holds only `mangled`. The two
+/// sets never overlap, so `impl Render for Box<i64>` cannot claim the identity
+/// `impl<T> Render for Box<T>` published.
+struct ImplMethodDeclarationKeys {
+    /// `Type::method` — the cross-module compatibility dispatch key.
+    shared: Option<String>,
+    /// `module.Type::method` — the declaring module's own dispatch key.
+    canonical: Option<String>,
+    /// `Type$$i64::method` and its module-owned form.
+    mangled: Vec<String>,
+}
+
 #[derive(Default)]
 struct ExplicitReturnFinder {
     saw_return: bool,
@@ -6084,13 +6099,18 @@ impl Checker {
                                         },
                                         &m.name,
                                     );
-                                    let symbol = format!("{type_name}::{}", m.name);
-                                    self.impl_method_declaration_ids
-                                        .insert(symbol.clone(), declaration.clone());
-                                    if let Some(module) = self.current_module.as_deref() {
-                                        self.impl_method_declaration_ids
-                                            .insert(format!("{module}.{symbol}"), declaration);
-                                    }
+                                    // A materialized default is keyed exactly
+                                    // like an explicit impl method: the
+                                    // `Box<i64>` specialisation takes its own
+                                    // mangled keys and leaves the generic
+                                    // `impl<T> … Box<T>` default owning the
+                                    // shared dispatch key.
+                                    let keys = self.impl_method_declaration_keys(
+                                        type_name,
+                                        &m.name,
+                                        id.type_params.as_deref(),
+                                    );
+                                    self.publish_impl_method_declaration_id(&keys, &declaration);
                                 }
                                 if let Some(td) = self.lookup_type_def_mut(type_name) {
                                     td.methods.insert(
@@ -7361,102 +7381,134 @@ impl Checker {
         // second call clobbers the first in `fn_sigs`, and codegen later emits two
         // LLVM functions under the same name → linkage crash.
         //
-        // Detection: no impl-level type params (concrete impl, not `impl<T>`),
-        // AND the enclosing impl's self-type has non-empty concrete type args
-        // (from `current_self_type`).  For such impls we ALSO register a
-        // mangled-key entry (`"Wrapper$$i64::describe"`), and that mangled key is
-        // what method-call dispatch and HIR will actually use.  The bare key entry
-        // in `fn_sigs` is kept as a fallback for lookup paths that have not yet
-        // been updated (e.g. method-set validation, external lookup).
-        let is_concrete_specialised_impl = impl_type_params.is_none_or(Vec::is_empty); // None → no impl type params → concrete
-        let has_concrete_receiver_args = self
-            .current_self_type
-            .as_ref()
-            .is_some_and(|(self_type_name, args)| self_type_name == type_name && !args.is_empty());
-        let canonical_method_key = if type_name.contains('.') {
-            method_key.clone()
-        } else {
-            self.current_module.as_ref().map_or_else(
-                || method_key.clone(),
-                |module| format!("{module}.{type_name}::{}", method.name),
-            )
-        };
-        // A generic declaration owns the bare dispatch key. Concrete
-        // specialisations only own their mangled key, so they cannot overwrite
-        // the generic declaration's identity for other receiver instances.
-        if !(is_concrete_specialised_impl && has_concrete_receiver_args) {
-            if self.registration_is_flat_file_import {
-                // File-import items are lowered as root items after checking.
-                // Their bare dispatch entry therefore outranks any package
-                // module's compatibility alias, independent of graph/import
-                // traversal order.
-                self.impl_method_declaration_ids
-                    .insert(method_key.clone(), declaration_id.clone());
-            } else {
-                self.impl_method_declaration_ids
-                    .entry(method_key.clone())
-                    .or_insert_with(|| declaration_id.clone());
-            }
-            self.impl_method_declaration_ids
-                .insert(canonical_method_key, declaration_id.clone());
-        }
-        if is_concrete_specialised_impl {
-            if let Some((self_type_name, self_type_args)) = &self.current_self_type.clone() {
-                if self_type_name == type_name && !self_type_args.is_empty() {
-                    // Try to resolve each type arg to a concrete `ResolvedTy` and
-                    // compute the mangled self-type name.  Fails gracefully if any
-                    // arg contains an inference variable or error node (which cannot
-                    // appear for a concrete specialised impl, but we are defensive).
-                    let resolved_args: Option<Vec<ResolvedTy>> = self_type_args
-                        .iter()
-                        .map(|ty| ResolvedTy::from_ty(ty).ok())
-                        .collect();
-                    if let Some(resolved_args) = resolved_args {
-                        if let Some(mangled_self) = crate::resolved_ty::mangle_impl_self_name(
-                            self_type_name,
-                            &resolved_args,
-                        ) {
-                            let mangled_method_key = format!("{mangled_self}::{}", method.name);
-                            // `scoped_module_item_name` deliberately rejects
-                            // presentation names containing `::`; an impl
-                            // method key necessarily has that separator. Build
-                            // the exact source-owned emitted symbol directly,
-                            // just as the non-specialised key above does.
-                            let canonical_mangled_method_key = if mangled_self.contains('.') {
-                                mangled_method_key.clone()
-                            } else {
-                                self.current_module.as_ref().map_or_else(
-                                    || mangled_method_key.clone(),
-                                    |module| format!("{module}.{mangled_method_key}"),
-                                )
-                            };
-                            // Register the full sig under the mangled key.  A
-                            // previous concrete-impl registration may already be
-                            // present; overwriting is correct because each impl
-                            // block processes its own concrete args in sequence.
-                            self.fn_sigs.insert(mangled_method_key.clone(), sig.clone());
-                            self.fn_sigs
-                                .insert(canonical_mangled_method_key.clone(), sig.clone());
-                            self.impl_method_declaration_ids
-                                .insert(mangled_method_key.clone(), declaration_id.clone());
-                            self.impl_method_declaration_ids.insert(
-                                canonical_mangled_method_key.clone(),
-                                declaration_id.clone(),
-                            );
-                            // Propagate consume-receiver membership to the mangled key
-                            // so HIR dispatch does not lose the move contract.
-                            if method.consumes_self {
-                                self.consume_receiver_methods.insert(mangled_method_key);
-                                self.consume_receiver_methods
-                                    .insert(canonical_mangled_method_key);
-                            }
-                        }
-                    }
-                }
+        // `impl_method_declaration_keys` owns the whole decision: a generic
+        // declaration keeps the shared dispatch key, a concrete specialisation
+        // takes only its mangled `"Wrapper$$i64::describe"` keys.  The bare key
+        // entry in `fn_sigs` is kept as a fallback for lookup paths that have
+        // not yet been updated (e.g. method-set validation, external lookup).
+        let keys = self.impl_method_declaration_keys(
+            type_name,
+            &method.name,
+            impl_type_params.map(Vec::as_slice),
+        );
+        self.publish_impl_method_declaration_id(&keys, &declaration_id);
+        for mangled_key in &keys.mangled {
+            // Register the full sig under the mangled key.  A previous
+            // concrete-impl registration may already be present; overwriting is
+            // correct because each impl block processes its own concrete args
+            // in sequence.
+            self.fn_sigs.insert(mangled_key.clone(), sig.clone());
+            // Propagate consume-receiver membership to the mangled key
+            // so HIR dispatch does not lose the move contract.
+            if method.consumes_self {
+                self.consume_receiver_methods.insert(mangled_key.clone());
             }
         }
 
         sig
+    }
+
+    /// Derive every key one impl method's declaration identity is published
+    /// under, from the shape of the enclosing impl block.
+    ///
+    /// A generic declaration (`impl<T> Render for Box<T>`) owns the shared
+    /// `Type::method` dispatch key and its module-canonical form. A concrete
+    /// specialisation (`impl Render for Box<i64>`) owns ONLY the mangled
+    /// `Type$$i64::method` keys, so it cannot overwrite the generic
+    /// declaration's identity for a different receiver instance.
+    ///
+    /// Explicit impl methods and materialized trait defaults both publish
+    /// through this one derivation. When the two producers keyed the same
+    /// declaration differently, a specialisation's materialized default
+    /// overwrote the generic impl's entry under the shared key, HIR's impl
+    /// block then advertised a declaration its emitted body did not carry, and
+    /// the generic default lost its monomorphisation entirely.
+    fn impl_method_declaration_keys(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        impl_type_params: Option<&[TypeParam]>,
+    ) -> ImplMethodDeclarationKeys {
+        let shared = format!("{type_name}::{method_name}");
+        // `scoped_module_item_name` deliberately rejects presentation names
+        // containing `::`; an impl method key necessarily has that separator.
+        // Build the module-owned form directly.
+        let module_owned = |key: &str, owner: &str| -> String {
+            if owner.contains('.') {
+                key.to_string()
+            } else {
+                self.current_module
+                    .as_ref()
+                    .map_or_else(|| key.to_string(), |module| format!("{module}.{key}"))
+            }
+        };
+        let canonical = module_owned(&shared, type_name);
+        // No impl-level type params means this impl block is concrete; it is a
+        // specialisation only when its self type also carries concrete args.
+        let is_concrete_specialised_impl = impl_type_params.is_none_or(<[TypeParam]>::is_empty);
+        let concrete_receiver_args = self
+            .current_self_type
+            .as_ref()
+            .filter(|(self_type_name, args)| self_type_name == type_name && !args.is_empty())
+            .map(|(_, args)| args.clone());
+        let Some(self_type_args) = concrete_receiver_args.filter(|_| is_concrete_specialised_impl)
+        else {
+            return ImplMethodDeclarationKeys {
+                shared: Some(shared),
+                canonical: Some(canonical),
+                mangled: Vec::new(),
+            };
+        };
+        // Resolve each type arg to a concrete `ResolvedTy` before mangling.
+        // An arg carrying an inference variable or error node cannot appear for
+        // a concrete specialised impl; if one does, the specialisation
+        // publishes nothing rather than falling back onto the generic
+        // declaration's shared key.
+        let mangled = self_type_args
+            .iter()
+            .map(|ty| ResolvedTy::from_ty(ty).ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|resolved_args| {
+                crate::resolved_ty::mangle_impl_self_name(type_name, &resolved_args)
+            })
+            .map(|mangled_self| {
+                let key = format!("{mangled_self}::{method_name}");
+                let canonical_key = module_owned(&key, &mangled_self);
+                vec![key, canonical_key]
+            })
+            .unwrap_or_default();
+        ImplMethodDeclarationKeys {
+            shared: None,
+            canonical: None,
+            mangled,
+        }
+    }
+
+    /// Publish one impl method's declaration identity under the keys
+    /// [`Self::impl_method_declaration_keys`] derived for it.
+    fn publish_impl_method_declaration_id(
+        &mut self,
+        keys: &ImplMethodDeclarationKeys,
+        declaration_id: &crate::DefId,
+    ) {
+        if let Some(shared) = &keys.shared {
+            if self.registration_is_flat_file_import {
+                // File-import items are lowered as root items after checking.
+                // Their shared dispatch entry therefore outranks any package
+                // module's compatibility alias, independent of graph/import
+                // traversal order.
+                self.impl_method_declaration_ids
+                    .insert(shared.clone(), declaration_id.clone());
+            } else {
+                self.impl_method_declaration_ids
+                    .entry(shared.clone())
+                    .or_insert_with(|| declaration_id.clone());
+            }
+        }
+        for key in keys.canonical.iter().chain(&keys.mangled) {
+            self.impl_method_declaration_ids
+                .insert(key.clone(), declaration_id.clone());
+        }
     }
 
     /// Allocate an implementation-method declaration identity while its source

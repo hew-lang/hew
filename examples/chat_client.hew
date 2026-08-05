@@ -57,13 +57,12 @@ fn main() {
     println("Type messages and press Enter. Type /quit to exit.");
     let reader = spawn ServerReader(conn: conn);
     reader.start(0);
-    var running = true;
-    while running {
+    loop {
         let line = io.read_line();
         if line.contains("/quit") {
-            running = false;
             conn.close();
             println("[client] disconnected");
+            break;
         } else {
             let outbound = f"{name}: {line}";
             let _ = conn.write_string(outbound);

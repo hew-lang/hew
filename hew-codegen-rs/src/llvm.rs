@@ -32763,6 +32763,172 @@ fn dbg_declare_at_end<'ctx>(
     }
 }
 
+/// One named coroutine body local awaiting honest debug-location emission.
+///
+/// Suspend-carrying coroutines cannot take `optnone` (CoroSplit must run), so
+/// the backend is free to defer a local's slot store past its source line. A
+/// prologue-wide `dbg.declare` would then let the debugger confidently print a
+/// stale slot value at a PC where the store has not executed — a silent lie.
+/// Body autos of such functions are therefore collected here during
+/// [`emit_variable_dies`] and resolved by
+/// [`emit_honest_coroutine_local_locations`] once the body's stores exist.
+struct PendingCoroLocalDbg<'ctx> {
+    slot: PointerValue<'ctx>,
+    di_var: inkwell::debug_info::DILocalVariable<'ctx>,
+    debug_loc: inkwell::debug_info::DILocation<'ctx>,
+}
+
+/// Give each suspend-coroutine body local an HONEST debug location instead of
+/// the whole-scope `dbg.declare` lie (A305: absent information is acceptable;
+/// a confidently wrong value is not).
+///
+/// Per local, from the finished pre-CoroSplit IR:
+///
+/// - Every direct store precedes every suspend point → keep the prologue
+///   `dbg.declare`. CoroSplit rewrites the declare onto the coro frame, which
+///   is what makes pre-suspend locals readable after a resume today.
+/// - Any store is reachable at-or-after a suspend point → emit a store-anchored
+///   `dbg.value` of the STORED SSA VALUE after each store instead. The
+///   variable's location list then begins where the assignment actually
+///   executes: before it the debugger reports the local as unavailable /
+///   optimized out, after it the value is read from the register the backend
+///   really keeps it in. When that register dies (or the frame is resumed
+///   without a re-store) the location list ends — again honest absence.
+/// - No direct stores at all (aggregate locals built through GEP/memcpy
+///   writes) → keep the declare. WHY: field-wise initialization has no single
+///   store to anchor availability on. WHEN-OBSOLETE: the v0.6.0-final
+///   full-fidelity pass, which must scope aggregate availability via
+///   per-field location lists (DW_OP_LLVM_fragment anchored at each field
+///   write) or an explicit init-complete marker; until then aggregates keep
+///   the pre-A305 whole-scope declare shape.
+fn emit_honest_coroutine_local_locations<'ctx>(
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    llvm_mod: &LlvmModule<'ctx>,
+    llvm_fn: inkwell::values::FunctionValue<'ctx>,
+    prologue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    pending: &[PendingCoroLocalDbg<'ctx>],
+) {
+    use inkwell::llvm_sys::core::{
+        LLVMGetBasicBlockTerminator, LLVMGetCalledValue, LLVMGetNumSuccessors, LLVMGetSuccessor,
+    };
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
+    use inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
+    use inkwell::values::{AsValueRef, InstructionOpcode};
+
+    if pending.is_empty() {
+        return;
+    }
+    let empty_expr = dctx.di_builder.create_expression(vec![]);
+    let blocks = llvm_fn.get_basic_blocks();
+
+    // Blocks that can execute at-or-after a suspend point: the transitive
+    // successors of every block containing an `llvm.coro.suspend` call. A
+    // suspend block's own pre-suspend stores stay pre-suspend (the block
+    // itself joins the set only through a loop back edge — conservatively
+    // post-suspend, which errs toward honesty, never toward a lie).
+    let suspend_fn = llvm_mod
+        .get_function("llvm.coro.suspend")
+        .map(|f| f.as_value_ref());
+    let mut post_suspend: HashSet<usize> = HashSet::new();
+    let mut work: Vec<LLVMBasicBlockRef> = Vec::new();
+    if let Some(suspend_fn) = suspend_fn {
+        for bb in &blocks {
+            let mut cursor = bb.get_first_instruction();
+            while let Some(instr) = cursor {
+                // SAFETY: `instr` is a live call instruction of this module;
+                // LLVMGetCalledValue only reads the callee operand.
+                if instr.get_opcode() == InstructionOpcode::Call
+                    && unsafe { LLVMGetCalledValue(instr.as_value_ref()) } == suspend_fn
+                {
+                    if let Some(term) = bb.get_terminator() {
+                        // SAFETY: `term` is the block's terminator; successor
+                        // iteration is a read-only CFG walk.
+                        let n = unsafe { LLVMGetNumSuccessors(term.as_value_ref()) };
+                        for i in 0..n {
+                            work.push(unsafe { LLVMGetSuccessor(term.as_value_ref(), i) });
+                        }
+                    }
+                    break;
+                }
+                cursor = instr.get_next_instruction();
+            }
+        }
+    }
+    while let Some(bb_ref) = work.pop() {
+        if !post_suspend.insert(bb_ref as usize) {
+            continue;
+        }
+        // SAFETY: `bb_ref` came from the same function's CFG; the terminator
+        // may be absent (null) for a block still under construction — guarded.
+        let term = unsafe { LLVMGetBasicBlockTerminator(bb_ref) };
+        if !term.is_null() {
+            let n = unsafe { LLVMGetNumSuccessors(term) };
+            for i in 0..n {
+                work.push(unsafe { LLVMGetSuccessor(term, i) });
+            }
+        }
+    }
+
+    for local in pending {
+        let slot_ref = local.slot.as_value_ref();
+        let mut stores: Vec<inkwell::values::InstructionValue<'ctx>> = Vec::new();
+        let mut any_post_suspend = false;
+        for bb in &blocks {
+            let in_post = post_suspend.contains(&(bb.as_mut_ptr() as usize));
+            let mut cursor = bb.get_first_instruction();
+            while let Some(instr) = cursor {
+                if instr.get_opcode() == InstructionOpcode::Store
+                    && instr
+                        .get_operand(1)
+                        .and_then(|op| op.value())
+                        .is_some_and(|ptr| ptr.as_value_ref() == slot_ref)
+                {
+                    any_post_suspend |= in_post;
+                    stores.push(instr);
+                }
+                cursor = instr.get_next_instruction();
+            }
+        }
+        if stores.is_empty() || !any_post_suspend {
+            // Pre-suspend-only (or aggregate-initialized) local: the declare
+            // shape survives CoroSplit's frame rewrite and stays readable
+            // across resumes.
+            dbg_declare_at_end(
+                dctx.di_builder,
+                local.slot,
+                local.di_var,
+                empty_expr,
+                local.debug_loc,
+                prologue_bb,
+            );
+            continue;
+        }
+        for store in stores {
+            // A store is never a terminator, so a successor instruction always
+            // exists; a missing one simply skips the anchor (honest absence).
+            let Some(next) = store.get_next_instruction() else {
+                continue;
+            };
+            let Some(value) = store.get_operand(0).and_then(|op| op.value()) else {
+                continue;
+            };
+            // SAFETY: every wrapper belongs to this module's live context and
+            // DIBuilder; the call inserts one new-format dbg.value record
+            // before `next` and returns a handle we discard.
+            unsafe {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    dctx.di_builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    local.di_var.as_mut_ptr(),
+                    empty_expr.as_mut_ptr(),
+                    local.debug_loc.as_mut_ptr(),
+                    next.as_value_ref(),
+                );
+            }
+        }
+    }
+}
+
 /// gdb `-g` lexical-block map for one function. Holds one `DILexicalBlock` per
 /// HIR scope in the MIR `scope_table`, parented per the table and rooted at the
 /// subprogram, plus a byte-range index for resolving an instruction span to its
@@ -32873,7 +33039,9 @@ fn emit_variable_dies<'ctx>(
     record_field_names: &HashMap<String, Vec<String>>,
     prologue_bb: inkwell::basic_block::BasicBlock<'ctx>,
     lexical_scopes: &LexicalScopes<'ctx>,
+    coroutine_pending: Option<&mut Vec<PendingCoroLocalDbg<'ctx>>>,
 ) {
+    let mut coroutine_pending = coroutine_pending;
     // The function-declaration line is the fallback scope/line for a slot that
     // carries no per-binding span (params, synthesised locals). If the function
     // has no in-file span the subprogram would not exist, so a fallback of 0 is
@@ -32983,6 +33151,20 @@ fn emit_variable_dies<'ctx>(
         } else {
             var_debug_loc
         };
+        // A suspend-coroutine body auto defers its location decision until the
+        // body's stores exist (A305 honesty pass); everything else — params,
+        // and every local of a non-coroutine — keeps the prologue declare,
+        // whose eager-store contract `optnone` guarantees.
+        if idx >= param_count {
+            if let Some(pending) = coroutine_pending.as_deref_mut() {
+                pending.push(PendingCoroLocalDbg {
+                    slot,
+                    di_var,
+                    debug_loc: declare_loc,
+                });
+                continue;
+            }
+        }
         dbg_declare_at_end(
             dctx.di_builder,
             slot,
@@ -34152,6 +34334,7 @@ fn lower_function<'ctx>(
     // body) before the closing branch, so each `llvm.dbg.declare` references an
     // in-scope alloca. Fail-closed inside the helper: no subprogram / no name /
     // unresolvable type → no DIE for that slot.
+    let mut coroutine_pending_locals: Vec<PendingCoroLocalDbg<'ctx>> = Vec::new();
     if let (Some(dctx), Some(subprogram), Some(ls)) =
         (debug, fn_subprogram, lexical_scopes.as_ref())
     {
@@ -34165,6 +34348,7 @@ fn lower_function<'ctx>(
             record_field_names,
             prologue_bb,
             ls,
+            is_coroutine_function(func).then_some(&mut coroutine_pending_locals),
         );
     }
     fn_ctx
@@ -34519,6 +34703,19 @@ fn lower_function<'ctx>(
         // default edge and the cleanup join) terminate here.
         fn_ctx.builder.position_at_end(coro.suspend_return_block);
         crate::coro::emit_coro_end_ret(&cc)?;
+    }
+
+    // A305 honesty pass: the body's stores now exist, so each deferred
+    // coroutine local can get its honest location shape (declare for
+    // pre-suspend-only locals, store-anchored dbg.value otherwise).
+    if let Some(dctx) = debug {
+        emit_honest_coroutine_local_locations(
+            dctx,
+            llvm_mod,
+            llvm_fn,
+            prologue_bb,
+            &coroutine_pending_locals,
+        );
     }
 
     Ok(())

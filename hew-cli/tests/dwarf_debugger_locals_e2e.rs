@@ -107,6 +107,31 @@ fn main() {
 }
 ";
 
+/// A receive handler that assigns a local AFTER a real suspend point. The
+/// handler cannot take `optnone` (`CoroSplit` must run), so `y`'s slot store is
+/// free to lag its source line — the case where a whole-scope `dbg.declare`
+/// would let the debugger print stale garbage as if it were `y`.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const SLEEP_SRC: &str = "\
+actor Worker {
+    receive fn compute(n: i64) -> i64 {
+        let x: i64 = n + 1;
+        sleep(10ms);
+        let y: i64 = x + 34;
+        println(y);
+        y
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    match await worker.compute(7) {
+        Ok(value) => println(value),
+        Err(_) => println(-1),
+    }
+}
+";
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const ENUM_SRC: &str = "\
 record Payload {
@@ -381,6 +406,114 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
     assert!(
         text.contains("after = 42") || text.contains("$3 = 42"),
         "post-suspend breakpoint must expose `after = 42`:\n{text}"
+    );
+}
+
+/// A305: a debugger stopped where a local's store has not executed must report
+/// the local UNAVAILABLE — never a confidently wrong value. Before the honest
+/// location pass, `y` here read as stack garbage at the pre-suspend stop and
+/// at the post-suspend stop before its assignment; the declared slot genuinely
+/// held the wrong bits at those PCs.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
+    require_codegen();
+    let Some(dbg) = debugger() else {
+        eprintln!("skip: no lldb/gdb on host");
+        return;
+    };
+    let fixture = build_debug_fixture("sleep-honest-locals", SLEEP_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+    // Stop 1 (line 4, ramp, pre-suspend): `x` stored, `y` not. Stop 2 (line 7,
+    // `.resume`, post-suspend): both stored. Hardware breakpoints avoid
+    // patching coroutine code while runtime threads execute it.
+    let cmd = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 4"),
+            "-o",
+            &format!("breakpoint set -H --file {src} --line 7"),
+            "-o",
+            "run",
+            "-o",
+            "frame variable x y",
+            // The line-4 breakpoint also matches the `.resume` re-entry PC;
+            // disable it so the next stop is the line-7 one.
+            "-o",
+            "breakpoint disable 1",
+            "-o",
+            "continue",
+            "-o",
+            "frame variable x y",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("hbreak {src}:4"),
+            "-ex",
+            &format!("hbreak {src}:7"),
+            "-ex",
+            "run",
+            "-ex",
+            "info locals",
+            "-ex",
+            "disable 1",
+            "-ex",
+            "continue",
+            "-ex",
+            "info locals",
+            bin,
+        ]);
+        command
+    };
+    let out = run_bounded_command(cmd, format!("{dbg} honest post-suspend local"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{dbg} failed while debugging sleep handler:\n{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Pre-suspend stop: the stored local reads its real value.
+    assert!(
+        text.contains("x = 8"),
+        "pre-suspend breakpoint must read the stored `x = 8`:\n{text}"
+    );
+    // The unstored local must be reported absent, and must never surface a
+    // fabricated numeric value at the pre-store stop. `y`'s only true value is
+    // 42, and 42 may legitimately appear at the second (post-store) stop — so
+    // reject any `y = <digits>` line that is not exactly 42.
+    assert!(
+        text.contains("not available") || text.contains("optimized out"),
+        "unstored `y` must be reported unavailable/optimized-out at the pre-store stop:\n{text}"
+    );
+    let wrong_y = text.lines().any(|line| {
+        line.split_once("y = ")
+            .map(|(_, v)| v.trim())
+            .is_some_and(|v| {
+                v.chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit() || c == '-')
+                    && v != "42"
+            })
+    });
+    assert!(
+        !wrong_y,
+        "`y` must never read as a value other than its stored 42:\n{text}"
+    );
+    // Post-store stop: the value is either honestly absent or the real 42 —
+    // this fixture's codegen shape keeps it readable at the `y` return line.
+    assert!(
+        text.contains("y = 42") || text.contains("= 42"),
+        "post-store breakpoint must read the stored `y = 42`:\n{text}"
     );
 }
 

@@ -1,12 +1,16 @@
 fn test_funcupdate_string_field_override_drops_old -> ()
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(0) ty=FlatConfig
     bind BindingId(0) c site=SiteId(0) ty=FlatConfig
     bind BindingId(1) i site=SiteId(6) ty=i64
     use BindingId(1) i site=SiteId(8) ty=i64 intent=Read
     eval site=SiteId(21) ty=()
     use BindingId(0) c site=SiteId(24) ty=FlatConfig intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(12) ty=string
     use BindingId(0) c site=SiteId(16) ty=FlatConfig intent=Read
     agg_alias BindingId(0) c site=SiteId(16) ty=FlatConfig
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(11) ty=FlatConfig
     bind BindingId(0) c site=SiteId(10) ty=FlatConfig
     eval site=SiteId(11) ty=()
     use BindingId(1) i site=SiteId(19) ty=i64 intent=Read
@@ -14,12 +18,12 @@ fn test_funcupdate_string_field_override_drops_old -> ()
     eval site=SiteId(18) ty=()
     eval site=SiteId(22) ty=()
     use BindingId(0) c site=SiteId(29) ty=FlatConfig intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(30) ty=string
+    bind BindingId(4294967227) __hew_temp_arg site=SiteId(30) ty=string
     eval site=SiteId(27) ty=()
-    drop BindingId(4294967231) __hew_temp_arg ty=string
+    drop BindingId(4294967227) __hew_temp_arg ty=string
     drop BindingId(0) c ty=FlatConfig
   drop_plans:
-    call[bb0 string$repeat -> bb1] ->
+    call[bb0 std$string$repeat -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -27,9 +31,9 @@ fn test_funcupdate_string_field_override_drops_old -> ()
       (none)
     branch[bb2: bb3/bb4] ->
       (none)
-    call[bb3 string$repeat -> bb5] ->
+    call[bb3 std$string$repeat -> bb5] ->
       (none)
-    call[bb4 testing$assert_eq -> bb8] ->
+    call[bb4 std$testing$assert_eq -> bb8] ->
       (none)
     branch[bb5: bb6/bb7] ->
       (none)
@@ -39,9 +43,9 @@ fn test_funcupdate_string_field_override_drops_old -> ()
       (none)
     cancel[bb7] ->
       drop _5 ty=FlatConfig kind=record_in_place
-    call[bb8 string$repeat -> bb9] ->
+    call[bb8 std$string$repeat -> bb9] ->
       (none)
-    call[bb9 testing$assert_eq_str -> bb10] ->
+    call[bb9 std$testing$assert_eq_str -> bb10] ->
       (none)
     return[bb10] ->
       drop _23 ty=string kind=cow_heap(hew_string_drop)
@@ -49,6 +53,8 @@ fn test_funcupdate_string_field_override_drops_old -> ()
 
 fn test_funcupdate_bitcopy_field_override_carries_label -> ()
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(36) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(35) ty=FlatConfig
     bind BindingId(2) c site=SiteId(35) ty=FlatConfig
     bind BindingId(3) i site=SiteId(41) ty=i64
     use BindingId(3) i site=SiteId(43) ty=i64 intent=Read
@@ -57,6 +63,7 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
     use BindingId(2) c site=SiteId(59) ty=FlatConfig intent=Read
     use BindingId(2) c site=SiteId(51) ty=FlatConfig intent=Read
     agg_alias BindingId(2) c site=SiteId(51) ty=FlatConfig
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(46) ty=FlatConfig
     bind BindingId(2) c site=SiteId(45) ty=FlatConfig
     eval site=SiteId(46) ty=()
     use BindingId(3) i site=SiteId(54) ty=i64 intent=Read
@@ -64,12 +71,12 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
     eval site=SiteId(53) ty=()
     eval site=SiteId(57) ty=()
     use BindingId(2) c site=SiteId(64) ty=FlatConfig intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(65) ty=string
+    bind BindingId(4294967228) __hew_temp_arg site=SiteId(65) ty=string
     eval site=SiteId(62) ty=()
-    drop BindingId(4294967231) __hew_temp_arg ty=string
+    drop BindingId(4294967228) __hew_temp_arg ty=string
     drop BindingId(2) c ty=FlatConfig
   drop_plans:
-    call[bb0 string$repeat -> bb1] ->
+    call[bb0 std$string$repeat -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -79,7 +86,7 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
       (none)
     branch[bb3: bb5/bb6] ->
       (none)
-    call[bb4 testing$assert_eq -> bb9] ->
+    call[bb4 std$testing$assert_eq -> bb9] ->
       (none)
     panic[bb5] ->
       drop _5 ty=FlatConfig kind=record_in_place
@@ -91,9 +98,9 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
       (none)
     cancel[bb8] ->
       drop _5 ty=FlatConfig kind=record_in_place
-    call[bb9 string$repeat -> bb10] ->
+    call[bb9 std$string$repeat -> bb10] ->
       (none)
-    call[bb10 testing$assert_eq_str -> bb11] ->
+    call[bb10 std$testing$assert_eq_str -> bb11] ->
       (none)
     return[bb11] ->
       drop _24 ty=string kind=cow_heap(hew_string_drop)
@@ -101,16 +108,19 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
 
 fn test_funcupdate_vec_field_override_drops_old -> ()
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(70) ty=Vec<i64>
     bind BindingId(4) init site=SiteId(70) ty=Vec<i64>
     use BindingId(4) init site=SiteId(73) ty=Vec<i64> intent=Read
     eval site=SiteId(72) ty=()
     use BindingId(4) init site=SiteId(76) ty=Vec<i64> intent=Read
     agg_alias BindingId(4) init site=SiteId(76) ty=Vec<i64>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(75) ty=VecHolder
     bind BindingId(5) s site=SiteId(75) ty=VecHolder
     bind BindingId(6) i site=SiteId(78) ty=i64
     use BindingId(6) i site=SiteId(80) ty=i64 intent=Read
     eval site=SiteId(95) ty=()
     use BindingId(5) s site=SiteId(98) ty=VecHolder intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(82) ty=Vec<i64>
     bind BindingId(7) next site=SiteId(82) ty=Vec<i64>
     use BindingId(7) next site=SiteId(85) ty=Vec<i64> intent=Read
     use BindingId(6) i site=SiteId(86) ty=i64 intent=Read
@@ -119,6 +129,7 @@ fn test_funcupdate_vec_field_override_drops_old -> ()
     agg_alias BindingId(7) next site=SiteId(89) ty=Vec<i64>
     use BindingId(5) s site=SiteId(90) ty=VecHolder intent=Read
     agg_alias BindingId(5) s site=SiteId(90) ty=VecHolder
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(88) ty=VecHolder
     bind BindingId(5) s site=SiteId(87) ty=VecHolder
     eval site=SiteId(88) ty=()
     use BindingId(6) i site=SiteId(93) ty=i64 intent=Read
@@ -143,7 +154,7 @@ fn test_funcupdate_vec_field_override_drops_old -> ()
       (none)
     call[bb4 Vec::new -> bb6] ->
       (none)
-    call[bb5 testing$assert_eq_str -> bb10] ->
+    call[bb5 std$testing$assert_eq_str -> bb10] ->
       (none)
     call[bb6 hew_vec_push_i64 -> bb7] ->
       (none)
@@ -157,31 +168,37 @@ fn test_funcupdate_vec_field_override_drops_old -> ()
       drop _5 ty=VecHolder kind=record_in_place
     call[bb10 hew_vec_len -> bb11] ->
       (none)
-    call[bb11 testing$assert_eq -> bb12] ->
+    call[bb11 std$testing$assert_eq -> bb12] ->
       (none)
     return[bb12] ->
       drop _5 ty=VecHolder kind=record_in_place
 
 fn test_funcupdate_multi_field_override_drops_old -> ()
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(107) ty=Vec<i64>
     bind BindingId(8) init site=SiteId(107) ty=Vec<i64>
     use BindingId(8) init site=SiteId(110) ty=Vec<i64> intent=Read
     eval site=SiteId(109) ty=()
     use BindingId(8) init site=SiteId(113) ty=Vec<i64> intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(114) ty=string
     agg_alias BindingId(8) init site=SiteId(113) ty=Vec<i64>
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(112) ty=VecHolder
     bind BindingId(9) s site=SiteId(112) ty=VecHolder
     bind BindingId(10) i site=SiteId(118) ty=i64
     use BindingId(10) i site=SiteId(120) ty=i64 intent=Read
     eval site=SiteId(139) ty=()
     use BindingId(9) s site=SiteId(143) ty=VecHolder intent=Read
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(122) ty=Vec<i64>
     bind BindingId(11) next site=SiteId(122) ty=Vec<i64>
     use BindingId(11) next site=SiteId(125) ty=Vec<i64> intent=Read
     use BindingId(10) i site=SiteId(126) ty=i64 intent=Read
     eval site=SiteId(124) ty=()
     use BindingId(11) next site=SiteId(129) ty=Vec<i64> intent=Read
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(130) ty=string
     agg_alias BindingId(11) next site=SiteId(129) ty=Vec<i64>
     use BindingId(9) s site=SiteId(134) ty=VecHolder intent=Read
     agg_alias BindingId(9) s site=SiteId(134) ty=VecHolder
+    bind BindingId(4294967226) __hew_produced_value site=SiteId(128) ty=VecHolder
     bind BindingId(9) s site=SiteId(127) ty=VecHolder
     eval site=SiteId(128) ty=()
     use BindingId(10) i site=SiteId(137) ty=i64 intent=Read
@@ -189,9 +206,9 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
     eval site=SiteId(136) ty=()
     eval site=SiteId(140) ty=()
     use BindingId(9) s site=SiteId(148) ty=VecHolder intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(149) ty=string
+    bind BindingId(4294967225) __hew_temp_arg site=SiteId(149) ty=string
     eval site=SiteId(146) ty=()
-    drop BindingId(4294967231) __hew_temp_arg ty=string
+    drop BindingId(4294967225) __hew_temp_arg ty=string
     drop BindingId(11) next ty=Vec<i64>
     drop BindingId(9) s ty=VecHolder
     drop BindingId(8) init ty=Vec<i64>
@@ -202,7 +219,7 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
       (none)
     call[bb1 hew_vec_push_i64 -> bb2] ->
       (none)
-    call[bb2 string$repeat -> bb3] ->
+    call[bb2 std$string$repeat -> bb3] ->
       (none)
     goto[bb3->bb4] ->
       (none)
@@ -214,7 +231,7 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
       (none)
     call[bb7 hew_vec_push_i64 -> bb8] ->
       (none)
-    call[bb8 string$repeat -> bb9] ->
+    call[bb8 std$string$repeat -> bb9] ->
       (none)
     branch[bb9: bb10/bb11] ->
       (none)
@@ -224,11 +241,11 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
       (none)
     cancel[bb11] ->
       drop _7 ty=VecHolder kind=record_in_place
-    call[bb12 testing$assert_eq -> bb13] ->
+    call[bb12 std$testing$assert_eq -> bb13] ->
       (none)
-    call[bb13 string$repeat -> bb14] ->
+    call[bb13 std$string$repeat -> bb14] ->
       (none)
-    call[bb14 testing$assert_eq_str -> bb15] ->
+    call[bb14 std$testing$assert_eq_str -> bb15] ->
       (none)
     return[bb15] ->
       drop _27 ty=string kind=cow_heap(hew_string_drop)
@@ -241,6 +258,7 @@ fn test_funcupdate_hashmap_field_override_drops_old -> ()
     eval site=SiteId(156) ty=()
     use BindingId(12) init site=SiteId(161) ty=HashMap<string, i64> intent=Read
     agg_alias BindingId(12) init site=SiteId(161) ty=HashMap<string, i64>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(160) ty=MapHolder
     bind BindingId(13) h site=SiteId(160) ty=MapHolder
     bind BindingId(14) i site=SiteId(163) ty=i64
     use BindingId(14) i site=SiteId(165) ty=i64 intent=Read
@@ -254,6 +272,7 @@ fn test_funcupdate_hashmap_field_override_drops_old -> ()
     agg_alias BindingId(15) next site=SiteId(175) ty=HashMap<string, i64>
     use BindingId(13) h site=SiteId(176) ty=MapHolder intent=Read
     agg_alias BindingId(13) h site=SiteId(176) ty=MapHolder
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(174) ty=MapHolder
     bind BindingId(13) h site=SiteId(173) ty=MapHolder
     eval site=SiteId(174) ty=()
     use BindingId(14) i site=SiteId(179) ty=i64 intent=Read
@@ -278,7 +297,7 @@ fn test_funcupdate_hashmap_field_override_drops_old -> ()
       (none)
     call[bb4 HashMap::new -> bb6] ->
       (none)
-    call[bb5 testing$assert_eq -> bb10] ->
+    call[bb5 std$testing$assert_eq -> bb10] ->
       (none)
     call[bb6 hew_hashmap_insert_layout -> bb7] ->
       (none)
@@ -292,7 +311,7 @@ fn test_funcupdate_hashmap_field_override_drops_old -> ()
       drop _6 ty=MapHolder kind=record_in_place
     call[bb10 hew_hashmap_len_layout -> bb11] ->
       (none)
-    call[bb11 testing$assert_eq -> bb12] ->
+    call[bb11 std$testing$assert_eq -> bb12] ->
       (none)
     return[bb12] ->
       drop _6 ty=MapHolder kind=record_in_place
@@ -304,6 +323,7 @@ fn test_funcupdate_hashset_field_override_drops_old -> ()
     eval site=SiteId(195) ty=bool
     use BindingId(16) init site=SiteId(199) ty=HashSet<i64> intent=Read
     agg_alias BindingId(16) init site=SiteId(199) ty=HashSet<i64>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(198) ty=SetHolder
     bind BindingId(17) h site=SiteId(198) ty=SetHolder
     bind BindingId(18) i site=SiteId(201) ty=i64
     use BindingId(18) i site=SiteId(203) ty=i64 intent=Read
@@ -317,6 +337,7 @@ fn test_funcupdate_hashset_field_override_drops_old -> ()
     agg_alias BindingId(19) next site=SiteId(212) ty=HashSet<i64>
     use BindingId(17) h site=SiteId(213) ty=SetHolder intent=Read
     agg_alias BindingId(17) h site=SiteId(213) ty=SetHolder
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(211) ty=SetHolder
     bind BindingId(17) h site=SiteId(210) ty=SetHolder
     eval site=SiteId(211) ty=()
     use BindingId(18) i site=SiteId(216) ty=i64 intent=Read
@@ -341,7 +362,7 @@ fn test_funcupdate_hashset_field_override_drops_old -> ()
       (none)
     call[bb4 HashSet::new -> bb6] ->
       (none)
-    call[bb5 testing$assert_eq -> bb10] ->
+    call[bb5 std$testing$assert_eq -> bb10] ->
       (none)
     call[bb6 hew_hashset_insert_layout -> bb7] ->
       (none)
@@ -355,339 +376,41 @@ fn test_funcupdate_hashset_field_override_drops_old -> ()
       drop _6 ty=SetHolder kind=record_in_place
     call[bb10 hew_hashset_len_layout -> bb11] ->
       (none)
-    call[bb11 testing$assert_eq -> bb12] ->
+    call[bb11 std$testing$assert_eq -> bb12] ->
       (none)
     return[bb12] ->
       drop _6 ty=SetHolder kind=record_in_place
 
-fn testing$assert_eq -> ()
+fn std$string$from_int -> string
   statements:
-    use BindingId(20) actual site=SiteId(232) ty=i64 intent=Read
-    use BindingId(21) expected site=SiteId(233) ty=i64 intent=Read
-    use BindingId(21) expected site=SiteId(238) ty=i64 intent=Read
-    return site=Some(SiteId(230)) ty=()
-    use BindingId(20) actual site=SiteId(242) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(236) ty=string
-    eval site=SiteId(235) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
+    use BindingId(20) n site=SiteId(231) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(230) ty=string
+    return site=Some(SiteId(230)) ty=string
   drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 panic -> bb9] ->
-      (none)
-    goto[bb9->bb3] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb9] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_eq_u8 -> ()
-  statements:
-    use BindingId(22) actual site=SiteId(254) ty=u8 intent=Read
-    use BindingId(23) expected site=SiteId(255) ty=u8 intent=Read
-    use BindingId(23) expected site=SiteId(261) ty=u8 intent=Read
-    return site=Some(SiteId(252)) ty=()
-    use BindingId(22) actual site=SiteId(266) ty=u8 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(258) ty=string
-    eval site=SiteId(257) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 panic -> bb9] ->
-      (none)
-    goto[bb9->bb3] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb9] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_ne_u8 -> ()
-  statements:
-    use BindingId(24) a site=SiteId(278) ty=u8 intent=Read
-    use BindingId(25) b site=SiteId(279) ty=u8 intent=Read
-    use BindingId(24) a site=SiteId(285) ty=u8 intent=Read
-    return site=Some(SiteId(276)) ty=()
-    use BindingId(25) b site=SiteId(290) ty=u8 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(282) ty=string
-    eval site=SiteId(281) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 string_concat -> bb9] ->
-      (none)
-    call[bb9 panic -> bb10] ->
-      (none)
-    goto[bb10->bb3] ->
-      drop _14 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb10] ->
-      drop _14 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_eq_str -> ()
-  statements:
-    use BindingId(26) actual site=SiteId(305) ty=string intent=Read
-    use BindingId(27) expected site=SiteId(306) ty=string intent=Read
-    use BindingId(27) expected site=SiteId(311) ty=string intent=Read
-    return site=Some(SiteId(303)) ty=()
-    use BindingId(26) actual site=SiteId(315) ty=string intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(309) ty=string
-    eval site=SiteId(308) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 string::fmt -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 string::fmt -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 string_concat -> bb9] ->
-      (none)
-    call[bb9 panic -> bb10] ->
-      (none)
-    goto[bb10->bb3] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb10] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_ne -> ()
-  statements:
-    use BindingId(28) a site=SiteId(330) ty=i64 intent=Read
-    use BindingId(29) b site=SiteId(331) ty=i64 intent=Read
-    use BindingId(28) a site=SiteId(336) ty=i64 intent=Read
-    return site=Some(SiteId(328)) ty=()
-    use BindingId(29) b site=SiteId(340) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(334) ty=string
-    eval site=SiteId(333) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 string_concat -> bb9] ->
-      (none)
-    call[bb9 panic -> bb10] ->
-      (none)
-    goto[bb10->bb3] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb10] ->
-      drop _12 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_true -> ()
-  statements:
-    use BindingId(30) condition site=SiteId(355) ty=bool intent=Read
-    return site=Some(SiteId(353)) ty=()
-    eval site=SiteId(357) ty=!
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 panic -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    goto[bb4->bb3] ->
-      (none)
-    cancel[bb4] ->
-      (none)
-
-fn testing$assert_false -> ()
-  statements:
-    use BindingId(31) condition site=SiteId(361) ty=bool intent=Read
-    return site=Some(SiteId(360)) ty=()
-    eval site=SiteId(363) ty=!
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 panic -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    goto[bb4->bb3] ->
-      (none)
-    cancel[bb4] ->
-      (none)
-
-fn testing$assert_gt -> ()
-  statements:
-    use BindingId(32) a site=SiteId(368) ty=i64 intent=Read
-    use BindingId(33) b site=SiteId(369) ty=i64 intent=Read
-    use BindingId(32) a site=SiteId(374) ty=i64 intent=Read
-    return site=Some(SiteId(366)) ty=()
-    use BindingId(33) b site=SiteId(378) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(372) ty=string
-    eval site=SiteId(371) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 panic -> bb9] ->
-      (none)
-    goto[bb9->bb3] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb9] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-
-fn testing$assert_lt -> ()
-  statements:
-    use BindingId(34) a site=SiteId(390) ty=i64 intent=Read
-    use BindingId(35) b site=SiteId(391) ty=i64 intent=Read
-    use BindingId(34) a site=SiteId(396) ty=i64 intent=Read
-    return site=Some(SiteId(388)) ty=()
-    use BindingId(35) b site=SiteId(400) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(394) ty=string
-    eval site=SiteId(393) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-  drop_plans:
-    branch[bb0: bb1/bb2] ->
-      (none)
-    cancel[bb0] ->
-      (none)
-    call[bb1 to_string_i64 -> bb4] ->
-      (none)
-    goto[bb2->bb3] ->
-      (none)
-    return[bb3] ->
-      (none)
-    call[bb4 string_concat -> bb5] ->
-      (none)
-    call[bb5 string_concat -> bb6] ->
-      (none)
-    call[bb6 to_string_i64 -> bb7] ->
-      (none)
-    call[bb7 string_concat -> bb8] ->
-      (none)
-    call[bb8 panic -> bb9] ->
-      (none)
-    goto[bb9->bb3] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb9] ->
-      drop _10 ty=string kind=cow_heap(hew_string_drop)
-
-fn string$from_int -> string
-  statements:
-    use BindingId(36) n site=SiteId(411) ty=i64 intent=Read
-    return site=Some(SiteId(410)) ty=string
-  drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     return[bb1] ->
       (none)
 
-fn string$from_float -> string
+fn std$string$from_float -> string
   statements:
-    use BindingId(37) f site=SiteId(415) ty=f64 intent=Read
-    return site=Some(SiteId(414)) ty=string
+    use BindingId(21) f site=SiteId(235) ty=f64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(234) ty=string
+    return site=Some(SiteId(234)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     return[bb1] ->
       (none)
 
-fn string$from_bool -> string
+fn std$string$from_bool -> string
   statements:
-    use BindingId(38) b site=SiteId(419) ty=bool intent=Read
-    return site=Some(SiteId(418)) ty=string
+    use BindingId(22) b site=SiteId(239) ty=bool intent=Read
+    return site=Some(SiteId(238)) ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -698,19 +421,21 @@ fn string$from_bool -> string
     return[bb3] ->
       (none)
 
-fn string$from_char -> string
+fn std$string$from_char -> string
   statements:
-    use BindingId(39) code site=SiteId(427) ty=i64 intent=Read
-    use BindingId(39) code site=SiteId(430) ty=i64 intent=Read
-    use BindingId(39) code site=SiteId(434) ty=i64 intent=Read
-    use BindingId(39) code site=SiteId(437) ty=i64 intent=Read
-    use BindingId(39) code site=SiteId(442) ty=i64 intent=Read
-    eval site=SiteId(449) ty=()
-    use BindingId(39) code site=SiteId(453) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(440) ty=string
-    eval site=SiteId(439) ty=!
-    return site=Some(SiteId(450)) ty=string
-    drop BindingId(4294967231) __hew_temp_arg ty=string
+    use BindingId(23) code site=SiteId(247) ty=i64 intent=Read
+    use BindingId(23) code site=SiteId(250) ty=i64 intent=Read
+    use BindingId(23) code site=SiteId(254) ty=i64 intent=Read
+    use BindingId(23) code site=SiteId(257) ty=i64 intent=Read
+    use BindingId(23) code site=SiteId(262) ty=i64 intent=Read
+    eval site=SiteId(269) ty=()
+    use BindingId(23) code site=SiteId(273) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(264) ty=string
+    bind BindingId(4294967230) __hew_temp_arg site=SiteId(260) ty=string
+    eval site=SiteId(259) ty=!
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(271) ty=string
+    return site=Some(SiteId(270)) ty=string
+    drop BindingId(4294967230) __hew_temp_arg ty=string
   drop_plans:
     branch[bb0: bb2/bb1] ->
       (none)
@@ -730,33 +455,31 @@ fn string$from_char -> string
       (none)
     cancel[bb6] ->
       (none)
-    call[bb7 to_string_i64 -> bb10] ->
+    call[bb7 hew_i64_to_string -> bb10] ->
       (none)
     goto[bb8->bb9] ->
       (none)
-    call[bb9 hew_char_to_string -> bb13] ->
+    call[bb9 hew_char_to_string -> bb12] ->
       (none)
-    call[bb10 string_concat -> bb11] ->
+    call[bb10 hew_panic_msg -> bb11] ->
       (none)
-    call[bb11 panic -> bb12] ->
-      (none)
-    goto[bb12->bb9] ->
+    goto[bb11->bb9] ->
       drop _15 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb12] ->
+    cancel[bb11] ->
       drop _15 ty=string kind=cow_heap(hew_string_drop)
-    return[bb13] ->
+    return[bb12] ->
       (none)
 
-fn string$to_int -> Option<i64>
+fn std$string$to_int -> Option<i64>
   statements:
-    use BindingId(40) s site=SiteId(457) ty=string intent=Read
-    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(456) ty=Result<i64, string>
-    return site=Some(SiteId(455)) ty=Option<i64>
-    bind BindingId(41) value site=SiteId(459) ty=i64
-    use BindingId(41) value site=SiteId(460) ty=i64 intent=Read
+    use BindingId(24) s site=SiteId(277) ty=string intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(276) ty=Result<i64, string>
+    return site=Some(SiteId(275)) ty=Option<i64>
+    bind BindingId(25) value site=SiteId(279) ty=i64
+    use BindingId(25) value site=SiteId(280) ty=i64 intent=Read
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<i64, string>
   drop_plans:
-    call[bb0 string$try_to_int -> bb1] ->
+    call[bb0 std$string$try_to_int -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -777,67 +500,73 @@ fn string$to_int -> Option<i64>
     branch[bb6: bb4/bb5] ->
       (none)
 
-fn string$try_to_int -> Result<i64, string>
+fn std$string$try_to_int -> Result<i64, string>
   statements:
-    use BindingId(42) s site=SiteId(463) ty=string intent=Read
-    bind BindingId(43) slen site=SiteId(462) ty=i64
-    use BindingId(43) slen site=SiteId(466) ty=i64 intent=Read
-    return site=Some(SiteId(468)) ty=Result<i64, string>
-    eval site=SiteId(471) ty=()
-    bind BindingId(44) start site=SiteId(472) ty=i64
-    bind BindingId(45) negative site=SiteId(473) ty=bool
-    use BindingId(42) s site=SiteId(475) ty=string intent=Read
-    bind BindingId(46) first site=SiteId(474) ty=string
-    use BindingId(46) first site=SiteId(480) ty=string intent=Read
-    bind BindingId(45) negative site=SiteId(482) ty=bool
-    eval site=SiteId(483) ty=()
-    bind BindingId(44) start site=SiteId(484) ty=i64
-    eval site=SiteId(485) ty=()
-    use BindingId(46) first site=SiteId(488) ty=string intent=Read
-    eval site=SiteId(494) ty=()
-    use BindingId(44) start site=SiteId(496) ty=i64 intent=Read
-    use BindingId(43) slen site=SiteId(497) ty=i64 intent=Read
-    bind BindingId(44) start site=SiteId(490) ty=i64
-    eval site=SiteId(491) ty=()
-    return site=Some(SiteId(498)) ty=Result<i64, string>
-    eval site=SiteId(501) ty=()
-    bind BindingId(47) cutoff site=SiteId(502) ty=i64
-    use BindingId(45) negative site=SiteId(504) ty=bool intent=Read
-    bind BindingId(48) max_last_digit site=SiteId(503) ty=i64
-    bind BindingId(49) result site=SiteId(509) ty=i64
-    bind BindingId(50) i site=SiteId(0) ty=i64
-    use BindingId(42) s site=SiteId(514) ty=string intent=Read
-    use BindingId(50) i site=SiteId(515) ty=i64 intent=Read
-    use BindingId(50) i site=SiteId(517) ty=i64 intent=Read
-    eval site=SiteId(555) ty=()
-    use BindingId(45) negative site=SiteId(557) ty=bool intent=Read
-    use BindingId(44) start site=SiteId(510) ty=i64 intent=Read
-    use BindingId(43) slen site=SiteId(511) ty=i64 intent=Read
-    bind BindingId(51) digit site=SiteId(513) ty=string
-    use BindingId(51) digit site=SiteId(521) ty=string intent=Read
-    bind BindingId(52) d site=SiteId(520) ty=i64
-    use BindingId(51) digit site=SiteId(525) ty=string intent=Read
-    eval site=SiteId(523) ty=()
-    use BindingId(52) d site=SiteId(528) ty=i64 intent=Read
-    return site=Some(SiteId(530)) ty=Result<i64, string>
-    eval site=SiteId(533) ty=()
-    use BindingId(49) result site=SiteId(536) ty=i64 intent=Read
-    use BindingId(47) cutoff site=SiteId(537) ty=i64 intent=Read
-    use BindingId(49) result site=SiteId(540) ty=i64 intent=Read
-    use BindingId(47) cutoff site=SiteId(541) ty=i64 intent=Read
-    use BindingId(52) d site=SiteId(543) ty=i64 intent=Read
-    use BindingId(48) max_last_digit site=SiteId(544) ty=i64 intent=Read
-    return site=Some(SiteId(545)) ty=Result<i64, string>
-    eval site=SiteId(548) ty=()
-    use BindingId(49) result site=SiteId(552) ty=i64 intent=Read
-    use BindingId(52) d site=SiteId(554) ty=i64 intent=Read
-    bind BindingId(49) result site=SiteId(549) ty=i64
-    eval site=SiteId(550) ty=()
-    use BindingId(49) result site=SiteId(560) ty=i64 intent=Read
-    use BindingId(49) result site=SiteId(565) ty=i64 intent=Read
-    return site=Some(SiteId(556)) ty=Result<i64, string>
-    drop BindingId(51) digit ty=string
-    drop BindingId(46) first ty=string
+    use BindingId(26) s site=SiteId(283) ty=string intent=Read
+    bind BindingId(27) slen site=SiteId(282) ty=i64
+    use BindingId(27) slen site=SiteId(286) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(288) ty=Result<i64, string>
+    return site=Some(SiteId(288)) ty=Result<i64, string>
+    eval site=SiteId(291) ty=()
+    bind BindingId(28) start site=SiteId(292) ty=i64
+    bind BindingId(29) negative site=SiteId(293) ty=bool
+    use BindingId(26) s site=SiteId(295) ty=string intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(294) ty=string
+    bind BindingId(30) first site=SiteId(294) ty=string
+    use BindingId(30) first site=SiteId(300) ty=string intent=Read
+    bind BindingId(29) negative site=SiteId(302) ty=bool
+    eval site=SiteId(303) ty=()
+    bind BindingId(28) start site=SiteId(304) ty=i64
+    eval site=SiteId(305) ty=()
+    use BindingId(30) first site=SiteId(308) ty=string intent=Read
+    eval site=SiteId(314) ty=()
+    use BindingId(28) start site=SiteId(316) ty=i64 intent=Read
+    use BindingId(27) slen site=SiteId(317) ty=i64 intent=Read
+    bind BindingId(28) start site=SiteId(310) ty=i64
+    eval site=SiteId(311) ty=()
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(318) ty=Result<i64, string>
+    return site=Some(SiteId(318)) ty=Result<i64, string>
+    eval site=SiteId(321) ty=()
+    bind BindingId(31) cutoff site=SiteId(322) ty=i64
+    use BindingId(29) negative site=SiteId(324) ty=bool intent=Read
+    bind BindingId(32) max_last_digit site=SiteId(323) ty=i64
+    bind BindingId(33) result site=SiteId(329) ty=i64
+    bind BindingId(34) i site=SiteId(0) ty=i64
+    use BindingId(26) s site=SiteId(334) ty=string intent=Read
+    use BindingId(34) i site=SiteId(335) ty=i64 intent=Read
+    use BindingId(34) i site=SiteId(337) ty=i64 intent=Read
+    eval site=SiteId(375) ty=()
+    use BindingId(29) negative site=SiteId(377) ty=bool intent=Read
+    use BindingId(28) start site=SiteId(330) ty=i64 intent=Read
+    use BindingId(27) slen site=SiteId(331) ty=i64 intent=Read
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(333) ty=string
+    bind BindingId(35) digit site=SiteId(333) ty=string
+    use BindingId(35) digit site=SiteId(341) ty=string intent=Read
+    bind BindingId(36) d site=SiteId(340) ty=i64
+    use BindingId(35) digit site=SiteId(345) ty=string intent=Read
+    eval site=SiteId(343) ty=()
+    use BindingId(36) d site=SiteId(348) ty=i64 intent=Read
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(350) ty=Result<i64, string>
+    return site=Some(SiteId(350)) ty=Result<i64, string>
+    eval site=SiteId(353) ty=()
+    use BindingId(33) result site=SiteId(356) ty=i64 intent=Read
+    use BindingId(31) cutoff site=SiteId(357) ty=i64 intent=Read
+    use BindingId(33) result site=SiteId(360) ty=i64 intent=Read
+    use BindingId(31) cutoff site=SiteId(361) ty=i64 intent=Read
+    use BindingId(36) d site=SiteId(363) ty=i64 intent=Read
+    use BindingId(32) max_last_digit site=SiteId(364) ty=i64 intent=Read
+    bind BindingId(4294967226) __hew_produced_value site=SiteId(365) ty=Result<i64, string>
+    return site=Some(SiteId(365)) ty=Result<i64, string>
+    eval site=SiteId(368) ty=()
+    use BindingId(33) result site=SiteId(372) ty=i64 intent=Read
+    use BindingId(36) d site=SiteId(374) ty=i64 intent=Read
+    bind BindingId(33) result site=SiteId(369) ty=i64
+    eval site=SiteId(370) ty=()
+    use BindingId(33) result site=SiteId(380) ty=i64 intent=Read
+    use BindingId(33) result site=SiteId(385) ty=i64 intent=Read
+    return site=Some(SiteId(376)) ty=Result<i64, string>
+    drop BindingId(35) digit ty=string
+    drop BindingId(30) first ty=string
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
       (none)
@@ -905,7 +634,7 @@ fn string$try_to_int -> Result<i64, string>
       drop _16 ty=string kind=cow_heap(hew_string_drop)
     call[bb27 hew_string_slice -> bb28] ->
       (none)
-    call[bb28 string$digit_value -> bb29] ->
+    call[bb28 std$string$digit_value -> bb29] ->
       (none)
     call[bb29 hew_string_drop -> bb30] ->
       (none)
@@ -966,16 +695,16 @@ fn string$try_to_int -> Result<i64, string>
     cancel[bb52] ->
       drop _16 ty=string kind=cow_heap(hew_string_drop)
 
-fn string$to_float -> f64
+fn std$string$to_float -> f64
   statements:
-    use BindingId(53) s site=SiteId(568) ty=string intent=Read
-    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(567) ty=Result<f64, string>
-    return site=Some(SiteId(566)) ty=f64
-    bind BindingId(54) value site=SiteId(570) ty=f64
-    use BindingId(54) value site=SiteId(570) ty=f64 intent=Read
+    use BindingId(37) s site=SiteId(388) ty=string intent=Read
+    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(387) ty=Result<f64, string>
+    return site=Some(SiteId(386)) ty=f64
+    bind BindingId(38) value site=SiteId(390) ty=f64
+    use BindingId(38) value site=SiteId(390) ty=f64 intent=Read
     drop BindingId(4294967231) __hew_call_scrutinee ty=Result<f64, string>
   drop_plans:
-    call[bb0 string$try_to_float -> bb1] ->
+    call[bb0 std$string$try_to_float -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -996,19 +725,21 @@ fn string$to_float -> f64
     branch[bb6: bb4/bb5] ->
       (none)
 
-fn string$try_to_float -> Result<f64, string>
+fn std$string$try_to_float -> Result<f64, string>
   statements:
-    use BindingId(55) s site=SiteId(574) ty=string intent=Read
-    use BindingId(55) s site=SiteId(579) ty=string intent=Read
-    return site=Some(SiteId(572)) ty=Result<f64, string>
+    use BindingId(39) s site=SiteId(394) ty=string intent=Read
+    use BindingId(39) s site=SiteId(399) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(402) ty=Result<f64, string>
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(392) ty=Result<f64, string>
+    return site=Some(SiteId(392)) ty=Result<f64, string>
   drop_plans:
-    call[bb0 string$is_valid_float_literal -> bb1] ->
+    call[bb0 std$string$is_valid_float_literal -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     branch[bb1: bb2/bb3] ->
       (none)
-    call[bb2 string$parse_valid_float_literal -> bb5] ->
+    call[bb2 std$string$parse_valid_float_literal -> bb5] ->
       (none)
     goto[bb3->bb4] ->
       (none)
@@ -1019,42 +750,42 @@ fn string$try_to_float -> Result<f64, string>
     cancel[bb5] ->
       (none)
 
-fn string$is_valid_float_literal -> bool
+fn std$string$is_valid_float_literal -> bool
   statements:
-    use BindingId(56) s site=SiteId(585) ty=string intent=Read
-    bind BindingId(57) slen site=SiteId(584) ty=i64
-    use BindingId(57) slen site=SiteId(588) ty=i64 intent=Read
-    return site=Some(SiteId(590)) ty=bool
-    eval site=SiteId(592) ty=()
-    use BindingId(56) s site=SiteId(594) ty=string intent=Read
-    use BindingId(57) slen site=SiteId(595) ty=i64 intent=Read
-    bind BindingId(58) start site=SiteId(593) ty=i64
-    use BindingId(58) start site=SiteId(598) ty=i64 intent=Read
-    return site=Some(SiteId(600)) ty=bool
-    eval site=SiteId(602) ty=()
-    use BindingId(56) s site=SiteId(604) ty=string intent=Read
-    use BindingId(58) start site=SiteId(605) ty=i64 intent=Read
-    use BindingId(57) slen site=SiteId(606) ty=i64 intent=Read
-    bind BindingId(59) exponent_index site=SiteId(603) ty=i64
-    use BindingId(59) exponent_index site=SiteId(609) ty=i64 intent=Read
-    return site=Some(SiteId(611)) ty=bool
-    eval site=SiteId(613) ty=()
-    use BindingId(59) exponent_index site=SiteId(616) ty=i64 intent=Read
-    use BindingId(57) slen site=SiteId(619) ty=i64 intent=Read
-    use BindingId(59) exponent_index site=SiteId(621) ty=i64 intent=Read
-    bind BindingId(60) significand_end site=SiteId(614) ty=i64
-    use BindingId(56) s site=SiteId(624) ty=string intent=Read
-    use BindingId(58) start site=SiteId(625) ty=i64 intent=Read
-    use BindingId(60) significand_end site=SiteId(626) ty=i64 intent=Read
-    return site=Some(SiteId(628)) ty=bool
-    eval site=SiteId(630) ty=()
-    use BindingId(59) exponent_index site=SiteId(632) ty=i64 intent=Read
-    use BindingId(56) s site=SiteId(635) ty=string intent=Read
-    use BindingId(59) exponent_index site=SiteId(637) ty=i64 intent=Read
-    eval site=SiteId(642) ty=()
-    return site=Some(SiteId(643)) ty=bool
-    use BindingId(57) slen site=SiteId(639) ty=i64 intent=Read
-    return site=Some(SiteId(634)) ty=bool
+    use BindingId(40) s site=SiteId(405) ty=string intent=Read
+    bind BindingId(41) slen site=SiteId(404) ty=i64
+    use BindingId(41) slen site=SiteId(408) ty=i64 intent=Read
+    return site=Some(SiteId(410)) ty=bool
+    eval site=SiteId(412) ty=()
+    use BindingId(40) s site=SiteId(414) ty=string intent=Read
+    use BindingId(41) slen site=SiteId(415) ty=i64 intent=Read
+    bind BindingId(42) start site=SiteId(413) ty=i64
+    use BindingId(42) start site=SiteId(418) ty=i64 intent=Read
+    return site=Some(SiteId(420)) ty=bool
+    eval site=SiteId(422) ty=()
+    use BindingId(40) s site=SiteId(424) ty=string intent=Read
+    use BindingId(42) start site=SiteId(425) ty=i64 intent=Read
+    use BindingId(41) slen site=SiteId(426) ty=i64 intent=Read
+    bind BindingId(43) exponent_index site=SiteId(423) ty=i64
+    use BindingId(43) exponent_index site=SiteId(429) ty=i64 intent=Read
+    return site=Some(SiteId(431)) ty=bool
+    eval site=SiteId(433) ty=()
+    use BindingId(43) exponent_index site=SiteId(436) ty=i64 intent=Read
+    use BindingId(41) slen site=SiteId(439) ty=i64 intent=Read
+    use BindingId(43) exponent_index site=SiteId(441) ty=i64 intent=Read
+    bind BindingId(44) significand_end site=SiteId(434) ty=i64
+    use BindingId(40) s site=SiteId(444) ty=string intent=Read
+    use BindingId(42) start site=SiteId(445) ty=i64 intent=Read
+    use BindingId(44) significand_end site=SiteId(446) ty=i64 intent=Read
+    return site=Some(SiteId(448)) ty=bool
+    eval site=SiteId(450) ty=()
+    use BindingId(43) exponent_index site=SiteId(452) ty=i64 intent=Read
+    use BindingId(40) s site=SiteId(455) ty=string intent=Read
+    use BindingId(43) exponent_index site=SiteId(457) ty=i64 intent=Read
+    eval site=SiteId(462) ty=()
+    return site=Some(SiteId(463)) ty=bool
+    use BindingId(41) slen site=SiteId(459) ty=i64 intent=Read
+    return site=Some(SiteId(454)) ty=bool
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
       (none)
@@ -1066,7 +797,7 @@ fn string$is_valid_float_literal -> bool
       (none)
     goto[bb3->bb4] ->
       (none)
-    call[bb4 string$float_parse_start -> bb6] ->
+    call[bb4 std$string$float_parse_start -> bb6] ->
       (none)
     goto[bb5->bb4] ->
       (none)
@@ -1078,7 +809,7 @@ fn string$is_valid_float_literal -> bool
       (none)
     goto[bb8->bb9] ->
       (none)
-    call[bb9 string$find_exponent_index -> bb11] ->
+    call[bb9 std$string$find_exponent_index -> bb11] ->
       (none)
     goto[bb10->bb9] ->
       (none)
@@ -1100,7 +831,7 @@ fn string$is_valid_float_literal -> bool
       (none)
     goto[bb17->bb18] ->
       (none)
-    call[bb18 string$is_valid_float_significand -> bb19] ->
+    call[bb18 std$string$is_valid_float_significand -> bb19] ->
       (none)
     branch[bb19: bb20/bb21] ->
       (none)
@@ -1122,7 +853,7 @@ fn string$is_valid_float_literal -> bool
       (none)
     panic[bb27] ->
       (none)
-    call[bb28 string$is_valid_float_exponent -> bb29] ->
+    call[bb28 std$string$is_valid_float_exponent -> bb29] ->
       (none)
     return[bb29] ->
       (none)
@@ -1131,27 +862,28 @@ fn string$is_valid_float_literal -> bool
     cancel[bb30] ->
       (none)
 
-fn string$float_parse_start -> i64
+fn std$string$float_parse_start -> i64
   statements:
-    bind BindingId(63) start site=SiteId(644) ty=i64
-    use BindingId(61) s site=SiteId(646) ty=string intent=Read
-    bind BindingId(64) first site=SiteId(645) ty=string
-    use BindingId(64) first site=SiteId(652) ty=string intent=Read
-    use BindingId(64) first site=SiteId(655) ty=string intent=Read
-    bind BindingId(65) has_sign site=SiteId(650) ty=bool
-    use BindingId(64) first site=SiteId(659) ty=string intent=Read
-    eval site=SiteId(657) ty=()
-    use BindingId(65) has_sign site=SiteId(661) ty=bool intent=Read
-    bind BindingId(63) start site=SiteId(662) ty=i64
-    eval site=SiteId(663) ty=()
-    eval site=SiteId(665) ty=()
-    use BindingId(63) start site=SiteId(667) ty=i64 intent=Read
-    use BindingId(62) slen site=SiteId(668) ty=i64 intent=Read
-    return site=Some(SiteId(669)) ty=i64
-    eval site=SiteId(671) ty=()
-    use BindingId(63) start site=SiteId(672) ty=i64 intent=Read
-    return site=Some(SiteId(672)) ty=i64
-    drop BindingId(64) first ty=string
+    bind BindingId(47) start site=SiteId(464) ty=i64
+    use BindingId(45) s site=SiteId(466) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(465) ty=string
+    bind BindingId(48) first site=SiteId(465) ty=string
+    use BindingId(48) first site=SiteId(472) ty=string intent=Read
+    use BindingId(48) first site=SiteId(475) ty=string intent=Read
+    bind BindingId(49) has_sign site=SiteId(470) ty=bool
+    use BindingId(48) first site=SiteId(479) ty=string intent=Read
+    eval site=SiteId(477) ty=()
+    use BindingId(49) has_sign site=SiteId(481) ty=bool intent=Read
+    bind BindingId(47) start site=SiteId(482) ty=i64
+    eval site=SiteId(483) ty=()
+    eval site=SiteId(485) ty=()
+    use BindingId(47) start site=SiteId(487) ty=i64 intent=Read
+    use BindingId(46) slen site=SiteId(488) ty=i64 intent=Read
+    return site=Some(SiteId(489)) ty=i64
+    eval site=SiteId(491) ty=()
+    use BindingId(47) start site=SiteId(492) ty=i64 intent=Read
+    return site=Some(SiteId(492)) ty=i64
+    drop BindingId(48) first ty=string
   drop_plans:
     call[bb0 hew_string_slice -> bb1] ->
       (none)
@@ -1182,58 +914,59 @@ fn string$float_parse_start -> i64
     cancel[bb11] ->
       (none)
 
-fn string$parse_valid_float_literal -> f64
+fn std$string$parse_valid_float_literal -> f64
   statements:
-    use BindingId(66) s site=SiteId(674) ty=string intent=Read
-    bind BindingId(67) slen site=SiteId(673) ty=i64
-    use BindingId(66) s site=SiteId(677) ty=string intent=Read
-    use BindingId(67) slen site=SiteId(678) ty=i64 intent=Read
-    bind BindingId(68) start site=SiteId(676) ty=i64
-    use BindingId(66) s site=SiteId(681) ty=string intent=Read
-    bind BindingId(69) first site=SiteId(680) ty=string
-    use BindingId(69) first site=SiteId(686) ty=string intent=Read
-    bind BindingId(70) negative site=SiteId(685) ty=bool
-    use BindingId(69) first site=SiteId(690) ty=string intent=Read
-    eval site=SiteId(688) ty=()
-    use BindingId(66) s site=SiteId(693) ty=string intent=Read
-    use BindingId(68) start site=SiteId(694) ty=i64 intent=Read
-    use BindingId(67) slen site=SiteId(695) ty=i64 intent=Read
-    bind BindingId(71) exponent_index site=SiteId(692) ty=i64
-    use BindingId(71) exponent_index site=SiteId(699) ty=i64 intent=Read
-    use BindingId(67) slen site=SiteId(702) ty=i64 intent=Read
-    use BindingId(71) exponent_index site=SiteId(704) ty=i64 intent=Read
-    bind BindingId(72) significand_end site=SiteId(697) ty=i64
-    use BindingId(66) s site=SiteId(706) ty=string intent=Read
-    use BindingId(68) start site=SiteId(707) ty=i64 intent=Read
-    use BindingId(72) significand_end site=SiteId(708) ty=i64 intent=Read
-    bind BindingId(73) value site=SiteId(705) ty=f64
-    use BindingId(71) exponent_index site=SiteId(711) ty=i64 intent=Read
-    use BindingId(66) s site=SiteId(714) ty=string intent=Read
-    use BindingId(71) exponent_index site=SiteId(716) ty=i64 intent=Read
-    eval site=SiteId(726) ty=()
-    use BindingId(70) negative site=SiteId(728) ty=bool intent=Read
-    use BindingId(67) slen site=SiteId(718) ty=i64 intent=Read
-    bind BindingId(74) exponent site=SiteId(713) ty=i64
-    use BindingId(73) value site=SiteId(722) ty=f64 intent=Read
-    use BindingId(74) exponent site=SiteId(723) ty=i64 intent=Read
-    bind BindingId(73) value site=SiteId(720) ty=f64
-    eval site=SiteId(721) ty=()
-    use BindingId(73) value site=SiteId(732) ty=f64 intent=Read
-    use BindingId(73) value site=SiteId(734) ty=f64 intent=Read
-    return site=Some(SiteId(727)) ty=f64
-    drop BindingId(69) first ty=string
+    use BindingId(50) s site=SiteId(494) ty=string intent=Read
+    bind BindingId(51) slen site=SiteId(493) ty=i64
+    use BindingId(50) s site=SiteId(497) ty=string intent=Read
+    use BindingId(51) slen site=SiteId(498) ty=i64 intent=Read
+    bind BindingId(52) start site=SiteId(496) ty=i64
+    use BindingId(50) s site=SiteId(501) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(500) ty=string
+    bind BindingId(53) first site=SiteId(500) ty=string
+    use BindingId(53) first site=SiteId(506) ty=string intent=Read
+    bind BindingId(54) negative site=SiteId(505) ty=bool
+    use BindingId(53) first site=SiteId(510) ty=string intent=Read
+    eval site=SiteId(508) ty=()
+    use BindingId(50) s site=SiteId(513) ty=string intent=Read
+    use BindingId(52) start site=SiteId(514) ty=i64 intent=Read
+    use BindingId(51) slen site=SiteId(515) ty=i64 intent=Read
+    bind BindingId(55) exponent_index site=SiteId(512) ty=i64
+    use BindingId(55) exponent_index site=SiteId(519) ty=i64 intent=Read
+    use BindingId(51) slen site=SiteId(522) ty=i64 intent=Read
+    use BindingId(55) exponent_index site=SiteId(524) ty=i64 intent=Read
+    bind BindingId(56) significand_end site=SiteId(517) ty=i64
+    use BindingId(50) s site=SiteId(526) ty=string intent=Read
+    use BindingId(52) start site=SiteId(527) ty=i64 intent=Read
+    use BindingId(56) significand_end site=SiteId(528) ty=i64 intent=Read
+    bind BindingId(57) value site=SiteId(525) ty=f64
+    use BindingId(55) exponent_index site=SiteId(531) ty=i64 intent=Read
+    use BindingId(50) s site=SiteId(534) ty=string intent=Read
+    use BindingId(55) exponent_index site=SiteId(536) ty=i64 intent=Read
+    eval site=SiteId(546) ty=()
+    use BindingId(54) negative site=SiteId(548) ty=bool intent=Read
+    use BindingId(51) slen site=SiteId(538) ty=i64 intent=Read
+    bind BindingId(58) exponent site=SiteId(533) ty=i64
+    use BindingId(57) value site=SiteId(542) ty=f64 intent=Read
+    use BindingId(58) exponent site=SiteId(543) ty=i64 intent=Read
+    bind BindingId(57) value site=SiteId(540) ty=f64
+    eval site=SiteId(541) ty=()
+    use BindingId(57) value site=SiteId(552) ty=f64 intent=Read
+    use BindingId(57) value site=SiteId(554) ty=f64 intent=Read
+    return site=Some(SiteId(547)) ty=f64
+    drop BindingId(53) first ty=string
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 string$float_parse_start -> bb2] ->
+    call[bb1 std$string$float_parse_start -> bb2] ->
       (none)
     call[bb2 hew_string_slice -> bb3] ->
       (none)
     call[bb3 hew_string_drop -> bb4] ->
       (none)
-    call[bb4 string$find_exponent_index -> bb5] ->
+    call[bb4 std$string$find_exponent_index -> bb5] ->
       (none)
     branch[bb5: bb6/bb7] ->
       (none)
@@ -1241,7 +974,7 @@ fn string$parse_valid_float_literal -> f64
       (none)
     goto[bb7->bb8] ->
       (none)
-    call[bb8 string$parse_float_significand -> bb9] ->
+    call[bb8 std$string$parse_float_significand -> bb9] ->
       (none)
     branch[bb9: bb10/bb11] ->
       (none)
@@ -1253,9 +986,9 @@ fn string$parse_valid_float_literal -> f64
       (none)
     panic[bb13] ->
       (none)
-    call[bb14 string$parse_float_exponent -> bb15] ->
+    call[bb14 std$string$parse_float_exponent -> bb15] ->
       (none)
-    call[bb15 string$apply_float_exponent -> bb16] ->
+    call[bb15 std$string$apply_float_exponent -> bb16] ->
       (none)
     goto[bb16->bb12] ->
       (none)
@@ -1268,10 +1001,10 @@ fn string$parse_valid_float_literal -> f64
     return[bb19] ->
       (none)
 
-fn string$digit_value -> i64
+fn std$string$digit_value -> i64
   statements:
-    use BindingId(75) ch site=SiteId(736) ty=string intent=Read
-    return site=Some(SiteId(735)) ty=i64
+    use BindingId(59) ch site=SiteId(556) ty=string intent=Read
+    return site=Some(SiteId(555)) ty=i64
   drop_plans:
     goto[bb0->bb2] ->
       (none)
@@ -1346,32 +1079,33 @@ fn string$digit_value -> i64
     cancel[bb23] ->
       (none)
 
-fn string$find_exponent_index -> i64
+fn std$string$find_exponent_index -> i64
   statements:
-    bind BindingId(79) exponent_index site=SiteId(748) ty=i64
-    bind BindingId(80) i site=SiteId(0) ty=i64
-    use BindingId(76) s site=SiteId(753) ty=string intent=Read
-    use BindingId(80) i site=SiteId(754) ty=i64 intent=Read
-    use BindingId(80) i site=SiteId(756) ty=i64 intent=Read
-    eval site=SiteId(781) ty=()
-    use BindingId(79) exponent_index site=SiteId(782) ty=i64 intent=Read
-    return site=Some(SiteId(782)) ty=i64
-    use BindingId(77) start site=SiteId(749) ty=i64 intent=Read
-    use BindingId(78) end site=SiteId(750) ty=i64 intent=Read
-    bind BindingId(81) ch site=SiteId(752) ty=string
-    use BindingId(81) ch site=SiteId(761) ty=string intent=Read
-    use BindingId(81) ch site=SiteId(764) ty=string intent=Read
-    bind BindingId(82) is_exponent site=SiteId(759) ty=bool
-    use BindingId(81) ch site=SiteId(768) ty=string intent=Read
-    eval site=SiteId(766) ty=()
-    use BindingId(82) is_exponent site=SiteId(771) ty=bool intent=Read
-    use BindingId(79) exponent_index site=SiteId(774) ty=i64 intent=Read
-    return site=Some(SiteId(776)) ty=i64
-    eval site=SiteId(778) ty=()
-    use BindingId(80) i site=SiteId(780) ty=i64 intent=Consume
-    bind BindingId(79) exponent_index site=SiteId(779) ty=i64
-    eval site=SiteId(780) ty=()
-    drop BindingId(81) ch ty=string
+    bind BindingId(63) exponent_index site=SiteId(568) ty=i64
+    bind BindingId(64) i site=SiteId(0) ty=i64
+    use BindingId(60) s site=SiteId(573) ty=string intent=Read
+    use BindingId(64) i site=SiteId(574) ty=i64 intent=Read
+    use BindingId(64) i site=SiteId(576) ty=i64 intent=Read
+    eval site=SiteId(601) ty=()
+    use BindingId(63) exponent_index site=SiteId(602) ty=i64 intent=Read
+    return site=Some(SiteId(602)) ty=i64
+    use BindingId(61) start site=SiteId(569) ty=i64 intent=Read
+    use BindingId(62) end site=SiteId(570) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(572) ty=string
+    bind BindingId(65) ch site=SiteId(572) ty=string
+    use BindingId(65) ch site=SiteId(581) ty=string intent=Read
+    use BindingId(65) ch site=SiteId(584) ty=string intent=Read
+    bind BindingId(66) is_exponent site=SiteId(579) ty=bool
+    use BindingId(65) ch site=SiteId(588) ty=string intent=Read
+    eval site=SiteId(586) ty=()
+    use BindingId(66) is_exponent site=SiteId(591) ty=bool intent=Read
+    use BindingId(63) exponent_index site=SiteId(594) ty=i64 intent=Read
+    return site=Some(SiteId(596)) ty=i64
+    eval site=SiteId(598) ty=()
+    use BindingId(64) i site=SiteId(600) ty=i64 intent=Consume
+    bind BindingId(63) exponent_index site=SiteId(599) ty=i64
+    eval site=SiteId(600) ty=()
+    drop BindingId(65) ch ty=string
   drop_plans:
     branch[bb0: bb5/bb6] ->
       (none)
@@ -1426,44 +1160,45 @@ fn string$find_exponent_index -> i64
     panic[bb20] ->
       (none)
 
-fn string$is_valid_float_significand -> bool
+fn std$string$is_valid_float_significand -> bool
   statements:
-    use BindingId(84) start site=SiteId(784) ty=i64 intent=Read
-    use BindingId(85) end site=SiteId(785) ty=i64 intent=Read
-    return site=Some(SiteId(786)) ty=bool
-    eval site=SiteId(788) ty=()
-    bind BindingId(86) saw_digit site=SiteId(789) ty=bool
-    bind BindingId(87) saw_decimal site=SiteId(790) ty=bool
-    bind BindingId(88) i site=SiteId(0) ty=i64
-    use BindingId(83) s site=SiteId(795) ty=string intent=Read
-    use BindingId(88) i site=SiteId(796) ty=i64 intent=Read
-    use BindingId(88) i site=SiteId(798) ty=i64 intent=Read
-    eval site=SiteId(833) ty=()
-    use BindingId(86) saw_digit site=SiteId(834) ty=bool intent=Read
-    return site=Some(SiteId(834)) ty=bool
-    use BindingId(84) start site=SiteId(791) ty=i64 intent=Read
-    use BindingId(85) end site=SiteId(792) ty=i64 intent=Read
-    bind BindingId(89) ch site=SiteId(794) ty=string
-    use BindingId(89) ch site=SiteId(802) ty=string intent=Read
-    bind BindingId(90) is_decimal site=SiteId(801) ty=bool
-    use BindingId(90) is_decimal site=SiteId(805) ty=bool intent=Read
-    use BindingId(89) ch site=SiteId(809) ty=string intent=Read
-    use BindingId(89) ch site=SiteId(819) ty=string intent=Read
-    eval site=SiteId(807) ty=()
-    use BindingId(87) saw_decimal site=SiteId(811) ty=bool intent=Read
-    return site=Some(SiteId(812)) ty=bool
-    eval site=SiteId(814) ty=()
-    bind BindingId(87) saw_decimal site=SiteId(815) ty=bool
-    eval site=SiteId(816) ty=()
-    bind BindingId(91) digit site=SiteId(818) ty=i64
-    use BindingId(89) ch site=SiteId(823) ty=string intent=Read
-    eval site=SiteId(821) ty=()
-    use BindingId(91) digit site=SiteId(826) ty=i64 intent=Read
-    return site=Some(SiteId(828)) ty=bool
-    eval site=SiteId(830) ty=()
-    bind BindingId(86) saw_digit site=SiteId(831) ty=bool
-    eval site=SiteId(832) ty=()
-    drop BindingId(89) ch ty=string
+    use BindingId(68) start site=SiteId(604) ty=i64 intent=Read
+    use BindingId(69) end site=SiteId(605) ty=i64 intent=Read
+    return site=Some(SiteId(606)) ty=bool
+    eval site=SiteId(608) ty=()
+    bind BindingId(70) saw_digit site=SiteId(609) ty=bool
+    bind BindingId(71) saw_decimal site=SiteId(610) ty=bool
+    bind BindingId(72) i site=SiteId(0) ty=i64
+    use BindingId(67) s site=SiteId(615) ty=string intent=Read
+    use BindingId(72) i site=SiteId(616) ty=i64 intent=Read
+    use BindingId(72) i site=SiteId(618) ty=i64 intent=Read
+    eval site=SiteId(653) ty=()
+    use BindingId(70) saw_digit site=SiteId(654) ty=bool intent=Read
+    return site=Some(SiteId(654)) ty=bool
+    use BindingId(68) start site=SiteId(611) ty=i64 intent=Read
+    use BindingId(69) end site=SiteId(612) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(614) ty=string
+    bind BindingId(73) ch site=SiteId(614) ty=string
+    use BindingId(73) ch site=SiteId(622) ty=string intent=Read
+    bind BindingId(74) is_decimal site=SiteId(621) ty=bool
+    use BindingId(74) is_decimal site=SiteId(625) ty=bool intent=Read
+    use BindingId(73) ch site=SiteId(629) ty=string intent=Read
+    use BindingId(73) ch site=SiteId(639) ty=string intent=Read
+    eval site=SiteId(627) ty=()
+    use BindingId(71) saw_decimal site=SiteId(631) ty=bool intent=Read
+    return site=Some(SiteId(632)) ty=bool
+    eval site=SiteId(634) ty=()
+    bind BindingId(71) saw_decimal site=SiteId(635) ty=bool
+    eval site=SiteId(636) ty=()
+    bind BindingId(75) digit site=SiteId(638) ty=i64
+    use BindingId(73) ch site=SiteId(643) ty=string intent=Read
+    eval site=SiteId(641) ty=()
+    use BindingId(75) digit site=SiteId(646) ty=i64 intent=Read
+    return site=Some(SiteId(648)) ty=bool
+    eval site=SiteId(650) ty=()
+    bind BindingId(70) saw_digit site=SiteId(651) ty=bool
+    eval site=SiteId(652) ty=()
+    drop BindingId(73) ch ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1501,7 +1236,7 @@ fn string$is_valid_float_significand -> bool
       (none)
     call[bb14 hew_string_drop -> bb17] ->
       (none)
-    call[bb15 string$digit_value -> bb22] ->
+    call[bb15 std$string$digit_value -> bb22] ->
       (none)
     goto[bb16->bb7] ->
       (none)
@@ -1540,49 +1275,51 @@ fn string$is_valid_float_significand -> bool
     panic[bb28] ->
       (none)
 
-fn string$is_valid_float_exponent -> bool
+fn std$string$is_valid_float_exponent -> bool
   statements:
-    use BindingId(93) start site=SiteId(836) ty=i64 intent=Read
-    use BindingId(94) end site=SiteId(837) ty=i64 intent=Read
-    return site=Some(SiteId(838)) ty=bool
-    eval site=SiteId(840) ty=()
-    use BindingId(93) start site=SiteId(841) ty=i64 intent=Consume
-    bind BindingId(95) index site=SiteId(841) ty=i64
-    use BindingId(92) s site=SiteId(843) ty=string intent=Read
-    use BindingId(93) start site=SiteId(844) ty=i64 intent=Read
-    use BindingId(93) start site=SiteId(846) ty=i64 intent=Read
-    bind BindingId(96) first site=SiteId(842) ty=string
-    use BindingId(96) first site=SiteId(851) ty=string intent=Read
-    use BindingId(96) first site=SiteId(854) ty=string intent=Read
-    bind BindingId(97) has_sign site=SiteId(849) ty=bool
-    use BindingId(96) first site=SiteId(858) ty=string intent=Read
-    eval site=SiteId(856) ty=()
-    use BindingId(97) has_sign site=SiteId(860) ty=bool intent=Read
-    use BindingId(93) start site=SiteId(863) ty=i64 intent=Read
-    eval site=SiteId(866) ty=()
-    use BindingId(95) index site=SiteId(868) ty=i64 intent=Read
-    use BindingId(94) end site=SiteId(869) ty=i64 intent=Read
-    bind BindingId(95) index site=SiteId(861) ty=i64
-    eval site=SiteId(862) ty=()
-    return site=Some(SiteId(870)) ty=bool
-    eval site=SiteId(872) ty=()
-    bind BindingId(98) i site=SiteId(0) ty=i64
-    use BindingId(92) s site=SiteId(877) ty=string intent=Read
-    use BindingId(98) i site=SiteId(878) ty=i64 intent=Read
-    use BindingId(98) i site=SiteId(880) ty=i64 intent=Read
-    eval site=SiteId(896) ty=()
-    return site=Some(SiteId(897)) ty=bool
-    use BindingId(95) index site=SiteId(873) ty=i64 intent=Read
-    use BindingId(94) end site=SiteId(874) ty=i64 intent=Read
-    bind BindingId(99) digit site=SiteId(876) ty=string
-    use BindingId(99) digit site=SiteId(884) ty=string intent=Read
-    bind BindingId(100) value site=SiteId(883) ty=i64
-    use BindingId(99) digit site=SiteId(888) ty=string intent=Read
-    eval site=SiteId(886) ty=()
-    use BindingId(100) value site=SiteId(892) ty=i64 intent=Read
-    return site=Some(SiteId(895)) ty=bool
-    drop BindingId(99) digit ty=string
-    drop BindingId(96) first ty=string
+    use BindingId(77) start site=SiteId(656) ty=i64 intent=Read
+    use BindingId(78) end site=SiteId(657) ty=i64 intent=Read
+    return site=Some(SiteId(658)) ty=bool
+    eval site=SiteId(660) ty=()
+    use BindingId(77) start site=SiteId(661) ty=i64 intent=Consume
+    bind BindingId(79) index site=SiteId(661) ty=i64
+    use BindingId(76) s site=SiteId(663) ty=string intent=Read
+    use BindingId(77) start site=SiteId(664) ty=i64 intent=Read
+    use BindingId(77) start site=SiteId(666) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(662) ty=string
+    bind BindingId(80) first site=SiteId(662) ty=string
+    use BindingId(80) first site=SiteId(671) ty=string intent=Read
+    use BindingId(80) first site=SiteId(674) ty=string intent=Read
+    bind BindingId(81) has_sign site=SiteId(669) ty=bool
+    use BindingId(80) first site=SiteId(678) ty=string intent=Read
+    eval site=SiteId(676) ty=()
+    use BindingId(81) has_sign site=SiteId(680) ty=bool intent=Read
+    use BindingId(77) start site=SiteId(683) ty=i64 intent=Read
+    eval site=SiteId(686) ty=()
+    use BindingId(79) index site=SiteId(688) ty=i64 intent=Read
+    use BindingId(78) end site=SiteId(689) ty=i64 intent=Read
+    bind BindingId(79) index site=SiteId(681) ty=i64
+    eval site=SiteId(682) ty=()
+    return site=Some(SiteId(690)) ty=bool
+    eval site=SiteId(692) ty=()
+    bind BindingId(82) i site=SiteId(0) ty=i64
+    use BindingId(76) s site=SiteId(697) ty=string intent=Read
+    use BindingId(82) i site=SiteId(698) ty=i64 intent=Read
+    use BindingId(82) i site=SiteId(700) ty=i64 intent=Read
+    eval site=SiteId(716) ty=()
+    return site=Some(SiteId(717)) ty=bool
+    use BindingId(79) index site=SiteId(693) ty=i64 intent=Read
+    use BindingId(78) end site=SiteId(694) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(696) ty=string
+    bind BindingId(83) digit site=SiteId(696) ty=string
+    use BindingId(83) digit site=SiteId(704) ty=string intent=Read
+    bind BindingId(84) value site=SiteId(703) ty=i64
+    use BindingId(83) digit site=SiteId(708) ty=string intent=Read
+    eval site=SiteId(706) ty=()
+    use BindingId(84) value site=SiteId(712) ty=i64 intent=Read
+    return site=Some(SiteId(715)) ty=bool
+    drop BindingId(83) digit ty=string
+    drop BindingId(80) first ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1650,7 +1387,7 @@ fn string$is_valid_float_exponent -> bool
       (none)
     call[bb27 hew_string_slice -> bb28] ->
       (none)
-    call[bb28 string$digit_value -> bb29] ->
+    call[bb28 std$string$digit_value -> bb29] ->
       (none)
     call[bb29 hew_string_drop -> bb30] ->
       (none)
@@ -1671,52 +1408,53 @@ fn string$is_valid_float_exponent -> bool
     panic[bb35] ->
       (none)
 
-fn string$parse_float_significand -> f64
+fn std$string$parse_float_significand -> f64
   statements:
-    bind BindingId(104) whole site=SiteId(898) ty=f64
-    bind BindingId(105) fraction site=SiteId(899) ty=f64
-    bind BindingId(106) fraction_scale site=SiteId(900) ty=f64
-    bind BindingId(107) saw_decimal site=SiteId(901) ty=bool
-    bind BindingId(108) i site=SiteId(0) ty=i64
-    use BindingId(101) s site=SiteId(906) ty=string intent=Read
-    use BindingId(108) i site=SiteId(907) ty=i64 intent=Read
-    use BindingId(108) i site=SiteId(909) ty=i64 intent=Read
-    eval site=SiteId(955) ty=()
-    use BindingId(104) whole site=SiteId(957) ty=f64 intent=Read
-    use BindingId(105) fraction site=SiteId(959) ty=f64 intent=Read
-    use BindingId(106) fraction_scale site=SiteId(960) ty=f64 intent=Read
-    return site=Some(SiteId(956)) ty=f64
-    use BindingId(102) start site=SiteId(902) ty=i64 intent=Read
-    use BindingId(103) end site=SiteId(903) ty=i64 intent=Read
-    bind BindingId(109) ch site=SiteId(905) ty=string
-    use BindingId(109) ch site=SiteId(913) ty=string intent=Read
-    bind BindingId(110) is_decimal site=SiteId(912) ty=bool
-    use BindingId(110) is_decimal site=SiteId(915) ty=bool intent=Read
-    use BindingId(109) ch site=SiteId(918) ty=string intent=Read
-    eval site=SiteId(924) ty=()
-    use BindingId(109) ch site=SiteId(926) ty=string intent=Read
-    eval site=SiteId(916) ty=()
-    bind BindingId(107) saw_decimal site=SiteId(920) ty=bool
-    eval site=SiteId(921) ty=()
-    eval site=SiteId(922) ty=()
-    bind BindingId(111) value site=SiteId(925) ty=i64
-    use BindingId(109) ch site=SiteId(930) ty=string intent=Read
-    eval site=SiteId(928) ty=()
-    use BindingId(111) value site=SiteId(933) ty=i64 intent=Read
-    bind BindingId(112) digit site=SiteId(932) ty=f64
-    use BindingId(107) saw_decimal site=SiteId(936) ty=bool intent=Read
-    use BindingId(105) fraction site=SiteId(941) ty=f64 intent=Read
-    use BindingId(112) digit site=SiteId(943) ty=f64 intent=Read
-    bind BindingId(105) fraction site=SiteId(938) ty=f64
-    eval site=SiteId(939) ty=()
-    use BindingId(106) fraction_scale site=SiteId(946) ty=f64 intent=Read
-    bind BindingId(106) fraction_scale site=SiteId(944) ty=f64
-    eval site=SiteId(945) ty=()
-    use BindingId(104) whole site=SiteId(952) ty=f64 intent=Read
-    use BindingId(112) digit site=SiteId(954) ty=f64 intent=Read
-    bind BindingId(104) whole site=SiteId(949) ty=f64
-    eval site=SiteId(950) ty=()
-    drop BindingId(109) ch ty=string
+    bind BindingId(88) whole site=SiteId(718) ty=f64
+    bind BindingId(89) fraction site=SiteId(719) ty=f64
+    bind BindingId(90) fraction_scale site=SiteId(720) ty=f64
+    bind BindingId(91) saw_decimal site=SiteId(721) ty=bool
+    bind BindingId(92) i site=SiteId(0) ty=i64
+    use BindingId(85) s site=SiteId(726) ty=string intent=Read
+    use BindingId(92) i site=SiteId(727) ty=i64 intent=Read
+    use BindingId(92) i site=SiteId(729) ty=i64 intent=Read
+    eval site=SiteId(775) ty=()
+    use BindingId(88) whole site=SiteId(777) ty=f64 intent=Read
+    use BindingId(89) fraction site=SiteId(779) ty=f64 intent=Read
+    use BindingId(90) fraction_scale site=SiteId(780) ty=f64 intent=Read
+    return site=Some(SiteId(776)) ty=f64
+    use BindingId(86) start site=SiteId(722) ty=i64 intent=Read
+    use BindingId(87) end site=SiteId(723) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(725) ty=string
+    bind BindingId(93) ch site=SiteId(725) ty=string
+    use BindingId(93) ch site=SiteId(733) ty=string intent=Read
+    bind BindingId(94) is_decimal site=SiteId(732) ty=bool
+    use BindingId(94) is_decimal site=SiteId(735) ty=bool intent=Read
+    use BindingId(93) ch site=SiteId(738) ty=string intent=Read
+    eval site=SiteId(744) ty=()
+    use BindingId(93) ch site=SiteId(746) ty=string intent=Read
+    eval site=SiteId(736) ty=()
+    bind BindingId(91) saw_decimal site=SiteId(740) ty=bool
+    eval site=SiteId(741) ty=()
+    eval site=SiteId(742) ty=()
+    bind BindingId(95) value site=SiteId(745) ty=i64
+    use BindingId(93) ch site=SiteId(750) ty=string intent=Read
+    eval site=SiteId(748) ty=()
+    use BindingId(95) value site=SiteId(753) ty=i64 intent=Read
+    bind BindingId(96) digit site=SiteId(752) ty=f64
+    use BindingId(91) saw_decimal site=SiteId(756) ty=bool intent=Read
+    use BindingId(89) fraction site=SiteId(761) ty=f64 intent=Read
+    use BindingId(96) digit site=SiteId(763) ty=f64 intent=Read
+    bind BindingId(89) fraction site=SiteId(758) ty=f64
+    eval site=SiteId(759) ty=()
+    use BindingId(90) fraction_scale site=SiteId(766) ty=f64 intent=Read
+    bind BindingId(90) fraction_scale site=SiteId(764) ty=f64
+    eval site=SiteId(765) ty=()
+    use BindingId(88) whole site=SiteId(772) ty=f64 intent=Read
+    use BindingId(96) digit site=SiteId(774) ty=f64 intent=Read
+    bind BindingId(88) whole site=SiteId(769) ty=f64
+    eval site=SiteId(770) ty=()
+    drop BindingId(93) ch ty=string
   drop_plans:
     branch[bb0: bb5/bb6] ->
       (none)
@@ -1746,7 +1484,7 @@ fn string$parse_float_significand -> f64
       (none)
     goto[bb11->bb12] ->
       (none)
-    call[bb12 string$digit_value -> bb15] ->
+    call[bb12 std$string$digit_value -> bb15] ->
       (none)
     goto[bb13->bb3] ->
       (none)
@@ -1758,7 +1496,7 @@ fn string$parse_float_significand -> f64
       (none)
     call[bb15 hew_string_drop -> bb16] ->
       (none)
-    call[bb16 string$digit_to_float -> bb17] ->
+    call[bb16 std$string$digit_to_float -> bb17] ->
       (none)
     branch[bb17: bb18/bb19] ->
       (none)
@@ -1773,55 +1511,57 @@ fn string$parse_float_significand -> f64
     panic[bb21] ->
       (none)
 
-fn string$parse_float_exponent -> i64
+fn std$string$parse_float_exponent -> i64
   statements:
-    use BindingId(114) start site=SiteId(961) ty=i64 intent=Consume
-    bind BindingId(116) index site=SiteId(961) ty=i64
-    bind BindingId(117) negative site=SiteId(962) ty=bool
-    use BindingId(113) s site=SiteId(964) ty=string intent=Read
-    use BindingId(114) start site=SiteId(965) ty=i64 intent=Read
-    use BindingId(114) start site=SiteId(967) ty=i64 intent=Read
-    bind BindingId(118) first site=SiteId(963) ty=string
-    use BindingId(118) first site=SiteId(971) ty=string intent=Read
-    bind BindingId(119) has_negative_sign site=SiteId(970) ty=bool
-    use BindingId(118) first site=SiteId(974) ty=string intent=Read
-    bind BindingId(120) has_positive_sign site=SiteId(973) ty=bool
-    use BindingId(118) first site=SiteId(978) ty=string intent=Read
-    eval site=SiteId(976) ty=()
-    use BindingId(119) has_negative_sign site=SiteId(980) ty=bool intent=Read
-    bind BindingId(117) negative site=SiteId(981) ty=bool
-    eval site=SiteId(982) ty=()
-    use BindingId(114) start site=SiteId(985) ty=i64 intent=Read
-    use BindingId(120) has_positive_sign site=SiteId(988) ty=bool intent=Read
-    eval site=SiteId(995) ty=()
-    bind BindingId(121) exponent site=SiteId(996) ty=i64
-    bind BindingId(116) index site=SiteId(983) ty=i64
-    eval site=SiteId(984) ty=()
-    use BindingId(114) start site=SiteId(991) ty=i64 intent=Read
-    bind BindingId(116) index site=SiteId(989) ty=i64
-    eval site=SiteId(990) ty=()
-    bind BindingId(122) i site=SiteId(0) ty=i64
-    use BindingId(113) s site=SiteId(1001) ty=string intent=Read
-    use BindingId(122) i site=SiteId(1002) ty=i64 intent=Read
-    use BindingId(122) i site=SiteId(1004) ty=i64 intent=Read
-    eval site=SiteId(1020) ty=()
-    use BindingId(117) negative site=SiteId(1022) ty=bool intent=Read
-    use BindingId(116) index site=SiteId(997) ty=i64 intent=Read
-    use BindingId(115) end site=SiteId(998) ty=i64 intent=Read
-    bind BindingId(123) digit site=SiteId(1000) ty=string
-    use BindingId(123) digit site=SiteId(1008) ty=string intent=Read
-    bind BindingId(124) value site=SiteId(1007) ty=i64
-    use BindingId(123) digit site=SiteId(1012) ty=string intent=Read
-    eval site=SiteId(1010) ty=()
-    use BindingId(121) exponent site=SiteId(1017) ty=i64 intent=Read
-    use BindingId(124) value site=SiteId(1019) ty=i64 intent=Read
-    bind BindingId(121) exponent site=SiteId(1014) ty=i64
-    eval site=SiteId(1015) ty=()
-    use BindingId(121) exponent site=SiteId(1026) ty=i64 intent=Read
-    use BindingId(121) exponent site=SiteId(1028) ty=i64 intent=Read
-    return site=Some(SiteId(1021)) ty=i64
-    drop BindingId(123) digit ty=string
-    drop BindingId(118) first ty=string
+    use BindingId(98) start site=SiteId(781) ty=i64 intent=Consume
+    bind BindingId(100) index site=SiteId(781) ty=i64
+    bind BindingId(101) negative site=SiteId(782) ty=bool
+    use BindingId(97) s site=SiteId(784) ty=string intent=Read
+    use BindingId(98) start site=SiteId(785) ty=i64 intent=Read
+    use BindingId(98) start site=SiteId(787) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(783) ty=string
+    bind BindingId(102) first site=SiteId(783) ty=string
+    use BindingId(102) first site=SiteId(791) ty=string intent=Read
+    bind BindingId(103) has_negative_sign site=SiteId(790) ty=bool
+    use BindingId(102) first site=SiteId(794) ty=string intent=Read
+    bind BindingId(104) has_positive_sign site=SiteId(793) ty=bool
+    use BindingId(102) first site=SiteId(798) ty=string intent=Read
+    eval site=SiteId(796) ty=()
+    use BindingId(103) has_negative_sign site=SiteId(800) ty=bool intent=Read
+    bind BindingId(101) negative site=SiteId(801) ty=bool
+    eval site=SiteId(802) ty=()
+    use BindingId(98) start site=SiteId(805) ty=i64 intent=Read
+    use BindingId(104) has_positive_sign site=SiteId(808) ty=bool intent=Read
+    eval site=SiteId(815) ty=()
+    bind BindingId(105) exponent site=SiteId(816) ty=i64
+    bind BindingId(100) index site=SiteId(803) ty=i64
+    eval site=SiteId(804) ty=()
+    use BindingId(98) start site=SiteId(811) ty=i64 intent=Read
+    bind BindingId(100) index site=SiteId(809) ty=i64
+    eval site=SiteId(810) ty=()
+    bind BindingId(106) i site=SiteId(0) ty=i64
+    use BindingId(97) s site=SiteId(821) ty=string intent=Read
+    use BindingId(106) i site=SiteId(822) ty=i64 intent=Read
+    use BindingId(106) i site=SiteId(824) ty=i64 intent=Read
+    eval site=SiteId(840) ty=()
+    use BindingId(101) negative site=SiteId(842) ty=bool intent=Read
+    use BindingId(100) index site=SiteId(817) ty=i64 intent=Read
+    use BindingId(99) end site=SiteId(818) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(820) ty=string
+    bind BindingId(107) digit site=SiteId(820) ty=string
+    use BindingId(107) digit site=SiteId(828) ty=string intent=Read
+    bind BindingId(108) value site=SiteId(827) ty=i64
+    use BindingId(107) digit site=SiteId(832) ty=string intent=Read
+    eval site=SiteId(830) ty=()
+    use BindingId(105) exponent site=SiteId(837) ty=i64 intent=Read
+    use BindingId(108) value site=SiteId(839) ty=i64 intent=Read
+    bind BindingId(105) exponent site=SiteId(834) ty=i64
+    eval site=SiteId(835) ty=()
+    use BindingId(105) exponent site=SiteId(846) ty=i64 intent=Read
+    use BindingId(105) exponent site=SiteId(848) ty=i64 intent=Read
+    return site=Some(SiteId(841)) ty=i64
+    drop BindingId(107) digit ty=string
+    drop BindingId(102) first ty=string
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1879,7 +1619,7 @@ fn string$parse_float_exponent -> i64
       (none)
     call[bb22 hew_string_slice -> bb23] ->
       (none)
-    call[bb23 string$digit_value -> bb24] ->
+    call[bb23 std$string$digit_value -> bb24] ->
       (none)
     call[bb24 hew_string_drop -> bb25] ->
       (none)
@@ -1910,25 +1650,25 @@ fn string$parse_float_exponent -> i64
     cancel[bb35] ->
       (none)
 
-fn string$apply_float_exponent -> f64
+fn std$string$apply_float_exponent -> f64
   statements:
-    bind BindingId(127) scale site=SiteId(1029) ty=f64
-    use BindingId(126) exponent site=SiteId(1032) ty=i64 intent=Read
-    use BindingId(126) exponent site=SiteId(1037) ty=i64 intent=Read
-    use BindingId(126) exponent site=SiteId(1039) ty=i64 intent=Read
-    bind BindingId(128) exp_abs site=SiteId(1030) ty=i64
-    bind BindingId(129) i site=SiteId(0) ty=i64
-    use BindingId(127) scale site=SiteId(1045) ty=f64 intent=Read
-    bind BindingId(127) scale site=SiteId(1043) ty=f64
-    eval site=SiteId(1044) ty=()
-    eval site=SiteId(1047) ty=()
-    use BindingId(126) exponent site=SiteId(1050) ty=i64 intent=Read
-    use BindingId(128) exp_abs site=SiteId(1041) ty=i64 intent=Read
-    use BindingId(125) value site=SiteId(1054) ty=f64 intent=Read
-    use BindingId(127) scale site=SiteId(1055) ty=f64 intent=Read
-    use BindingId(125) value site=SiteId(1058) ty=f64 intent=Read
-    use BindingId(127) scale site=SiteId(1059) ty=f64 intent=Read
-    return site=Some(SiteId(1048)) ty=f64
+    bind BindingId(111) scale site=SiteId(849) ty=f64
+    use BindingId(110) exponent site=SiteId(852) ty=i64 intent=Read
+    use BindingId(110) exponent site=SiteId(857) ty=i64 intent=Read
+    use BindingId(110) exponent site=SiteId(859) ty=i64 intent=Read
+    bind BindingId(112) exp_abs site=SiteId(850) ty=i64
+    bind BindingId(113) i site=SiteId(0) ty=i64
+    use BindingId(111) scale site=SiteId(865) ty=f64 intent=Read
+    bind BindingId(111) scale site=SiteId(863) ty=f64
+    eval site=SiteId(864) ty=()
+    eval site=SiteId(867) ty=()
+    use BindingId(110) exponent site=SiteId(870) ty=i64 intent=Read
+    use BindingId(112) exp_abs site=SiteId(861) ty=i64 intent=Read
+    use BindingId(109) value site=SiteId(874) ty=f64 intent=Read
+    use BindingId(111) scale site=SiteId(875) ty=f64 intent=Read
+    use BindingId(109) value site=SiteId(878) ty=f64 intent=Read
+    use BindingId(111) scale site=SiteId(879) ty=f64 intent=Read
+    return site=Some(SiteId(868)) ty=f64
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -1969,10 +1709,10 @@ fn string$apply_float_exponent -> f64
     return[bb15] ->
       (none)
 
-fn string$digit_to_float -> f64
+fn std$string$digit_to_float -> f64
   statements:
-    use BindingId(130) digit site=SiteId(1061) ty=i64 intent=Read
-    return site=Some(SiteId(1060)) ty=f64
+    use BindingId(114) digit site=SiteId(881) ty=i64 intent=Read
+    return site=Some(SiteId(880)) ty=f64
   drop_plans:
     goto[bb0->bb2] ->
       (none)
@@ -2047,10 +1787,10 @@ fn string$digit_to_float -> f64
     cancel[bb23] ->
       (none)
 
-fn string$is_empty -> bool
+fn std$string$is_empty -> bool
   statements:
-    use BindingId(131) s site=SiteId(1074) ty=string intent=Read
-    return site=Some(SiteId(1073)) ty=bool
+    use BindingId(115) s site=SiteId(894) ty=string intent=Read
+    return site=Some(SiteId(893)) ty=bool
   drop_plans:
     call[bb0 hew_string_is_empty -> bb1] ->
       (none)
@@ -2059,11 +1799,12 @@ fn string$is_empty -> bool
     return[bb1] ->
       (none)
 
-fn string$repeat -> string
+fn std$string$repeat -> string
   statements:
-    use BindingId(132) s site=SiteId(1077) ty=string intent=Read
-    use BindingId(133) n site=SiteId(1078) ty=i64 intent=Read
-    return site=Some(SiteId(1076)) ty=string
+    use BindingId(116) s site=SiteId(897) ty=string intent=Read
+    use BindingId(117) n site=SiteId(898) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(896) ty=string
+    return site=Some(SiteId(896)) ty=string
   drop_plans:
     call[bb0 hew_string_repeat -> bb1] ->
       (none)
@@ -2072,126 +1813,138 @@ fn string$repeat -> string
     return[bb1] ->
       (none)
 
-fn string$pad_left -> string
+fn std$string$pad_left -> string
   statements:
-    use BindingId(136) pad site=SiteId(1081) ty=string intent=Read
-    bind BindingId(137) pad_len site=SiteId(1080) ty=i64
-    use BindingId(137) pad_len site=SiteId(1084) ty=i64 intent=Read
-    eval site=SiteId(1090) ty=()
-    use BindingId(134) s site=SiteId(1092) ty=string intent=Read
-    bind BindingId(138) slen site=SiteId(1091) ty=i64
-    use BindingId(138) slen site=SiteId(1095) ty=i64 intent=Read
-    use BindingId(135) width site=SiteId(1096) ty=i64 intent=Read
-    eval site=SiteId(1086) ty=!
-    use BindingId(134) s site=SiteId(1097) ty=string intent=Consume
-    return site=Some(SiteId(1097)) ty=string
-    eval site=SiteId(1099) ty=()
-    use BindingId(136) pad site=SiteId(1102) ty=string intent=Read
-    use BindingId(135) width site=SiteId(1104) ty=i64 intent=Read
-    use BindingId(138) slen site=SiteId(1105) ty=i64 intent=Read
-    use BindingId(134) s site=SiteId(1107) ty=string intent=Read
-    return site=Some(SiteId(1100)) ty=string
+    use BindingId(120) pad site=SiteId(901) ty=string intent=Read
+    bind BindingId(121) pad_len site=SiteId(900) ty=i64
+    use BindingId(121) pad_len site=SiteId(904) ty=i64 intent=Read
+    eval site=SiteId(910) ty=()
+    use BindingId(118) s site=SiteId(912) ty=string intent=Read
+    eval site=SiteId(906) ty=!
+    bind BindingId(122) slen site=SiteId(911) ty=i64
+    use BindingId(122) slen site=SiteId(915) ty=i64 intent=Read
+    use BindingId(119) width site=SiteId(916) ty=i64 intent=Read
+    use BindingId(118) s site=SiteId(917) ty=string intent=Consume
+    return site=Some(SiteId(917)) ty=string
+    eval site=SiteId(919) ty=()
+    use BindingId(120) pad site=SiteId(922) ty=string intent=Read
+    use BindingId(119) width site=SiteId(924) ty=i64 intent=Read
+    use BindingId(122) slen site=SiteId(925) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(921) ty=string
+    use BindingId(118) s site=SiteId(927) ty=string intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(920) ty=string
+    return site=Some(SiteId(920)) ty=string
   drop_plans:
-    branch[bb0: bb1/bb2] ->
+    call[bb0 hew_string_char_count -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 panic -> bb4] ->
+    branch[bb1: bb2/bb3] ->
       (none)
-    goto[bb2->bb3] ->
+    call[bb2 hew_panic_msg -> bb5] ->
       (none)
-    branch[bb3: bb5/bb6] ->
+    goto[bb3->bb4] ->
       (none)
-    goto[bb4->bb3] ->
+    call[bb4 hew_string_char_count -> bb6] ->
       (none)
-    cancel[bb4] ->
+    goto[bb5->bb4] ->
       (none)
-    return[bb5] ->
+    cancel[bb5] ->
       (none)
-    goto[bb6->bb7] ->
+    branch[bb6: bb7/bb8] ->
       (none)
-    branch[bb7: bb9/bb10] ->
+    return[bb7] ->
       (none)
-    goto[bb8->bb7] ->
+    goto[bb8->bb9] ->
       (none)
-    cancel[bb8] ->
+    branch[bb9: bb11/bb12] ->
       (none)
-    panic[bb9] ->
+    goto[bb10->bb9] ->
       (none)
-    call[bb10 string$repeat -> bb11] ->
+    cancel[bb10] ->
       (none)
-    return[bb11] ->
+    panic[bb11] ->
+      (none)
+    call[bb12 std$string$repeat -> bb13] ->
+      (none)
+    return[bb13] ->
       (none)
 
-fn string$pad_right -> string
+fn std$string$pad_right -> string
   statements:
-    use BindingId(141) pad site=SiteId(1109) ty=string intent=Read
-    bind BindingId(142) pad_len site=SiteId(1108) ty=i64
-    use BindingId(142) pad_len site=SiteId(1112) ty=i64 intent=Read
-    eval site=SiteId(1118) ty=()
-    use BindingId(139) s site=SiteId(1120) ty=string intent=Read
-    bind BindingId(143) slen site=SiteId(1119) ty=i64
-    use BindingId(143) slen site=SiteId(1123) ty=i64 intent=Read
-    use BindingId(140) width site=SiteId(1124) ty=i64 intent=Read
-    eval site=SiteId(1114) ty=!
-    use BindingId(139) s site=SiteId(1125) ty=string intent=Consume
-    return site=Some(SiteId(1125)) ty=string
-    eval site=SiteId(1127) ty=()
-    use BindingId(139) s site=SiteId(1129) ty=string intent=Read
-    use BindingId(141) pad site=SiteId(1131) ty=string intent=Read
-    use BindingId(140) width site=SiteId(1133) ty=i64 intent=Read
-    use BindingId(143) slen site=SiteId(1134) ty=i64 intent=Read
-    return site=Some(SiteId(1128)) ty=string
+    use BindingId(125) pad site=SiteId(929) ty=string intent=Read
+    bind BindingId(126) pad_len site=SiteId(928) ty=i64
+    use BindingId(126) pad_len site=SiteId(932) ty=i64 intent=Read
+    eval site=SiteId(938) ty=()
+    use BindingId(123) s site=SiteId(940) ty=string intent=Read
+    eval site=SiteId(934) ty=!
+    bind BindingId(127) slen site=SiteId(939) ty=i64
+    use BindingId(127) slen site=SiteId(943) ty=i64 intent=Read
+    use BindingId(124) width site=SiteId(944) ty=i64 intent=Read
+    use BindingId(123) s site=SiteId(945) ty=string intent=Consume
+    return site=Some(SiteId(945)) ty=string
+    eval site=SiteId(947) ty=()
+    use BindingId(123) s site=SiteId(949) ty=string intent=Read
+    use BindingId(125) pad site=SiteId(951) ty=string intent=Read
+    use BindingId(124) width site=SiteId(953) ty=i64 intent=Read
+    use BindingId(127) slen site=SiteId(954) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(950) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(948) ty=string
+    return site=Some(SiteId(948)) ty=string
   drop_plans:
-    branch[bb0: bb1/bb2] ->
+    call[bb0 hew_string_char_count -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    call[bb1 panic -> bb4] ->
+    branch[bb1: bb2/bb3] ->
       (none)
-    goto[bb2->bb3] ->
+    call[bb2 hew_panic_msg -> bb5] ->
       (none)
-    branch[bb3: bb5/bb6] ->
+    goto[bb3->bb4] ->
       (none)
-    goto[bb4->bb3] ->
+    call[bb4 hew_string_char_count -> bb6] ->
       (none)
-    cancel[bb4] ->
+    goto[bb5->bb4] ->
       (none)
-    return[bb5] ->
+    cancel[bb5] ->
       (none)
-    goto[bb6->bb7] ->
+    branch[bb6: bb7/bb8] ->
       (none)
-    branch[bb7: bb9/bb10] ->
+    return[bb7] ->
       (none)
-    goto[bb8->bb7] ->
+    goto[bb8->bb9] ->
       (none)
-    cancel[bb8] ->
+    branch[bb9: bb11/bb12] ->
       (none)
-    panic[bb9] ->
+    goto[bb10->bb9] ->
       (none)
-    call[bb10 string$repeat -> bb11] ->
+    cancel[bb10] ->
       (none)
-    return[bb11] ->
+    panic[bb11] ->
+      (none)
+    call[bb12 std$string$repeat -> bb13] ->
+      (none)
+    return[bb13] ->
       (none)
 
-fn string$is_numeric -> bool
+fn std$string$is_numeric -> bool
   statements:
-    use BindingId(144) s site=SiteId(1137) ty=string intent=Read
-    bind BindingId(145) slen site=SiteId(1136) ty=i64
-    use BindingId(145) slen site=SiteId(1140) ty=i64 intent=Read
-    return site=Some(SiteId(1142)) ty=bool
-    eval site=SiteId(1144) ty=()
-    bind BindingId(146) i site=SiteId(0) ty=i64
-    use BindingId(144) s site=SiteId(1150) ty=string intent=Read
-    use BindingId(146) i site=SiteId(1151) ty=i64 intent=Read
-    use BindingId(146) i site=SiteId(1153) ty=i64 intent=Read
-    eval site=SiteId(1163) ty=()
-    return site=Some(SiteId(1164)) ty=bool
-    use BindingId(145) slen site=SiteId(1146) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(1149) ty=string
-    bind BindingId(147) d site=SiteId(1148) ty=i64
-    use BindingId(147) d site=SiteId(1159) ty=i64 intent=Read
-    return site=Some(SiteId(1162)) ty=bool
+    use BindingId(128) s site=SiteId(957) ty=string intent=Read
+    bind BindingId(129) slen site=SiteId(956) ty=i64
+    use BindingId(129) slen site=SiteId(960) ty=i64 intent=Read
+    return site=Some(SiteId(962)) ty=bool
+    eval site=SiteId(964) ty=()
+    bind BindingId(130) i site=SiteId(0) ty=i64
+    use BindingId(128) s site=SiteId(970) ty=string intent=Read
+    use BindingId(130) i site=SiteId(971) ty=i64 intent=Read
+    use BindingId(130) i site=SiteId(973) ty=i64 intent=Read
+    eval site=SiteId(983) ty=()
+    return site=Some(SiteId(984)) ty=bool
+    use BindingId(129) slen site=SiteId(966) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_temp_arg site=SiteId(969) ty=string
+    bind BindingId(131) d site=SiteId(968) ty=i64
+    use BindingId(131) d site=SiteId(979) ty=i64 intent=Read
+    return site=Some(SiteId(982)) ty=bool
     drop BindingId(4294967231) __hew_temp_arg ty=string
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
@@ -2228,62 +1981,63 @@ fn string$is_numeric -> bool
       (none)
     call[bb13 hew_string_slice -> bb14] ->
       (none)
-    call[bb14 string$digit_value -> bb15] ->
+    call[bb14 std$string$digit_value -> bb15] ->
       (none)
     branch[bb15: bb16/bb17] ->
       (none)
     return[bb16] ->
-      drop _18 ty=string kind=cow_heap(hew_string_drop)
+      drop _17 ty=string kind=cow_heap(hew_string_drop)
     goto[bb17->bb18] ->
       (none)
     goto[bb18->bb8] ->
-      drop _18 ty=string kind=cow_heap(hew_string_drop)
+      drop _17 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb18] ->
-      drop _18 ty=string kind=cow_heap(hew_string_drop)
+      drop _17 ty=string kind=cow_heap(hew_string_drop)
     goto[bb19->bb18] ->
       (none)
     cancel[bb19] ->
       (none)
     panic[bb20] ->
-      drop _18 ty=string kind=cow_heap(hew_string_drop)
+      drop _17 ty=string kind=cow_heap(hew_string_drop)
 
-fn string$count -> i64
+fn std$string$count -> i64
   statements:
-    use BindingId(149) needle site=SiteId(1166) ty=string intent=Read
-    bind BindingId(150) nlen site=SiteId(1165) ty=i64
-    use BindingId(150) nlen site=SiteId(1169) ty=i64 intent=Read
-    return site=Some(SiteId(1171)) ty=i64
-    eval site=SiteId(1173) ty=()
-    bind BindingId(151) n site=SiteId(1174) ty=i64
-    bind BindingId(152) pos site=SiteId(1175) ty=i64
-    use BindingId(148) haystack site=SiteId(1177) ty=string intent=Read
-    bind BindingId(153) hlen site=SiteId(1176) ty=i64
-    use BindingId(152) pos site=SiteId(1180) ty=i64 intent=Read
-    use BindingId(153) hlen site=SiteId(1182) ty=i64 intent=Read
-    use BindingId(150) nlen site=SiteId(1183) ty=i64 intent=Read
-    use BindingId(148) haystack site=SiteId(1185) ty=string intent=Read
-    use BindingId(152) pos site=SiteId(1186) ty=i64 intent=Read
-    use BindingId(153) hlen site=SiteId(1187) ty=i64 intent=Read
-    eval site=SiteId(1207) ty=()
-    use BindingId(151) n site=SiteId(1208) ty=i64 intent=Read
-    return site=Some(SiteId(1208)) ty=i64
-    bind BindingId(154) rest site=SiteId(1184) ty=string
-    use BindingId(154) rest site=SiteId(1191) ty=string intent=Read
-    use BindingId(149) needle site=SiteId(1192) ty=string intent=Read
-    bind BindingId(156) idx site=SiteId(1189) ty=i64
-    use BindingId(151) n site=SiteId(1199) ty=i64 intent=Read
-    bind BindingId(155) i site=SiteId(1194) ty=i64
-    use BindingId(155) i site=SiteId(1194) ty=i64 intent=Read
-    use BindingId(151) n site=SiteId(1196) ty=i64 intent=Consume
-    return site=Some(SiteId(1196)) ty=i64
-    bind BindingId(151) n site=SiteId(1197) ty=i64
-    eval site=SiteId(1198) ty=()
-    use BindingId(152) pos site=SiteId(1204) ty=i64 intent=Read
-    use BindingId(156) idx site=SiteId(1205) ty=i64 intent=Read
-    use BindingId(150) nlen site=SiteId(1206) ty=i64 intent=Read
-    bind BindingId(152) pos site=SiteId(1201) ty=i64
-    eval site=SiteId(1202) ty=()
-    drop BindingId(154) rest ty=string
+    use BindingId(133) needle site=SiteId(986) ty=string intent=Read
+    bind BindingId(134) nlen site=SiteId(985) ty=i64
+    use BindingId(134) nlen site=SiteId(989) ty=i64 intent=Read
+    return site=Some(SiteId(991)) ty=i64
+    eval site=SiteId(993) ty=()
+    bind BindingId(135) n site=SiteId(994) ty=i64
+    bind BindingId(136) pos site=SiteId(995) ty=i64
+    use BindingId(132) haystack site=SiteId(997) ty=string intent=Read
+    bind BindingId(137) hlen site=SiteId(996) ty=i64
+    use BindingId(136) pos site=SiteId(1000) ty=i64 intent=Read
+    use BindingId(137) hlen site=SiteId(1002) ty=i64 intent=Read
+    use BindingId(134) nlen site=SiteId(1003) ty=i64 intent=Read
+    use BindingId(132) haystack site=SiteId(1005) ty=string intent=Read
+    use BindingId(136) pos site=SiteId(1006) ty=i64 intent=Read
+    use BindingId(137) hlen site=SiteId(1007) ty=i64 intent=Read
+    eval site=SiteId(1027) ty=()
+    use BindingId(135) n site=SiteId(1028) ty=i64 intent=Read
+    return site=Some(SiteId(1028)) ty=i64
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1004) ty=string
+    bind BindingId(138) rest site=SiteId(1004) ty=string
+    use BindingId(138) rest site=SiteId(1011) ty=string intent=Read
+    use BindingId(133) needle site=SiteId(1012) ty=string intent=Read
+    bind BindingId(140) idx site=SiteId(1009) ty=i64
+    use BindingId(135) n site=SiteId(1019) ty=i64 intent=Read
+    bind BindingId(139) i site=SiteId(1014) ty=i64
+    use BindingId(139) i site=SiteId(1014) ty=i64 intent=Read
+    use BindingId(135) n site=SiteId(1016) ty=i64 intent=Consume
+    return site=Some(SiteId(1016)) ty=i64
+    bind BindingId(135) n site=SiteId(1017) ty=i64
+    eval site=SiteId(1018) ty=()
+    use BindingId(136) pos site=SiteId(1024) ty=i64 intent=Read
+    use BindingId(140) idx site=SiteId(1025) ty=i64 intent=Read
+    use BindingId(134) nlen site=SiteId(1026) ty=i64 intent=Read
+    bind BindingId(136) pos site=SiteId(1021) ty=i64
+    eval site=SiteId(1022) ty=()
+    drop BindingId(138) rest ty=string
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
       (none)
@@ -2348,11 +2102,11 @@ fn string$count -> i64
     cancel[bb25] ->
       drop _18 ty=string kind=cow_heap(hew_string_drop)
 
-fn string$starts_with -> bool
+fn std$string$starts_with -> bool
   statements:
-    use BindingId(157) s site=SiteId(1210) ty=string intent=Read
-    use BindingId(158) prefix site=SiteId(1211) ty=string intent=Read
-    return site=Some(SiteId(1209)) ty=bool
+    use BindingId(141) s site=SiteId(1030) ty=string intent=Read
+    use BindingId(142) prefix site=SiteId(1031) ty=string intent=Read
+    return site=Some(SiteId(1029)) ty=bool
   drop_plans:
     call[bb0 hew_string_starts_with -> bb1] ->
       (none)
@@ -2361,11 +2115,11 @@ fn string$starts_with -> bool
     return[bb1] ->
       (none)
 
-fn string$ends_with -> bool
+fn std$string$ends_with -> bool
   statements:
-    use BindingId(159) s site=SiteId(1214) ty=string intent=Read
-    use BindingId(160) suffix site=SiteId(1215) ty=string intent=Read
-    return site=Some(SiteId(1213)) ty=bool
+    use BindingId(143) s site=SiteId(1034) ty=string intent=Read
+    use BindingId(144) suffix site=SiteId(1035) ty=string intent=Read
+    return site=Some(SiteId(1033)) ty=bool
   drop_plans:
     call[bb0 hew_string_ends_with -> bb1] ->
       (none)
@@ -2374,11 +2128,11 @@ fn string$ends_with -> bool
     return[bb1] ->
       (none)
 
-fn string$contains -> bool
+fn std$string$contains -> bool
   statements:
-    use BindingId(161) s site=SiteId(1218) ty=string intent=Read
-    use BindingId(162) sub site=SiteId(1219) ty=string intent=Read
-    return site=Some(SiteId(1217)) ty=bool
+    use BindingId(145) s site=SiteId(1038) ty=string intent=Read
+    use BindingId(146) sub site=SiteId(1039) ty=string intent=Read
+    return site=Some(SiteId(1037)) ty=bool
   drop_plans:
     call[bb0 hew_string_contains -> bb1] ->
       (none)
@@ -2387,22 +2141,22 @@ fn string$contains -> bool
     return[bb1] ->
       (none)
 
-fn string$is_ascii -> bool
+fn std$string$is_ascii -> bool
   statements:
-    use BindingId(163) s site=SiteId(1222) ty=string intent=Read
-    bind BindingId(164) len site=SiteId(1221) ty=i64
-    bind BindingId(165) i site=SiteId(0) ty=i64
-    use BindingId(163) s site=SiteId(1229) ty=string intent=Read
-    use BindingId(165) i site=SiteId(1230) ty=i64 intent=Read
-    eval site=SiteId(1242) ty=()
-    return site=Some(SiteId(1243)) ty=bool
-    use BindingId(164) len site=SiteId(1225) ty=i64 intent=Read
-    bind BindingId(167) ch site=SiteId(1227) ty=char
-    use BindingId(167) ch site=SiteId(1238) ty=char intent=Read
-    bind BindingId(166) c site=SiteId(1232) ty=char
-    use BindingId(166) c site=SiteId(1232) ty=char intent=Read
-    return site=Some(SiteId(1234)) ty=bool
-    return site=Some(SiteId(1241)) ty=bool
+    use BindingId(147) s site=SiteId(1042) ty=string intent=Read
+    bind BindingId(148) len site=SiteId(1041) ty=i64
+    bind BindingId(149) i site=SiteId(0) ty=i64
+    use BindingId(147) s site=SiteId(1049) ty=string intent=Read
+    use BindingId(149) i site=SiteId(1050) ty=i64 intent=Read
+    eval site=SiteId(1062) ty=()
+    return site=Some(SiteId(1063)) ty=bool
+    use BindingId(148) len site=SiteId(1045) ty=i64 intent=Read
+    bind BindingId(151) ch site=SiteId(1047) ty=char
+    use BindingId(151) ch site=SiteId(1058) ty=char intent=Read
+    bind BindingId(150) c site=SiteId(1052) ty=char
+    use BindingId(150) c site=SiteId(1052) ty=char intent=Read
+    return site=Some(SiteId(1054)) ty=bool
+    return site=Some(SiteId(1061)) ty=bool
   drop_plans:
     call[bb0 hew_string_length -> bb1] ->
       (none)
@@ -2457,10 +2211,11 @@ fn string$is_ascii -> bool
     panic[bb19] ->
       (none)
 
-fn string$trim -> string
+fn std$string$trim -> string
   statements:
-    use BindingId(168) s site=SiteId(1245) ty=string intent=Read
-    return site=Some(SiteId(1244)) ty=string
+    use BindingId(152) s site=SiteId(1065) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1064) ty=string
+    return site=Some(SiteId(1064)) ty=string
   drop_plans:
     call[bb0 hew_string_trim -> bb1] ->
       (none)
@@ -2469,12 +2224,13 @@ fn string$trim -> string
     return[bb1] ->
       (none)
 
-fn string$replace -> string
+fn std$string$replace -> string
   statements:
-    use BindingId(169) s site=SiteId(1248) ty=string intent=Read
-    use BindingId(170) old site=SiteId(1249) ty=string intent=Read
-    use BindingId(171) new_val site=SiteId(1250) ty=string intent=Read
-    return site=Some(SiteId(1247)) ty=string
+    use BindingId(153) s site=SiteId(1068) ty=string intent=Read
+    use BindingId(154) old site=SiteId(1069) ty=string intent=Read
+    use BindingId(155) new_val site=SiteId(1070) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1067) ty=string
+    return site=Some(SiteId(1067)) ty=string
   drop_plans:
     call[bb0 hew_string_replace -> bb1] ->
       (none)
@@ -2483,11 +2239,12 @@ fn string$replace -> string
     return[bb1] ->
       (none)
 
-fn string$split -> Vec<string>
+fn std$string$split -> Vec<string>
   statements:
-    use BindingId(172) s site=SiteId(1253) ty=string intent=Read
-    use BindingId(173) sep site=SiteId(1254) ty=string intent=Read
-    return site=Some(SiteId(1252)) ty=Vec<string>
+    use BindingId(156) s site=SiteId(1073) ty=string intent=Read
+    use BindingId(157) sep site=SiteId(1074) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1072) ty=Vec<string>
+    return site=Some(SiteId(1072)) ty=Vec<string>
   drop_plans:
     call[bb0 hew_string_split -> bb1] ->
       (none)
@@ -2496,68 +2253,74 @@ fn string$split -> Vec<string>
     return[bb1] ->
       (none)
 
-fn string$lines -> Vec<string>
+fn std$string$lines -> Vec<string>
   statements:
-    bind BindingId(175) result site=SiteId(1256) ty=Vec<string>
-    use BindingId(174) s site=SiteId(1259) ty=string intent=Read
-    bind BindingId(176) slen site=SiteId(1258) ty=i64
-    bind BindingId(177) start site=SiteId(1261) ty=i64
-    use BindingId(177) start site=SiteId(1263) ty=i64 intent=Read
-    use BindingId(176) slen site=SiteId(1264) ty=i64 intent=Read
-    use BindingId(174) s site=SiteId(1266) ty=string intent=Read
-    use BindingId(177) start site=SiteId(1267) ty=i64 intent=Read
-    use BindingId(176) slen site=SiteId(1268) ty=i64 intent=Read
-    eval site=SiteId(1320) ty=()
-    use BindingId(176) slen site=SiteId(1321) ty=i64 intent=Consume
-    bind BindingId(183) final_end site=SiteId(1321) ty=i64
-    use BindingId(183) final_end site=SiteId(1324) ty=i64 intent=Read
-    use BindingId(177) start site=SiteId(1325) ty=i64 intent=Read
-    bind BindingId(178) rest site=SiteId(1265) ty=string
-    use BindingId(178) rest site=SiteId(1271) ty=string intent=Read
-    bind BindingId(179) found site=SiteId(1270) ty=Option<i64>
-    use BindingId(179) found site=SiteId(1275) ty=Option<i64> intent=Read
-    eval site=SiteId(1280) ty=()
-    use BindingId(179) found site=SiteId(1282) ty=Option<i64> intent=Consume
-    eval site=SiteId(1278) ty=()
-    bind BindingId(181) idx site=SiteId(1281) ty=i64
-    use BindingId(177) start site=SiteId(1286) ty=i64 intent=Read
-    use BindingId(181) idx site=SiteId(1287) ty=i64 intent=Read
-    bind BindingId(180) __option_unwrap_or_value site=SiteId(1284) ty=i64
-    use BindingId(180) __option_unwrap_or_value site=SiteId(1284) ty=i64 intent=Read
-    bind BindingId(182) end site=SiteId(1285) ty=i64
-    use BindingId(182) end site=SiteId(1290) ty=i64 intent=Read
-    use BindingId(177) start site=SiteId(1291) ty=i64 intent=Read
-    use BindingId(174) s site=SiteId(1294) ty=string intent=Read
-    use BindingId(182) end site=SiteId(1296) ty=i64 intent=Read
-    use BindingId(182) end site=SiteId(1298) ty=i64 intent=Read
-    use BindingId(182) end site=SiteId(1303) ty=i64 intent=Read
-    eval site=SiteId(1306) ty=()
-    use BindingId(175) result site=SiteId(1308) ty=Vec<string> intent=Read
-    use BindingId(174) s site=SiteId(1310) ty=string intent=Read
-    use BindingId(177) start site=SiteId(1311) ty=i64 intent=Read
-    use BindingId(182) end site=SiteId(1312) ty=i64 intent=Read
-    bind BindingId(182) end site=SiteId(1301) ty=i64
-    eval site=SiteId(1302) ty=()
-    eval site=SiteId(1307) ty=()
-    use BindingId(177) start site=SiteId(1317) ty=i64 intent=Read
-    use BindingId(181) idx site=SiteId(1318) ty=i64 intent=Read
-    bind BindingId(177) start site=SiteId(1314) ty=i64
-    eval site=SiteId(1315) ty=()
-    use BindingId(174) s site=SiteId(1328) ty=string intent=Read
-    use BindingId(183) final_end site=SiteId(1330) ty=i64 intent=Read
-    use BindingId(183) final_end site=SiteId(1332) ty=i64 intent=Read
-    use BindingId(183) final_end site=SiteId(1337) ty=i64 intent=Read
-    eval site=SiteId(1340) ty=()
-    use BindingId(175) result site=SiteId(1342) ty=Vec<string> intent=Read
-    use BindingId(174) s site=SiteId(1344) ty=string intent=Read
-    use BindingId(177) start site=SiteId(1345) ty=i64 intent=Read
-    use BindingId(183) final_end site=SiteId(1346) ty=i64 intent=Read
-    bind BindingId(183) final_end site=SiteId(1335) ty=i64
-    eval site=SiteId(1336) ty=()
-    eval site=SiteId(1341) ty=()
-    use BindingId(175) result site=SiteId(1348) ty=Vec<string> intent=Read
-    return site=Some(SiteId(1348)) ty=Vec<string>
-    drop BindingId(178) rest ty=string
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1076) ty=Vec<string>
+    bind BindingId(159) result site=SiteId(1076) ty=Vec<string>
+    use BindingId(158) s site=SiteId(1079) ty=string intent=Read
+    bind BindingId(160) slen site=SiteId(1078) ty=i64
+    bind BindingId(161) start site=SiteId(1081) ty=i64
+    use BindingId(161) start site=SiteId(1083) ty=i64 intent=Read
+    use BindingId(160) slen site=SiteId(1084) ty=i64 intent=Read
+    use BindingId(158) s site=SiteId(1086) ty=string intent=Read
+    use BindingId(161) start site=SiteId(1087) ty=i64 intent=Read
+    use BindingId(160) slen site=SiteId(1088) ty=i64 intent=Read
+    eval site=SiteId(1140) ty=()
+    use BindingId(160) slen site=SiteId(1141) ty=i64 intent=Consume
+    bind BindingId(167) final_end site=SiteId(1141) ty=i64
+    use BindingId(167) final_end site=SiteId(1144) ty=i64 intent=Read
+    use BindingId(161) start site=SiteId(1145) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1085) ty=string
+    bind BindingId(162) rest site=SiteId(1085) ty=string
+    use BindingId(162) rest site=SiteId(1091) ty=string intent=Read
+    bind BindingId(163) found site=SiteId(1090) ty=Option<i64>
+    use BindingId(163) found site=SiteId(1095) ty=Option<i64> intent=Read
+    eval site=SiteId(1100) ty=()
+    use BindingId(163) found site=SiteId(1102) ty=Option<i64> intent=Consume
+    eval site=SiteId(1098) ty=()
+    bind BindingId(165) idx site=SiteId(1101) ty=i64
+    use BindingId(161) start site=SiteId(1106) ty=i64 intent=Read
+    use BindingId(165) idx site=SiteId(1107) ty=i64 intent=Read
+    bind BindingId(164) __option_unwrap_or_value site=SiteId(1104) ty=i64
+    use BindingId(164) __option_unwrap_or_value site=SiteId(1104) ty=i64 intent=Read
+    bind BindingId(166) end site=SiteId(1105) ty=i64
+    use BindingId(166) end site=SiteId(1110) ty=i64 intent=Read
+    use BindingId(161) start site=SiteId(1111) ty=i64 intent=Read
+    use BindingId(158) s site=SiteId(1114) ty=string intent=Read
+    use BindingId(166) end site=SiteId(1116) ty=i64 intent=Read
+    use BindingId(166) end site=SiteId(1118) ty=i64 intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(1113) ty=string
+    use BindingId(166) end site=SiteId(1123) ty=i64 intent=Read
+    eval site=SiteId(1126) ty=()
+    use BindingId(159) result site=SiteId(1128) ty=Vec<string> intent=Read
+    use BindingId(158) s site=SiteId(1130) ty=string intent=Read
+    use BindingId(161) start site=SiteId(1131) ty=i64 intent=Read
+    use BindingId(166) end site=SiteId(1132) ty=i64 intent=Read
+    bind BindingId(166) end site=SiteId(1121) ty=i64
+    eval site=SiteId(1122) ty=()
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(1129) ty=string
+    eval site=SiteId(1127) ty=()
+    use BindingId(161) start site=SiteId(1137) ty=i64 intent=Read
+    use BindingId(165) idx site=SiteId(1138) ty=i64 intent=Read
+    bind BindingId(161) start site=SiteId(1134) ty=i64
+    eval site=SiteId(1135) ty=()
+    use BindingId(158) s site=SiteId(1148) ty=string intent=Read
+    use BindingId(167) final_end site=SiteId(1150) ty=i64 intent=Read
+    use BindingId(167) final_end site=SiteId(1152) ty=i64 intent=Read
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(1147) ty=string
+    use BindingId(167) final_end site=SiteId(1157) ty=i64 intent=Read
+    eval site=SiteId(1160) ty=()
+    use BindingId(159) result site=SiteId(1162) ty=Vec<string> intent=Read
+    use BindingId(158) s site=SiteId(1164) ty=string intent=Read
+    use BindingId(161) start site=SiteId(1165) ty=i64 intent=Read
+    use BindingId(167) final_end site=SiteId(1166) ty=i64 intent=Read
+    bind BindingId(167) final_end site=SiteId(1155) ty=i64
+    eval site=SiteId(1156) ty=()
+    bind BindingId(4294967226) __hew_produced_value site=SiteId(1163) ty=string
+    eval site=SiteId(1161) ty=()
+    use BindingId(159) result site=SiteId(1168) ty=Vec<string> intent=Read
+    return site=Some(SiteId(1168)) ty=Vec<string>
+    drop BindingId(162) rest ty=string
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
@@ -2688,26 +2451,31 @@ fn string$lines -> Vec<string>
     return[bb51] ->
       (none)
 
-fn string$join -> string
+fn std$string$join -> string
   statements:
-    use BindingId(184) parts site=SiteId(1350) ty=Vec<string> intent=Read
-    bind BindingId(186) n site=SiteId(1349) ty=i64
-    use BindingId(186) n site=SiteId(1352) ty=i64 intent=Read
-    return site=Some(SiteId(1354)) ty=string
-    eval site=SiteId(1356) ty=()
-    use BindingId(184) parts site=SiteId(1358) ty=Vec<string> intent=Read
-    bind BindingId(187) result site=SiteId(1357) ty=string
-    bind BindingId(188) i site=SiteId(0) ty=i64
-    use BindingId(187) result site=SiteId(1366) ty=string intent=Read
-    use BindingId(185) sep site=SiteId(1367) ty=string intent=Read
-    use BindingId(184) parts site=SiteId(1369) ty=Vec<string> intent=Read
-    use BindingId(188) i site=SiteId(1370) ty=i64 intent=Read
-    eval site=SiteId(1371) ty=()
-    use BindingId(187) result site=SiteId(1372) ty=string intent=Read
-    return site=Some(SiteId(1372)) ty=string
-    use BindingId(186) n site=SiteId(1361) ty=i64 intent=Read
-    bind BindingId(187) result site=SiteId(1363) ty=string
-    eval site=SiteId(1364) ty=()
+    use BindingId(168) parts site=SiteId(1170) ty=Vec<string> intent=Read
+    bind BindingId(170) n site=SiteId(1169) ty=i64
+    use BindingId(170) n site=SiteId(1172) ty=i64 intent=Read
+    return site=Some(SiteId(1174)) ty=string
+    eval site=SiteId(1176) ty=()
+    use BindingId(168) parts site=SiteId(1178) ty=Vec<string> intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1177) ty=string
+    bind BindingId(171) result site=SiteId(1177) ty=string
+    bind BindingId(172) i site=SiteId(0) ty=i64
+    use BindingId(171) result site=SiteId(1186) ty=string intent=Read
+    use BindingId(169) sep site=SiteId(1187) ty=string intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1185) ty=string
+    use BindingId(168) parts site=SiteId(1189) ty=Vec<string> intent=Read
+    use BindingId(172) i site=SiteId(1190) ty=i64 intent=Read
+    eval site=SiteId(1191) ty=()
+    use BindingId(171) result site=SiteId(1192) ty=string intent=Read
+    return site=Some(SiteId(1192)) ty=string
+    use BindingId(170) n site=SiteId(1181) ty=i64 intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(1188) ty=string
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(1184) ty=string
+    bind BindingId(171) result site=SiteId(1183) ty=string
+    eval site=SiteId(1184) ty=()
+    drop BindingId(4294967230) __hew_produced_value ty=string
   drop_plans:
     call[bb0 hew_vec_len -> bb1] ->
       (none)
@@ -2744,108 +2512,112 @@ fn string$join -> string
     cancel[bb13] ->
       drop _12 ty=string kind=cow_heap(hew_string_drop)
     panic[bb14] ->
+      drop _20 ty=string kind=cow_heap(hew_string_drop)
       drop _12 ty=string kind=cow_heap(hew_string_drop)
     goto[bb15->bb10] ->
-      (none)
+      drop _20 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb15] ->
+      drop _20 ty=string kind=cow_heap(hew_string_drop)
       drop _12 ty=string kind=cow_heap(hew_string_drop)
     panic[bb16] ->
+      drop _20 ty=string kind=cow_heap(hew_string_drop)
       drop _12 ty=string kind=cow_heap(hew_string_drop)
 
-fn string::len -> i64
+fn std.string.string::len -> i64
   statements:
-    return site=Some(SiteId(1373)) ty=i64
+    return site=Some(SiteId(1193)) ty=i64
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::is_empty -> bool
+fn std.string.string::is_empty -> bool
   statements:
-    return site=Some(SiteId(1374)) ty=bool
+    return site=Some(SiteId(1194)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::contains -> bool
+fn std.string.string::contains -> bool
   statements:
-    return site=Some(SiteId(1375)) ty=bool
+    return site=Some(SiteId(1195)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::starts_with -> bool
+fn std.string.string::starts_with -> bool
   statements:
-    return site=Some(SiteId(1376)) ty=bool
+    return site=Some(SiteId(1196)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::ends_with -> bool
+fn std.string.string::ends_with -> bool
   statements:
-    return site=Some(SiteId(1377)) ty=bool
+    return site=Some(SiteId(1197)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::to_upper -> string
+fn std.string.string::to_upper -> string
   statements:
-    return site=Some(SiteId(1378)) ty=string
+    return site=Some(SiteId(1198)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::to_lower -> string
+fn std.string.string::to_lower -> string
   statements:
-    return site=Some(SiteId(1379)) ty=string
+    return site=Some(SiteId(1199)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::trim -> string
+fn std.string.string::trim -> string
   statements:
-    return site=Some(SiteId(1380)) ty=string
+    return site=Some(SiteId(1200)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::is_digit -> bool
+fn std.string.string::is_digit -> bool
   statements:
-    return site=Some(SiteId(1381)) ty=bool
+    return site=Some(SiteId(1201)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::is_alpha -> bool
+fn std.string.string::is_alpha -> bool
   statements:
-    return site=Some(SiteId(1382)) ty=bool
+    return site=Some(SiteId(1202)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::is_alphanumeric -> bool
+fn std.string.string::is_alphanumeric -> bool
   statements:
-    return site=Some(SiteId(1383)) ty=bool
+    return site=Some(SiteId(1203)) ty=bool
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::clone -> string
+fn std.string.string::clone -> string
   statements:
-    return site=Some(SiteId(1384)) ty=string
+    return site=Some(SiteId(1204)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::replace -> string
+fn std.string.string::replace -> string
   statements:
-    return site=Some(SiteId(1385)) ty=string
+    return site=Some(SiteId(1205)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::split -> Vec<string>
+fn std.string.string::split -> Vec<string>
   statements:
-    return site=Some(SiteId(1386)) ty=Vec<string>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1206) ty=Vec<string>
+    return site=Some(SiteId(1206)) ty=Vec<string>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
@@ -2854,9 +2626,10 @@ fn string::split -> Vec<string>
     return[bb1] ->
       (none)
 
-fn string::lines -> Vec<string>
+fn std.string.string::lines -> Vec<string>
   statements:
-    return site=Some(SiteId(1388)) ty=Vec<string>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1208) ty=Vec<string>
+    return site=Some(SiteId(1208)) ty=Vec<string>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
@@ -2865,44 +2638,45 @@ fn string::lines -> Vec<string>
     return[bb1] ->
       (none)
 
-fn string::find -> Option<i64>
+fn std.string.string::find -> Option<i64>
   statements:
-    return site=Some(SiteId(1390)) ty=Option<i64>
+    return site=Some(SiteId(1210)) ty=Option<i64>
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::slice -> string
+fn std.string.string::slice -> string
   statements:
-    return site=Some(SiteId(1391)) ty=string
+    return site=Some(SiteId(1211)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::repeat -> string
+fn std.string.string::repeat -> string
   statements:
-    return site=Some(SiteId(1392)) ty=string
+    return site=Some(SiteId(1212)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::char_at -> Option<char>
+fn std.string.string::char_at -> Option<char>
   statements:
-    return site=Some(SiteId(1393)) ty=Option<char>
+    return site=Some(SiteId(1213)) ty=Option<char>
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::get -> Option<char>
+fn std.string.string::get -> Option<char>
   statements:
-    return site=Some(SiteId(1394)) ty=Option<char>
+    return site=Some(SiteId(1214)) ty=Option<char>
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::chars -> Vec<char>
+fn std.string.string::chars -> Vec<char>
   statements:
-    return site=Some(SiteId(1395)) ty=Vec<char>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1215) ty=Vec<char>
+    return site=Some(SiteId(1215)) ty=Vec<char>
   drop_plans:
     call[bb0 Vec::new -> bb1] ->
       (none)
@@ -2911,23 +2685,24 @@ fn string::chars -> Vec<char>
     return[bb1] ->
       (none)
 
-fn string::char_count_utf8 -> i64
+fn std.string.string::char_count_utf8 -> i64
   statements:
-    return site=Some(SiteId(1397)) ty=i64
+    return site=Some(SiteId(1217)) ty=i64
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::codepoint_at_utf8 -> Option<i64>
+fn std.string.string::codepoint_at_utf8 -> Option<i64>
   statements:
-    return site=Some(SiteId(1398)) ty=Option<i64>
+    return site=Some(SiteId(1218)) ty=Option<i64>
   drop_plans:
     return[bb0] ->
       (none)
 
-fn string::to_bytes -> bytes
+fn std.string.string::to_bytes -> bytes
   statements:
-    return site=Some(SiteId(1399)) ty=bytes
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1219) ty=bytes
+    return site=Some(SiteId(1219)) ty=bytes
   drop_plans:
     call[bb0 bytes::new -> bb1] ->
       (none)
@@ -2936,12 +2711,279 @@ fn string::to_bytes -> bytes
     return[bb1] ->
       (none)
 
+fn std$testing$assert_eq -> ()
+  statements:
+    use BindingId(210) actual site=SiteId(1223) ty=i64 intent=Read
+    use BindingId(211) expected site=SiteId(1224) ty=i64 intent=Read
+    use BindingId(211) expected site=SiteId(1229) ty=i64 intent=Read
+    return site=Some(SiteId(1221)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1231) ty=string
+    use BindingId(210) actual site=SiteId(1233) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1235) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1227) ty=string
+    eval site=SiteId(1226) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_eq_u8 -> ()
+  statements:
+    use BindingId(212) actual site=SiteId(1245) ty=u8 intent=Read
+    use BindingId(213) expected site=SiteId(1246) ty=u8 intent=Read
+    use BindingId(213) expected site=SiteId(1252) ty=u8 intent=Read
+    return site=Some(SiteId(1243)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1254) ty=string
+    use BindingId(212) actual site=SiteId(1257) ty=u8 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1259) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1249) ty=string
+    eval site=SiteId(1248) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_ne_u8 -> ()
+  statements:
+    use BindingId(214) a site=SiteId(1269) ty=u8 intent=Read
+    use BindingId(215) b site=SiteId(1270) ty=u8 intent=Read
+    use BindingId(214) a site=SiteId(1276) ty=u8 intent=Read
+    return site=Some(SiteId(1267)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1278) ty=string
+    use BindingId(215) b site=SiteId(1281) ty=u8 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1283) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1273) ty=string
+    eval site=SiteId(1272) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _14 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _14 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_eq_str -> ()
+  statements:
+    use BindingId(216) actual site=SiteId(1296) ty=string intent=Read
+    use BindingId(217) expected site=SiteId(1297) ty=string intent=Read
+    use BindingId(217) expected site=SiteId(1302) ty=string intent=Read
+    return site=Some(SiteId(1294)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1304) ty=string
+    use BindingId(216) actual site=SiteId(1306) ty=string intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1308) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1300) ty=string
+    eval site=SiteId(1299) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 to_string_str -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 to_string_str -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_ne -> ()
+  statements:
+    use BindingId(218) a site=SiteId(1321) ty=i64 intent=Read
+    use BindingId(219) b site=SiteId(1322) ty=i64 intent=Read
+    use BindingId(218) a site=SiteId(1327) ty=i64 intent=Read
+    return site=Some(SiteId(1319)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1329) ty=string
+    use BindingId(219) b site=SiteId(1331) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1333) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1325) ty=string
+    eval site=SiteId(1324) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_true -> ()
+  statements:
+    use BindingId(220) condition site=SiteId(1346) ty=bool intent=Read
+    return site=Some(SiteId(1344)) ty=()
+    eval site=SiteId(1348) ty=!
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_panic_msg -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    goto[bb4->bb3] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+
+fn std$testing$assert_false -> ()
+  statements:
+    use BindingId(221) condition site=SiteId(1352) ty=bool intent=Read
+    return site=Some(SiteId(1351)) ty=()
+    eval site=SiteId(1354) ty=!
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_panic_msg -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    goto[bb4->bb3] ->
+      (none)
+    cancel[bb4] ->
+      (none)
+
+fn std$testing$assert_gt -> ()
+  statements:
+    use BindingId(222) a site=SiteId(1359) ty=i64 intent=Read
+    use BindingId(223) b site=SiteId(1360) ty=i64 intent=Read
+    use BindingId(222) a site=SiteId(1365) ty=i64 intent=Read
+    return site=Some(SiteId(1357)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1367) ty=string
+    use BindingId(223) b site=SiteId(1369) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1371) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1363) ty=string
+    eval site=SiteId(1362) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+
+fn std$testing$assert_lt -> ()
+  statements:
+    use BindingId(224) a site=SiteId(1381) ty=i64 intent=Read
+    use BindingId(225) b site=SiteId(1382) ty=i64 intent=Read
+    use BindingId(224) a site=SiteId(1387) ty=i64 intent=Read
+    return site=Some(SiteId(1379)) ty=()
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1389) ty=string
+    use BindingId(225) b site=SiteId(1391) ty=i64 intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1393) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(1385) ty=string
+    eval site=SiteId(1384) ty=!
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+  drop_plans:
+    branch[bb0: bb1/bb2] ->
+      (none)
+    cancel[bb0] ->
+      (none)
+    call[bb1 hew_i64_to_string -> bb4] ->
+      (none)
+    goto[bb2->bb3] ->
+      (none)
+    return[bb3] ->
+      (none)
+    call[bb4 hew_i64_to_string -> bb5] ->
+      (none)
+    call[bb5 hew_panic_msg -> bb6] ->
+      (none)
+    goto[bb6->bb3] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb6] ->
+      drop _10 ty=string kind=cow_heap(hew_string_drop)
+
 fn i8::fmt -> string
   statements:
     use BindingId(234) val site=SiteId(1471) ty=i8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1469) ty=string
     return site=Some(SiteId(1469)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -2951,9 +2993,10 @@ fn i8::fmt -> string
 fn i16::fmt -> string
   statements:
     use BindingId(235) val site=SiteId(1475) ty=i16 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1473) ty=string
     return site=Some(SiteId(1473)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -2963,9 +3006,10 @@ fn i16::fmt -> string
 fn i32::fmt -> string
   statements:
     use BindingId(236) val site=SiteId(1478) ty=i32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1477) ty=string
     return site=Some(SiteId(1477)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -2975,9 +3019,10 @@ fn i32::fmt -> string
 fn i64::fmt -> string
   statements:
     use BindingId(237) val site=SiteId(1481) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1480) ty=string
     return site=Some(SiteId(1480)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -2987,9 +3032,10 @@ fn i64::fmt -> string
 fn u8::fmt -> string
   statements:
     use BindingId(238) val site=SiteId(1484) ty=u8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1483) ty=string
     return site=Some(SiteId(1483)) ty=string
   drop_plans:
-    call[bb0 to_string_u8 -> bb1] ->
+    call[bb0 hew_u8_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -2999,9 +3045,10 @@ fn u8::fmt -> string
 fn u16::fmt -> string
   statements:
     use BindingId(239) val site=SiteId(1487) ty=u16 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1486) ty=string
     return site=Some(SiteId(1486)) ty=string
   drop_plans:
-    call[bb0 to_string_u16 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3011,9 +3058,10 @@ fn u16::fmt -> string
 fn u32::fmt -> string
   statements:
     use BindingId(240) val site=SiteId(1490) ty=u32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1489) ty=string
     return site=Some(SiteId(1489)) ty=string
   drop_plans:
-    call[bb0 to_string_u32 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3023,9 +3071,10 @@ fn u32::fmt -> string
 fn u64::fmt -> string
   statements:
     use BindingId(241) val site=SiteId(1493) ty=u64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1492) ty=string
     return site=Some(SiteId(1492)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3035,9 +3084,10 @@ fn u64::fmt -> string
 fn isize::fmt -> string
   statements:
     use BindingId(242) val site=SiteId(1497) ty=isize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1495) ty=string
     return site=Some(SiteId(1495)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3047,9 +3097,10 @@ fn isize::fmt -> string
 fn usize::fmt -> string
   statements:
     use BindingId(243) val site=SiteId(1501) ty=usize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1499) ty=string
     return site=Some(SiteId(1499)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3059,9 +3110,10 @@ fn usize::fmt -> string
 fn bool::fmt -> string
   statements:
     use BindingId(244) val site=SiteId(1504) ty=bool intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1503) ty=string
     return site=Some(SiteId(1503)) ty=string
   drop_plans:
-    call[bb0 to_string_bool -> bb1] ->
+    call[bb0 hew_bool_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3071,9 +3123,10 @@ fn bool::fmt -> string
 fn char::fmt -> string
   statements:
     use BindingId(245) val site=SiteId(1507) ty=char intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1506) ty=string
     return site=Some(SiteId(1506)) ty=string
   drop_plans:
-    call[bb0 to_string_char -> bb1] ->
+    call[bb0 hew_char_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3083,9 +3136,10 @@ fn char::fmt -> string
 fn f64::fmt -> string
   statements:
     use BindingId(246) val site=SiteId(1510) ty=f64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1509) ty=string
     return site=Some(SiteId(1509)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3095,9 +3149,10 @@ fn f64::fmt -> string
 fn f32::fmt -> string
   statements:
     use BindingId(247) val site=SiteId(1514) ty=f32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1512) ty=string
     return site=Some(SiteId(1512)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -3163,11 +3218,16 @@ fn duration::from_secs -> duration
 fn duration::fmt -> string
   statements:
     use BindingId(253) val site=SiteId(1532) ty=duration intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(1530) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(1529) ty=string
     return site=Some(SiteId(1529)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_duration_nanos -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    return[bb1] ->
+    call[bb1 hew_i64_to_string -> bb2] ->
       (none)
+    return[bb2] ->
+      (none)
+

@@ -1267,11 +1267,24 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
     // every live binding (params included) as `Uninit`, producing a
     // false-positive `InitialisedBeforeUse` at the join.
     let reachable = reachable_from_entry(blocks);
-    // Executable blocks only, for the predecessor meets: a post-panic poison
-    // continuation is structurally reachable but never runs, and its `Uninit`
-    // contribution at a join must not kill bindings Live on every executable
-    // path (see `execution_reachable_from_entry`).
+    // Executable blocks only, for the predecessor meets of blocks that can
+    // themselves execute: a post-panic poison continuation is structurally
+    // reachable but never runs, and its `Uninit` contribution at a join must
+    // not kill bindings Live on every executable path (see
+    // `execution_reachable_from_entry`). Blocks INSIDE the dead region keep
+    // the structural view: their states still chain through the diverging
+    // call's continuation, so code after an unconditional `panic(...)` carries
+    // its parameter and binding states and is diagnosed exactly as before —
+    // a closure parameter read after the panic must not regress into a false
+    // `InitialisedBeforeUse` merely because its whole region is dead.
     let execution_reachable = execution_reachable_from_entry(blocks);
+    let meet_filter = |block_id: u32| -> &HashSet<u32> {
+        if execution_reachable.contains(&block_id) {
+            &execution_reachable
+        } else {
+            &reachable
+        }
+    };
 
     // The function's entry block is id 0 by construction (see
     // `lower::Builder::finalize_blocks`).
@@ -1329,7 +1342,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
             let preds_of_bb = preds.get(&cur_id).unwrap_or(&empty);
             // Phase 1 uses the visited-only meet so back-edges don't
             // contribute `Uninit` before they are processed.
-            meet_predecessors(preds_of_bb, &exit_states, &execution_reachable)
+            meet_predecessors(preds_of_bb, &exit_states, meet_filter(cur_id))
         };
         // In Phase 1 we only propagate state — diagnostics are discarded.
         let mut phase1_checks: Vec<MirCheck> = Vec::new();
@@ -1399,7 +1412,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
             let empty = Vec::new();
             let preds_of_bb = preds.get(&blk_id).unwrap_or(&empty);
             // Phase 2 uses ALL predecessors (all are now in exit_states).
-            meet_predecessors(preds_of_bb, &exit_states, &execution_reachable)
+            meet_predecessors(preds_of_bb, &exit_states, meet_filter(blk_id))
         };
         entry_states.insert(blk_id, entry.clone());
         transfer_block(
@@ -2221,6 +2234,51 @@ mod tests {
             result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
             Some(BindingState::Live),
             "a never-executing panic continuation must not poison the join meet"
+        );
+    }
+
+    #[test]
+    fn param_use_inside_dead_post_panic_region_is_not_uninitialised() {
+        // Dead-region scoping: a block that only runs after an unconditional
+        // panic still inherits its predecessor states through the diverging
+        // continuation, so a parameter (or binding) read there is diagnosed
+        // exactly as before the executable-join exclusion — never as a false
+        // `InitialisedBeforeUse`. The nested-suspending-closure shape
+        // (`panic(...)` first, parameter read after) compiles because of this.
+        let p = BindingId(50);
+        let blocks = vec![
+            bb(
+                0,
+                Terminator::Call {
+                    callee: "hew_panic_msg".to_string(),
+                    authority: CallAuthority::Direct,
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            ),
+            BasicBlock {
+                id: 1,
+                statements: vec![MirStatement::Use {
+                    binding: p,
+                    name: "inner_value".to_string(),
+                    site: SiteId(20),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Read,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let result = analyze(&blocks, &TypeClassTable::default(), &[p]);
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::InitialisedBeforeUse { binding, .. } if *binding == p
+            )),
+            "a parameter read in the dead post-panic region must not diagnose \
+             InitialisedBeforeUse: {:?}",
+            result.checks
         );
     }
 

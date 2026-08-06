@@ -81,7 +81,16 @@ const REJECTED: &str = "REJECTED";
 /// differential deliberately permits new release cells (the fix direction),
 /// but a source refresh must not omit one of its new functions from future
 /// regression coverage.
-const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &["examples/mqtt_broker.hew"];
+///
+/// `examples/mqtt_broker.hew` is no longer here: it is REJECTED at the
+/// current compiler by a real, tracked static leak-obligation finding (an
+/// owned value reaching a suspend-abandon exit with more mints than
+/// discharges in `Acceptor__recv__start`), so it no longer has a
+/// `Functions`-shaped block for this mechanism to protect. Its baseline row
+/// is `REJECTED`; the main differential's `(Rejected, Rejected)` branch
+/// covers it, and the suspend-abandon gap itself is a compiler defect to fix
+/// separately, not something this ratchet can paper over.
+const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &[];
 
 /// Cells that stand BELOW the `main` baseline on purpose, each with the reason.
 ///
@@ -95,14 +104,14 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        5,
-        "refreshed from 4: the current measured count for the post-serve_forever main shape is 5, one higher than previously accounted; the request loop and its owned path temporaries moved into serve_forever, and main retains the error-arm reason/detail strings released on its normal and cancel exits",
+        9,
+        "refreshed from 5: the join-prefix-redefinition liveness fix (the predecessor-terminator string freshness guard) restores releases on main's error/cancel join edges that were previously miscounted; the post-serve_forever main shape now measures 9, still below the pre-refactor baseline of 10 because the request loop and its owned path temporaries moved into serve_forever",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        9,
-        "refreshed from 8: the current measured count for the post-serve_forever main shape is 9, one higher than previously accounted; the request loop and its owned path temporaries moved into serve_forever, and main retains addr across three live exits plus error-arm reason/detail strings on their normal and cancel exits",
+        13,
+        "refreshed from 9: same join-prefix-redefinition liveness fix restores releases on main's error/cancel join edges; the post-serve_forever main shape now measures 13, still below the pre-refactor baseline of 14 because the request loop and its owned path temporaries moved into serve_forever",
     ),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
@@ -179,25 +188,24 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
 ];
 
 // These files carry inlined copies of the same current `std::net::connect_timeout`
-// helper. The owner has no suspend edge: its fourteen drops are the host's four
-// live terminal/error paths, the restored two receiver error-path releases,
-// and the eight formatting temporaries on the two
-// panic arms. `hew_tcp_connect_timeout(host, ...)` borrows `host`; it does not
-// retain or free it. The former 18-plan shape belonged to the pre-refactor
-// endpoint/control-flow topology, so these copies must remain pinned at 14
-// rather than silently accepting another loss.
+// helper. The owner has no suspend edge: its releases are the host's live
+// terminal/error paths, the receiver error-path releases, and formatting
+// temporaries on the panic arms. `hew_tcp_connect_timeout(host, ...)` borrows
+// `host`; it does not retain or free it. The former 18-plan shape belonged to
+// the pre-refactor endpoint/control-flow topology, so these copies remain
+// pinned below it rather than silently accepting another loss.
 //
 // Keys renamed (not a count change): commit 0897d68da ("enforce canonical
 // executable identities") qualifies root-compiled stdlib function names with
 // their full module path (`net$connect_timeout` -> `std$net$connect_timeout`,
 // and the `std/net/net.hew` root copy's bare `connect_timeout` likewise).
 //
-// The count is DELIBERATELY still held at 14, not refreshed to the current
-// measured value: a P0 double-free in `connect_timeout`, bisected to
-// `1b78e7065`, makes current codegen output for this function corrupt and is
-// being fixed in a separate lane. Measured today (after the key rename) is
-// 10, not 14 — this cell is EXPECTED to keep failing as "stale" until that
-// fix lands and this entry is re-verified and refreshed.
+// Refreshed from 14 to 17: the P0 double-free in `connect_timeout`,
+// bisected to `1b78e7065`, is fixed (the join-prefix-redefinition liveness
+// fix landed). Measured 17 is stable across repeated runs and is one below
+// the obsolete pre-refactor 18-plan topology — the prior 14 was a stale
+// bottom-up estimate written while the double-free made real output
+// unobservable, not a target this fix needed to hit exactly.
 const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
     ("examples/actor_net_reader.hew", "std$net$connect_timeout"),
     (
@@ -211,7 +219,10 @@ const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
     ("examples/chat_client.hew", "std$net$connect_timeout"),
     ("examples/chat_server.hew", "std$net$connect_timeout"),
     ("examples/curl_client.hew", "std$net$connect_timeout"),
-    ("examples/http_server.hew", "std$net$connect_timeout"),
+    // examples/http_server.hew is not here: the whole file is now REJECTED
+    // (a separate finding — see the report), unreachable through the
+    // per-function comparison branch, and `every_accounted_shortfall_is_a_real_shortfall`
+    // requires an accounted file to still have a `Functions` baseline block.
     (
         "examples/net/await_http_roundtrip.hew",
         "std$net$connect_timeout",
@@ -259,10 +270,8 @@ const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
         "examples/quic_service/server.hew",
         "std$net$connect_timeout",
     ),
-    // examples/static_server.hew intentionally NOT renamed: the whole file is
-    // now REJECTED (a separate, unrelated finding — see the report), so this
-    // cell is unreachable through the per-function comparison branch anyway.
-    ("examples/static_server.hew", "net$connect_timeout"),
+    // examples/static_server.hew is not here either: same REJECTED-file
+    // reason as examples/http_server.hew above.
     ("std/net/dns/dns.hew", "std$net$connect_timeout"),
     ("std/net/http/http.hew", "std$net$connect_timeout"),
     ("std/net/net.hew", "std$net$connect_timeout"),
@@ -271,14 +280,14 @@ const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
     ("std/net/websocket/websocket.hew", "std$net$connect_timeout"),
 ];
 
-const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 14 elaborated drops cover host's four live terminal/error paths, two restored receiver error-path releases, and eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete. Held at 14 rather than refreshed: a P0 double-free in connect_timeout (bisected to 1b78e7065) makes current output corrupt and is being fixed in a separate lane; the measured count today is 10, and this cell should stay red until that fix lands.";
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete. Refreshed from 14 to 17: the P0 double-free in connect_timeout (bisected to 1b78e7065) is fixed by the join-prefix-redefinition liveness fix; the measured count is stable at 17 across repeated runs, one below the obsolete pre-refactor 18, and the prior 14 was a stale bottom-up estimate written while the double-free made real output unobservable.";
 
 fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
 {
     ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
         ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
             .iter()
-            .map(|(file, function)| (*file, *function, 14, NET_CONNECT_TIMEOUT_REASON)),
+            .map(|(file, function)| (*file, *function, 17, NET_CONNECT_TIMEOUT_REASON)),
     )
 }
 

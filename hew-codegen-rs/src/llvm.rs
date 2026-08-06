@@ -1797,7 +1797,24 @@ impl FrameCleanupThunkKey {
 #[derive(Default)]
 pub(crate) struct FrameCleanupThunkCache<'ctx> {
     entries: HashMap<FrameCleanupThunkKey, FunctionValue<'ctx>>,
-    next_internal_name: u64,
+}
+
+/// Derive a thunk name from the descriptor's CONTENT rather than first-use
+/// order. `entries` is a `HashMap`, and module lowering visits functions in
+/// whatever order the compiler walks them, so a first-use counter assigned a
+/// different `__hew_frame_cleanup_N` suffix to the SAME descriptor on
+/// consecutive runs of the same input — the same "iteration order decided
+/// emission" defect already fixed for guard initialization in
+/// `initialize_helper_crash_cleanup_guards`. A name drawn from the key's
+/// content is requested-order-independent: the same descriptor always hashes
+/// to the same suffix regardless of which function reaches it first.
+fn frame_cleanup_thunk_name(key: &FrameCleanupThunkKey) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in format!("{key:?}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("__hew_frame_cleanup_{hash:016x}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21872,7 +21889,7 @@ fn get_or_emit_frame_cleanup_thunk<'ctx>(
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let key = FrameCleanupThunkKey::new(drop, slot_ty);
     let name = {
-        let mut cache = fn_ctx.frame_cleanup_thunks.borrow_mut();
+        let cache = fn_ctx.frame_cleanup_thunks.borrow();
         if let Some(existing) = cache.entries.get(&key) {
             return Ok(*existing);
         }
@@ -21887,18 +21904,13 @@ fn get_or_emit_frame_cleanup_thunk<'ctx>(
                 key.descriptor, existing.slot_type, key.slot_type
             )));
         }
-        let name = format!("__hew_frame_cleanup_{}", cache.next_internal_name);
+        let name = frame_cleanup_thunk_name(&key);
         if fn_ctx.llvm_mod.get_function(&name).is_some() {
             return Err(CodegenError::FailClosed(format!(
                 "frame-cleanup thunk generated name `{name}` already exists but is not \
                  registered in the module cleanup-thunk cache"
             )));
         }
-        cache.next_internal_name = cache.next_internal_name.checked_add(1).ok_or_else(|| {
-            CodegenError::FailClosed(
-                "frame-cleanup thunk generated-name counter overflowed".to_string(),
-            )
-        })?;
         name
     };
 

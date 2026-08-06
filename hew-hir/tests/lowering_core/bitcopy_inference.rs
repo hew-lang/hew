@@ -226,6 +226,77 @@ fn concrete_generic_type_with_string_field_is_not_inferred_bitcopy() {
 }
 
 #[test]
+fn zero_field_extern_backed_record_is_bitcopy_handle_stand_in() {
+    // The FFI handle stand-in shape (`std::concurrency::lambda_actor`'s
+    // `LambdaActorHandle`): a zero-field record produced and consumed only by
+    // `#[extern_symbol]` methods. Its values exist behind the C ABI, so the
+    // record classifies as a pointer-width `BitCopy` stand-in — the same class
+    // the `#[opaque]` rule assigns — instead of falling to
+    // `Strategy::UnknownBlocked` at the MIR boundary.
+    let output = lower_checked(
+        r"
+        pub type Handle {
+        }
+
+        impl Handle {
+            #[extern_symbol(hew_test_handle_new)]
+            pub fn new(capacity: i64) -> Handle {
+                Handle {  }
+            }
+
+            #[extern_symbol(hew_test_handle_release)]
+            pub fn release(handle: Handle) -> i32 {
+                0
+            }
+        }
+    ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "no diagnostics expected; got: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        output
+            .module
+            .type_classes
+            .get("Handle")
+            .map(|entry| entry.0),
+        Some(ResourceMarker::BitCopy),
+        "a zero-field record named in #[extern_symbol] signatures is an FFI \
+         handle stand-in and must classify BitCopy"
+    );
+}
+
+#[test]
+fn zero_field_record_beside_unrelated_extern_stays_uninferred() {
+    // The gate is the record being NAMED in an extern signature, not the mere
+    // presence of FFI in the program: an unrelated `#[extern_symbol]` method
+    // must not promote a bystander empty record.
+    let output = lower_checked(
+        r"
+        pub type Empty {
+        }
+
+        pub type Handle {
+        }
+
+        impl Handle {
+            #[extern_symbol(hew_test_handle_new)]
+            pub fn new(capacity: i64) -> Handle {
+                Handle {  }
+            }
+        }
+    ",
+    );
+    assert_ne!(
+        output.module.type_classes.get("Empty").map(|entry| entry.0),
+        Some(ResourceMarker::BitCopy),
+        "an empty record not named in any extern signature must stay uninferred"
+    );
+}
+
+#[test]
 fn empty_field_user_type_remains_uninferred() {
     let output = lower_no_tc("pub type Empty { }");
     assert!(

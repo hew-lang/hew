@@ -1206,6 +1206,7 @@ impl Checker {
                 self.bind_actor_fields(&ad.fields);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
+                self.reject_unplugged_actor_state_fields(&ad.fields);
                 self.env.pop_scope();
                 continue;
             }
@@ -1371,6 +1372,72 @@ impl Checker {
         }
     }
 
+    /// Reject an actor state field left CONSUMED at the end of a body that
+    /// bound the actor's fields as bare names.
+    ///
+    /// An actor's state outlives every handler invocation and messages arrive
+    /// in arbitrary order, so a consuming use of a state field that the body
+    /// does not re-initialise leaves a hole the NEXT message consumes again —
+    /// `receive fn steal() { return sock.detach(); }` detaches one socket once
+    /// per message. No ordering discipline can plug that from outside; the
+    /// sound rule is that the body must plug it itself, on every path. Because
+    /// place facts join by union, a field re-initialised on only some paths is
+    /// still reported.
+    ///
+    /// This is deliberately a CHECKER reject and NOT a lowering change: a naive
+    /// retain at `ActorStateFieldLoad` regressed once
+    /// (`state-load-retains-unless-borrow-proven`) and an unconditional
+    /// projected-leaf drop double-freed once
+    /// (`state-drop-unconditional-projected-leaf-is-borrow`). The escape hatch
+    /// is re-initialisation, which the assignment path already discharges.
+    ///
+    /// Call sites run this AFTER popping any parameter scope, so a parameter
+    /// that shadows a field name cannot be mistaken for the field.
+    pub(super) fn reject_unplugged_actor_state_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let Some(binding) = self.env.lookup_ref(&field.name) else {
+                continue;
+            };
+            let (place, moved_at) = if binding.is_moved {
+                let Some(moved_at) = binding.moved_at.clone() else {
+                    continue;
+                };
+                (field.name.clone(), moved_at)
+            } else {
+                let Some(moved) = binding.moved_places.first() else {
+                    continue;
+                };
+                (
+                    std::iter::once(field.name.as_str())
+                        .chain(moved.path.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    moved.moved_at.clone(),
+                )
+            };
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                moved_at,
+                format!(
+                    "actor state `{place}` is consumed here and never re-initialised; \
+                     the next message would consume it again"
+                ),
+            )
+            .with_note(
+                field.ty.1.clone(),
+                "actor state outlives the handler that consumed it",
+            )
+            .with_suggestion(format!(
+                "re-initialise `{place}` before the body returns, or take a copy \
+                 instead of consuming the state"
+            ));
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+    }
+
     /// Bind actor fields as writable regardless of declared mutability.
     ///
     /// `init { }` is the actor's constructor: it must be able to assign
@@ -1419,6 +1486,7 @@ impl Checker {
         self.current_return_type = None;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1521,6 +1589,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1700,6 +1769,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1795,6 +1865,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1870,6 +1941,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -2152,6 +2224,7 @@ impl Checker {
             self.generic_ctx.pop();
         }
         self.env.pop_scope(); // params scope
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope(); // fields scope
     }
 

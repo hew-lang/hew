@@ -648,7 +648,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load8 = load { ptr, ptr }, ptr %local_8, align 8
   store { ptr, ptr } %move_load8, ptr %local_9, align 8
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_9, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 16, i64 8, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 16, i64 8, ptr @__hew_frame_cleanup_38da4857ac44d8b7, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -1503,7 +1503,7 @@ declare i32 @hew_actor_cooperate()
 
 declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_38da4857ac44d8b7(ptr %0) {
 entry:
   %closure_drop_env_slot = getelementptr inbounds nuw { ptr, ptr }, ptr %0, i32 0, i32 1
   %closure_drop_env = load ptr, ptr %closure_drop_env_slot, align 8

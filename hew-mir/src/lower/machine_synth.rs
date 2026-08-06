@@ -357,7 +357,7 @@ fn lower_actor_init_handler(
             machine_layout_names,
             enum_layouts,
             opaque_handle_names,
-            Some(&actor.name),
+            Some(actor.qualified_name().as_str()),
             module_fn_names,
             module_generic_fn_names,
             call_scrutinee_provenance,
@@ -2492,8 +2492,8 @@ pub(super) fn lower_supervisor_bootstrap(
         enum_layouts,
         opaque_handle_names,
         // Supervisors have no actor state. `lower_actor_init_handler`
-        // passes `Some(&actor.name)` for the same role; here we pass
-        // `None` because there's no state-field table to lift into the
+        // passes `Some(actor.qualified_name())` for the same role; here we
+        // pass `None` because there's no state-field table to lift into the
         // Builder.
         None,
         module_fn_names,

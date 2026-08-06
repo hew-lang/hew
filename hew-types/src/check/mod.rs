@@ -1567,7 +1567,18 @@ impl Checker {
                         if let Some(child_ty) = expr_types.get(child) {
                             // As above, marked children acquire the parent `Result`
                             // type when the HIR wrapper is materialized.
+                            //
+                            // A diverging branch (`panic(...)`, an early return,
+                            // `if true { panic() } else { 0 }`) is `Never`, which
+                            // unifies with any type: the join's checked value type
+                            // legitimately comes from the non-diverging arm. `Never`
+                            // on either side of the edge is that unification, not a
+                            // representation change, so it must not fail the graph
+                            // the way the tail-`Ok` and numeric-normalization
+                            // boundaries above are exempted.
                             if child_ty != parent_ty
+                                && !matches!(child_ty, Ty::Never)
+                                && !matches!(parent_ty, Ty::Never)
                                 && !self.tail_ok_coercions.contains(child)
                                 && !is_checker_numeric_normalization(
                                     child_ty,

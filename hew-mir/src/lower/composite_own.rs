@@ -5,6 +5,7 @@ use super::temp_drop::{
 mod aggregate_borrowed_ingress_clone;
 mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
+mod clone_synthesizable;
 mod foundation;
 mod predicate_string_temp_drop;
 mod retained_string_aliases;
@@ -1017,124 +1018,10 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .filter_map(|(_, p)| base_local(*p))
         .collect()
 }
-/// True when every variant payload of the tagged-union enum behind `ty` is
-/// either a bit-copy value or a plain `string` leaf.
-///
-/// This bounds the blast radius of the `string_binder_read_is_user_fn_borrow`
-/// exemption. `note_payload_escape` is deliberately coarse — one escaping
-/// binder excludes EVERY candidate root in the function — so the inverse is
-/// also coarse: clearing one binder can readmit every candidate. Readmitting a
-/// composite is not free: an `EnumInPlace` drop makes codegen synthesise the
-/// whole in-place helper family for that layout, and the clone half of that
-/// family fails closed on payloads with no dup symbol (`Stream` / `Sink` /
-/// `Generator` / `CancellationToken` handles, registry-backed resources). A
-/// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
-/// binder is interpolated would otherwise turn a leak into a hard
-/// `E_NOT_YET_IMPLEMENTED` compile failure.
-///
-/// ## Why the payload predicate is a POSITIVE bit-copy test
-///
-/// The obvious spelling — "`string`, or anything the heap authority says owns
-/// no heap" — is not a bit-copy predicate and does not bound the clone
-/// synthesis at all. `Stream<i64>` / `Sink<i64>` are pointer-backed IO handles:
-/// [`crate::model::ty_owns_heap_mir`]'s builtin leaf set omits `Stream`/`Sink`
-/// and its generic `Named` arm only recurses into type arguments and layouts,
-/// so with scalar arguments both answer "owns no heap" — while
-/// `hew-mir/src/state_clone.rs` classifies them as `IoHandle`s with no
-/// duplication helper, which clone totality rejects along with every
-/// closure-pair, `#[resource]`, and opaque-handle class. The
-/// `!ty_owns_heap_mir` spelling therefore re-admitted exactly the composites
-/// the bound exists to exclude.
-///
-/// [`ty_is_bit_copy_payload`] is the conservative alternative the payload leaf
-/// actually needs: a scalar leaf, or a tuple/array built only from such leaves.
-/// Every `Named` payload — builtin handle, user record, nested enum, opaque,
-/// resource — answers `false` and keeps its composite on the pre-existing
-/// fail-closed posture (it keeps leaking, exactly as before, and still
-/// compiles).
-///
-/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
-/// payload that is neither `string` nor bit-copy answers `false`.
-fn enum_payloads_are_plain_string(
-    ty: &ResolvedTy,
-    enum_layouts: &[crate::model::EnumLayout],
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-) -> bool {
-    payload_leaf_is_clone_drop_safe(ty, enum_layouts, record_field_orders, 0)
-}
-/// Whether every heap leaf reachable through `ty` is clone-and-drop-safe — a
-/// `string`, a bit-copy scalar, an owned `Vec` of the same, or a nested
-/// enum/record/tuple/array built only from such leaves. This is the real
-/// property the borrow cap needs: keeping the enum owner alive on a transient
-/// payload borrow is sound only when every active payload can be cloned AND
-/// dropped. An affine/IO/`#[resource]`/opaque/closure leaf (or `Bytes`, which
-/// this scan does not admit) answers `false` and keeps its composite on the
-/// pre-existing fail-closed leak posture — never a double-free. Without the
-/// recursion a whole-nested-enum handoff (`match outer {
-/// Wrap(w) => match w { Text(s) => s.len() } }`) failed the flat plain-string
-/// test on its nested-enum payload, disabling the cap, so the ordinary `s.len()`
-/// borrow was misread as a payload escape and both enum owners leaked. `depth`
-/// is a defensive backstop; inline nesting is already bounded by finite size.
-fn payload_leaf_is_clone_drop_safe(
-    ty: &ResolvedTy,
-    enum_layouts: &[crate::model::EnumLayout],
-    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    depth: u32,
-) -> bool {
-    if depth > 32 {
-        return false;
-    }
-    // `string` and scalars are always clone-and-drop-safe leaves.
-    if matches!(ty, ResolvedTy::String) || ty_is_bit_copy_payload(ty) {
-        return true;
-    }
-    let recurse = |leaf: &ResolvedTy| {
-        payload_leaf_is_clone_drop_safe(leaf, enum_layouts, record_field_orders, depth + 1)
-    };
-    match ty {
-        ResolvedTy::Tuple(elems) => elems.iter().all(recurse),
-        ResolvedTy::Array(elem, _) => recurse(elem),
-        // A `Vec<T>` clones/drops element-wise (safe iff its element is); a nested
-        // inline enum recurses into every variant payload, a nested record into
-        // every field. An indirect enum, or a generic record whose fields resolve
-        // only after substitution, is left on the fail-closed leak posture.
-        ResolvedTy::Named { args, .. } if super::drop_plan::ty_is_vec(ty) => {
-            args.first().is_some_and(&recurse)
-        }
-        ResolvedTy::Named { name, args, .. } => {
-            if let Some(layout) = crate::model::find_enum_layout(name, args, enum_layouts) {
-                return !layout.is_indirect
-                    && layout
-                        .variants
-                        .iter()
-                        .all(|variant| variant.field_tys.iter().all(&recurse));
-            }
-            record_field_orders
-                .get(name)
-                .is_some_and(|fields| fields.iter().all(|(_, field_ty)| recurse(field_ty)))
-        }
-        _ => false,
-    }
-}
-/// True when `ty` is a payload that is copied bit-for-bit and owns nothing: a
-/// scalar leaf, or a tuple / fixed-size array built exclusively from such
-/// leaves.
-///
-/// The scalar leaf set is the shared [`crate::return_provenance::ty_is_scalar_non_heap`]
-/// authority (the same one the audited extern-return table uses to admit a
-/// scalar-return extern), extended here to `char`-sized aggregates of scalars.
-/// Deliberately EXHAUSTIVE-by-rejection: every non-listed form — `Named` (which
-/// covers `Stream`/`Sink`/`Generator`/`CancellationToken` and resources, every
-/// user record and nested enum, every `#[opaque]` handle and `#[resource]`),
-/// `String`, `Bytes`, `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`,
-/// `TraitObject`, `Task`, `TypeParam` — answers `false`.
-fn ty_is_bit_copy_payload(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Tuple(elems) => elems.iter().all(ty_is_bit_copy_payload),
-        ResolvedTy::Array(elem, _) => ty_is_bit_copy_payload(elem),
-        other => crate::return_provenance::ty_is_scalar_non_heap(other),
-    }
-}
+// The clone-synthesizability payload predicate lives in the sibling
+// `clone_synthesizable` concern module (carved out under the `src/lower/`
+// line-ceiling ratchet). The test module reaches it through this re-export.
+use clone_synthesizable::enum_payloads_are_clone_synthesizable;
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -1232,7 +1119,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    let mut all_candidates_are_plain_string_payload = true;
+    let mut all_candidates_clone_synthesizable = true;
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1243,8 +1130,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &=
-            enum_payloads_are_plain_string(ty, enum_layouts, record_field_orders);
+        all_candidates_clone_synthesizable &=
+            enum_payloads_are_clone_synthesizable(ty, enum_layouts, record_field_orders);
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1885,7 +1772,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // active payload binder (if any) is then the sole close
                     // authority. This is the same positive cap used for user
                     // functions, applied to the complete borrow-safe surface.
-                    let read_is_borrow = all_candidates_are_plain_string_payload
+                    // The cap recurses through NESTED enum payloads: a
+                    // `Result<Status, i64>` whose `Ok` payload is itself a
+                    // scalar-and-string enum stays synthesizable, so the inner
+                    // `Described(s)` string read is correctly a borrow and the
+                    // outer composite keeps its `EnumInPlace` drop (#2717 — the
+                    // scalar sibling of the NESTED enum, not a Move, was the
+                    // residual leak the plain-string-only cap left excluded).
+                    let read_is_borrow = all_candidates_clone_synthesizable
                         && (binder_read_is_borrow_safe_terminator(
                             &block.terminator,
                             suspend_kinds.get(&block.id),
@@ -9996,4 +9890,4 @@ mod plain_vec_drop_interior_alias_and_escape {
 }
 
 #[cfg(test)]
-mod plain_string_payload_cap;
+mod clone_synthesizable_payload_cap;

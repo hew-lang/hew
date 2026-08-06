@@ -5854,6 +5854,24 @@ impl Checker {
                         prev_span.clone(),
                     ));
                 } else {
+                    // A flat file-import module (`import "sibling.hew";`)
+                    // surfaces its pub free functions unqualified at the
+                    // importer's flat/root namespace. The declaration authority
+                    // is the module-qualified `scoped_name` (`sibling.double`) —
+                    // the exact `DefId` HIR/MIR/codegen derive the symbol from —
+                    // but the call site spells the callee bare (`double`). Alias
+                    // the bare surface to that qualified declaration so
+                    // `call_target_for_signature` publishes `CallTarget::User`,
+                    // exactly as a module-path import does through this same
+                    // `import_fn_name_aliases` rung. Without it the bare call
+                    // finds no declaration and falls through to `Unsupported`,
+                    // which `ensure_executable_target` then rejects (method calls
+                    // resolve through the impl-method path and were unaffected).
+                    if self.registration_is_flat_file_import && fd.visibility.is_pub() {
+                        self.import_fn_name_aliases
+                            .entry((None, fd.name.clone()))
+                            .or_insert_with(|| scoped_name.clone());
+                    }
                     self.fn_def_spans.insert(
                         scoped_name.clone(),
                         (span.clone(), self.current_module.clone()),

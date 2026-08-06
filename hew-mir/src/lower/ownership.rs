@@ -433,6 +433,13 @@ impl Builder {
         };
         let provisional = self.owned_locals.remove(index).binding;
         self.synthetic_owner_publication_sites.remove(&provisional);
+        // Record the assignment move as a typed handoff, exactly as the `let`
+        // adoption seam does. `finalize_string_ownership` consults this set to
+        // suppress the share-retain at a handoff move; without it the
+        // reassignment spliced a `StringRetain` whose source temp — retired
+        // right here — had no balancing release, leaking one node per
+        // `var s = ...; s = <fresh producer>;` on every path.
+        self.typed_produced_value_handoffs.insert((source, dest));
         let typed_owner = self
             .typed_produced_value_owner_bindings
             .remove(&provisional);

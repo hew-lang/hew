@@ -657,6 +657,64 @@ fn fresh_string_owner_defined_before(
         })
 }
 
+/// Whether `local`'s active generation at a hand-off site was minted by a fresh
+/// string-producing TERMINATOR (`Terminator::Call` for a string transform, or a
+/// `SuspendKind::CallClosure` string invoke) in every normal-flow predecessor
+/// whose edge targets `block_id`.
+///
+/// This is the cross-block completion of [`fresh_string_owner_defined_before`]:
+/// a string transform (`hew_string_trim`, `slice`, …) that terminates a
+/// predecessor block writes its result into the successor, so the in-block
+/// instruction scan never sees the producing write. A block-boundary
+/// reassignment (`ver_str = c.slice(..).trim()` inside an if/else arm) is
+/// exactly this shape: the following move hands the fresh owner onward, so it
+/// must NOT mint a competing `StringRetain`.
+///
+/// Deliberately narrow: it is used only at the local-to-local hand-off site,
+/// where the moved-from source is the fresh producer's own transient result and
+/// carries no independent scope-exit drop. It is NOT used at aggregate/record
+/// ingress shares, where the source is a named binding with its own drop
+/// obligation and a loop-carried store must keep its retain (the `cyclic_blocks`
+/// guard there is load-bearing — dropping it double-frees a per-iteration record
+/// field).
+///
+/// Fail closed: a predecessor that does not fresh-produce `local` for this block
+/// (a `Goto`/`Branch` merge, a non-string call, or a terminator whose normal
+/// edge is elsewhere) makes the whole join non-fresh, so a genuinely needed
+/// retain is never dropped. `Terminator::Call`'s only CFG successor is its
+/// `next` edge (the unwind/`cancel` edge is not in `successors()`), so a
+/// matching predecessor reaches this block solely along the fresh-producing
+/// path.
+fn fresh_string_owner_defined_by_predecessor_terminator(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    local: u32,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    let mut saw_predecessor = false;
+    for pred in blocks {
+        if !pred.successors().contains(&block_id) {
+            continue;
+        }
+        saw_predecessor = true;
+        let suspend_kind = suspend_kinds.get(&pred.id);
+        let produces_local = fresh_string_producer_term_dest(
+            &pred.terminator,
+            suspend_kind,
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
+            == Some(local);
+        let normal_edge_here =
+            fresh_string_producer_term_next(&pred.terminator, suspend_kind) == Some(block_id);
+        if !(produces_local && normal_edge_here) {
+            return false;
+        }
+    }
+    saw_predecessor
+}
+
 /// Whether the currently-live generation of `local` is read after a site
 /// before every path overwrites it.
 ///
@@ -1981,13 +2039,19 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
-                if fresh_string_owner_defined_before(
+                if (fresh_string_owner_defined_before(
                     block,
                     instr_index,
                     src_local,
                     locals,
                     owned_string_return_carrier_symbols,
-                ) && !fresh_generation_is_used_after(
+                ) || fresh_string_owner_defined_by_predecessor_terminator(
+                    blocks,
+                    suspend_kinds,
+                    block.id,
+                    src_local,
+                    owned_string_return_carrier_symbols,
+                )) && !fresh_generation_is_used_after(
                     blocks,
                     suspend_kinds,
                     src_local,

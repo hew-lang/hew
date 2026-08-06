@@ -201,18 +201,43 @@ fn call_argument_is_proven_owned(
     result
 }
 
+/// Refinements a single site's fact can ever take: `Unknown -> concrete`, then
+/// `-> NoOwner`, plus the one `Borrowed -> Owned` upgrade
+/// [`resolve_user_call_facts`] may apply to its own earlier answer. Every pass
+/// moves one way along that chain, so this is the per-site ceiling the loop
+/// bound multiplies by.
+const REFINEMENTS_PER_SITE: usize = 3;
+
 fn finalize_resolved_produced_value_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
 ) {
     seed_resolved_produced_value_facts(verifier, facts);
-    let limit = verifier
-        .function_return_sites
+
+    // The loop bound must DOMINATE the graph, not sample it.
+    //
+    // The old bound counted returns, calls, aggregates and binding references —
+    // but not the structural relations a nested block, scope or conditional
+    // interposes, and `propagate_produced_value_relations` advances a relation
+    // CHAIN by one edge per round because it reads from a snapshot. A chain
+    // deeper than the count of those four populations could exhaust the bound
+    // before converging, and an unchanged call pass would then end the outer
+    // loop on an INCOMPLETE fixpoint — silently reintroducing order dependence.
+    // "Bounded iterations" is not "reached a fixpoint".
+    //
+    // Every pass here refines a fact along the one-way chain
+    // `Unknown -> concrete -> NoOwner`, and this shim may additionally refine
+    // its own `Borrowed` to `Owned`, so at most three refinements can ever land
+    // on a given site and a round that changes nothing is final. Bounding by the
+    // COMPLETE fact population times that per-site ceiling therefore dominates
+    // any relation depth — a relation chain cannot be longer than the number of
+    // sites that carry a fact. The bound is now a termination guard against a
+    // malformed graph, not a participant in the answer.
+    let limit = facts
         .len()
-        .saturating_add(verifier.user_call_targets.len())
-        .saturating_add(verifier.aggregate_payloads.len())
-        .saturating_add(verifier.binding_reference_targets.len())
+        .saturating_mul(REFINEMENTS_PER_SITE)
         .saturating_add(1);
+    let mut shim_published: HashSet<SiteId> = HashSet::new();
     for _ in 0..limit {
         // Settle relations, bindings and aggregates to their own fixpoint
         // BEFORE publishing any call result.
@@ -239,7 +264,7 @@ fn finalize_resolved_produced_value_facts(
                 break;
             }
         }
-        if !resolve_user_call_facts(verifier, facts) {
+        if !resolve_user_call_facts(verifier, facts, &mut shim_published) {
             break;
         }
     }
@@ -507,12 +532,28 @@ fn resolve_aggregate_facts(
 /// single-definition reasoning this needs, and a second hand-rolled copy is
 /// exactly how the two sides drift apart.
 ///
+/// # The test is on the value, not on the spelling of the return
+///
+/// The returned expression is rarely the reference itself. A block tail
+/// (`{ o }`), a nested block, and an explicit `return o;` all interpose a site
+/// whose own producer is not a `BindingRef`, and an `if` / `match` interposes a
+/// `Join` over one site per arm. Testing the syntactic return site refuses all
+/// of them and leaks the composite, so the value is first resolved through
+/// [`value_identity_terminal_site`], and a `Join` is admitted only when EVERY
+/// arm promotes — exactly one arm executes, so each arm's own sole-use proof is
+/// what licenses that arm's move.
+///
+/// `Projection` and `MoveOut` are deliberately NOT followed. A projection is the
+/// interior-alias case this whole change exists to refuse (`w.h`), and a
+/// `MoveOut` already carries its own owner.
+///
 /// The shapes it must NOT promote, and what refuses them: a bare parameter
 /// forwarder (`fn f(h: Holder) -> Holder { h }`) — a parameter has no defining
 /// site, so the single-definition test fails; a `let`-of-parameter re-binding
 /// (`let x = h; x`) — the definition is a reference whose own fact is
 /// `Borrowed`; a `var` reassigned from a parameter — two definitions; a field
-/// projection of a parameter (`w.h`) — not a binding reference at all.
+/// projection of a parameter (`w.h`) — a `Projection` relation, which is not
+/// followed, over a producer that is not a binding reference.
 fn function_return_ownership_summaries(
     verifier: &Verifier,
     facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
@@ -527,14 +568,12 @@ fn function_return_ownership_summaries(
                         fact.ownership
                     } else if verifier.site_types.get(site) == Some(&ResolvedTy::String) {
                         ProducedValueOwnership::owned(ProducedValueAcquisition::Retained)
-                    } else if fact.producer == crate::node::HirProducedValueProducer::BindingRef
-                        && call_argument_is_proven_owned(
-                            *site,
-                            verifier,
-                            facts,
-                            &mut HashSet::new(),
-                        )
-                    {
+                    } else if return_value_is_a_moved_out_local(
+                        *site,
+                        verifier,
+                        facts,
+                        &mut HashSet::new(),
+                    ) {
                         ProducedValueOwnership::owned(ProducedValueAcquisition::MoveOut)
                     } else {
                         fact.ownership
@@ -545,6 +584,86 @@ fn function_return_ownership_summaries(
             (declaration.clone(), summary)
         })
         .collect()
+}
+
+/// Resolve `site` through value-IDENTITY relations to the site that actually
+/// produces the value.
+///
+/// `Identity` and `Subsumes` are the two passthrough edges: the parent site
+/// materialises the same value its source did (a block tail, an explicit
+/// `return`, a specialised parent consuming its structural child). Following
+/// them is what lets a proof about the value survive being written down at a
+/// wrapper site.
+///
+/// `Projection`, `MoveOut`, `Join` and `Leaf` all stop the walk. A projection is
+/// a DIFFERENT value that aliases its source, which is precisely the
+/// interior-alias case that must never read as an owner; a `MoveOut` already
+/// carries its own owner; a `Join` has several sources and its caller handles
+/// each arm separately.
+///
+/// The visited set makes a malformed cyclic relation graph terminate rather than
+/// hang; well-formed HIR cannot reach it, and stopping at the repeat yields the
+/// conservative answer.
+fn value_identity_terminal_site(
+    start: SiteId,
+    facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
+) -> SiteId {
+    use crate::node::HirProducedValueRelation as Relation;
+
+    let mut site = start;
+    let mut visited = HashSet::new();
+    while visited.insert(site) {
+        let Some(fact) = facts.get(&site) else {
+            break;
+        };
+        match fact.relation {
+            Relation::Identity(source) | Relation::Subsumes(source) => site = source,
+            Relation::Leaf | Relation::Projection(_) | Relation::MoveOut(_) | Relation::Join(_) => {
+                break
+            }
+        }
+    }
+    site
+}
+
+/// True when the value returned at `site` is a local this frame is handing over
+/// rather than lending: a sole-use, singly-defined, proven-owned binding.
+///
+/// The syntactic return site is resolved to its value-identity terminal first,
+/// so a block tail, a nested block and an explicit `return` all reach the same
+/// verdict as the bare reference. A `Join` is admitted only when EVERY arm is
+/// itself a moved-out local — exactly one arm executes, so each arm's own
+/// sole-use proof licenses that arm's move, and one borrowing arm sinks the
+/// whole return.
+fn return_value_is_a_moved_out_local(
+    site: SiteId,
+    verifier: &Verifier,
+    facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
+    visiting: &mut HashSet<SiteId>,
+) -> bool {
+    use crate::node::HirProducedValueRelation as Relation;
+
+    let terminal = value_identity_terminal_site(site, facts);
+    if !visiting.insert(terminal) {
+        return false;
+    }
+    let verdict = match facts.get(&terminal) {
+        None => false,
+        Some(fact) => match &fact.relation {
+            Relation::Join(arms) => {
+                !arms.is_empty()
+                    && arms.iter().all(|arm| {
+                        return_value_is_a_moved_out_local(*arm, verifier, facts, visiting)
+                    })
+            }
+            _ => {
+                fact.producer == crate::node::HirProducedValueProducer::BindingRef
+                    && call_argument_is_proven_owned(terminal, verifier, facts, &mut HashSet::new())
+            }
+        },
+    };
+    visiting.remove(&terminal);
+    verdict
 }
 
 /// Compatibility closure for direct user calls whose checker-authored call
@@ -579,13 +698,30 @@ fn function_return_ownership_summaries(
 /// WHEN OBSOLETE: remove this closure once lowering projects the checker's total
 /// post-resolution result fact onto every HIR call occurrence.
 ///
+/// # Its own answers stay refinable; a checker verdict does not
+///
+/// A callee's summary can only be as good as the facts available when it is
+/// read, and a callee that returns a local defined by another call
+/// (`fn f() -> Outer { let o = mk(); o }`) cannot be summarised until `mk`'s own
+/// result has been published — which happens in this same pass. Freezing the
+/// first answer therefore baked in `Borrowed` for every call chain deeper than
+/// one level, so a fresh composite reached through one more frame lost its
+/// caller-side drop and leaked.
+///
+/// So a `Borrowed` this shim itself wrote stays refinable: `shim_published`
+/// records the sites it has answered, and only those may be upgraded on a later
+/// round. Refinement is one-way — a summary only improves as the facts it reads
+/// improve — so this converges rather than oscillates. The contract below is
+/// intact: a concrete verdict this shim did not write is still never touched.
+///
 /// WHAT REPLACES IT: the checker must publish the final call-site ownership
 /// keyed by stable resolved call identity, and HIR must carry that verdict
-/// unchanged. Until then this shim may fill only `Unknown`; it must never
-/// reinterpret a concrete checker verdict.
+/// unchanged. Until then this shim may fill only `Unknown` or refine its OWN
+/// earlier answer; it must never reinterpret a concrete checker verdict.
 fn resolve_user_call_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+    shim_published: &mut HashSet<SiteId>,
 ) -> bool {
     use ProducedValueOwnership as Ownership;
 
@@ -641,11 +777,16 @@ fn resolve_user_call_facts(
         } else {
             summary
         };
+        let refinable_own_answer =
+            shim_published.contains(site) && matches!(summary, Ownership::Owned { .. });
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };
-        if matches!(fact.ownership, Ownership::Unknown) && !matches!(summary, Ownership::Unknown) {
+        let writable = matches!(fact.ownership, Ownership::Unknown)
+            || (refinable_own_answer && matches!(fact.ownership, Ownership::Borrowed));
+        if writable && !matches!(summary, Ownership::Unknown) && fact.ownership != summary {
             fact.ownership = summary;
+            shim_published.insert(*site);
             changed = true;
         }
     }
@@ -2609,7 +2750,7 @@ mod tests {
         ] {
             facts.insert(call_site, fact(HirProducedValueProducer::Call, ownership));
             assert!(
-                !resolve_user_call_facts(&verifier, &mut facts),
+                !resolve_user_call_facts(&verifier, &mut facts, &mut HashSet::new()),
                 "the compatibility closure must not report a concrete checker fact as changed"
             );
             assert_eq!(
@@ -2617,6 +2758,101 @@ mod tests {
                 "the borrowed-forwarder promotion must not replace a concrete checker verdict"
             );
         }
+    }
+
+    /// The refinement boundary: this closure may improve a `Borrowed` IT wrote,
+    /// and only that one.
+    ///
+    /// Refinability is what lets a call chain deeper than one level settle —
+    /// the inner call's result is published in the same pass, so the outer
+    /// summary is only correct on a later round. It must not become a licence
+    /// to reinterpret a `Borrowed` the checker authored, which is
+    /// indistinguishable by value and distinguishable only by who wrote it.
+    #[test]
+    fn only_a_borrowed_this_closure_wrote_is_refinable() {
+        let mut ids = IdGen::default();
+        let return_site = ids.site();
+        let call_site = ids.site();
+        let target = hew_types::DefId::new("produce");
+        let mut verifier = Verifier::default();
+        verifier
+            .function_return_sites
+            .insert(target.clone(), vec![return_site]);
+        verifier.user_call_targets.insert(call_site, vec![target]);
+
+        let fact = |producer, ownership| HirProducedValueFact {
+            producer,
+            ownership,
+            relation: HirProducedValueRelation::Leaf,
+            receiver: None,
+            receiver_boundary: None,
+            arguments: Vec::new(),
+        };
+        // The callee's return fact improves between the two rounds, exactly as
+        // it does when an inner call is published mid-pass.
+        let owned = ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh);
+
+        let mut published = HashSet::new();
+        let mut facts = HashMap::from([
+            (
+                return_site,
+                fact(
+                    HirProducedValueProducer::BindingRef,
+                    ProducedValueOwnership::Borrowed,
+                ),
+            ),
+            (
+                call_site,
+                fact(
+                    HirProducedValueProducer::Call,
+                    ProducedValueOwnership::Unknown,
+                ),
+            ),
+        ]);
+        assert!(resolve_user_call_facts(
+            &verifier,
+            &mut facts,
+            &mut published
+        ));
+        assert_eq!(
+            facts[&call_site].ownership,
+            ProducedValueOwnership::Borrowed,
+            "the first round publishes the summary available at the time"
+        );
+        facts.get_mut(&return_site).expect("return fact").ownership = owned;
+        assert!(
+            resolve_user_call_facts(&verifier, &mut facts, &mut published),
+            "an improved callee summary must be able to reach a site this closure answered"
+        );
+        assert_eq!(
+            facts[&call_site].ownership, owned,
+            "its own earlier Borrowed is refinable once the callee resolves"
+        );
+
+        // Same value, same improvement — but the Borrowed was not written here.
+        let mut foreign_published = HashSet::new();
+        let mut facts = HashMap::from([
+            (
+                return_site,
+                fact(HirProducedValueProducer::BindingRef, owned),
+            ),
+            (
+                call_site,
+                fact(
+                    HirProducedValueProducer::Call,
+                    ProducedValueOwnership::Borrowed,
+                ),
+            ),
+        ]);
+        assert!(
+            !resolve_user_call_facts(&verifier, &mut facts, &mut foreign_published),
+            "a Borrowed this closure did not write is a checker verdict and stays"
+        );
+        assert_eq!(
+            facts[&call_site].ownership,
+            ProducedValueOwnership::Borrowed,
+            "refinability must key on authorship, not on the value being Borrowed"
+        );
     }
 
     #[test]

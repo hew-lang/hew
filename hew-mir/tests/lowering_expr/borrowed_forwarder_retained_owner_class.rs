@@ -164,3 +164,171 @@ fn string_forwarder_result_keeps_its_retained_owner() {
          forwarder promotion still mints exactly one caller owner"
     );
 }
+
+/// A fresh composite handed to a borrowing callee, with the producer's return
+/// spelled seven different ways.
+///
+/// The value is the same in every row — a sole-use local the frame hands over —
+/// so the caller must mint exactly one temporary owner in every row. What
+/// differs is what sits between the local and the return: nothing, a block, two
+/// blocks, an explicit `return`, an `if` with one local per arm, a `match` with
+/// one local per arm, and no local at all.
+///
+/// A rule that tests the syntactic return site instead of the value it resolves
+/// to answers row 1 and leaks rows 2 through 6, because a block interposes a
+/// value-identity relation and a conditional interposes a join. Holding all seven
+/// to one number is what stops the next narrowing of this rule from silently
+/// dropping a spelling: a single-shape test would have passed throughout that
+/// regression.
+#[test]
+fn every_return_spelling_of_a_fresh_local_mints_one_caller_owner() {
+    const PRELUDE: &str = "type Inner { a: string, b: string }\n\
+                           type Outer { inner: Inner }\n\
+                           fn borrowSum(o: Outer) -> i64 { o.inner.a.len() + o.inner.b.len() }\n\
+                           fn mk(i: i64) -> Outer { Outer { inner: Inner { a: \"x\", b: \"y\" } } }\n";
+    const CALLER: &str = "fn main() -> i64 { borrowSum(mkOuter(1)) }\n";
+
+    for (spelling, producer) in [
+        (
+            "bare tail",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); o }",
+        ),
+        (
+            "block tail",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); { o } }",
+        ),
+        (
+            "nested block tail",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); { { o } } }",
+        ),
+        (
+            "explicit return",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); return o; }",
+        ),
+        (
+            "if arms",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); let p = mk(i); \
+             if i % 2 == 0 { o } else { p } }",
+        ),
+        (
+            "match arms",
+            "fn mkOuter(i: i64) -> Outer { let o = mk(i); let p = mk(i); \
+             match i % 2 { 0 => o, _ => p } }",
+        ),
+        ("no local at all", "fn mkOuter(i: i64) -> Outer { mk(i) }"),
+    ] {
+        let pipeline = pipeline(&format!("{PRELUDE}{producer}\n{CALLER}"));
+        assert_eq!(
+            temp_arg_owners(&pipeline, "main"),
+            1,
+            "{spelling}: the producer hands over a fresh composite, so the \
+             borrowing caller owns and drops it exactly once — the spelling of \
+             the return does not change whose value it is"
+        );
+    }
+}
+
+/// The refusals must survive the same spellings.
+///
+/// Following value-identity relations to reach the local in the shapes above
+/// must not also see THROUGH a parameter alias. A block around `w.h` or around a
+/// bare parameter is still an alias of storage the caller keeps, and a join with
+/// one owned arm and one parameter arm is still a borrow — one arm executing is
+/// enough to double-free.
+#[test]
+fn no_return_spelling_launders_a_parameter_alias_into_an_owner() {
+    const PRELUDE: &str = "type Holder { s: string }\n\
+                           type Wrap { h: Holder }\n\
+                           fn borrowLen(h: Holder) -> i64 { h.s.len() }\n";
+
+    for (shape, program) in [
+        (
+            "field projection behind a block",
+            "fn getself(w: Wrap) -> Holder { { w.h } }\n\
+             fn main() -> i64 { let w: Wrap = Wrap { h: Holder { s: \"a\" + \"b\" } }; \
+             borrowLen(getself(w)) }\n",
+        ),
+        (
+            "parameter forwarder behind a block",
+            "fn passthrough(h: Holder) -> Holder { { h } }\n\
+             fn main() -> i64 { let x: Holder = Holder { s: \"a\" + \"b\" }; \
+             borrowLen(passthrough(x)) }\n",
+        ),
+        (
+            "join of an owned local and a parameter",
+            "fn mixed(p: Holder, c: bool) -> Holder { let o: Holder = Holder { s: \"z\" + \"z\" }; \
+             if c { o } else { p } }\n\
+             fn main() -> i64 { let y: Holder = Holder { s: \"a\" + \"b\" }; \
+             borrowLen(mixed(y, true)) }\n",
+        ),
+    ] {
+        let pipeline = pipeline(&format!("{PRELUDE}{program}"));
+        assert_eq!(
+            temp_arg_owners(&pipeline, "main"),
+            0,
+            "{shape}: the returned value still aliases storage the argument \
+             binding owns, so no caller-side drop may be minted"
+        );
+    }
+}
+
+/// A relation chain deeper than the fact-graph populations the old loop bound
+/// counted, compiled twice in one process.
+///
+/// The produced-value solver advances a relation chain by one edge per round
+/// because propagation reads from a snapshot, so a chain deeper than the bound
+/// left the fixpoint INCOMPLETE — and an incomplete fixpoint answers whatever
+/// the iteration order reached. Twenty nested blocks around the returned local
+/// build that chain in a module with only a handful of calls, aggregates and
+/// binding references.
+///
+/// Two runs in one process is the discriminator that matters here: the default
+/// hasher is seeded per process, so a single run cannot distinguish a stable
+/// answer from a lucky one. The assertion is that the answer is the CORRECT one
+/// (the caller owns the composite) and that MIR is identical between runs, not
+/// merely that two runs agree.
+/// Deeply nested source recurses through the parser and checker, and a libtest
+/// thread's default 2 MiB stack overflows on it where the CLI's main thread does
+/// not (`hew check` handles 40 levels). Run the body on a thread sized for the
+/// recursion so the test measures the fixpoint and not the harness.
+#[test]
+fn a_deep_relation_chain_reaches_the_same_fixpoint_on_every_run() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(deep_relation_chain_body)
+        .expect("spawn deep-recursion test thread")
+        .join()
+        .expect("deep-relation-chain body");
+}
+
+fn deep_relation_chain_body() {
+    let nesting = 20;
+    let source = format!(
+        "type Inner {{ a: string, b: string }}\n\
+         type Outer {{ inner: Inner }}\n\
+         fn borrowSum(o: Outer) -> i64 {{ o.inner.a.len() + o.inner.b.len() }}\n\
+         fn mk() -> Outer {{ Outer {{ inner: Inner {{ a: \"x\", b: \"y\" }} }} }}\n\
+         fn mkOuter() -> Outer {{ let o = mk(); {}o{} }}\n\
+         fn main() -> i64 {{ borrowSum(mkOuter()) }}\n",
+        "{ ".repeat(nesting),
+        " }".repeat(nesting),
+    );
+
+    let first = pipeline(&source);
+    let second = pipeline(&source);
+
+    assert_eq!(
+        temp_arg_owners(&first, "main"),
+        1,
+        "a {nesting}-deep value-identity chain still resolves to the sole-use \
+         local the frame hands over; a bound that runs out mid-chain answers \
+         `borrowed` and leaks the composite"
+    );
+    assert_eq!(
+        format!("{:?}", first.raw_mir),
+        format!("{:?}", second.raw_mir),
+        "two compilations of one source in the same process must produce \
+         identical MIR; a differing answer means the fixpoint terminated on \
+         iteration order rather than on convergence"
+    );
+}

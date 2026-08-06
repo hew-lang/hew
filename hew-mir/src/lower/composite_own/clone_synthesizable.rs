@@ -64,7 +64,9 @@ use std::collections::HashMap;
 /// heap leaf reachable through the composite must itself clone AND drop. It
 /// recurses through the shapes whose `EnumInPlace` helper family can be
 /// synthesized leaf-by-leaf:
-/// - `string` and bit-copy scalars are always safe;
+/// - `string`, `bytes`, and bit-copy scalars are always safe (`string` and
+///   `bytes` are refcounted `CoW` values sharing the `hew_{string,bytes}_clone_ref`
+///   dup + `hew_{string,bytes}_drop` inverse family);
 /// - a tuple / fixed-size array is safe iff every element is;
 /// - an owned `Vec<T>` clones and drops element-wise, safe iff its element is;
 /// - a nested inline enum recurses into every variant payload (`Ok(Status)`
@@ -74,7 +76,7 @@ use std::collections::HashMap;
 /// - a nested value record recurses into every registered field.
 ///
 /// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, a
-/// generic record whose fields resolve only after substitution, `Bytes`, a
+/// generic record whose fields resolve only after substitution, a
 /// closure/borrow leaf, or ANY affine leaf answers `false` and keeps its
 /// composite on the pre-existing fail-closed leak posture — never a double-free
 /// or double-close. A recursion budget bounds pathological mutually-nested
@@ -113,8 +115,14 @@ fn payload_leaf_is_clone_drop_safe(
     ) {
         return false;
     }
-    // `string` and scalars are always clone-and-drop-safe leaves.
-    if matches!(ty, ResolvedTy::String) || ty_is_bit_copy_payload(ty) {
+    // `string`, `bytes`, and scalars are always clone-and-drop-safe leaves.
+    // `bytes` is a refcounted CoW value with the same intrinsic dup+drop family
+    // as `string` (`hew_bytes_clone_ref` / `hew_bytes_drop`), so its
+    // `EnumInPlace` helper family has both halves — admitting it is sound and
+    // frees the payload exactly once. The affine gate above still refuses a
+    // `bytes` leaf sitting BESIDE an affine/IO/resource sibling (the `.all()`
+    // conjunction), keeping the arm binder the sole close authority there.
+    if matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) || ty_is_bit_copy_payload(ty) {
         return true;
     }
     let recurse = |leaf: &ResolvedTy| {

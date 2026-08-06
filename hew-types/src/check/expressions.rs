@@ -6,6 +6,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
 use crate::BuiltinType;
 
@@ -1125,28 +1126,125 @@ impl Checker {
     /// gate would then silently skip the move — leaving two owners of one
     /// registration. Ownership is decided by the transfer predicate, not by
     /// the representation of the bytes.
+    /// Mark the PLACE an expression denotes as moved, unconditionally.
+    ///
+    /// The place is the root binding plus the projection steps taken from it,
+    /// so a field transfer (`await a.take(h.sock)`) records that `h.sock`
+    /// specifically is gone while `h`'s siblings stay usable. Consuming a
+    /// projection used to no-op here, which is how a transferred field could be
+    /// detached a second time through the same projection.
+    ///
+    /// Deliberately reports nothing: every site that consumes an expression
+    /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
+    /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
+    /// Reporting here as well would double-diagnose one consuming use.
     fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
-        if let Expr::Identifier(name) = expr {
-            let released_at = self
-                .env
-                .lookup_ref(name)
-                .and_then(|binding| binding.released_at.clone());
-            if let Some(released_at) = released_at {
-                let mut error = TypeError::new(
-                    TypeErrorKind::UseAfterConsume,
-                    span.clone(),
-                    format!(
-                        "cannot consume released resource `{name}`; its close obligation was already discharged"
-                    ),
-                )
-                .with_note(released_at, "resource was closed here");
-                if let Some(source_module) = &self.current_module {
-                    error = error.with_source_module(source_module.clone());
-                }
-                self.errors.push(error);
-            }
-            self.env.mark_moved(name, span.clone());
+        let Some((root, path)) = Self::expr_place(expr) else {
+            return;
+        };
+        if !path.is_empty() {
+            self.env.mark_place_moved(&root, path, span.clone());
+            return;
         }
+        let released_at = self
+            .env
+            .lookup_ref(&root)
+            .and_then(|binding| binding.released_at.clone());
+        if let Some(released_at) = released_at {
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                span.clone(),
+                format!(
+                    "cannot consume released resource `{root}`; its close obligation was already discharged"
+                ),
+            )
+            .with_note(released_at, "resource was closed here");
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+        self.env.mark_moved(&root, span.clone());
+    }
+
+    /// Resolve an expression to a checker PLACE: the root binding name plus the
+    /// projection steps taken from it.
+    ///
+    /// Tuple element access (`t.0`) parses as a field access with a numeric
+    /// field name, so field steps cover both spellings.
+    ///
+    /// Returns `None` for anything that is not a projection chain rooted in a
+    /// binding — indexing, calls, `this`. Those roots have no binding-level
+    /// ownership slot to attach a fact to, so nothing is recorded for them
+    /// rather than a guess being recorded; element-of-collection places are the
+    /// known remaining hole and belong to the MIR half of this family.
+    pub(super) fn expr_place(expr: &Expr) -> Option<(String, PlacePath)> {
+        match expr {
+            Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
+            Expr::FieldAccess { object, field } => {
+                let (root, mut path) = Self::expr_place(&object.0)?;
+                path.push(field.clone());
+                Some((root, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
+    fn render_place(root: &str, path: &[String]) -> String {
+        std::iter::once(root)
+            .chain(path.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// Report a use of `root`'s place at `path` that collides with a place
+    /// already consumed on this path, if it does.
+    pub(super) fn report_place_use_after_move(&mut self, root: &str, path: &[String], span: &Span) {
+        let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
+        else {
+            return;
+        };
+        // A place read only to project further into it is not a whole-value
+        // use of itself, at any depth: `o.inner` inside `o.inner.ticket` names
+        // an address, not the aggregate. Without this the partially-moved-root
+        // rule would fire on every ancestor of a moved place and stack one
+        // diagnostic per projection step on top of the real one.
+        if conflict == PlaceConflict::WholeOfPartial && self.place_base_depth > 0 {
+            return;
+        }
+        let place = Self::render_place(root, path);
+        let moved_place = Self::render_place(root, &moved_path);
+        let (message, suggestion) = match conflict {
+            PlaceConflict::Exact => (
+                format!("use of moved place `{place}`"),
+                format!(
+                    "`{place}` transferred its value away; re-initialise it \
+                     (`{place} = ...`) before using it again"
+                ),
+            ),
+            PlaceConflict::UnderMoved => (
+                format!("use of `{place}`, which lives inside moved place `{moved_place}`"),
+                format!(
+                    "`{moved_place}` transferred its value away, taking `{place}` with it; \
+                     read it before the transfer, or re-initialise `{moved_place}`"
+                ),
+            ),
+            PlaceConflict::WholeOfPartial => (
+                format!("use of `{place}` after its field `{moved_place}` was moved out"),
+                format!(
+                    "`{place}` is only partially owned here; use the fields that are still \
+                     owned, or re-initialise `{moved_place}` before using `{place}` whole"
+                ),
+            ),
+        };
+        let mut error = TypeError::new(TypeErrorKind::UseAfterMove, span.clone(), message)
+            .with_note(moved_at, "value was consumed here")
+            .with_suggestion(suggestion);
+        if let Some(source_module) = &self.current_module {
+            error = error.with_source_module(source_module.clone());
+        }
+        self.errors.push(error);
     }
 
     /// Whether `ty` carries a value whose SOLE ownership crosses an actor
@@ -1382,7 +1480,11 @@ impl Checker {
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding.def_span.clone();
-            if is_moved {
+            // The outermost place of an assignment target is written, not read:
+            // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
+            // that plugs the hole, not a use of the value that left.
+            let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
                     Ty::Named { name, .. } if self.registry.is_linear(name)
@@ -1432,6 +1534,14 @@ impl Checker {
                     ));
                 }
                 self.errors.push(err);
+            }
+            // A whole-value use of a partially-moved aggregate would hand a
+            // second owner the storage that already moved out. Projection bases
+            // are exempt (handled inside the reporter, which is the one
+            // authority on that rule) and so are assignment targets, which
+            // write rather than read.
+            if !is_moved && !is_write_target {
+                self.report_place_use_after_move(name, &[], span);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
@@ -5911,7 +6021,20 @@ impl Checker {
             }
         }
 
+        // The object is the BASE of this projection, not a whole-value use of
+        // itself: `h.other` stays legal after `h.sock` moved out.
+        self.place_base_depth += 1;
         let obj_ty = self.synthesize(&object.0, &object.1);
+        self.place_base_depth -= 1;
+        // Reading this projection after it (or storage under it) was consumed
+        // is a use-after-move. Assignment targets are exempt: the outermost
+        // target place is written, not read.
+        if self.place_write_depth == 0 || self.place_base_depth > 0 {
+            if let Some((root, mut path)) = Self::expr_place(&object.0) {
+                path.push(field.to_string());
+                self.report_place_use_after_move(&root, &path, span);
+            }
+        }
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args, .. } => {

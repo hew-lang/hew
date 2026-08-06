@@ -3203,6 +3203,22 @@ pub struct Checker {
     /// may only be assigned inside `init`; handlers and methods must declare
     /// the field with `var` to write it).
     pub(super) current_actor_fields: Vec<ActorFieldInfo>,
+    /// Nesting depth of "this expression is the BASE of a projection, not a
+    /// whole-value use".
+    ///
+    /// Reading `h.sock` reads `h` too, but only as the address the projection
+    /// starts from — it does not hand anyone the whole aggregate. Without the
+    /// distinction the partially-moved-root rule would reject every sibling
+    /// access after a field transfer, which is exactly the precision the rule
+    /// exists to preserve.
+    pub(super) place_base_depth: usize,
+    /// Nesting depth of "this expression is an assignment TARGET place".
+    ///
+    /// A target is written, not read: it neither consumes the old value nor
+    /// requires one to still be there. Combined with `place_base_depth == 0`
+    /// it identifies the OUTERMOST target place, which is exactly the place a
+    /// plain `=` re-initialises.
+    pub(super) place_write_depth: usize,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an
@@ -3655,6 +3671,8 @@ impl Checker {
             current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
+            place_base_depth: 0,
+            place_write_depth: 0,
             actor_protocol_descriptors: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,

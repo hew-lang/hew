@@ -1143,6 +1143,45 @@ fn ty_is_bit_copy_payload(ty: &ResolvedTy) -> bool {
 /// exhaustive `instr_source_places` / `terminator_source_places` machinery
 /// `derive_cow_sole_owner` uses, so a future alias-producing instruction
 /// auto-excludes rather than silently re-opening a double-free.
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
+///
+/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
+/// while `v`'s original reference stays owned by whatever produced it (here, an
+/// enum composite's variant payload slot). This is the `ReturnSlot` analogue of
+/// `corroborated_retained_string_move_sites`' `Move { dest: Local, src }` shape:
+/// there the destination local is the new owner and the source stays an alias
+/// released by its parent; at a return the caller is the new owner and the
+/// composite keeps release authority. Treating the read as an ESCAPE excludes
+/// the composite's `EnumInPlace` drop, so the retain's extra reference is never
+/// balanced — one leaked payload node per call (the enum twin of the
+/// returned-member retain leak, `enum_callee_consume_drop_leak_oracle`
+/// `move_out_arm`).
+fn is_retained_return_move(
+    block: &BasicBlock,
+    instr_index: usize,
+    dest: Place,
+    src: Place,
+) -> bool {
+    if !matches!(dest, Place::ReturnSlot) {
+        return false;
+    }
+    let Some(prev) = instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+    else {
+        return false;
+    };
+    matches!(
+        prev,
+        Instr::StringRetain {
+            value,
+            condition: StringRetainCondition::Always,
+        } if *value == src,
+    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the body is four sequential single-purpose passes — candidate \
@@ -1627,7 +1666,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
             // discriminates a benign hand-off from a real escape, so it needs
             // its own analysis rather than the blanket source scan below.
             if let Instr::Move { dest, src } = instr {
-                let retained_string_move = retained_string_moves.contains(&(block.id, instr_index));
+                let retained_string_move = retained_string_moves.contains(&(block.id, instr_index))
+                    || is_retained_return_move(block, instr_index, *dest, *src);
                 let retained_bytes_move = retained_bytes_moves.contains(&(block.id, instr_index));
                 let src_local = base_local(*src);
                 let dest_local = base_local(*dest);

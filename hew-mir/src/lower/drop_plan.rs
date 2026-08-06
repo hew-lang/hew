@@ -9612,6 +9612,119 @@ mod obligation_balance_validator {
         );
     }
 
+    /// A freshly minted string moved into a record field inside a loop body,
+    /// then committed with the empty-static-string marker, and dropped on the
+    /// loop back-edge because the slot is still nominally in scope. The commit
+    /// marker neutralizes the moved-from slot, so the back-edge drop walks a
+    /// nulled slot and is a no-op — ACCEPT. Before the fix the marker confirmed
+    /// the transfer as a definite discharge but left the slot un-neutralized,
+    /// so the back-edge drop counted as a SECOND definite discharge and
+    /// manufactured a phantom over-release for the common build-a-record-in-a-
+    /// loop shape.
+    #[test]
+    fn aggregate_transfer_commit_then_backedge_drop_accepts() {
+        let blocks = vec![
+            block(0, Vec::new(), Terminator::Goto { target: 1 }),
+            block(
+                1,
+                Vec::new(),
+                Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 2,
+                    else_target: 3,
+                },
+            ),
+            block(
+                2,
+                vec![
+                    mint(1),
+                    Instr::RecordInit {
+                        ty: ResolvedTy::Unit,
+                        fields: vec![(FieldOffset(0), Place::Local(1))],
+                        dest: Place::Local(3),
+                    },
+                    // The aggregate-transfer commit marker: the moved-from slot
+                    // is overwritten with an empty static string.
+                    Instr::StringLit {
+                        bytes: Vec::new(),
+                        dest: Place::Local(1),
+                    },
+                ],
+                Terminator::Goto { target: 1 },
+            ),
+            block(3, Vec::new(), Terminator::Return),
+        ];
+        // The loop back-edge drops the now-emptied `key` slot.
+        let plans = vec![
+            (
+                ExitPath::Goto {
+                    block: 2,
+                    target: 1,
+                },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+            (ExitPath::Return { block: 3 }, DropPlan::default()),
+        ];
+        let findings = run(blocks, plans, &[(1, "key")]);
+        assert!(
+            findings.is_empty(),
+            "the commit marker neutralizes the moved-from slot, so the \
+             back-edge drop is a no-op, not a second discharge: {findings:?}"
+        );
+    }
+
+    /// Distinguish-garbage pin for the neutralize above: a REAL defining write
+    /// AFTER the commit marker re-mints the slot to a fresh owner (neutralized
+    /// reset), so a genuine double-free on the NEW generation (two definite
+    /// return-transfers) still REJECTS. Proves the fix suppresses only the
+    /// no-op drop of the emptied slot, not genuine over-release of a live one.
+    #[test]
+    fn remint_after_commit_marker_still_rejects_double_free() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::RecordInit {
+                    ty: ResolvedTy::Unit,
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(3),
+                },
+                // Commit marker neutralizes the slot ...
+                Instr::StringLit {
+                    bytes: Vec::new(),
+                    dest: Place::Local(1),
+                },
+                // ... then a real defining write re-mints a fresh owner.
+                mint(1),
+                // ... which is then definitely discharged TWICE — a genuine
+                // double-free of the new generation.
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+        let findings = run(blocks, plans, &[(1, "key")]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a re-minted generation double-freed after the commit marker must \
+             still reject: {findings:?}"
+        );
+        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
+            panic!("expected over-release, got {:?}", findings[0]);
+        };
+        assert_eq!(name, "key");
+    }
+
     /// Negative control (A278 / S1873): a value transferred into an
     /// aggregate (the `forward_param_into_field` family once the param
     /// exclusion has removed the parameter itself) must NOT phantom-reject

@@ -1098,6 +1098,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    type_classes: &hew_hir::TypeClassTable,
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -1130,8 +1131,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_clone_synthesizable &=
-            enum_payloads_are_clone_synthesizable(ty, enum_layouts, record_field_orders);
+        all_candidates_clone_synthesizable &= enum_payloads_are_clone_synthesizable(
+            ty,
+            enum_layouts,
+            record_field_orders,
+            type_classes,
+        );
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {

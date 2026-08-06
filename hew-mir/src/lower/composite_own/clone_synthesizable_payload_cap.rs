@@ -70,13 +70,26 @@ fn admits_with_records(
     ok: Vec<ResolvedTy>,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
+    admits_with_classes(ok, record_field_orders, &hew_hir::TypeClassTable::default())
+}
+
+fn admits_with_classes(
+    ok: Vec<ResolvedTy>,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    type_classes: &hew_hir::TypeClassTable,
+) -> bool {
     let args = vec![
         ok.first().cloned().unwrap_or(ResolvedTy::Unit),
         ResolvedTy::String,
     ];
     let ty = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
-    enum_payloads_are_clone_synthesizable(&ty, &[result_layout(&key, ok)], record_field_orders)
+    enum_payloads_are_clone_synthesizable(
+        &ty,
+        &[result_layout(&key, ok)],
+        record_field_orders,
+        type_classes,
+    )
 }
 
 /// A single-argument `Status`-shaped nested enum: one scalar variant and one
@@ -118,6 +131,7 @@ fn admits_nested(inner_payload: ResolvedTy) -> bool {
             status_layout("Status", inner_payload),
         ],
         &HashMap::new(),
+        &hew_hir::TypeClassTable::default(),
     )
 }
 
@@ -216,9 +230,71 @@ fn nested_string_enum_payloads_are_admitted() {
         enum_payloads_are_clone_synthesizable(
             &outer,
             &[result_layout(&key, vec![inner]), inner_layout],
-            &HashMap::new()
+            &HashMap::new(),
+            &hew_hir::TypeClassTable::default()
         ),
         "a nested enum whose leaves are all string must be admitted"
+    );
+}
+
+/// A `#[resource]` value beside a clone-drop-safe `string` in the SAME payload
+/// must fail-closed the WHOLE composite. This is the exact class that leaked
+/// through the record arm: a `#[resource]` record is field-bearing, so it sits
+/// in `record_field_orders` keyed like a plain value record, and recursing into
+/// its scalar field wrongly admitted it — seeding an `EnumInPlace` drop that
+/// closed the affine resource a SECOND time (the observed `Result<Conn, string>`
+/// double close). The value-class gate now refuses any affine leaf up front.
+#[test]
+fn resource_beside_string_payload_is_refused() {
+    // Mark `Conn` as an affine `#[resource]` and register its (all-scalar)
+    // field order, reproducing the field-bearing-resource-record shape.
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Conn".to_string(),
+        (hew_hir::ResourceMarker::Resource, None),
+    );
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Conn".to_string(),
+        vec![("fd".to_string(), ResolvedTy::I64)],
+    );
+
+    // `Result<Conn, string>` — a resource record Ok payload beside the string
+    // Err. Without the affine gate the record arm recursed into `fd: i64` and
+    // admitted it; the gate refuses it.
+    assert!(
+        !admits_with_classes(vec![builtin("Conn", vec![])], &orders, &classes),
+        "a `#[resource]` record payload is affine (its own close discipline, no \
+         clone helper) and must stay refused even though its fields are scalar"
+    );
+
+    // `Result<(Conn, string), string>` — a resource leaf beside a string leaf
+    // inside a tuple payload. The tuple recursion must still hit the affine leaf
+    // and refuse the whole composite.
+    assert!(
+        !admits_with_classes(
+            vec![ResolvedTy::Tuple(vec![
+                builtin("Conn", vec![]),
+                ResolvedTy::String
+            ])],
+            &orders,
+            &classes
+        ),
+        "a resource leaf beside a string leaf in a tuple payload must refuse the \
+         whole composite"
+    );
+
+    // Guard: the SAME record shape WITHOUT the resource marker is an ordinary
+    // value record and stays admitted — proving the refusal keys on affinity,
+    // not merely on the record being present.
+    assert!(
+        admits_with_classes(
+            vec![builtin("Conn", vec![])],
+            &orders,
+            &hew_hir::TypeClassTable::default()
+        ),
+        "the same field order WITHOUT the resource marker is a plain value \
+         record and stays admitted — the gate keys on affinity, not presence"
     );
 }
 
@@ -249,8 +325,9 @@ fn record_of_strings_is_admitted_and_record_with_resource_is_refused() {
 
 #[test]
 fn vec_of_clone_safe_elements_is_admitted_and_vec_of_resource_is_refused() {
-    let vec_of =
-        |elem: ResolvedTy| ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![elem]);
+    let vec_of = |elem: ResolvedTy| {
+        ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![elem])
+    };
     assert!(
         admits(vec![vec_of(ResolvedTy::String)]),
         "a `Vec<string>` payload clones and drops element-wise and must be admitted"
@@ -303,7 +380,8 @@ fn an_unresolvable_layout_is_refused() {
         !enum_payloads_are_clone_synthesizable(
             &builtin("Result", vec![ResolvedTy::String]),
             &[],
-            &HashMap::new()
+            &HashMap::new(),
+            &hew_hir::TypeClassTable::default()
         ),
         "no layout means no proof"
     );
@@ -314,7 +392,8 @@ fn an_unresolvable_layout_is_refused() {
                 &crate::lower::mangle_layout_key("Result", &[builtin("Status", vec![])]),
                 vec![builtin("Status", vec![])],
             )],
-            &HashMap::new()
+            &HashMap::new(),
+            &hew_hir::TypeClassTable::default()
         ),
         "a nested enum with no resolvable layout fails closed rather than \
          admitting the outer composite"

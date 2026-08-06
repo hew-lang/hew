@@ -288,6 +288,7 @@ pub(super) fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &builder.type_classes,
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,

@@ -197,6 +197,29 @@ fn record_of_strings_is_admitted_and_record_with_resource_is_refused() {
 }
 
 #[test]
+fn vec_of_clone_safe_elements_is_admitted_and_vec_of_resource_is_refused() {
+    let vec_of = |elem: ResolvedTy| {
+        ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![elem])
+    };
+    assert!(
+        admits(vec![vec_of(ResolvedTy::String)]),
+        "a `Vec<string>` payload clones and drops element-wise and must be admitted"
+    );
+    assert!(
+        admits(vec![vec_of(vec_of(ResolvedTy::I64))]),
+        "a `Vec<Vec<i64>>` payload recurses element-wise and stays clone-drop-safe"
+    );
+    assert!(
+        !admits(vec![vec_of(opaque("Value"))]),
+        "a `Vec<#[opaque]>` element has no duplication helper and must stay refused"
+    );
+    assert!(
+        !admits(vec![vec_of(builtin("Connection", vec![]))]),
+        "a `Vec<#[resource]>` element must stay refused"
+    );
+}
+
+#[test]
 fn an_unresolvable_layout_is_refused() {
     assert!(
         !enum_payloads_are_plain_string(

@@ -674,26 +674,20 @@ fn return_value_is_a_moved_out_local(
 /// occurrence. This shim joins the already-published callee return facts and,
 /// for a borrowed forwarder, requires every actual argument to be proven owned.
 ///
-/// # `Retained` is a `string`-only licence
+/// # `Borrowed` summaries never upgrade to `Owned`
 ///
-/// The borrowed-forwarder upgrade below promotes a `Borrowed` call result to
-/// `Owned { Retained }`. `Retained` means the value ALIASES its source and holds
-/// one INDEPENDENT refcount share, so exactly one extra drop is legal. Only
-/// `string` satisfies that: codegen `hew_string_clone`s a string field load, so
-/// the projection owns a fresh `+1`. Every other heap type does not — an inline
-/// aggregate field load is a byte-copy interior alias whose original the source's
-/// composite drop already frees (hew-mir's `FieldLoadClass::ByteCopyAlias`), and
-/// a single-pointer leaf load transfers one handle with no second share. Promoting
-/// either to `Retained` mints a caller-side drop over storage the argument
-/// binding still owns — a DOUBLE FREE, which is exactly what
-/// `fn getself(w: Wrap) -> Holder { w.h }` produced through a live `let w`.
-///
-/// So the upgrade is gated on the result type being `string`, matching the same
-/// restriction its sibling [`function_return_ownership_summaries`] already
-/// carries, MIR's `string`-only retained-join branch, and the deliberately
-/// named `callee_returns_retained_string_owner` authority. A non-`string`
-/// borrowed forwarder stays `Borrowed`: at worst a missed drop, never a second
-/// claim.
+/// A callee whose return summary is `Borrowed` hands back an alias of one of
+/// its by-value (borrowed) arguments; the caller-side storage that alias roots
+/// in — a named `let`, or an anonymous temp already finalized as its own
+/// `__hew_temp_arg` at this very call — keeps its own exactly-once release.
+/// This closure never promotes such a result to `Owned { Retained }`: doing so
+/// would mint a caller-side drop over storage the argument binding still owns
+/// with no runtime retain behind it, a DOUBLE FREE, which is exactly what
+/// `fn getself(w: Wrap) -> Holder { w.h }` produced through a live `let w`. See
+/// the `Borrowed` branch in [`resolve_user_call_facts`] below for the current
+/// fail-closed handling: a `Borrowed` summary stays `Borrowed`, so at worst a
+/// missed drop, never a second claim. The only refinement this closure ever
+/// performs is on an `Owned` answer it itself published earlier (below).
 ///
 /// WHEN OBSOLETE: remove this closure once lowering projects the checker's total
 /// post-resolution result fact onto every HIR call occurrence.

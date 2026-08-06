@@ -1,6 +1,5 @@
 fn Echo__recv__run -> ()
   statements:
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<string>, Stream<string>)
     bind BindingId(2) __tuple_1 site=SiteId(0) ty=(Sink<string>, Stream<string>)
     use BindingId(2) __tuple_1 site=SiteId(3) ty=(Sink<string>, Stream<string>) intent=Read
     bind BindingId(3) sink site=SiteId(4) ty=Sink<string>

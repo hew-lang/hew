@@ -57,7 +57,12 @@ actor ClientHandler {
             let data = conn.read_string();
             if data.contains("__HEW_TCP_DISCONNECT__") {
                 room.unregister(name.clone());
-                let _ = conn.close();
+                // The connection belongs to this actor's lifetime, not to this
+                // handler: `deliver` stays reachable for as long as the actor
+                // lives, and a broadcast already in flight when the client
+                // disconnects would write to a closed socket. Leaving the
+                // socket in state lets the actor's teardown close it exactly
+                // once, after the last message that could touch it.
                 running = false;
             } else {
                 let line = f"{name.clone()}: {data}";

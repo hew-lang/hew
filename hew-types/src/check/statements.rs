@@ -1183,7 +1183,12 @@ impl Checker {
                 // roots that are known immutable so users see the value-type
                 // rule, not just a generic binding error.
                 if let Expr::FieldAccess { object, field } = &target.0 {
+                    // The object is the base of the target place, not a
+                    // whole-value use: writing `h.sock` after `h.other` moved
+                    // out is legal.
+                    self.place_base_depth += 1;
                     let obj_ty = self.synthesize(&object.0, &object.1);
+                    self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
                     if let Ty::Named { name, .. } = &resolved {
                         let root_is_mutable = Self::assignment_root_binding_name(&target.0)
@@ -1218,6 +1223,10 @@ impl Checker {
                 // must match — for `HashMap<K, V>` this is the bare `V` (a read
                 // would instead yield `Option<V>`), and the checker records the
                 // `hew_hashmap_insert_layout` runtime call at the index span.
+                // Synthesising the target must not read it as a value: an
+                // assignment overwrites the place, so a moved-out place is
+                // exactly what a re-initialisation is allowed to name.
+                self.place_write_depth += 1;
                 let target_ty = match &target.0 {
                     Expr::Index { object, index } => {
                         let ty = self.synthesize_index(
@@ -1235,6 +1244,7 @@ impl Checker {
                     }
                     _ => self.synthesize(&target.0, &target.1),
                 };
+                self.place_write_depth -= 1;
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without
@@ -1344,6 +1354,19 @@ impl Checker {
                     self.env.mark_written(name);
                 }
                 self.check_against(&value.0, &value.1, &target_ty);
+                // A plain `=` gives the target place a fresh owner, discharging
+                // the consume obligation on it and on everything under it. This
+                // is the escape hatch for a consumed actor state field: the
+                // handler plugs the hole it made. Compound assignment reads the
+                // old value first, so it discharges nothing.
+                //
+                // Evaluated after the RHS so `sock = take_from(sock)` still
+                // reports the read.
+                if op.is_none() {
+                    if let Some((root, path)) = Checker::expr_place(&target.0) {
+                        self.env.reinit_place(&root, &path);
+                    }
+                }
             }
             Stmt::Expression((expr, es)) => {
                 if let Expr::MethodCall {

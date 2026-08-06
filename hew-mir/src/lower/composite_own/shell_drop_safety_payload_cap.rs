@@ -1,24 +1,31 @@
-//! The clone-safety cap on the `string_binder_read_is_user_fn_borrow`
-//! exemption must be a POSITIVE clone-drop-safe predicate, not "owns no heap".
+//! The shell-drop-safety cap on the `string_binder_read_is_user_fn_borrow`
+//! exemption must be a POSITIVE predicate over payload classes whose shell
+//! drop cannot double-release, not "owns no heap".
 //!
 //! `EnumInPlace` seeds the enum clone/drop helper synthesis, and clone
-//! totality refuses every `IoHandle` / closure-pair / `#[resource]` /
-//! opaque-handle class. `Stream<T>` and `Sink<T>` are pointer-backed IO
-//! handles with no duplication helper — yet the MIR heap authority's builtin
-//! leaf set omits them and its generic `Named` arm only recurses into type
-//! arguments, so `Stream<i64>` / `Sink<i64>` answer "owns no heap". The old
-//! `String || !ty_owns_heap_mir` spelling therefore re-admitted exactly the
-//! composites the cap exists to exclude, re-opening the clone-synthesis
-//! refusal.
+//! totality refuses every `IoHandle` / closure-pair / `#[resource]` class.
+//! `Stream<T>` and `Sink<T>` are pointer-backed IO handles — yet the MIR heap
+//! authority's builtin leaf set omits them and its generic `Named` arm only
+//! recurses into type arguments, so `Stream<i64>` / `Sink<i64>` answer "owns
+//! no heap". The old `String || !ty_owns_heap_mir` spelling therefore
+//! re-admitted exactly the composites the cap exists to exclude.
 //!
-//! The predicate recurses through every clone-drop-safe shape: a `string`, a
+//! The predicate recurses through every shell-drop-safe shape: a `string`, a
 //! bit-copy scalar, an owned `Vec` of the same, a nested enum/record/tuple/array
 //! built only from such leaves. A NESTED enum payload (`Result<Status, i64>`
 //! whose `Ok` payload is itself a scalar-and-string enum) is synthesizable iff
 //! its own payloads are — the plain-string-only spelling rejected it on its
-//! `Named` payload and leaked the inner `string` sibling (#2717). A nested
-//! enum/record/`Vec` carrying an IoHandle/resource/opaque payload still stays
-//! refused (fail-closed).
+//! `Named` payload and leaked the inner `string` sibling (#2717).
+//!
+//! A BARE `#[opaque]` handle as a DIRECT variant payload IS admitted: its
+//! thunk drop is a structural no-op with no other close authority anywhere
+//! (double-free impossible by construction), and codegen emits a trap-body
+//! clone for an opaque-carrying enum seeded only for its drop helper. A
+//! lifecycle-registered (`#[resource]`) handle classifies `Resource` and
+//! stays refused — a second close of a real resource is observable (the
+//! S2200 double-close class). A NESTED opaque (inside a `Vec`, tuple, or
+//! nested enum) stays refused: its release routes through a nested helper
+//! family where the no-op field-drop argument does not hold.
 use super::*;
 
 fn builtin(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
@@ -70,7 +77,12 @@ fn admits_with_records(
     ok: Vec<ResolvedTy>,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    admits_with_classes(ok, record_field_orders, &hew_hir::TypeClassTable::default())
+    admits_full(
+        ok,
+        record_field_orders,
+        &hew_hir::TypeClassTable::default(),
+        &hew_hir::LifecycleRegistry::default(),
+    )
 }
 
 fn admits_with_classes(
@@ -78,17 +90,43 @@ fn admits_with_classes(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     type_classes: &hew_hir::TypeClassTable,
 ) -> bool {
+    admits_full(
+        ok,
+        record_field_orders,
+        type_classes,
+        &hew_hir::LifecycleRegistry::default(),
+    )
+}
+
+fn admits_with_registry(ok: Vec<ResolvedTy>, registry: &hew_hir::LifecycleRegistry) -> bool {
+    admits_full(
+        ok,
+        &HashMap::new(),
+        &hew_hir::TypeClassTable::default(),
+        registry,
+    )
+}
+
+fn admits_full(
+    ok: Vec<ResolvedTy>,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    type_classes: &hew_hir::TypeClassTable,
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+) -> bool {
     let args = vec![
         ok.first().cloned().unwrap_or(ResolvedTy::Unit),
         ResolvedTy::String,
     ];
     let ty = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
-    enum_payloads_are_clone_synthesizable(
+    enum_payloads_are_shell_drop_safe(
         &ty,
         &[result_layout(&key, ok)],
         record_field_orders,
         type_classes,
+        &[],
+        &[],
+        lifecycle_registry,
     )
 }
 
@@ -124,7 +162,7 @@ fn admits_nested(inner_payload: ResolvedTy) -> bool {
     let result_key = crate::lower::mangle_layout_key("Result", &outer_args);
     // `find_enum_layout` keys an empty-args `Named` on the bare name, so the
     // nested `Status` layout is named directly.
-    enum_payloads_are_clone_synthesizable(
+    enum_payloads_are_shell_drop_safe(
         &ty,
         &[
             result_layout(&result_key, vec![status]),
@@ -132,6 +170,9 @@ fn admits_nested(inner_payload: ResolvedTy) -> bool {
         ],
         &HashMap::new(),
         &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
     )
 }
 
@@ -242,11 +283,11 @@ fn string_argument_io_handle_payloads_are_refused() {
 }
 
 #[test]
-fn opaque_and_resource_payloads_are_refused() {
-    assert!(
-        !admits(vec![opaque("Value")]),
-        "an `#[opaque]` handle has no duplication helper and must stay refused"
-    );
+fn resource_and_unresolvable_payloads_are_refused() {
+    // NOTE: a DIRECT bare `#[opaque]` payload is ADMITTED (see
+    // `bare_opaque_payload_sibling_is_admitted` — the hybrid-enum shell-drop
+    // shape); only the lifecycle-registered spelling and every NESTED opaque
+    // position stay refused.
     assert!(
         !admits(vec![builtin("Connection", vec![])]),
         "a `#[resource]`-class handle must stay refused"
@@ -278,11 +319,14 @@ fn nested_string_enum_payloads_are_admitted() {
     let outer = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
     assert!(
-        enum_payloads_are_clone_synthesizable(
+        enum_payloads_are_shell_drop_safe(
             &outer,
             &[result_layout(&key, vec![inner]), inner_layout],
             &HashMap::new(),
-            &hew_hir::TypeClassTable::default()
+            &hew_hir::TypeClassTable::default(),
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
         ),
         "a nested enum whose leaves are all string must be admitted"
     );
@@ -428,25 +472,104 @@ fn nested_enum_with_io_handle_payload_is_refused() {
 #[test]
 fn an_unresolvable_layout_is_refused() {
     assert!(
-        !enum_payloads_are_clone_synthesizable(
+        !enum_payloads_are_shell_drop_safe(
             &builtin("Result", vec![ResolvedTy::String]),
             &[],
             &HashMap::new(),
-            &hew_hir::TypeClassTable::default()
+            &hew_hir::TypeClassTable::default(),
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
         ),
         "no layout means no proof"
     );
     assert!(
-        !enum_payloads_are_clone_synthesizable(
+        !enum_payloads_are_shell_drop_safe(
             &builtin("Result", vec![builtin("Status", vec![])]),
             &[result_layout(
                 &crate::lower::mangle_layout_key("Result", &[builtin("Status", vec![])]),
                 vec![builtin("Status", vec![])],
             )],
             &HashMap::new(),
-            &hew_hir::TypeClassTable::default()
+            &hew_hir::TypeClassTable::default(),
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
         ),
         "a nested enum with no resolvable layout fails closed rather than \
          admitting the outer composite"
+    );
+}
+
+#[test]
+fn bare_opaque_payload_sibling_is_admitted() {
+    // The hybrid-enum callee-drop shape: `Mixed { Text(string); Opaque(Handle) }`
+    // passed by value declines the snapshot carrier, so the tag-aware
+    // `EnumInPlace` shell drop is the callee's ONE balancing release. The
+    // bare-opaque variant's thunk drop is a structural no-op with no other
+    // close authority anywhere, so admitting it cannot double-release.
+    assert!(
+        admits(vec![opaque("Handle")]),
+        "a bare `#[opaque]` handle sibling must not exclude the shell drop — \
+         excluding it leaks BOTH variants of the hybrid enum on every call"
+    );
+}
+
+#[test]
+fn lifecycle_registered_resource_beside_string_is_refused() {
+    // Rule-17 MIXED case: an affine `#[resource]` leaf sitting BESIDE the
+    // clone-drop-safe string leaf. The shell drop would run the registered
+    // close a second time (the S2200 double-close class) — the registry entry
+    // is exactly what demotes the same spelling from "bare opaque" to
+    // "resource", so the two cases differ ONLY by the registry.
+    let mut registry = hew_hir::LifecycleRegistry::default();
+    registry
+        .admit_opaque_resource(hew_hir::OpaqueResourceLifecycle {
+            resource_declaration: hew_types::DefId::new("Handle"),
+            close_declaration: hew_types::DefId::new("Handle::close"),
+            release_declaration: hew_types::DefId::new("Handle::close"),
+            close_symbol: "Handle::close".to_string(),
+            release_symbol: "Handle::close".to_string(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        })
+        .expect("unique test lifecycle");
+    assert!(
+        admits_with_registry(
+            vec![opaque("Handle")],
+            &hew_hir::LifecycleRegistry::default()
+        ),
+        "guard: without the registry entry the same spelling is a bare opaque \
+         handle and is admitted — proving the registry is the discriminator"
+    );
+    assert!(
+        !admits_with_registry(vec![opaque("Handle")], &registry),
+        "a lifecycle-registered resource has a REAL close; the shell drop \
+         beside the string leaf must stay refused (S2200 double-close class)"
+    );
+}
+
+#[test]
+fn bare_opaque_beside_resource_marker_is_refused() {
+    // Belt-and-braces on the OTHER authority: the same `#[opaque]` spelling
+    // carrying a `#[resource]` marker in the type-class table classifies
+    // `AffineResource` and is refused by the value-class gate even with an
+    // empty lifecycle registry — the two refusal authorities are independent.
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Handle".to_string(),
+        (hew_hir::ResourceMarker::Resource, None),
+    );
+    assert!(
+        !admits_full(
+            vec![opaque("Handle")],
+            &HashMap::new(),
+            &classes,
+            &hew_hir::LifecycleRegistry::default(),
+        ),
+        "a `#[resource]`-marked opaque refuses through the value-class gate \
+         independently of the lifecycle registry"
     );
 }

@@ -303,6 +303,19 @@ impl Builder {
         if !retained_join || !borrowed_branch {
             return value;
         }
+        // The "borrowed branch" fact predates the uniform owned-carrier
+        // protocol (D185). When lowering already emitted a
+        // `NeutralizePayloadSlot { transferee: value }` for a variant-payload
+        // slot, this branch value carries the payload's SOLE share — the
+        // carrier slot is nulled, its guarded drop releases nothing — so a
+        // join retain here would strand a `+1` per execution. Corroborated
+        // against the recorded transferee set, never re-derived from the HIR
+        // fact that misclassifies the transfer as a borrow.
+        if base_local(value)
+            .is_some_and(|local| self.variant_payload_transferee_locals.contains(&local))
+        {
+            return value;
+        }
         match self.subst_ty(result_ty) {
             ResolvedTy::String => {
                 let retained = self.alloc_local(ResolvedTy::String);

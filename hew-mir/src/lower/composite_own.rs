@@ -5,10 +5,10 @@ use super::temp_drop::{
 mod aggregate_borrowed_ingress_clone;
 mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
-mod clone_synthesizable;
 mod foundation;
 mod predicate_string_temp_drop;
 mod retained_string_aliases;
+mod shell_drop_safety;
 mod tuple_handle_projection;
 #[cfg(test)]
 use super::*;
@@ -48,6 +48,7 @@ use predicate_string_temp_drop::predicate_string_temp_drop_proof;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
+use shell_drop_safety::enum_payloads_are_shell_drop_safe;
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
@@ -1018,10 +1019,6 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .filter_map(|(_, p)| base_local(*p))
         .collect()
 }
-// The clone-synthesizability payload predicate lives in the sibling
-// `clone_synthesizable` concern module (carved out under the `src/lower/`
-// line-ceiling ratchet). The test module reaches it through this re-export.
-use clone_synthesizable::enum_payloads_are_clone_synthesizable;
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -1138,6 +1135,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     type_classes: &hew_hir::TypeClassTable,
+    record_layouts: &[crate::model::RecordLayout],
+    opaque_handle_names: &[String],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -1159,17 +1159,17 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    // Per-candidate clone-synthesizability. The borrow exemption keeps a
+    // Per-candidate shell-drop safety. The borrow exemption keeps a
     // candidate's `EnumInPlace` owner alive across an arm-binder read, which is
-    // sound iff the helper family can clone AND drop every active payload of
-    // THAT candidate. The decision is a property of the candidate's OWN payload
+    // sound iff the shell drop can release every active payload of THAT
+    // candidate without double-releasing anything. The decision is a property of the candidate's OWN payload
     // leaves, so it is recorded per candidate root — not ANDed function-wide. A
     // function-wide conjunction let one non-synthesizable composite (a
     // `Result<Child, _>` whose affine `#[resource]` payload has no clone helper)
     // poison the exemption for a separately-admissible sibling
     // (`Result<bytes, string>`), leaking the sibling that the composite itself
     // was perfectly able to free. Each candidate stands on its own leaves.
-    let mut synthesizable_candidate_locals: HashSet<u32> = HashSet::new();
+    let mut shell_drop_safe_candidate_locals: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1180,13 +1180,16 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        if enum_payloads_are_clone_synthesizable(
+        if enum_payloads_are_shell_drop_safe(
             ty,
             enum_layouts,
             record_field_orders,
             type_classes,
+            record_layouts,
+            opaque_handle_names,
+            lifecycle_registry,
         ) {
-            synthesizable_candidate_locals.insert(local);
+            shell_drop_safe_candidate_locals.insert(local);
         }
         candidate_local_to_binding.insert(local, *binding);
     }
@@ -1845,9 +1848,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
                     // Every borrow exemption keeps the enclosing enum's
                     // EnumInPlace owner alive. That is sound only when the
-                    // helper family can clone and drop every possible active
-                    // payload. A sibling affine/IO/resource/opaque nominal has
-                    // drop-only semantics, so even a perfectly ordinary read
+                    // shell's drop cannot double-release ANY possible active
+                    // payload: plain strings (shell is the sole owner, the
+                    // binder a no-retain alias), bit-copy leaves (nothing to
+                    // release), and bare `#[opaque]` handles (the thunk's drop
+                    // is a structural no-op and no other close authority
+                    // exists). A sibling affine/IO/`#[resource]` nominal has a
+                    // REAL drop-only close, so even a perfectly ordinary read
                     // of the string arm must exclude the whole enum owner: the
                     // active payload binder (if any) is then the sole close
                     // authority. This is the same positive cap used for user
@@ -1861,12 +1868,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // residual leak the plain-string-only cap left excluded).
                     // Per-candidate: the borrow exemption is granted only when
                     // the candidate composite THIS binder was projected from is
-                    // itself clone-synthesizable. A non-synthesizable sibling
-                    // (different root) no longer poisons an admissible one. A
-                    // binder with no known root fails closed (excluded).
+                    // itself shell-drop-safe. A non-safe sibling (different
+                    // root) no longer poisons an admissible one. A binder with
+                    // no known root fails closed (excluded).
                     let read_is_borrow = payload_binder_candidate_root
                         .get(&l)
-                        .is_some_and(|root| synthesizable_candidate_locals.contains(root))
+                        .is_some_and(|root| shell_drop_safe_candidate_locals.contains(root))
                         && (binder_read_is_borrow_safe_terminator(
                             &block.terminator,
                             suspend_kinds.get(&block.id),
@@ -9977,4 +9984,4 @@ mod plain_vec_drop_interior_alias_and_escape {
 }
 
 #[cfg(test)]
-mod clone_synthesizable_payload_cap;
+mod shell_drop_safety_payload_cap;

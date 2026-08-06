@@ -629,6 +629,15 @@ fn main() {
 /// D5 (consume): explicitly closing an owned handle held in ACTOR STATE
 /// (`sink.close()` on the bare state field) is refused fail-closed — the actor's
 /// `state_drop_fn` is the single owner, so an explicit close would double-free.
+///
+/// The refusal now arrives from the checker instead of MIR: consuming an actor
+/// state field without re-initialising it is refused for every affine state
+/// field, and that rule reaches this program first. The property under test is
+/// unchanged — a state-held handle cannot be explicitly closed — only the layer
+/// that says so. The MIR authority keeps its own pin in
+/// `explicit_close_of_state_field_handle_is_refused_by_mir_after_reinit`, whose
+/// shape the checker rule admits, so the MIR refusal cannot rot behind the
+/// earlier one.
 #[test]
 fn explicit_close_of_state_field_handle_is_refused() {
     let source = r#"import std::stream;
@@ -655,8 +664,49 @@ fn main() {
 "#;
     let stderr = compile_expect_refusal("state_field_close_refused", source);
     assert!(
-        stderr.contains("closing an owned handle held in actor state") && stderr.contains("Sink"),
+        stderr.contains("actor state `sink` is consumed here and never re-initialised")
+            && stderr.contains("actor state outlives the handler that consumed it"),
         "explicit close of a state-held handle must be refused fail-closed; got:\n{stderr}"
+    );
+}
+
+/// D5 (consume), MIR authority: the same refusal, reached through a shape the
+/// checker's state-hole rule admits.
+///
+/// Re-initialising `sink` plugs the hole the checker cares about, so the
+/// program gets past it and MIR still refuses the close on its own grounds —
+/// the actor's `state_drop_fn` is the single owner. Without this pin the MIR
+/// refusal would be shadowed by the checker's and could regress unobserved.
+#[test]
+fn explicit_close_of_state_field_handle_is_refused_by_mir_after_reinit() {
+    let source = r#"import std::stream;
+
+actor Producer {
+    var sink: stream.Sink<string>;
+
+    receive fn go() {
+        sink.send("x");
+        sink.close();
+        let (fresh, _unused) = stream.pipe(2);
+        sink = fresh;
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    let p = spawn Producer(sink: sink);
+    p.go();
+    sleep(100ms);
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stderr = compile_expect_refusal("state_field_close_reinit_refused", source);
+    assert!(
+        stderr.contains("closing an owned handle held in actor state") && stderr.contains("Sink"),
+        "the MIR refusal for a state-held handle close must still fire; got:\n{stderr}"
     );
 }
 

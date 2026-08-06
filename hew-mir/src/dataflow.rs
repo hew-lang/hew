@@ -522,6 +522,79 @@ pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     visited
 }
 
+/// Runtime C-ABI symbols whose Hew-level return type is `Never` — the
+/// `panic()` / `exit()` shims. Derived from the stdlib catalog's
+/// `BuiltinTy::Never` rows so this set cannot drift from the checker's own
+/// divergence authority: a new never-returning shim added to the catalog is
+/// picked up here without a second registration site.
+fn diverging_runtime_symbols() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SYMBOLS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SYMBOLS.get_or_init(|| {
+        hew_hir::stdlib_catalog::entries()
+            .iter()
+            .filter(|entry| matches!(entry.return_ty, hew_hir::stdlib_catalog::BuiltinTy::Never))
+            .filter_map(|entry| match entry.linkage {
+                hew_hir::stdlib_catalog::BuiltinLinkage::RuntimeFfiShim { symbol } => Some(symbol),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Block IDs that can actually EXECUTE at runtime: reachable from the entry
+/// block along terminator edges, never crossing the continuation edge of a
+/// call whose callee diverges (`hew_panic_msg` / `hew_exit`, the catalog's
+/// `Never`-typed runtime shims — see [`diverging_runtime_symbols`]).
+///
+/// A `Terminator::Call` structurally requires a `next` block, so lowering a
+/// `Never`-typed call still emits a continuation (opened as a dead cursor,
+/// often materialising a poison result and a `Goto` to the enclosing join).
+/// That deadness is a lowering-time cursor flag and does not survive into
+/// `BasicBlock`, so the plain structural [`reachable_from_entry`] view treats
+/// the poison path as executable. Letting such a path contribute to a join
+/// block's `meet_predecessors` kills — to `Uninit` — every binding that is
+/// Live on all EXECUTABLE paths into the join. For a match whose sibling arm
+/// panics (`let e = match f() { Ok(x) => x, Err(_) => panic(...) }`), that
+/// false `Uninit` meet (a) moved the payload binder's admitted composite
+/// release from the function exit to the arm's scope-close `Goto` — BEFORE
+/// the join's field loads read the record, a use-after-free that turned into
+/// a double-free abort on every `net.connect_timeout` call — and (b) starved
+/// the return exits of the balancing drop, leaking one heap block per call in
+/// the shapes where (a) did not fire. Excluding the never-executing poison
+/// predecessors makes the meet agree with runtime reality: the binder stays
+/// Live through the join and its single release fires at the true exits,
+/// after every read.
+///
+/// Diagnostics and the RPO worklist deliberately keep the structural
+/// [`reachable_from_entry`] view: post-panic code is still swept for
+/// diagnostics, and every block still receives an exit-state entry.
+pub(crate) fn execution_reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = Vec::new();
+    if by_id.contains_key(&0) {
+        stack.push(0);
+        visited.insert(0);
+    }
+    while let Some(cur) = stack.pop() {
+        if let Some(block) = by_id.get(&cur) {
+            if let Terminator::Call { callee, .. } = &block.terminator {
+                if diverging_runtime_symbols().contains(callee.as_str()) {
+                    // The call never returns; its continuation edge is dead.
+                    continue;
+                }
+            }
+            for s in block.successors() {
+                if visited.insert(s) {
+                    stack.push(s);
+                }
+            }
+        }
+    }
+    visited
+}
+
 pub(crate) fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
@@ -1194,6 +1267,11 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
     // every live binding (params included) as `Uninit`, producing a
     // false-positive `InitialisedBeforeUse` at the join.
     let reachable = reachable_from_entry(blocks);
+    // Executable blocks only, for the predecessor meets: a post-panic poison
+    // continuation is structurally reachable but never runs, and its `Uninit`
+    // contribution at a join must not kill bindings Live on every executable
+    // path (see `execution_reachable_from_entry`).
+    let execution_reachable = execution_reachable_from_entry(blocks);
 
     // The function's entry block is id 0 by construction (see
     // `lower::Builder::finalize_blocks`).
@@ -1251,7 +1329,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
             let preds_of_bb = preds.get(&cur_id).unwrap_or(&empty);
             // Phase 1 uses the visited-only meet so back-edges don't
             // contribute `Uninit` before they are processed.
-            meet_predecessors(preds_of_bb, &exit_states, &reachable)
+            meet_predecessors(preds_of_bb, &exit_states, &execution_reachable)
         };
         // In Phase 1 we only propagate state — diagnostics are discarded.
         let mut phase1_checks: Vec<MirCheck> = Vec::new();
@@ -1321,7 +1399,7 @@ pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
             let empty = Vec::new();
             let preds_of_bb = preds.get(&blk_id).unwrap_or(&empty);
             // Phase 2 uses ALL predecessors (all are now in exit_states).
-            meet_predecessors(preds_of_bb, &exit_states, &reachable)
+            meet_predecessors(preds_of_bb, &exit_states, &execution_reachable)
         };
         entry_states.insert(blk_id, entry.clone());
         transfer_block(

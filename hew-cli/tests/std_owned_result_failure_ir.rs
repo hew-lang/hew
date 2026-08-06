@@ -114,44 +114,44 @@ fn stdlib_raw_owned_failure_handles_are_released_once_after_detail_is_copied() {
 
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$CommandOutput$ProcessError\" @\"process$try_run\"",
-        "@\"process$last_process_error\"",
+        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run\"",
+        "@\"std$process$last_process_error\"",
         "call void @hew_process_result_free",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$CommandOutput$ProcessError\" @\"process$try_run_argv\"",
-        "@\"process$last_process_error\"",
+        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run_argv\"",
+        "@\"std$process$last_process_error\"",
         "call void @hew_process_result_free",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %Child @\"process$start\"",
-        "@\"process$last_process_error\"",
+        "define internal %std.process.Child @\"std$process$start\"",
+        "@\"std$process$last_process_error\"",
         "call void @hew_process_drop",
-        Some("@\"Child::close\""),
+        Some("@\"std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$Child$ProcessError\" @\"process$try_start\"",
-        "@\"process$last_process_error\"",
+        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start\"",
+        "@\"std$process$last_process_error\"",
         "call void @hew_process_drop",
-        Some("@\"Child::close\""),
+        Some("@\"std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$Child$ProcessError\" @\"process$try_start_argv\"",
-        "@\"process$last_process_error\"",
+        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start_argv\"",
+        "@\"std$process$last_process_error\"",
         "call void @hew_process_drop",
-        Some("@\"Child::close\""),
+        Some("@\"std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %Expr @\"cron$parse\"",
-        "@\"cron$cron_last_error_message\"",
+        "define internal %std.time.cron.Expr @\"std$time$cron$parse\"",
+        "@\"std$time$cron$cron_last_error_message\"",
         "call void @hew_cron_free",
-        Some("@\"Expr::close\""),
+        Some("@\"std.time.cron.Expr::close\""),
     );
 }

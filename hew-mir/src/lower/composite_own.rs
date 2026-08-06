@@ -1018,7 +1018,9 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .collect()
 }
 /// True when every variant payload of the tagged-union enum behind `ty` is
-/// either a bit-copy value or a plain `string` leaf.
+/// clone-synthesizable by the `EnumInPlace` helper family: a bit-copy value, a
+/// plain `string` leaf, or a nested enum whose own payloads recursively satisfy
+/// the same.
 ///
 /// This bounds the blast radius of the `string_binder_read_is_user_fn_borrow`
 /// exemption. `note_payload_escape` is deliberately coarse — one escaping
@@ -1053,12 +1055,55 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// fail-closed posture (it keeps leaking, exactly as before, and still
 /// compiles).
 ///
-/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
-/// payload that is neither `string` nor bit-copy answers `false`.
-fn enum_payloads_are_plain_string(
+/// A NESTED enum payload (`Ok(Status)` where `Status` is itself a heap-owning
+/// enum with a `string` and an `i64` variant) recurses: it is clone-synthesizable
+/// exactly when ITS variant payloads are, so the `EnumInPlace` clone half — which
+/// walks the nested enum's own tag-aware helper — synthesizes without hitting a
+/// dup-less leaf. This is the `Result<Status, i64>` shape #2717's substrate
+/// reproduction exercises; without the recursion the outer `Result` failed the
+/// predicate on its `Named` payload and disabled the borrow exemption for the
+/// inner `Described(s)` string read, leaking the payload.
+///
+/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, a record /
+/// handle / resource `Named` payload, or any payload that is neither `string`,
+/// bit-copy, nor a synthesizable nested enum answers `false`. A recursion budget
+/// bounds pathological mutually-nested layouts (a genuinely recursive enum is
+/// `is_indirect` and already short-circuits).
+fn enum_payloads_are_clone_synthesizable(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],
 ) -> bool {
+    fn field_is_synthesizable(
+        field_ty: &ResolvedTy,
+        enum_layouts: &[crate::model::EnumLayout],
+        depth: u32,
+    ) -> bool {
+        if matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty) {
+            return true;
+        }
+        // A nested enum payload is synthesizable iff its own payloads are —
+        // recurse under a depth budget so a pathological non-`is_indirect`
+        // nesting cannot diverge. Non-enum `Named` payloads (records, handles,
+        // resources) stay fail-closed.
+        if depth == 0 {
+            return false;
+        }
+        let ResolvedTy::Named { name, args, .. } = field_ty else {
+            return false;
+        };
+        let Some(layout) = crate::model::find_enum_layout(name, args, enum_layouts) else {
+            return false;
+        };
+        if layout.is_indirect {
+            return false;
+        }
+        layout.variants.iter().all(|variant| {
+            variant
+                .field_tys
+                .iter()
+                .all(|inner| field_is_synthesizable(inner, enum_layouts, depth - 1))
+        })
+    }
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
@@ -1070,9 +1115,10 @@ fn enum_payloads_are_plain_string(
         return false;
     }
     layout.variants.iter().all(|variant| {
-        variant.field_tys.iter().all(|field_ty| {
-            matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty)
-        })
+        variant
+            .field_tys
+            .iter()
+            .all(|field_ty| field_is_synthesizable(field_ty, enum_layouts, 8))
     })
 }
 /// True when `ty` is a payload that is copied bit-for-bit and owns nothing: a
@@ -1191,7 +1237,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    let mut all_candidates_are_plain_string_payload = true;
+    let mut all_candidates_clone_synthesizable = true;
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1202,7 +1248,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &= enum_payloads_are_plain_string(ty, enum_layouts);
+        all_candidates_clone_synthesizable &=
+            enum_payloads_are_clone_synthesizable(ty, enum_layouts);
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1843,7 +1890,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // active payload binder (if any) is then the sole close
                     // authority. This is the same positive cap used for user
                     // functions, applied to the complete borrow-safe surface.
-                    let read_is_borrow = all_candidates_are_plain_string_payload
+                    // The cap recurses through NESTED enum payloads: a
+                    // `Result<Status, i64>` whose `Ok` payload is itself a
+                    // scalar-and-string enum stays synthesizable, so the inner
+                    // `Described(s)` string read is correctly a borrow and the
+                    // outer composite keeps its `EnumInPlace` drop (#2717 — the
+                    // scalar sibling of the NESTED enum, not a Move, was the
+                    // residual leak the plain-string-only cap left excluded).
+                    let read_is_borrow = all_candidates_clone_synthesizable
                         && (binder_read_is_borrow_safe_terminator(
                             &block.terminator,
                             suspend_kinds.get(&block.id),
@@ -9954,4 +10008,4 @@ mod plain_vec_drop_interior_alias_and_escape {
 }
 
 #[cfg(test)]
-mod plain_string_payload_cap;
+mod clone_synthesizable_payload_cap;

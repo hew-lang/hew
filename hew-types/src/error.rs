@@ -1451,7 +1451,15 @@ mod tests {
     fn test_error_with_suggestions() {
         let err =
             TypeError::inference_failed(0..5, "variable").with_suggestion("use let x: i32 = ...");
-        assert!(!err.suggestions.is_empty());
+        // `inference_failed` seeds its own suggestion; `with_suggestion` appends
+        // after it — a dropped or reordered suggestion fails this exact pin.
+        assert_eq!(
+            err.suggestions,
+            vec![
+                "consider adding a type annotation".to_string(),
+                "use let x: i32 = ...".to_string(),
+            ]
+        );
     }
 
     #[test]

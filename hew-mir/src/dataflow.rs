@@ -1684,8 +1684,8 @@ pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
 mod tests {
     use super::*;
     use crate::model::{
-        DropFnSpec, FieldAddr, FieldOffset, NeutralizeAuthority, PreparedCarrierBoundary,
-        RuntimeCall,
+        CallAuthority, DropFnSpec, FieldAddr, FieldOffset, NeutralizeAuthority,
+        PreparedCarrierBoundary, RuntimeCall,
     };
 
     #[test]
@@ -2163,6 +2163,80 @@ mod tests {
         assert!(
             !result.entry_states.contains_key(&2),
             "the diagnostic dataflow pass must not materialise unreachable cursor state"
+        );
+    }
+
+    /// Build the two-arm join CFG both diverging-continuation tests share:
+    /// bb0 branches to an ok arm (bb1, binds `b`, goto join) and a failing
+    /// arm (bb2, calls `callee` whose continuation bb4 gotos the join bb3).
+    fn panic_join_blocks(binding: BindingId, callee: &str) -> Vec<BasicBlock> {
+        vec![
+            bb(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            BasicBlock {
+                id: 1,
+                statements: vec![MirStatement::Bind {
+                    binding,
+                    name: "payload".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::String,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            bb(
+                2,
+                Terminator::Call {
+                    callee: callee.to_string(),
+                    authority: CallAuthority::Direct,
+                    args: vec![],
+                    dest: None,
+                    next: 4,
+                },
+            ),
+            bb(3, Terminator::Return),
+            bb(4, Terminator::Goto { target: 3 }),
+        ]
+    }
+
+    #[test]
+    fn diverging_call_continuation_does_not_kill_join_liveness() {
+        // The Err-arm-panics match shape: `Ok(x)` binds on one arm, the
+        // sibling arm calls the never-returning panic shim and its poison
+        // continuation gotos the join. The continuation never executes, so
+        // its Uninit contribution must not kill the ok-arm binding at the
+        // join — that false meet moved the binding's composite release from
+        // the function exit to the arm edge, freeing the record before the
+        // join's field loads read it (the net.connect_timeout double-free).
+        let b = BindingId(40);
+        let blocks = panic_join_blocks(b, "hew_panic_msg");
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
+            Some(BindingState::Live),
+            "a never-executing panic continuation must not poison the join meet"
+        );
+    }
+
+    #[test]
+    fn ordinary_call_continuation_still_contributes_uninit_at_join() {
+        // Control: a continuation of a NORMAL call really executes, so the
+        // one-arm-only binding is genuinely absent on that path and the meet
+        // must stay Uninit — dropping it at the join would read a slot the
+        // other path never initialised.
+        let b = BindingId(41);
+        let blocks = panic_join_blocks(b, "hew_string_concat");
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
+            None,
+            "an executable continuation path must keep the binding Uninit at the join"
         );
     }
 

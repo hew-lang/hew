@@ -54,13 +54,20 @@ fn result_layout(name: &str, ok: Vec<ResolvedTy>) -> crate::model::EnumLayout {
 }
 
 fn admits(ok: Vec<ResolvedTy>) -> bool {
+    admits_with_records(ok, &HashMap::new())
+}
+
+fn admits_with_records(
+    ok: Vec<ResolvedTy>,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+) -> bool {
     let args = vec![
         ok.first().cloned().unwrap_or(ResolvedTy::Unit),
         ResolvedTy::String,
     ];
     let ty = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
-    enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)])
+    enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)], record_field_orders)
 }
 
 #[test]
@@ -130,15 +137,73 @@ fn opaque_and_resource_payloads_are_refused() {
     );
     assert!(
         !admits(vec![builtin("Rec", vec![])]),
-        "a user record payload is not a bit-copy leaf and stays refused \
-         (fail-closed: it keeps leaking, exactly as before, and compiles)"
+        "an UNRESOLVABLE record payload (no field order registered) has no proof \
+         its leaves are clone-drop-safe and stays refused (fail-closed)"
+    );
+}
+
+#[test]
+fn nested_string_enum_payloads_are_admitted() {
+    // `Outer::Wrap(Inner)` where `Inner::Text(string)` — the whole-nested-enum
+    // handoff shape. The inner enum's leaves are all `string`, so the outer
+    // composite is clone-drop-safe and must be admitted.
+    let inner = builtin("Inner", vec![]);
+    let inner_layout = crate::model::EnumLayout {
+        name: "Inner".to_string(),
+        tag_width: 1,
+        variants: vec![crate::model::MachineVariantLayout {
+            name: "Text".to_string(),
+            field_tys: vec![ResolvedTy::String],
+            field_names: vec![],
+        }],
+        is_indirect: false,
+    };
+    let args = vec![inner.clone(), ResolvedTy::String];
+    let outer = builtin("Result", args.clone());
+    let key = crate::lower::mangle_layout_key("Result", &args);
+    assert!(
+        enum_payloads_are_plain_string(
+            &outer,
+            &[result_layout(&key, vec![inner]), inner_layout],
+            &HashMap::new()
+        ),
+        "a nested enum whose leaves are all string must be admitted"
+    );
+}
+
+#[test]
+fn record_of_strings_is_admitted_and_record_with_resource_is_refused() {
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Holder".to_string(),
+        vec![
+            ("label".to_string(), ResolvedTy::String),
+            ("count".to_string(), ResolvedTy::I64),
+        ],
+    );
+    assert!(
+        admits_with_records(vec![builtin("Holder", vec![])], &orders),
+        "a record payload whose fields are all string/scalar leaves is \
+         clone-drop-safe and must be admitted"
+    );
+    orders.insert(
+        "Guarded".to_string(),
+        vec![("conn".to_string(), builtin("Connection", vec![]))],
+    );
+    assert!(
+        !admits_with_records(vec![builtin("Guarded", vec![])], &orders),
+        "a record payload carrying a `#[resource]`-class leaf must stay refused"
     );
 }
 
 #[test]
 fn an_unresolvable_layout_is_refused() {
     assert!(
-        !enum_payloads_are_plain_string(&builtin("Result", vec![ResolvedTy::String]), &[]),
+        !enum_payloads_are_plain_string(
+            &builtin("Result", vec![ResolvedTy::String]),
+            &[],
+            &HashMap::new()
+        ),
         "no layout means no proof"
     );
 }

@@ -1058,22 +1058,58 @@ pub(super) fn proven_borrow_whole_arg_locals(
 fn enum_payloads_are_plain_string(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return false;
-    };
-    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
-    let Some(layout) = layout else {
-        return false;
-    };
-    if layout.is_indirect {
+    payload_leaf_is_clone_drop_safe(ty, enum_layouts, record_field_orders, 0)
+}
+/// Whether every heap leaf reachable through `ty` is clone-and-drop-safe — a
+/// `string`, a bit-copy scalar, or a nested enum/record/tuple/array built only
+/// from such leaves. This is the real property the borrow cap needs: keeping the
+/// enum owner alive on a transient payload borrow is sound only when every active
+/// payload can be cloned AND dropped. An affine/IO/`#[resource]`/opaque/closure
+/// leaf (or `Vec`/`Bytes`, which this scan does not admit) answers `false` and
+/// keeps its composite on the pre-existing fail-closed leak posture — never a
+/// double-free. Without the recursion a whole-nested-enum handoff (`match outer {
+/// Wrap(w) => match w { Text(s) => s.len() } }`) failed the flat plain-string
+/// test on its nested-enum payload, disabling the cap, so the ordinary `s.len()`
+/// borrow was misread as a payload escape and both enum owners leaked. `depth`
+/// is a defensive backstop; inline nesting is already bounded by finite size.
+fn payload_leaf_is_clone_drop_safe(
+    ty: &ResolvedTy,
+    enum_layouts: &[crate::model::EnumLayout],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    depth: u32,
+) -> bool {
+    if depth > 32 {
         return false;
     }
-    layout.variants.iter().all(|variant| {
-        variant.field_tys.iter().all(|field_ty| {
-            matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty)
-        })
-    })
+    if matches!(ty, ResolvedTy::String) || ty_is_bit_copy_payload(ty) {
+        return true;
+    }
+    let recurse = |leaf: &ResolvedTy| {
+        payload_leaf_is_clone_drop_safe(leaf, enum_layouts, record_field_orders, depth + 1)
+    };
+    match ty {
+        ResolvedTy::Tuple(elems) => elems.iter().all(recurse),
+        ResolvedTy::Array(elem, _) => recurse(elem),
+        // A nested inline enum recurses into every variant payload; a nested
+        // record into every declared field. An indirect (heap-boxed) enum, or a
+        // generic record whose fields resolve only after substitution, is left
+        // unresolved on the fail-closed leak posture.
+        ResolvedTy::Named { name, args, .. } => {
+            if let Some(layout) = crate::model::find_enum_layout(name, args, enum_layouts) {
+                return !layout.is_indirect
+                    && layout
+                        .variants
+                        .iter()
+                        .all(|variant| variant.field_tys.iter().all(&recurse));
+            }
+            record_field_orders
+                .get(name)
+                .is_some_and(|fields| fields.iter().all(|(_, field_ty)| recurse(field_ty)))
+        }
+        _ => false,
+    }
 }
 /// True when `ty` is a payload that is copied bit-for-bit and owns nothing: a
 /// scalar leaf, or a tuple / fixed-size array built exclusively from such
@@ -1202,7 +1238,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &= enum_payloads_are_plain_string(ty, enum_layouts);
+        all_candidates_are_plain_string_payload &=
+            enum_payloads_are_plain_string(ty, enum_layouts, record_field_orders);
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {

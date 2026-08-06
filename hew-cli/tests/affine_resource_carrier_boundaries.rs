@@ -378,7 +378,7 @@ fn raw_mir_carries_guards_and_preserves_the_parameter_prefix() {
     let arena = raw_mir("arena_guard", ARENA_BODY);
     let insert_fn = function(
         &arena,
-        "fn Arena::insert$$Token(Arena<Token>, Token) -> Key<Token>",
+        "fn std.arena.Arena::insert$$Token(std.arena.Arena<Token>, Token) -> std.arena.Key<Token>",
     );
     assert!(
         insert_fn.contains(
@@ -493,7 +493,7 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success()
-            && stderr.contains("Vec<Receiver<Token>>")
+            && stderr.contains("Vec<std.channel.Receiver<Token>>")
             && stderr.contains("cannot be cloned")
             && stderr.contains("affine close contract"),
         "Receiver has no dup helper and must be rejected by the shared affine-clone authority:\n{stderr}"

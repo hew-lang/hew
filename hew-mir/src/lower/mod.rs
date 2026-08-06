@@ -720,6 +720,13 @@ struct Builder {
     /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
     /// ordinary calls continue to borrow the caller's reference.
     pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// MIR locals that RECEIVED a variant payload's sole ownership through an
+    /// emitted `NeutralizePayloadSlot { transferee: Some(..) }` on a
+    /// `MachineVariant`/`EnumVariant` slot (the uniform owned-carrier payload
+    /// move-out, D185). The neutralize nulls the carrier's slot, so the
+    /// transferee already holds the one live share — a typed-join branch
+    /// retain on such a local would strand a `+1` nothing discharges.
+    pub(crate) variant_payload_transferee_locals: HashSet<u32>,
     /// Exact join publications whose HIR result fact is a borrowed string.
     /// Return and owning-sink planning may mint a share from this typed row;
     /// ordinary reads keep borrowing the selected source owner.
@@ -3142,6 +3149,15 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // Exact tagged-union layout keys.  A `ResolvedTy::Named` derives the same
     // key from its full owner plus concrete argument spine before consulting
     // this set; it is never matched by final path segment.
+    // Machines ONLY. `ty_is_machine` must match real machines and never an
+    // inline user enum (which DOES enter the owned call-carrier protocol), so
+    // it consults this set instead of the combined `machine_layout_names`
+    // below. Derived from the same `machine_layouts` before the user-enum keys
+    // are chained in.
+    let machine_decl_layout_names: HashSet<String> = machine_layouts
+        .iter()
+        .flat_map(|layout| [layout.name.clone(), layout.event_name.clone()])
+        .collect();
     let machine_layout_names: HashSet<String> = machine_layouts
         .iter()
         .flat_map(|layout| [layout.name.clone(), layout.event_name.clone()])
@@ -3276,6 +3292,13 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     param_ownership
         .produced_value_facts
         .clone_from(&module.produced_value_facts);
+    // Machine layout keys only exist post-lowering, so inject the machines-only
+    // name authority here (not in the HIR-scoped fact pass). `ty_is_machine`
+    // reads it via the Rc-shared facts to exclude real machines — never inline
+    // user enums — from the owned call-carrier protocol.
+    param_ownership
+        .machine_decl_layout_names
+        .clone_from(&machine_decl_layout_names);
     let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(param_ownership);
     for item in &module.items {
         match item {
@@ -3879,6 +3902,15 @@ pub(crate) struct ParamOwnershipFacts {
     /// Positive checker/HIR authority that the parameter type exposes
     /// caller-visible storage.
     caller_visible_param_projections: HashSet<(hew_hir::ItemId, usize)>,
+    /// Machines-ONLY tagged-union layout keys — every machine layout name plus
+    /// its event-companion key, WITHOUT the user-enum keys carried in the
+    /// Builder's combined `machine_layout_names`. `ty_is_machine` consults this
+    /// so an ordinary inline user enum is never misread as a machine and denied
+    /// the owned call-carrier protocol. Populated from `module.machine_layouts`
+    /// after `compute_param_ownership` (the HIR pass has no layout keys); empty
+    /// until then. Travels on the Rc-shared facts so every Builder — including
+    /// the machine-`__step` synth builders — reads the same authority.
+    machine_decl_layout_names: HashSet<String>,
 }
 
 /// Shared context for the consume-detection and borrow-site walkers. Bundles

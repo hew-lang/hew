@@ -52,11 +52,21 @@ impl Builder {
     /// contract passes machines BY VALUE — the caller keeps an independent
     /// copy — so transfer/neutralize semantics are wrong for it exactly as
     /// they are for indirect enums.
+    ///
+    /// This consults the machines-ONLY `machine_decl_layout_names`, never the
+    /// combined `machine_layout_names`. The latter also carries every user enum
+    /// layout key so `is_known_actor_runtime_ty` can classify inline tagged
+    /// unions as `BitCopy`; consulting it here would misread an ordinary inline
+    /// user enum (`Payload`, `Mixed`) as a machine and wrongly deny it the
+    /// carrier protocol it must enter.
     pub(crate) fn ty_is_machine(&self, ty: &hew_types::ResolvedTy) -> bool {
         matches!(
             ty,
             hew_types::ResolvedTy::Named { .. }
-                if super::machine_layout_ty_matches(&self.machine_layout_names, ty)
+                if super::machine_layout_ty_matches(
+                    &self.param_ownership.machine_decl_layout_names,
+                    ty,
+                )
         )
     }
 
@@ -568,6 +578,20 @@ impl Builder {
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
                 });
+                // A variant-payload slot's neutralize hands `dest` the ONE
+                // live share — the carrier's guarded drop releases nothing
+                // for this slot afterwards. Record it so the typed-join
+                // branch retain, which still reads the legacy "payload is
+                // borrowed" HIR fact, does not strand an extra `+1` on the
+                // transferred value (`retain_typed_join_branch`).
+                if matches!(
+                    source,
+                    Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                ) {
+                    if let Some(local) = base_local(dest) {
+                        self.variant_payload_transferee_locals.insert(local);
+                    }
+                }
                 if let Some(flag) = transfer_guard {
                     self.push_instr(Instr::ConstI64 {
                         dest: flag,

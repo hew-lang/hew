@@ -3109,6 +3109,11 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
 /// `type Item = T` associated-type binding is checker-only metadata and does
 /// not block this projection-free method (the method's return type is the
 /// concrete `Option<T>`, not a `Self::Item` projection).
+///
+/// `Iterator::next` takes `var self`, so the impl receiver is `var p:
+/// Pair<T>` (a concretely-typed spelling of `var self`) and the call-site
+/// binding is `var` — the dual-return `(Option<T>, Pair<T>)` write-back ABI
+/// must agree between the dispatch site and the monomorphised body.
 #[test]
 fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     require_codegen();
@@ -3120,12 +3125,12 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
         "pub type Pair<T> { left: T; right: T; }\n\
          impl<T> Iterator for Pair<T> where T: Display {\n\
          \x20   type Item = T;\n\
-         \x20   fn next(p: Pair<T>) -> Option<T> {\n\
+         \x20   fn next(var p: Pair<T>) -> Option<T> {\n\
          \x20       Some(p.left)\n\
          \x20   }\n\
          }\n\
          fn main() {\n\
-         \x20   let p = Pair { left: 77, right: 88 };\n\
+         \x20   var p = Pair { left: 77, right: 88 };\n\
          \x20   match p.next() {\n\
          \x20       Some(x) => println(x),\n\
          \x20       None => println(-1),\n\
@@ -3151,6 +3156,69 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
         String::from_utf8_lossy(&output.stdout),
         "77\n",
         "Pair::next under where T: Display must return Some(left) and print 77",
+    );
+}
+
+/// Pinned ABI regression — a `var self` receiver spelled as the impl's own
+/// concrete type (`var c: Counter<T>`, not literal `Self`) behind where-clause
+/// trait dispatch must use the dual-return `(Option<T>, Counter<T>)` ABI on
+/// BOTH sides of the call. The registry/checker recognise the concretely-typed
+/// spelling; when body lowering used a narrower Self-only predicate the
+/// monomorphised body returned a plain `Option$$i64` against a call dest of
+/// `{ Option$$i64, Counter$$i64 }` — a fail-closed struct-type mismatch at
+/// every dispatch site. Two `next()` calls pin both tuple fields: field 0 (the
+/// `Option` payload, `77`) and field 1 (the written-back receiver — the second
+/// call prints `88` only if the mutation actually landed).
+#[test]
+fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let hew_src = dir.path().join("counter_iter.hew");
+    std::fs::write(
+        &hew_src,
+        "pub type Counter<T> { current: T; step: T; }\n\
+         impl<T> Iterator for Counter<T> where T: Display {\n\
+         \x20   type Item = T;\n\
+         \x20   fn next(var c: Counter<T>) -> Option<T> {\n\
+         \x20       let out = c.current;\n\
+         \x20       c.current = c.step;\n\
+         \x20       Some(out)\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   var c = Counter { current: 77, step: 88 };\n\
+         \x20   match c.next() {\n\
+         \x20       Some(x) => println(x),\n\
+         \x20       None => println(-1),\n\
+         \x20   }\n\
+         \x20   match c.next() {\n\
+         \x20       Some(x) => println(x),\n\
+         \x20       None => println(-1),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&hew_src)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "hew run should succeed for var-self concrete-receiver dispatch; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "77\n88\n",
+        "first next() must yield the original current (77); the second must \
+         yield the written-back value (88) — anything else means the \
+         dual-return write-back ABI dropped the receiver update",
     );
 }
 

@@ -9648,17 +9648,10 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[String],
     ) {
-        // `self_type_name` is the symbol-prefix name — may be the mangled form
-        // for concrete specialised impls (e.g. `"Wrapper$$i64"`). The var-self
-        // check must use the bare AST receiver type name (e.g. `"Wrapper"`) so
-        // the param-type annotation `Wrapper<i64>` still matches (#2270).
-        let bare_type_name = self_type_name
-            .split_once("$$")
-            .map_or(self_type_name, |(bare, _)| bare);
-        let bare_type_name = hew_types::short_name(bare_type_name);
+        let bare_type_name = Self::bare_impl_self_type_name(self_type_name);
         let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
         self.register_fn_entry(&symbol, method);
-        if Self::is_var_self_method_for_type(method, bare_type_name) {
+        if Self::is_var_self_method_for_type(method, Some(bare_type_name)) {
             if let Some(entry) = self.fn_registry.get_mut(&symbol) {
                 let Some(receiver_ty) = entry.param_tys.first().cloned() else {
                     unreachable!(
@@ -9707,17 +9700,39 @@ impl LowerCtx {
         self.extern_fn_names.insert(decl.name.clone());
     }
 
-    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: &str) -> bool {
-        method.params.first().is_some_and(|param| {
-            param.is_mutable && Self::is_receiver_param_for_type(param, self_type_name)
-        })
+    /// Reduce a symbol-prefix impl self-type name to the bare AST receiver
+    /// type name — may be the mangled form for concrete specialised impls
+    /// (e.g. `"Wrapper$$i64"`), and must compare as `"Wrapper"` so the
+    /// param-type annotation `Wrapper<i64>` still matches (#2270).
+    ///
+    /// The SINGLE derivation feeding [`Self::is_var_self_method_for_type`]:
+    /// both the fn-registry ABI registration (dual-return tuple) and the
+    /// body-lowering return wrap key off this same name reduction so the
+    /// registered callee return type and the emitted body agree.
+    fn bare_impl_self_type_name(self_type_name: &str) -> &str {
+        let bare = self_type_name
+            .split_once("$$")
+            .map_or(self_type_name, |(bare, _)| bare);
+        hew_types::short_name(bare)
     }
 
-    fn is_var_self_method(method: &FnDecl) -> bool {
-        method
-            .params
-            .first()
-            .is_some_and(|param| param.is_mutable && Self::is_receiver_param(param))
+    /// THE var-self receiver predicate. A method takes a `var self` receiver
+    /// iff its first parameter is mutable and typed `Self` — or, inside an
+    /// impl block, typed as the impl's own target type (the checker's
+    /// `is_receiver_param` accepts both spellings, so the ABI decision here
+    /// must too). Every site that decides the dual-return `(ret, Self)` ABI
+    /// carrier — registration and body lowering — goes through this one
+    /// function; a second predicate is how the call site and the callee
+    /// disagree on the return struct (the exact fail-closed ABI mismatch a
+    /// `fn next(var p: Pair<T>)` where-clause impl used to hit).
+    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: Option<&str>) -> bool {
+        method.params.first().is_some_and(|param| {
+            param.is_mutable
+                && match self_type_name {
+                    Some(name) => Self::is_receiver_param_for_type(param, name),
+                    None => Self::is_receiver_param(param),
+                }
+        })
     }
 
     fn is_receiver_param_for_type(param: &Param, self_type_name: &str) -> bool {
@@ -11897,6 +11912,7 @@ impl LowerCtx {
                 &symbol,
                 span.clone(),
                 &type_params,
+                Some(&symbol_self_name),
             );
             // Explicit impl-method bodies are written in the file that declares
             // the impl, so record as root-origin when this impl is lowered from
@@ -12021,6 +12037,7 @@ impl LowerCtx {
                             &symbol,
                             span.clone(),
                             &type_params,
+                            Some(&symbol_self_name),
                         );
                         if let Some(declaration) = &synthetic_default_declaration {
                             hir_method.declaration = declaration.clone();
@@ -12091,7 +12108,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> HirFn {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[])
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
     fn lower_imported_fn_with_name(
@@ -12300,6 +12317,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         impl_type_params: &[String],
+        impl_self_type_name: Option<&str>,
     ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
@@ -12376,7 +12394,13 @@ impl LowerCtx {
                 intrinsic_id: None,
             };
         }
-        let var_self_receiver = if Self::is_var_self_method(func) {
+        // Same predicate AND same name reduction as
+        // `register_impl_method_fn_entry`: the fn-registry entry for `name`
+        // already carries the dual-return `(ret, Self)` tuple when this fires,
+        // so the wrapped body below is what makes the emitted return type
+        // match the ABI every call site was told about.
+        let bare_self_type_name = impl_self_type_name.map(Self::bare_impl_self_type_name);
+        let var_self_receiver = if Self::is_var_self_method_for_type(func, bare_self_type_name) {
             params.first().cloned()
         } else {
             None

@@ -150,57 +150,6 @@ fn typed_trait_call_result_ownership(
         .then(|| ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh))
 }
 
-fn call_argument_is_proven_owned(
-    site: SiteId,
-    verifier: &Verifier,
-    facts: &HashMap<SiteId, crate::node::HirProducedValueFact>,
-    visiting: &mut HashSet<SiteId>,
-) -> bool {
-    use ProducedValueOwnership as Ownership;
-
-    if !visiting.insert(site) {
-        return false;
-    }
-    let result = facts.get(&site).is_some_and(|fact| match fact.ownership {
-        Ownership::Owned { .. } | Ownership::NoOwner => true,
-        Ownership::Borrowed if fact.producer == crate::node::HirProducedValueProducer::Literal => {
-            true
-        }
-        Ownership::Borrowed | Ownership::ReceiverIdentity
-            if fact.producer == crate::node::HirProducedValueProducer::BindingRef =>
-        {
-            verifier
-                .binding_reference_targets
-                .get(&site)
-                .is_some_and(|binding| {
-                    verifier
-                        .binding_reference_sites
-                        .get(binding)
-                        .is_some_and(|references| references.len() == 1)
-                        && verifier
-                            .binding_definitions
-                            .get(binding)
-                            .is_some_and(|definitions| {
-                                definitions.len() == 1
-                                    && facts.get(&definitions[0]).is_some_and(|definition| {
-                                        definition.producer
-                                            != crate::node::HirProducedValueProducer::BindingRef
-                                    })
-                                    && call_argument_is_proven_owned(
-                                        definitions[0],
-                                        verifier,
-                                        facts,
-                                        visiting,
-                                    )
-                            })
-                })
-        }
-        Ownership::Borrowed | Ownership::ReceiverIdentity | Ownership::Unknown => false,
-    });
-    visiting.remove(&site);
-    result
-}
-
 fn finalize_resolved_produced_value_facts(
     verifier: &Verifier,
     facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
@@ -539,26 +488,19 @@ fn resolve_user_call_facts(
         } else {
             summary
         };
-        let summary = if matches!(summary, Ownership::Borrowed) {
-            let arguments = verifier.user_call_arguments.get(site);
-            if arguments.is_some_and(|arguments| {
-                !arguments.is_empty()
-                    && arguments.iter().all(|argument| {
-                        call_argument_is_proven_owned(
-                            *argument,
-                            verifier,
-                            facts,
-                            &mut HashSet::new(),
-                        )
-                    })
-            }) {
-                Ownership::owned(ProducedValueAcquisition::Retained)
-            } else {
-                summary
-            }
-        } else {
-            summary
-        };
+        // A `Borrowed` summary stays `Borrowed` — NO owned upgrade. A callee
+        // whose return summary is `Borrowed` hands back an alias of one of its
+        // by-value (borrowed) arguments; the caller-side storage that alias
+        // roots in — a named `let`, or an anonymous temp already finalized as
+        // its own `__hew_temp_arg` at this very call — keeps its own exactly
+        // -once release. Upgrading the result to `Owned { Retained }` minted a
+        // SECOND owner over the same storage with no runtime retain behind it:
+        // a deterministic double-free whenever the mint fired. Worse, the
+        // upgrade read the arguments' facts mid-fixpoint, so whether it fired
+        // depended on `HashMap` pass order — the alias-return double-free
+        // oracle flipped per compile. Borrowed-alias results stay non-fresh;
+        // the fail-closed worst case of declining is a missed drop, never a
+        // double release.
         let Some(fact) = facts.get_mut(site) else {
             continue;
         };

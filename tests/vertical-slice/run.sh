@@ -5327,3 +5327,65 @@ expect_check_fail_error_count \
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/rc_set_type_mismatch.hew" \
   1 "rc_set_type_mismatch"
+
+# ---------------------------------------------------------------------------
+# Place-level ownership: consumption is a fact about a PLACE, not a binding
+# name. Each reject asserts exactly one diagnostic — an ancestor of a consumed
+# place is read only to project through it, so the partially-moved-root rule
+# must not stack an error per projection step.
+# ---------------------------------------------------------------------------
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_reuse.hew" \
+  1 "actor_arg_field_projection_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_reuse.hew" \
+  "use of moved place \`holder.sock\`" \
+  "actor_arg_field_projection_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_whole_use.hew" \
+  1 "actor_arg_field_projection_whole_use"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_whole_use.hew" \
+  "use of \`holder\` after its field \`holder.sock\` was moved out" \
+  "actor_arg_field_projection_whole_use_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_tuple_element_reuse.hew" \
+  1 "actor_arg_tuple_element_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_tuple_element_reuse.hew" \
+  "use of moved place \`pair.0\`" \
+  "actor_arg_tuple_element_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_nested_field_projection_reuse.hew" \
+  1 "actor_arg_nested_field_projection_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_nested_field_projection_reuse.hew" \
+  "use of moved place \`outer.inner.ticket\`" \
+  "actor_arg_nested_field_projection_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_consumed_unplugged.hew" \
+  1 "actor_state_field_consumed_unplugged"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_consumed_unplugged.hew" \
+  "actor state \`sock\` is consumed here and never re-initialised" \
+  "actor_state_field_consumed_unplugged_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_reinit_one_branch.hew" \
+  1 "actor_state_field_reinit_one_branch"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_reinit_one_branch.hew" \
+  "actor state \`sock\` is consumed here and never re-initialised" \
+  "actor_state_field_reinit_one_branch_message"
+
+# Accept side of the same rules: a transferred field costs the record only
+# that field, value-semantics fields transfer nothing at all, and
+# re-initialising a consumed state field really does hand the next message an
+# owned value (the second `swap` observes the socket the first one installed).
+run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
+run_accept_expect_stdout "actor_arg_value_field_projection"
+run_accept_expect_stdout "actor_state_field_reinit"

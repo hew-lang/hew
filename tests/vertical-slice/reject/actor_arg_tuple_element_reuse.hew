@@ -1,0 +1,27 @@
+// Tuple element access is the same projection shape as a named field, so a
+// transferred tuple element is consumed at the place `pair.0` and cannot be
+// consumed again through it.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+actor Sink {
+    receive fn take(s: Socket) -> i64 {
+        return s.detach();
+    }
+}
+
+fn main() -> i64 {
+    let sink = spawn Sink;
+    let pair = (Socket { fd: 1 }, 5);
+    let _ = await sink.take(pair.0);
+    return pair.0.detach();
+}

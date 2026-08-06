@@ -1063,13 +1063,14 @@ fn enum_payloads_are_plain_string(
     payload_leaf_is_clone_drop_safe(ty, enum_layouts, record_field_orders, 0)
 }
 /// Whether every heap leaf reachable through `ty` is clone-and-drop-safe — a
-/// `string`, a bit-copy scalar, or a nested enum/record/tuple/array built only
-/// from such leaves. This is the real property the borrow cap needs: keeping the
-/// enum owner alive on a transient payload borrow is sound only when every active
-/// payload can be cloned AND dropped. An affine/IO/`#[resource]`/opaque/closure
-/// leaf (or `Vec`/`Bytes`, which this scan does not admit) answers `false` and
-/// keeps its composite on the pre-existing fail-closed leak posture — never a
-/// double-free. Without the recursion a whole-nested-enum handoff (`match outer {
+/// `string`, a bit-copy scalar, an owned `Vec` of the same, or a nested
+/// enum/record/tuple/array built only from such leaves. This is the real
+/// property the borrow cap needs: keeping the enum owner alive on a transient
+/// payload borrow is sound only when every active payload can be cloned AND
+/// dropped. An affine/IO/`#[resource]`/opaque/closure leaf (or `Bytes`, which
+/// this scan does not admit) answers `false` and keeps its composite on the
+/// pre-existing fail-closed leak posture — never a double-free. Without the
+/// recursion a whole-nested-enum handoff (`match outer {
 /// Wrap(w) => match w { Text(s) => s.len() } }`) failed the flat plain-string
 /// test on its nested-enum payload, disabling the cap, so the ordinary `s.len()`
 /// borrow was misread as a payload escape and both enum owners leaked. `depth`
@@ -1083,6 +1084,7 @@ fn payload_leaf_is_clone_drop_safe(
     if depth > 32 {
         return false;
     }
+    // `string` and scalars are always clone-and-drop-safe leaves.
     if matches!(ty, ResolvedTy::String) || ty_is_bit_copy_payload(ty) {
         return true;
     }
@@ -1092,10 +1094,13 @@ fn payload_leaf_is_clone_drop_safe(
     match ty {
         ResolvedTy::Tuple(elems) => elems.iter().all(recurse),
         ResolvedTy::Array(elem, _) => recurse(elem),
-        // A nested inline enum recurses into every variant payload; a nested
-        // record into every declared field. An indirect (heap-boxed) enum, or a
-        // generic record whose fields resolve only after substitution, is left
-        // unresolved on the fail-closed leak posture.
+        // A `Vec<T>` clones/drops element-wise (safe iff its element is); a nested
+        // inline enum recurses into every variant payload, a nested record into
+        // every field. An indirect enum, or a generic record whose fields resolve
+        // only after substitution, is left on the fail-closed leak posture.
+        ResolvedTy::Named { args, .. } if super::drop_plan::ty_is_vec(ty) => {
+            args.first().is_some_and(&recurse)
+        }
         ResolvedTy::Named { name, args, .. } => {
             if let Some(layout) = crate::model::find_enum_layout(name, args, enum_layouts) {
                 return !layout.is_indirect

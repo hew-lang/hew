@@ -218,12 +218,13 @@ fn an_unresolvable_layout_is_refused() {
         "no layout means no proof"
     );
     assert!(
-        !enum_payloads_are_clone_synthesizable(&builtin("Result", vec![builtin("Status", vec![])]), &[
-            result_layout(
+        !enum_payloads_are_clone_synthesizable(
+            &builtin("Result", vec![builtin("Status", vec![])]),
+            &[result_layout(
                 &crate::lower::mangle_layout_key("Result", &[builtin("Status", vec![])]),
                 vec![builtin("Status", vec![])],
-            ),
-        ]),
+            ),]
+        ),
         "a nested enum with no resolvable layout fails closed rather than \
          admitting the outer composite"
     );

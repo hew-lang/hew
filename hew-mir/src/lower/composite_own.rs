@@ -15,24 +15,24 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     aggregate_projection_transfer_dests, alias_projection_chain_owner_seeds,
-    attribute_field_binder_provenance, base_local, binder_read_is_borrow_safe_instr,
-    binder_read_is_borrow_safe_terminator, blocks_reachable_from, bytes_interior_producer_dest,
-    bytes_place_is_typed, bytes_runtime_arg_is_borrow, bytes_share_sink_places,
-    close_alias_binders_forward, collect_record_field_binders,
+    attribute_field_binder_provenance, attribute_payload_binder_root, base_local,
+    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator, blocks_reachable_from,
+    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
+    bytes_share_sink_places, close_alias_binders_forward, collect_record_field_binders,
     compute_collection_interior_alias_taint, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, forward_move_closure, instr_escape_places,
     instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
-    place_is_interior_projection, place_is_tag_read, propagate_whole_value_alias_roots,
-    readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
+    place_is_interior_projection, place_is_tag_read, propagate_payload_binder_root,
+    propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
     retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
     ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
     vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
-    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition, SuspendKind, Terminator,
-    FOR_ITER_CURSOR_NAME_PREFIX,
+    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement,
+    PayloadBinderRoot, Place, ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition,
+    SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
 use aggregate_borrowed_ingress_clone::{
     aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
@@ -1253,7 +1253,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // clone-synthesizability (FIX: per-candidate, not function-wide). Seeded from
     // the interior projection's aliased source (its `alias_of` root is the
     // candidate local) and carried along every onward hand-off below.
-    let mut payload_binder_candidate_root: HashMap<u32, u32> = HashMap::new();
+    let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1279,13 +1279,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                     payload_binders
                                         .entry(dl)
                                         .or_insert_with(|| local_scope.get(&dl).copied());
-                                    // Attribute this binder to the candidate it
-                                    // was projected from (the aliased source's
-                                    // root). First seed wins, matching the
-                                    // payload-binder identity above.
-                                    payload_binder_candidate_root.entry(dl).or_insert_with(|| {
-                                        alias_of.get(&sl).copied().unwrap_or(sl)
-                                    });
+                                    // Attribute this binder to its projected-from
+                                    // candidate; a second, differing root marks it
+                                    // `Conflict` (see `attribute_payload_binder_root`).
+                                    attribute_payload_binder_root(
+                                        &mut payload_binder_candidate_root,
+                                        dl,
+                                        alias_of.get(&sl).copied().unwrap_or(sl),
+                                    );
                                 }
                             }
                         }
@@ -1356,10 +1357,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             // scope for MIR temps.
                             payload_binders.insert(dl, local_scope.get(&dl).copied().or(src_scope));
                             // The hand-off carries the same candidate attribution
-                            // as its source binder.
-                            if let Some(&root) = payload_binder_candidate_root.get(&sl) {
-                                payload_binder_candidate_root.entry(dl).or_insert(root);
-                            }
+                            // as its source binder; an already-`Conflict` source
+                            // propagates the conflict onward, never a stale root.
+                            propagate_payload_binder_root(
+                                &mut payload_binder_candidate_root,
+                                sl,
+                                dl,
+                            );
                             changed = true;
                         }
                     }
@@ -1390,10 +1394,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                 payload_binders
                                     .insert(dl, local_scope.get(&dl).copied().or(src_scope));
                                 // The loaded field inherits its record binder's
-                                // candidate attribution.
-                                if let Some(&root) = payload_binder_candidate_root.get(&sl) {
-                                    payload_binder_candidate_root.entry(dl).or_insert(root);
-                                }
+                                // candidate attribution; a `Conflict` source
+                                // propagates onward rather than a stale root.
+                                propagate_payload_binder_root(
+                                    &mut payload_binder_candidate_root,
+                                    sl,
+                                    dl,
+                                );
                                 changed = true;
                             }
                         }
@@ -1870,23 +1877,25 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // the candidate composite THIS binder was projected from is
                     // itself shell-drop-safe. A non-safe sibling (different
                     // root) no longer poisons an admissible one. A binder with
-                    // no known root fails closed (excluded).
-                    let read_is_borrow = payload_binder_candidate_root
-                        .get(&l)
-                        .is_some_and(|root| shell_drop_safe_candidate_locals.contains(root))
-                        && (binder_read_is_borrow_safe_terminator(
-                            &block.terminator,
-                            suspend_kinds.get(&block.id),
-                            l,
-                        ) || string_binder_read_is_user_fn_borrow(
-                            &block.terminator,
-                            suspend_kinds.get(&block.id),
-                            l,
-                            local_tys.get(l as usize),
-                            module_fn_names,
-                            module_generic_fn_names,
-                            extern_contracts,
-                        ));
+                    // no known root, or a `Conflict` attribution, fails closed
+                    // (excluded).
+                    let read_is_borrow = matches!(
+                        payload_binder_candidate_root.get(&l),
+                        Some(PayloadBinderRoot::Root(root))
+                            if shell_drop_safe_candidate_locals.contains(root)
+                    ) && (binder_read_is_borrow_safe_terminator(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    ) || string_binder_read_is_user_fn_borrow(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                        local_tys.get(l as usize),
+                        module_fn_names,
+                        module_generic_fn_names,
+                        extern_contracts,
+                    ));
                     if !read_is_borrow {
                         note_payload_escape(
                             &payload_binder_candidate_root,
@@ -8620,6 +8629,8 @@ mod tuple_composite_field_drop_exclusion {
 // `src/lower/` line-count ratchet (`hew-mir/tests/lower_module_size.rs`).
 #[cfg(test)]
 mod enum_composite_field_drop_exemption;
+#[cfg(test)]
+mod payload_binder_conflicting_roots;
 #[cfg(test)]
 mod tuple_projection_forward_transfer_proof;
 #[cfg(test)]

@@ -126,19 +126,20 @@ use self::consts::{
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
 use self::drop_plan::{
-    affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
-    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
-    classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
-    describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
-    field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
-    note_payload_escape, render_owned_handle_ty, resource_drop_fn, stream_handle_drop_descriptor,
-    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
-    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
-    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    affine_release_needs_drop_flag, attribute_payload_binder_root,
+    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
+    builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
+    classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
+    dyn_rebind_source_binding, elaborate, exit_block_id, field_override_uses_record_field_drop,
+    is_borrowing_call_abi, is_handle_borrowing_call_abi, note_payload_escape,
+    propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
+    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
+    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
+    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
-    vec_iter_yield_abandonment_diagnostics,
+    vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
 };
 pub use self::drop_plan::{crash_only_param_loan_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;

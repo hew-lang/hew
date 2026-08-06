@@ -4007,6 +4007,59 @@ pub(super) fn ty_is_heap_owning_tuple(
     matches!(ty, ResolvedTy::Tuple(_))
         && crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
 }
+/// A payload binder's attribution to the composite candidate it was
+/// projected from. `Root` names the single candidate proven so far;
+/// `Conflict` marks a binder that TWO DIFFERENT composite roots fed the same
+/// local — deliberately not a missing map entry, so `note_payload_escape`'s
+/// fail-closed "unknown root" branch still fires and excludes every
+/// candidate instead of silently keeping whichever root arrived first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PayloadBinderRoot {
+    Root(u32),
+    Conflict,
+}
+/// Attribute `binder` to `root`, or mark it `Conflict` when it is already
+/// attributed to a DIFFERENT root. First-root-wins silently excluded only
+/// the first root on escape when a raw-MIR shape fed one heap payload local
+/// from two composite roots; `Conflict` instead falls back to the coarse
+/// exclude-every-root posture for that binder. Once `Conflict`, the
+/// attribution never reverts to a single root.
+pub(super) fn attribute_payload_binder_root(
+    payload_binder_candidate_root: &mut HashMap<u32, PayloadBinderRoot>,
+    binder: u32,
+    root: u32,
+) {
+    match payload_binder_candidate_root.get(&binder) {
+        None => {
+            payload_binder_candidate_root.insert(binder, PayloadBinderRoot::Root(root));
+        }
+        Some(PayloadBinderRoot::Root(existing)) if *existing != root => {
+            payload_binder_candidate_root.insert(binder, PayloadBinderRoot::Conflict);
+        }
+        _ => {}
+    }
+}
+/// Propagate `src_binder`'s attribution onward to `dest_binder` on a benign
+/// hand-off Move. `Root` carries forward through [`attribute_payload_binder_root`]
+/// (so a second, differing root already at `dest_binder` still resolves to
+/// `Conflict`); `Conflict` propagates as `Conflict` rather than reverting to
+/// no attribution; no attribution at `src_binder` leaves `dest_binder`
+/// untouched.
+pub(super) fn propagate_payload_binder_root(
+    payload_binder_candidate_root: &mut HashMap<u32, PayloadBinderRoot>,
+    src_binder: u32,
+    dest_binder: u32,
+) {
+    match payload_binder_candidate_root.get(&src_binder).copied() {
+        Some(PayloadBinderRoot::Root(root)) => {
+            attribute_payload_binder_root(payload_binder_candidate_root, dest_binder, root);
+        }
+        Some(PayloadBinderRoot::Conflict) => {
+            payload_binder_candidate_root.insert(dest_binder, PayloadBinderRoot::Conflict);
+        }
+        None => {}
+    }
+}
 /// A payload binder read into an owning sink means the active payload escaped
 /// its composite. Exclude only the root THAT binder was projected from, via the
 /// per-candidate `payload_binder_candidate_root` attribution the borrow
@@ -4014,21 +4067,25 @@ pub(super) fn ty_is_heap_owning_tuple(
 /// sibling (a `Result<GlobResult, _>` resource binder consumed by
 /// `matches.close()`) no longer strips a separately-admissible
 /// `Result<bytes, string>` / `Result<CommandOutput, _>` of its `EnumInPlace`
-/// drop. A binder with no known root fails closed to the coarse every-root
-/// posture. Over-exclusion leaks, never double-frees; this mirrors the already
-/// per-root `note_alias_escape` whole-composite escape.
+/// drop. A binder with no known root, OR a `Conflict` attribution (two
+/// composite roots fed the same binder), fails closed to the coarse
+/// every-root posture. Over-exclusion leaks, never double-frees; this mirrors
+/// the already per-root `note_alias_escape` whole-composite escape.
 pub(super) fn note_payload_escape(
-    payload_binder_candidate_root: &HashMap<u32, u32>,
+    payload_binder_candidate_root: &HashMap<u32, PayloadBinderRoot>,
     escaping_binder: u32,
     alias_of: &HashMap<u32, u32>,
     _blocks: &[BasicBlock],
     excluded_roots: &mut HashSet<u32>,
 ) {
-    if let Some(&root) = payload_binder_candidate_root.get(&escaping_binder) {
-        excluded_roots.insert(root);
-    } else {
-        for &root in alias_of.values() {
-            excluded_roots.insert(root);
+    match payload_binder_candidate_root.get(&escaping_binder) {
+        Some(PayloadBinderRoot::Root(root)) => {
+            excluded_roots.insert(*root);
+        }
+        Some(PayloadBinderRoot::Conflict) | None => {
+            for &root in alias_of.values() {
+                excluded_roots.insert(root);
+            }
         }
     }
 }

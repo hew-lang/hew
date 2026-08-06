@@ -14,7 +14,6 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _1 = const.i64 2
     _2 = call std$stream$pipe(_1) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: bind BindingId(2) __tuple_1 site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: use BindingId(2) __tuple_1 site=SiteId(3) ty=(Sink<string>, Stream<string>) intent=Read
     stmt: bind BindingId(3) sink site=SiteId(4) ty=Sink<string>

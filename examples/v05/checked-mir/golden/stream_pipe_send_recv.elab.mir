@@ -1,6 +1,5 @@
 fn Echo__recv__run -> ()
   statements:
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     bind BindingId(3) __tuple_2 site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     use BindingId(3) __tuple_2 site=SiteId(3) ty=(Sink<bytes>, Stream<bytes>) intent=Read
     bind BindingId(4) sink site=SiteId(4) ty=Sink<bytes>
@@ -11,9 +10,9 @@ fn Echo__recv__run -> ()
     use BindingId(6) i site=SiteId(16) ty=i64 intent=Read
     eval site=SiteId(23) ty=()
     use BindingId(4) sink site=SiteId(25) ty=Sink<bytes> intent=Consume
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(18) ty=string
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(14) ty=string
-    bind BindingId(4294967228) __hew_produced_value site=SiteId(13) ty=bytes
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(18) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(14) ty=string
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(13) ty=bytes
     eval site=SiteId(10) ty=()
     eval site=SiteId(24) ty=()
     bind BindingId(7) done site=SiteId(27) ty=bool
@@ -21,18 +20,18 @@ fn Echo__recv__run -> ()
     use BindingId(5) input site=SiteId(32) ty=Stream<bytes> intent=Read
     eval site=SiteId(44) ty=()
     use BindingId(5) input site=SiteId(46) ty=Stream<bytes> intent=Consume
-    bind BindingId(4294967227) __hew_produced_value site=SiteId(30) ty=Option<bytes>
+    bind BindingId(4294967228) __hew_produced_value site=SiteId(30) ty=Option<bytes>
     bind BindingId(8) item site=SiteId(30) ty=Option<bytes>
     use BindingId(8) item site=SiteId(35) ty=Option<bytes> intent=Read
     bind BindingId(9) b site=SiteId(36) ty=bytes
     use BindingId(9) b site=SiteId(38) ty=bytes intent=Read
     bind BindingId(7) done site=SiteId(42) ty=bool
     eval site=SiteId(43) ty=()
-    bind BindingId(4294967226) __hew_produced_value site=SiteId(37) ty=string
+    bind BindingId(4294967227) __hew_produced_value site=SiteId(37) ty=string
     eval site=SiteId(45) ty=()
     drop BindingId(9) b ty=bytes
     drop BindingId(8) item ty=Option<bytes>
-    drop BindingId(4294967228) __hew_produced_value ty=bytes
+    drop BindingId(4294967229) __hew_produced_value ty=bytes
     drop BindingId(3) __tuple_2 ty=(Sink<bytes>, Stream<bytes>)
   drop_plans:
     call[bb0 std$stream$bytes_pipe -> bb1] ->

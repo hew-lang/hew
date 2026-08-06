@@ -882,8 +882,9 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         "expected the positional resource-record clone-totality diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("VecIter<MonitorRef>")
-            && combined.contains("resource `MonitorRef` has an affine close contract"),
+        combined.contains("VecIter<std.link_monitor.MonitorRef>")
+            && combined
+                .contains("resource `std.link_monitor.MonitorRef` has an affine close contract"),
         "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
     );
 }

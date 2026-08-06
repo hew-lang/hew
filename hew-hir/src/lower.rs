@@ -12922,7 +12922,7 @@ impl LowerCtx {
                 };
                 HirSupervisorChild {
                     name: child.name.clone(),
-                    ty: child.actor_type.clone(),
+                    ty: self.canonical_supervisor_child_ty(&child.actor_type),
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,
                         RestartPolicy::Transient => HirRestartPolicy::Transient,
@@ -22499,6 +22499,30 @@ impl LowerCtx {
                 || format!("{module_binding}.{member}"),
                 |owner| format!("{owner}.{member}"),
             )
+    }
+
+    /// Canonicalize a supervisor child's user-spelled actor type to the
+    /// registered actor identity (`qualified_name()`), so the child's MIR
+    /// actor-layout lookup and the child-handle PID agree.
+    ///
+    /// A supervisor child records its actor type as the raw source spelling
+    /// (`child b: bank.Account` stores `bank.Account`), whose prefix is the
+    /// user's import alias. A module actor's identity is `qualified_name()` =
+    /// `{module_full_path}.{name}` (`hew.bank.Account`), which the MIR actor
+    /// layout keys on. Left raw, the alias-prefixed spelling never matches that
+    /// key and MIR rejects the supervisor with an unknown-actor
+    /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
+    /// `module_import_bindings` — the same table the checker's spawn resolution
+    /// uses — so a supervisor-child handle carries the same identity a spawn
+    /// handle does. A bare root-actor spelling has no module prefix and is
+    /// returned unchanged.
+    fn canonical_supervisor_child_ty(&self, raw: &str) -> String {
+        match raw.split_once('.') {
+            Some((module_binding, member)) => {
+                self.imported_module_member_key(module_binding, member)
+            }
+            None => raw.to_string(),
+        }
     }
 
     /// Whether bare `name` is authored by the scope currently being lowered.

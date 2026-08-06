@@ -2509,6 +2509,38 @@ impl Checker {
         self.module_type_exports.get(owner)
     }
 
+    /// Canonicalize a supervisor child's user-spelled `actor_type` to the
+    /// registered actor identity.
+    ///
+    /// A supervisor child records its actor type as the raw source string the
+    /// user wrote (`child b: bank.Account` stores `bank.Account`). For a
+    /// package-module child that spelling carries the user's import *alias*
+    /// (`bank`), whereas the checker registers the actor under its exact source
+    /// owner (`hew.bank.Account`, keyed off `current_module`). Left raw, the
+    /// alias-prefixed string never matches the canonical `fn_sigs` /
+    /// `actor_init_params` / `type_defs` keys, so a `LocalPid<bank.Account>`
+    /// finds no `receive fn` and every wall keyed on the actor identity silently
+    /// skips.
+    ///
+    /// Resolve the dotted `alias.Type` spelling through `module_import_bindings`
+    /// (via `resolve_module_type`) to the exact source owner — mirroring the
+    /// `spawn module.Actor(...)` path in `resolve_spawn_target`, so a
+    /// supervisor-child handle carries the same identity a spawn handle does. A
+    /// bare root-actor spelling (`Account`) and any spelling that does not
+    /// resolve to a module-exported actor are returned unchanged, so root/flat
+    /// programs are a no-op by construction.
+    pub(super) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+        if let Some((module_short, type_name)) = raw.split_once('.') {
+            if let Some(td) = self
+                .resolve_module_type(module_short, type_name)
+                .filter(|td| td.kind == TypeDefKind::Actor)
+            {
+                return td.name;
+            }
+        }
+        raw.to_string()
+    }
+
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
     /// the type being exported by the module.  Returns `None` if the module
     /// alias is unknown, the type is not exported, or the variant does not

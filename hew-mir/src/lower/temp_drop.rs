@@ -591,6 +591,130 @@ fn corroborated_retained_string_move_dest(
         _ => None,
     }
 }
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain` of the SAME `src`.
+///
+/// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
+/// buffer while `v`'s producing reference stays owned inside the callee. This is
+/// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
+/// share shape; `derive_enum_composite_drop_allowed` already recognises it for
+/// the enum shell drop (`is_retained_return_move`).
+fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
+    instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+        .is_some_and(|prev| {
+            matches!(
+                prev,
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::Always,
+                } if *value == src,
+            )
+        })
+}
+/// Whether the corroborated retained co-owner `local` escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`), through a chain of
+/// whole-value `Move`s.
+///
+/// A corroborated retained co-owner (`string.retain x; s = move x`) carries its
+/// own independent `+1` on the buffer. When such a value reaches the caller
+/// solely through a re-retained return, the caller receives the RETURN's
+/// separate reference — not the co-owner's share — so the co-owner's mint is
+/// never transferred out and still needs its scope-exit release. Without it the
+/// share leaks one node per call (`enum_callee_consume_drop_leak_oracle`
+/// `move_out_via_let_share`).
+///
+/// Fail-closed: the co-owner's value must reach the caller ONLY via retained
+/// returns. Any other consuming use of a value on the flow — a plain move into
+/// the `ReturnSlot` (a genuine transfer whose caller owns the co-owner's share,
+/// so a local drop would double-free), a call argument, a container insert, a
+/// terminator escape — answers `false`, and the co-owner keeps its (leaking,
+/// never double-freeing) exclusion. Requires at least one retained return so a
+/// value that merely dead-ends is not spuriously admitted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors the escape-scan parameters"
+)]
+fn retained_co_owner_escapes_only_into_retained_return(
+    blocks: &[BasicBlock],
+    local: u32,
+    retained_string_moves: &HashSet<(u32, usize)>,
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+) -> bool {
+    // Forward whole-value `Move` closure from `local`: every alias that carries
+    // the co-owner's buffer onward.
+    let mut reach: HashSet<u32> = HashSet::from([local]);
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(dl), Some(sl)) = (base_local(*dest), base_local(*src)) {
+                        if reach.contains(&sl) && reach.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut saw_retained_return = false;
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            for &rl in &reach {
+                if cow_owned_string_instr_is_borrow(
+                    instr,
+                    block.id,
+                    instr_index,
+                    rl,
+                    retained_string_moves,
+                ) {
+                    continue;
+                }
+                // `rl` is consumed here. Only two consuming shapes keep the
+                // co-owner's share balanced by its own scope-exit drop:
+                //   - a whole-value move onward within the flow, or
+                //   - a re-retained return (the caller gets the retain's copy).
+                match instr {
+                    Instr::Move {
+                        dest: Place::Local(dl),
+                        src,
+                    } if base_local(*src) == Some(rl) && reach.contains(dl) => {}
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src,
+                    } if base_local(*src) == Some(rl)
+                        && string_move_is_retained_return(block, instr_index, *src) =>
+                    {
+                        saw_retained_return = true;
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        for &rl in &reach {
+            if cow_owned_string_terminator_escapes(
+                &block.terminator,
+                suspend_kinds.get(&block.id),
+                rl,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                return false;
+            }
+        }
+    }
+    saw_retained_return
+}
 fn seed_fresh_string_instruction_locals(
     blocks: &[BasicBlock],
     locals: &[ResolvedTy],
@@ -3813,6 +3937,91 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     allowed
 }
 
+/// Splice one balancing `hew_string_drop` for every corroborated retained
+/// co-owner (`string.retain x; s = move x`) whose share escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`).
+///
+/// Such a co-owner mints an independent `+1` on the buffer. When that value
+/// reaches the caller solely through a re-retained return, the return hands the
+/// caller its OWN reference, so the co-owner's mint is never transferred out and
+/// leaks one node per call unless released inside the callee
+/// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
+/// local-share twin of the enum-shell fix G2 landed in
+/// `derive_enum_composite_drop_allowed`: G2 keeps the shell drop that frees the
+/// still-owned original; this adds the share drop that frees the co-owner's
+/// mint. The two are mutually exclusive references, so together the buffer is
+/// released exactly once per outstanding reference.
+///
+/// The release is spliced at the END of the co-owner's minting block, before its
+/// terminator, and ONLY when that block exits through a single unconditional
+/// `Goto`/`Return` edge: the value is provably still live there (it flows onward
+/// to the return) and no trap/cancel edge reaches the splice, so the frame
+/// cleanup escrow — which covers the enum shell, not this alias — cannot
+/// double-free. Fail-closed: any block shape that is not a proven single exit is
+/// skipped (leaks, never double-frees).
+pub(super) fn splice_retained_return_co_owner_drops(
+    blocks: &mut [BasicBlock],
+    locals: &[ResolvedTy],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+) {
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    // (minting block id, co-owner local) for every co-owner that escapes only
+    // into a re-retained return.
+    let mut splices: Vec<(u32, u32)> = Vec::new();
+    for block in blocks.iter() {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Some(local) = corroborated_retained_string_move_dest(
+                instr,
+                block.id,
+                instr_index,
+                &retained_string_moves,
+            ) else {
+                continue;
+            };
+            if !retained_co_owner_escapes_only_into_retained_return(
+                blocks,
+                local,
+                &retained_string_moves,
+                suspend_kinds,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                continue;
+            }
+            // Fail-closed placement gate: a single unconditional exit proves the
+            // splice point is on the co-owner's only continuation and off every
+            // trap/cancel edge.
+            if !matches!(
+                block.terminator,
+                Terminator::Goto { .. } | Terminator::Return
+            ) {
+                continue;
+            }
+            splices.push((block.id, local));
+        }
+    }
+    if splices.is_empty() {
+        return;
+    }
+    for (block_id, local) in splices {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let at = block.instructions.len();
+        block.instructions.push(Instr::Drop {
+            place: Place::Local(local),
+            ty: ResolvedTy::String,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+        });
+        shift_instr_spans_on_insert(instr_spans, block_id, u32::try_from(at).unwrap_or(u32::MAX));
+    }
+}
+
 fn remove_consumed_cow_bindings(
     allowed: &mut HashSet<BindingId>,
     actor_message_flags: &HashMap<BindingId, Place>,
@@ -4050,6 +4259,19 @@ pub(super) fn finalize_string_ownership(
                     entry.binding == *binding && entry.disposition == Disposition::ScopeExit
                 })
         }),
+    );
+    // Balance the independent `+1` of a corroborated retained co-owner that
+    // escapes only into a re-retained return. Runs last: all share and return
+    // retains are explicit in `raw.blocks`, and no in-function analysis reads
+    // the block stream after this splice.
+    splice_retained_return_co_owner_drops(
+        &mut raw.blocks,
+        &builder.locals,
+        &builder.suspend_kinds,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &mut raw.instr_spans,
     );
     derivation
 }

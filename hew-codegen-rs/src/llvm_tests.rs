@@ -10076,6 +10076,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
         &HashMap::new(),
         &[],
         &HashMap::new(),
+        &HashSet::new(),
     )
     .expect("the exhaustive instruction write-set must admit StringLit");
     assert_eq!(
@@ -10185,6 +10186,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
         )
         .expect("entry cancellation and guarded exits share one owner ritual");
         assert_eq!(descriptors.len(), 1);
@@ -10628,6 +10630,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             &HashMap::new(),
             &[],
             &symbols,
+            &HashSet::new(),
         );
         if admitted {
             assert_eq!(

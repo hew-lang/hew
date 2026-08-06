@@ -1017,8 +1017,9 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .filter_map(|(_, p)| base_local(*p))
         .collect()
 }
-/// True when every variant payload of the tagged-union enum behind `ty` is
-/// either a bit-copy value or a plain `string` leaf.
+/// True when every variant payload of the tagged-union enum behind `ty` is a
+/// bit-copy value, a plain `string` leaf, or a bare `#[opaque]` handle — the
+/// payload classes whose shell drop cannot double-release anything.
 ///
 /// This bounds the blast radius of the `string_binder_read_is_user_fn_borrow`
 /// exemption. `note_payload_escape` is deliberately coarse — one escaping
@@ -1031,6 +1032,36 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
 /// binder is interpolated would otherwise turn a leak into a hard
 /// `E_NOT_YET_IMPLEMENTED` compile failure.
+///
+/// ## Why a BARE `#[opaque]` payload sibling is admitted
+///
+/// A hybrid enum (`Mixed { Text(string); Opaque(Handle) }`) passed by value
+/// into a consuming callee declines the snapshot carrier (not clone-total), so
+/// the callee's ONE balancing release is the legacy tag-aware `EnumInPlace`
+/// shell drop. Requiring every payload to be plain string excluded that shell
+/// the moment the string binder was read (`s.len()`), leaking BOTH variants on
+/// every call. Admitting the bare-opaque sibling is per-variant sound:
+///
+///   * the shell's drop thunk is a structural NO-OP for an `OpaqueHandle`
+///     payload (`emit_field_drop_step(OpaqueHandle) => Ok(())` — the documented
+///     `.free()`-or-leak contract), and no other close authority exists for a
+///     bare opaque handle anywhere in the pipeline, so a double-release of that
+///     variant is impossible by construction;
+///   * the string variant keeps exactly the pre-existing plain-string
+///     discipline: the shell is the sole owner, the binder is a borrow-exempt
+///     alias, and any real payload escape still excludes the shell fail-closed;
+///   * codegen's clone half emits a trap-on-entry body for an opaque-carrying
+///     enum seeded only for its drop helper (`emit_enum_clone_inplace_body`'s
+///     `has_nested_opaque` guard), so the synthesis family stays linkable
+///     without ever aliasing the handle pointer.
+///
+/// The discrimination between a bare `#[opaque]` handle (no-op drop) and a
+/// `#[resource]`/lifecycle-registered handle (real close — a second close IS
+/// observable, the S2200 class) routes through the SAME
+/// `classify_state_field_with_lifecycle_registry` authority codegen's thunk
+/// synthesis uses, so admission here and emission there cannot disagree.
+/// `Resource`, `IoHandle`, record, nested-enum, and every other payload class
+/// still answers `false` (fail-closed leak, exactly as before).
 ///
 /// ## Why the payload predicate is a POSITIVE bit-copy test
 ///
@@ -1053,11 +1084,15 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// fail-closed posture (it keeps leaking, exactly as before, and still
 /// compiles).
 ///
-/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
-/// payload that is neither `string` nor bit-copy answers `false`.
-fn enum_payloads_are_plain_string(
+/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, a
+/// classification error, or any payload that is neither `string`, bit-copy,
+/// nor bare-opaque answers `false`.
+fn enum_payloads_are_shell_drop_safe(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],
+    record_layouts: &[crate::model::RecordLayout],
+    opaque_handle_names: &[String],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
@@ -1071,7 +1106,25 @@ fn enum_payloads_are_plain_string(
     }
     layout.variants.iter().all(|variant| {
         variant.field_tys.iter().all(|field_ty| {
-            matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty)
+            if matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty) {
+                return true;
+            }
+            // Bare `#[opaque]` handle — decided by the one classification
+            // authority the codegen thunk synthesis also consults, so a
+            // lifecycle-registered (`#[resource]`) handle classifies
+            // `Resource` and stays refused here.
+            let mut visited = HashSet::new();
+            matches!(
+                crate::state_clone::classify_state_field_with_lifecycle_registry(
+                    field_ty,
+                    record_layouts,
+                    enum_layouts,
+                    opaque_handle_names,
+                    lifecycle_registry,
+                    &mut visited,
+                ),
+                Ok(crate::state_clone::StateFieldCloneKind::OpaqueHandle { .. })
+            )
         })
     })
 }
@@ -1170,6 +1223,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    record_layouts: &[crate::model::RecordLayout],
+    opaque_handle_names: &[String],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -1191,7 +1247,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    let mut all_candidates_are_plain_string_payload = true;
+    let mut all_candidates_have_shell_drop_safe_payloads = true;
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1202,7 +1258,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &= enum_payloads_are_plain_string(ty, enum_layouts);
+        all_candidates_have_shell_drop_safe_payloads &= enum_payloads_are_shell_drop_safe(
+            ty,
+            enum_layouts,
+            record_layouts,
+            opaque_handle_names,
+            lifecycle_registry,
+        );
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1836,14 +1898,18 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
                     // Every borrow exemption keeps the enclosing enum's
                     // EnumInPlace owner alive. That is sound only when the
-                    // helper family can clone and drop every possible active
-                    // payload. A sibling affine/IO/resource/opaque nominal has
-                    // drop-only semantics, so even a perfectly ordinary read
+                    // shell's drop cannot double-release ANY possible active
+                    // payload: plain strings (shell is the sole owner, the
+                    // binder a no-retain alias), bit-copy leaves (nothing to
+                    // release), and bare `#[opaque]` handles (the thunk's drop
+                    // is a structural no-op and no other close authority
+                    // exists). A sibling affine/IO/`#[resource]` nominal has a
+                    // REAL drop-only close, so even a perfectly ordinary read
                     // of the string arm must exclude the whole enum owner: the
                     // active payload binder (if any) is then the sole close
                     // authority. This is the same positive cap used for user
                     // functions, applied to the complete borrow-safe surface.
-                    let read_is_borrow = all_candidates_are_plain_string_payload
+                    let read_is_borrow = all_candidates_have_shell_drop_safe_payloads
                         && (binder_read_is_borrow_safe_terminator(
                             &block.terminator,
                             suspend_kinds.get(&block.id),

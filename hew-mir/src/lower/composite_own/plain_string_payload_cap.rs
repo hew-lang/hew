@@ -1,15 +1,21 @@
-//! The clone-safety cap on the `string_binder_read_is_user_fn_borrow`
-//! exemption must be a POSITIVE bit-copy predicate, not "owns no heap".
+//! The shell-drop-safety cap on the `string_binder_read_is_user_fn_borrow`
+//! exemption must be a POSITIVE predicate over payload classes whose shell
+//! drop cannot double-release, not "owns no heap".
 //!
-//! `EnumInPlace` seeds the enum clone/drop helper synthesis, and clone
-//! totality refuses every `IoHandle` / closure-pair / `#[resource]` /
-//! opaque-handle class. `Stream<T>` and `Sink<T>` are pointer-backed IO
-//! handles with no duplication helper — yet the MIR heap authority's builtin
-//! leaf set omits them and its generic `Named` arm only recurses into type
-//! arguments, so `Stream<i64>` / `Sink<i64>` answer "owns no heap". The old
-//! `String || !ty_owns_heap_mir` spelling therefore re-admitted exactly the
-//! composites the cap exists to exclude, re-opening the clone-synthesis
-//! refusal.
+//! `EnumInPlace` seeds the enum clone/drop helper synthesis. `Stream<T>` and
+//! `Sink<T>` are pointer-backed IO handles with real close symbols — yet the
+//! MIR heap authority's builtin leaf set omits them and its generic `Named`
+//! arm only recurses into type arguments, so `Stream<i64>` / `Sink<i64>`
+//! answer "owns no heap". The old `String || !ty_owns_heap_mir` spelling
+//! therefore re-admitted exactly the composites the cap exists to exclude.
+//!
+//! A BARE `#[opaque]` handle sibling IS admitted: its thunk drop is a
+//! structural no-op with no other close authority anywhere (double-free
+//! impossible by construction), and codegen emits a trap-body clone for an
+//! opaque-carrying enum seeded only for its drop helper. A
+//! lifecycle-registered (`#[resource]`) handle still classifies `Resource`
+//! and stays refused — a second close of a real resource is observable (the
+//! S2200 double-close class).
 use super::*;
 
 fn builtin(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
@@ -53,14 +59,18 @@ fn result_layout(name: &str, ok: Vec<ResolvedTy>) -> crate::model::EnumLayout {
     }
 }
 
-fn admits(ok: Vec<ResolvedTy>) -> bool {
+fn admits_with_registry(ok: Vec<ResolvedTy>, registry: &hew_hir::LifecycleRegistry) -> bool {
     let args = vec![
         ok.first().cloned().unwrap_or(ResolvedTy::Unit),
         ResolvedTy::String,
     ];
     let ty = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
-    enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)])
+    enum_payloads_are_shell_drop_safe(&ty, &[result_layout(&key, ok)], &[], &[], registry)
+}
+
+fn admits(ok: Vec<ResolvedTy>) -> bool {
+    admits_with_registry(ok, &hew_hir::LifecycleRegistry::default())
 }
 
 #[test]
@@ -119,14 +129,61 @@ fn string_argument_io_handle_payloads_are_refused() {
 }
 
 #[test]
-fn opaque_and_resource_payloads_are_refused() {
+fn bare_opaque_payload_sibling_is_admitted() {
+    // The hybrid-enum callee-drop shape: `Mixed { Text(string); Opaque(Handle) }`
+    // passed by value declines the snapshot carrier, so the tag-aware
+    // `EnumInPlace` shell drop is the callee's ONE balancing release. The
+    // bare-opaque variant's thunk drop is a structural no-op with no other
+    // close authority anywhere, so admitting it cannot double-release.
     assert!(
-        !admits(vec![opaque("Value")]),
-        "an `#[opaque]` handle has no duplication helper and must stay refused"
+        admits(vec![opaque("Handle")]),
+        "a bare `#[opaque]` handle sibling must not exclude the shell drop — \
+         excluding it leaks BOTH variants of the hybrid enum on every call"
+    );
+}
+
+#[test]
+fn lifecycle_registered_resource_beside_string_is_refused() {
+    // Rule-17 MIXED case: an affine `#[resource]` leaf sitting BESIDE the
+    // clone-drop-safe string leaf. The shell drop would run the registered
+    // close a second time (the S2200 double-close class) — the registry entry
+    // is exactly what demotes the same spelling from "bare opaque" to
+    // "resource", so the two cases differ ONLY by the registry.
+    let mut registry = hew_hir::LifecycleRegistry::default();
+    registry
+        .admit_opaque_resource(hew_hir::OpaqueResourceLifecycle {
+            resource_declaration: hew_types::DefId::new("Handle"),
+            close_declaration: hew_types::DefId::new("Handle::close"),
+            release_declaration: hew_types::DefId::new("Handle::close"),
+            close_symbol: "Handle::close".to_string(),
+            release_symbol: "Handle::close".to_string(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        })
+        .expect("unique test lifecycle");
+    assert!(
+        admits_with_registry(
+            vec![opaque("Handle")],
+            &hew_hir::LifecycleRegistry::default()
+        ),
+        "guard: without the registry entry the same spelling is a bare opaque \
+         handle and is admitted — proving the registry is the discriminator"
     );
     assert!(
+        !admits_with_registry(vec![opaque("Handle")], &registry),
+        "a lifecycle-registered resource has a REAL close; the shell drop \
+         beside the string leaf must stay refused (S2200 double-close class)"
+    );
+}
+
+#[test]
+fn record_payloads_are_refused() {
+    assert!(
         !admits(vec![builtin("Connection", vec![])]),
-        "a `#[resource]`-class handle must stay refused"
+        "an unregistered user nominal is not a proven-inert payload and \
+         stays refused (fail-closed: it keeps leaking, exactly as before)"
     );
     assert!(
         !admits(vec![builtin("Rec", vec![])]),
@@ -138,7 +195,13 @@ fn opaque_and_resource_payloads_are_refused() {
 #[test]
 fn an_unresolvable_layout_is_refused() {
     assert!(
-        !enum_payloads_are_plain_string(&builtin("Result", vec![ResolvedTy::String]), &[]),
+        !enum_payloads_are_shell_drop_safe(
+            &builtin("Result", vec![ResolvedTy::String]),
+            &[],
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+        ),
         "no layout means no proof"
     );
 }

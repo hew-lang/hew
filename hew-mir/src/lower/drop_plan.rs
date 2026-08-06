@@ -10,15 +10,16 @@ use super::{
     derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
     derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, instr_source_places, place_is_interior_projection,
-    place_refs_local, propagate_whole_value_alias_roots, retained_string_terminator_drop_safe,
-    short_name, string_call_borrows, terminator_source_places, user_record_layout_key,
-    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
-    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
-    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
-    HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, ParamCrashCleanupKind, Place, RawMirFunction, ResolvedRef,
-    ResolvedTy, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
+    derive_tuple_composite_drop_allowed, instr_source_places, outbound_record_layouts,
+    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
+    retained_string_terminator_drop_safe, short_name, string_call_borrows,
+    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
+    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
+    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
+    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SuspendKind, Terminator,
+    TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
 #[cfg(test)]
 use hew_hir::ResourceMarker;
@@ -277,6 +278,7 @@ pub(super) fn elaborate(
     // proven not to escape; everything else leaks (as before W5.020) rather
     // than double-free. Empty when the builder carries no enum layouts (some
     // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
+    let outbound_records = outbound_record_layouts(builder);
     let mut enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
@@ -288,6 +290,9 @@ pub(super) fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &outbound_records,
+        &builder.opaque_handle_names,
+        &builder.lifecycle_registry,
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,

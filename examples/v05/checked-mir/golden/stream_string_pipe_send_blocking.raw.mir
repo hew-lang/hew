@@ -12,6 +12,7 @@ fn main() -> () [conv=default]
     _0 = const.i64 2
     _1 = call std$stream$pipe(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sink<string>, Stream<string>)
     stmt: use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sink<string>, Stream<string>) intent=Read
     stmt: bind BindingId(2) sink site=SiteId(4) ty=Sink<string>

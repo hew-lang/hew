@@ -40,6 +40,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _1 = const.i64 4
     _2 = call std$stream$bytes_pipe(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     stmt: bind BindingId(3) __tuple_2 site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     stmt: use BindingId(3) __tuple_2 site=SiteId(3) ty=(Sink<bytes>, Stream<bytes>) intent=Read
     stmt: bind BindingId(4) sink site=SiteId(4) ty=Sink<bytes>
@@ -80,13 +81,13 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _9 = move _14
     goto bb2
   bb8:
-    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(18) ty=string
-    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(14) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(18) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(14) ty=string
     _18 = call_rt hew_string_concat(_16, _17)
     drop _17 ty=string fn=release(hew_string_drop)
     _19 = call hew_string_to_bytes(_18) -> bb9
   bb9:
-    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(13) ty=bytes
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(13) ty=bytes
     drop _18 ty=string fn=release(hew_string_drop)
     suspend [stream_send] is_final=false -> resume=bb10 cleanup=bb10
   bb10:
@@ -113,7 +114,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     stmt: use BindingId(5) input site=SiteId(46) ty=Stream<bytes> intent=Consume
     call hew_stream_close(_7) [authority=Runtime(StreamClose)] -> bb24
   bb16:
-    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(30) ty=Option<bytes>
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(30) ty=Option<bytes>
     stmt: bind BindingId(8) item site=SiteId(30) ty=Option<bytes>
     stmt: use BindingId(8) item site=SiteId(35) ty=Option<bytes> intent=Read
     _25 = move _24
@@ -142,7 +143,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _31 = icmp.eq _27 _30
     branch _31 ? bb19 : bb20
   bb22:
-    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(37) ty=string
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(37) ty=string
     call println_str(_33) -> bb23
   bb23:
     drop _33 ty=string fn=release(hew_string_drop)

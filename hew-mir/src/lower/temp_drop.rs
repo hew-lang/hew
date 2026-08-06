@@ -1791,6 +1791,31 @@ pub(super) fn derive_cow_sole_owner(
             }
         }
     }
+    // Uniform owned-carrier payload transfer (D185): a `NeutralizePayloadSlot`
+    // on a variant-payload projection that names a `transferee` moves the
+    // payload OUT of the carrier and nulls the source slot — the carrier's
+    // guarded drop can no longer release it, so the transferee local carries
+    // the sole share, exactly like a fresh producer. Without this OWNED
+    // classification the legacy borrowed-publication seed on the match join
+    // strands a `+1` retain at the return write (`string.retain; ret = move`)
+    // for a payload nothing borrows any more: one leaked buffer per call.
+    // Whole-local neutralizes (send funnels, returned aggregate members) keep
+    // their own authorities and are deliberately not classified here.
+    for instr in blocks.iter().flat_map(|block| &block.instructions) {
+        let Instr::NeutralizePayloadSlot {
+            place: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+            transferee: Some(transferee),
+            ..
+        } = instr
+        else {
+            continue;
+        };
+        if let Some(bits) =
+            base_local(*transferee).and_then(|local| return_source_bits.get_mut(local as usize))
+        {
+            *bits |= STRING_RETURN_SOURCE_OWNED;
+        }
+    }
     loop {
         let mut changed = false;
         for block in blocks {
@@ -1845,7 +1870,16 @@ pub(super) fn derive_cow_sole_owner(
                 // caller falls back to a retain at the ReturnSlot. That may
                 // conservatively over-retain an overwritten arm, but it can
                 // never hand the caller an unowned alias.
-                if borrowed_param_locals.contains(&local) {
+                //
+                // Only genuine parameter slots carry that writerless entry
+                // definition. A borrowed match-join PUBLICATION local (the
+                // typed borrowed-publication seed) is written by every arm's
+                // explicit `Move`, so the writer scan below sees its complete
+                // definition set — let it take the path-split proof. Bailing
+                // here for those locals pinned the retain at the ReturnSlot
+                // even when every arm's write was a neutralize-transferred
+                // (already-owned) payload, stranding one share per call.
+                if borrowed_param_locals.contains(&local) && parameter_locals.contains(&local) {
                     return false;
                 }
                 let mut saw_definition = false;

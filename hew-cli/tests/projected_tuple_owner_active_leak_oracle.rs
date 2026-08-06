@@ -271,16 +271,44 @@ fn checked_and_elaborated_mir_write_the_disjoint_release_contract() {
         1,
         "the field transfer needs exactly one root-relative neutralization:\n{checked}"
     );
-    assert!(
-        checked.contains("aggregate_projection_neutralize _8 fields=[0] -> _9"),
-        "the authority must name the original tuple root, exact field, and \
-         loaded transferee; deleting any edge must fail this tooth:\n{checked}"
+    // Derive the root and transferee locals from the neutralize statement
+    // itself rather than pinning local numbers, which renumber on unrelated
+    // codegen changes. The semantic teeth stay: the authority must name the
+    // original tuple root, exact field 0, and the loaded transferee, and the
+    // load/neutralize/bind edges must appear in that order.
+    let neutralize_stmt = checked
+        .lines()
+        .find(|line| line.contains("aggregate_projection_neutralize"))
+        .expect("projection neutralize")
+        .trim();
+    let mut parts = neutralize_stmt.split_whitespace();
+    assert_eq!(parts.next(), Some("aggregate_projection_neutralize"));
+    let root = parts.next().expect("neutralize names the tuple root");
+    assert_eq!(
+        parts.next(),
+        Some("fields=[0]"),
+        "the authority must name the exact transferred field:\n{checked}"
     );
-    let load = checked.find("_9 = _8.0").expect("tuple field load");
+    assert_eq!(parts.next(), Some("->"));
+    let transferee = parts
+        .next()
+        .expect("neutralize names the loaded transferee");
+    let load = checked
+        .find(&format!("{transferee} = {root}.0"))
+        .expect("tuple field load");
     let neutralize = checked
         .find("aggregate_projection_neutralize")
         .expect("projection neutralize");
-    let bind = checked.find("_10 = move _9").expect("items binding move");
+    let bind = checked
+        .lines()
+        .scan(0, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+            Some((line_start, line))
+        })
+        .find(|(_, line)| line.trim_end().ends_with(&format!("= move {transferee}")))
+        .map(|(offset, _)| offset)
+        .expect("items binding move");
     assert!(
         load < neutralize && neutralize < bind,
         "the original slot must be cleared after its handle is loaded and \

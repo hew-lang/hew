@@ -252,14 +252,31 @@ impl BuiltinType {
     /// crosses an actor message boundary (ask argument, tell argument, spawn
     /// argument, `Duplex::send` payload).
     ///
-    /// This is deliberately narrower than [`Self::marker`]'s `Resource` class.
-    /// An actor reference (`LocalPid`, `BoxedActor`, `LambdaPid`,
-    /// `LambdaActorHandle`, `MonitorRef`) is a shareable address: sending one
-    /// copies the reference and the sender keeps a live handle of its own, so
-    /// the caller binding must stay usable. The types listed here have exactly
-    /// one live owner — the mailbox hand-off moves the value out of the caller
-    /// frame and mints the delivered copy a scope-exit owner in the handler —
-    /// so the caller binding is consumed.
+    /// The mailbox hand-off moves the value out of the caller frame and mints
+    /// the delivered copy a scope-exit owner in the handler, so a transferring
+    /// argument consumes the caller's binding.
+    ///
+    /// The exclusions are exactly the NON-OWNING actor references: `LocalPid`
+    /// and its raw runtime word `HewActor` (the pointer `LocalPid<T>` lowers
+    /// to). A pid's drop frees nothing — it is a by-value reference snapshot —
+    /// so sending one must leave the sender's handle live, or every supervisor
+    /// that hands one child's pid to two peers stops compiling.
+    ///
+    /// Everything else with a release contract transfers, including handles
+    /// that merely LOOK like references:
+    ///
+    /// * `LambdaPid` / `LambdaActorHandle` — refcounted wrappers. The runtime
+    ///   exposes `hew_lambda_actor_clone`, which allocates a distinct owning
+    ///   wrapper precisely because a plain address copy is unsafe; two owners
+    ///   of one wrapper release it twice (observed: SIGSEGV).
+    /// * `MonitorRef` — a `#[resource]` standing for an ACTIVE registration
+    ///   whose `close` demonitors. Two owners means one cancels the other's
+    ///   registration.
+    /// * `BoxedActor` — carries its own release contract.
+    ///
+    /// Sharing a transferring handle is still expressible: through the
+    /// runtime's explicit clone, which mints a second owner, never through a
+    /// silent address copy.
     ///
     /// This is the SINGLE list; both the env checker
     /// (`enforce_actor_boundary_send`) and HIR intent stamping read it, so the
@@ -281,6 +298,10 @@ impl BuiltinType {
                 | Self::Generator
                 | Self::AsyncGenerator
                 | Self::CancellationToken
+                | Self::LambdaPid
+                | Self::LambdaActorHandle
+                | Self::BoxedActor
+                | Self::MonitorRef
         )
     }
 

@@ -1326,12 +1326,20 @@ impl Ticket {
     fn redeem(consuming self) -> i64 { self.id }
 }
 
+type Holder { socket: Socket }
+
+type Inner { socket: Socket }
+
+type Outer { inner: Inner, tag: i64 }
+
 actor Sink {
     receive fn ask_socket(s: Socket) -> i64 { s.detach() }
     receive fn tell_socket(s: Socket) { let _ = s.detach(); }
     receive fn ask_ticket(t: Ticket) -> i64 { t.redeem() }
     receive fn count(n: i64) -> i64 { n }
     receive fn echo(m: string) -> string { m }
+    receive fn hold(h: Holder) -> i64 { h.socket.detach() }
+    receive fn nest(o: Outer) -> i64 { o.inner.socket.detach() }
 }
 ";
 
@@ -1501,6 +1509,154 @@ actor Sink {
             move_errors(&output).is_empty(),
             "copy-on-write values keep their copy semantics across the mailbox \
              boundary. errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn record_field_resource_used_after_send_is_rejected() {
+        // Containment decides ownership: a plain record is not itself a
+        // resource, but the `Socket` inside it still transfers, so sending the
+        // record twice would give one socket two drop paths. The tuple form of
+        // this shape was already rejected while the named-field form was not.
+        let output = check_with_socket_actor(
+            r"
+            fn probe() {
+                let a = spawn Sink();
+                let h = Holder { socket: Socket { fd: 1 } };
+                let _ = await a.hold(h);
+                let _ = await a.hold(h);
+            }
+            ",
+        );
+        assert!(
+            !move_errors(&output).is_empty(),
+            "a record carrying a `#[resource]` field transfers that resource. \
+             errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn nested_record_resource_used_after_send_is_rejected() {
+        // Depth 2: the walk must not stop at the first named member.
+        let output = check_with_socket_actor(
+            r"
+            fn probe() {
+                let a = spawn Sink();
+                let o = Outer { inner: Inner { socket: Socket { fd: 1 } }, tag: 5 };
+                let _ = await a.nest(o);
+                let _ = await a.nest(o);
+            }
+            ",
+        );
+        assert!(
+            !move_errors(&output).is_empty(),
+            "containment recursion must reach a resource nested two records \
+             deep. errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn plain_record_of_scalars_resent_is_accepted() {
+        // Negative control for the recursion: a record whose members carry no
+        // ownership must keep copy semantics, or the walk has over-captured.
+        let output = check_source(
+            r"
+            type Point { x: i64, y: i64 }
+
+            actor Store {
+                receive fn put(p: Point) -> i64 { p.x + p.y }
+            }
+
+            fn probe() {
+                let s = spawn Store();
+                let p = Point { x: 1, y: 2 };
+                let _ = await s.put(p);
+                let _ = await s.put(p);
+            }
+            ",
+        );
+        assert!(
+            move_errors(&output).is_empty(),
+            "a record of scalars is a copy-on-write value. errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn lambda_actor_handle_shared_by_two_spawns_is_rejected() {
+        // A `LambdaPid` is a refcounted wrapper, not an address: the runtime
+        // exposes an explicit clone that allocates a distinct owning wrapper
+        // precisely because copying the address is unsafe. Sharing one wrapper
+        // between two actor states released it twice and crashed (SIGSEGV).
+        let output = check_source(
+            r"
+            actor Holder {
+                let printer: LambdaPid<i64, ()>;
+                receive fn go(n: i64) {
+                    let _ = printer.send(n);
+                }
+            }
+
+            fn probe() {
+                let printer = actor |x: i64| {
+                    println(x);
+                };
+                let a = spawn Holder(printer: printer);
+                let b = spawn Holder(printer: printer);
+                a.go(1);
+                b.go(2);
+            }
+            ",
+        );
+        assert!(
+            !move_errors(&output).is_empty(),
+            "sharing one lambda-actor wrapper between two owners double-frees \
+             it. errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn monitor_registration_used_after_spawn_transfer_is_rejected() {
+        // `MonitorRef` stands for an ACTIVE registration whose close
+        // demonitors. Transferring it into actor state and then closing at the
+        // caller cancels the actor's registration out from under it.
+        //
+        // Its members are all scalars, so it derives `Copy` structurally under
+        // the qualified spelling — the reason the ownership marking must not
+        // be gated on `Copy`.
+        let output = check_source(
+            r"
+            import std::link_monitor::{MonitorError, MonitorRef};
+
+            actor Child {
+                receive fn ping() {}
+            }
+
+            actor Watcher {
+                let handle: MonitorRef;
+                receive fn go() {}
+            }
+
+            fn probe() {
+                let child = spawn Child;
+                match monitor(child) {
+                    Ok(m) => {
+                        let w = spawn Watcher(handle: m);
+                        w.go();
+                        m.close();
+                    },
+                    Err(_) => {},
+                }
+            }
+            ",
+        );
+        assert!(
+            !move_errors(&output).is_empty(),
+            "a monitor registration has one owner. errors: {:#?}",
             output.errors
         );
     }

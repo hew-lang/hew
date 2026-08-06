@@ -1111,27 +1111,41 @@ impl Checker {
 
     pub(super) fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
-            if let Expr::Identifier(name) = expr {
-                let released_at = self
-                    .env
-                    .lookup_ref(name)
-                    .and_then(|binding| binding.released_at.clone());
-                if let Some(released_at) = released_at {
-                    let mut error = TypeError::new(
-                        TypeErrorKind::UseAfterConsume,
-                        span.clone(),
-                        format!(
-                            "cannot consume released resource `{name}`; its close obligation was already discharged"
-                        ),
-                    )
-                    .with_note(released_at, "resource was closed here");
-                    if let Some(source_module) = &self.current_module {
-                        error = error.with_source_module(source_module.clone());
-                    }
-                    self.errors.push(error);
+            self.mark_expr_moved(expr, span);
+        }
+    }
+
+    /// Mark an identifier binding moved, unconditionally.
+    ///
+    /// Callers that have already PROVEN the value transfers ownership use this
+    /// directly instead of [`Self::mark_expr_moved_if_non_copy`]. The `Copy`
+    /// gate is not merely redundant there, it is wrong: an owned handle whose
+    /// members are all scalars (`MonitorRef { ref_id: u64 }`) derives `Copy`
+    /// structurally under a spelling that carries no negative impl, and the
+    /// gate would then silently skip the move — leaving two owners of one
+    /// registration. Ownership is decided by the transfer predicate, not by
+    /// the representation of the bytes.
+    fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+        if let Expr::Identifier(name) = expr {
+            let released_at = self
+                .env
+                .lookup_ref(name)
+                .and_then(|binding| binding.released_at.clone());
+            if let Some(released_at) = released_at {
+                let mut error = TypeError::new(
+                    TypeErrorKind::UseAfterConsume,
+                    span.clone(),
+                    format!(
+                        "cannot consume released resource `{name}`; its close obligation was already discharged"
+                    ),
+                )
+                .with_note(released_at, "resource was closed here");
+                if let Some(source_module) = &self.current_module {
+                    error = error.with_source_module(source_module.clone());
                 }
-                self.env.mark_moved(name, span.clone());
+                self.errors.push(error);
             }
+            self.env.mark_moved(name, span.clone());
         }
     }
 
@@ -1148,10 +1162,53 @@ impl Checker {
     /// binding is a genuine use-after-move. Without the nominal arm the caller
     /// kept its binding live and both frames consumed the one value.
     ///
-    /// Copy-on-write values (`string`, `Vec`, records, tuples of them) are deliberately
-    /// NOT here: the boundary copies them and both frames own their own copy,
-    /// which is the language's default value semantics.
+    /// Copy-on-write values (`string`, `Vec`, plain records, tuples of them)
+    /// are deliberately NOT here: the boundary copies them and both frames own
+    /// their own copy, which is the language's default value semantics. A
+    /// record that CONTAINS a resource is a different matter — see below.
+    ///
+    /// The walk is structural and total. It descends generic arguments, tuple
+    /// elements, array/slice elements, AND registered record/enum member types,
+    /// because containment is what decides ownership: `type Holder { socket:
+    /// Socket }` transfers the socket just as surely as `(Socket, i64)` does,
+    /// and sending one `Holder` twice gives the socket two drop paths. Skipping
+    /// the named-member edge left exactly that hole open while the tuple edge
+    /// was closed.
     fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
+        let mut visiting = std::collections::HashSet::new();
+        self.ty_contains_affine_actor_transfer_guarded(ty, &mut visiting)
+    }
+
+    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
+    ///
+    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
+    /// some positions — notably a declared actor state-field type — spelled by
+    /// its qualified path with no `builtin` tag attached, so the tag test alone
+    /// misses it and the handle silently stayed shareable.
+    ///
+    /// The qualification requirement is load-bearing: `lookup_builtin_type`
+    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
+    /// is a clone-total record that must keep ordinary value semantics. Only
+    /// the dotted spelling is the stdlib declaration.
+    fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
+        name.contains('.')
+            && crate::lookup_builtin_type(name)
+                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+    }
+
+    /// Recursion body for [`Self::ty_contains_affine_actor_transfer`].
+    ///
+    /// `visiting` makes the walk total over recursive type graphs
+    /// (`type Node { next: Vec<Node> }`). Re-entering a name already on the
+    /// stack contributes no NEW ownership edge, so it answers `false` — the
+    /// neutral element of the `any(...)` disjunction — and the result is
+    /// decided by the non-recursive members. This mirrors the recursion guard
+    /// marker derivation already uses (`implements_marker_guarded`).
+    fn ty_contains_affine_actor_transfer_guarded(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> bool {
         match ty {
             Ty::CancellationToken => true,
             Ty::Named {
@@ -1159,18 +1216,40 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                    || Self::qualified_name_resolves_to_transferring_builtin(name)
                     || self.registry.is_resource(name)
                     || self.registry.is_linear(name)
-                    || args
-                        .iter()
-                        .any(|arg| self.ty_contains_affine_actor_transfer(arg))
+                {
+                    return true;
+                }
+                if args
+                    .iter()
+                    .any(|arg| self.ty_contains_affine_actor_transfer_guarded(arg, visiting))
+                {
+                    return true;
+                }
+                // A builtin carries no user member set to descend into, and its
+                // ownership verdict is already decided above.
+                if builtin.is_some() || !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let members: Vec<Ty> = self
+                    .registry
+                    .member_types(name)
+                    .map(<[Ty]>::to_vec)
+                    .unwrap_or_default();
+                let carries = members
+                    .iter()
+                    .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
+                visiting.remove(name);
+                carries
             }
             Ty::Tuple(elements) => elements
                 .iter()
-                .any(|element| self.ty_contains_affine_actor_transfer(element)),
+                .any(|element| self.ty_contains_affine_actor_transfer_guarded(element, visiting)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                self.ty_contains_affine_actor_transfer(element)
+                self.ty_contains_affine_actor_transfer_guarded(element, visiting)
             }
             _ => false,
         }
@@ -1188,7 +1267,7 @@ impl Checker {
             self.report_invalid_actor_send(&ty, error_span);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {
-            self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
+            self.mark_expr_moved(expr, move_span);
         }
     }
 

@@ -50,6 +50,33 @@ actor Sink {
     receive fn measure(text: string) -> i64 {
         return text.len();
     }
+    receive fn hold(h: Holder) -> i64 {
+        return h.socket.detach();
+    }
+}
+
+actor Leaf {
+    receive fn value(n: i64) -> i64 {
+        return n;
+    }
+}
+
+actor Peer {
+    let leaf: LocalPid<Leaf>;
+    receive fn relay(n: i64) -> i64 {
+        match await leaf.value(n) {
+            Ok(v) => {
+                return v;
+            },
+            Err(_) => {
+                return -1;
+            },
+        }
+    }
+}
+
+type Holder {
+    socket: Socket;
 }
 
 actor Racer {
@@ -134,4 +161,39 @@ fn cow_argument_survives_repeated_sends() {
         Err(_) => testing.assert_true(false),
     }
     testing.assert_eq(text.len(), 5);
+}
+
+#[test]
+fn record_carrying_a_resource_transfers_it_to_the_handler() {
+    // The record is a plain aggregate; the `Socket` inside it is what owns.
+    // The handler detaching the exact fd proves the resource arrived intact
+    // and that this frame is where it is consumed.
+    let sink = spawn Sink;
+    let h = Holder { socket: Socket { fd: 31 } };
+    match await sink.hold(h) {
+        Ok(v) => testing.assert_eq(v, 31),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn one_actor_reference_shared_by_two_peers_still_runs() {
+    // An actor reference is NOT an ownership transfer: a pid's drop frees
+    // nothing. Handing one leaf to two peers must keep compiling AND running,
+    // and the caller must still be able to use its own handle afterwards.
+    let leaf = spawn Leaf;
+    let a = spawn Peer(leaf: leaf);
+    let b = spawn Peer(leaf: leaf);
+    match await a.relay(5) {
+        Ok(v) => testing.assert_eq(v, 5),
+        Err(_) => testing.assert_true(false),
+    }
+    match await b.relay(6) {
+        Ok(v) => testing.assert_eq(v, 6),
+        Err(_) => testing.assert_true(false),
+    }
+    match await leaf.value(7) {
+        Ok(v) => testing.assert_eq(v, 7),
+        Err(_) => testing.assert_true(false),
+    }
 }

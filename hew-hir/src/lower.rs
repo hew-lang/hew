@@ -3447,6 +3447,22 @@ pub fn lower_program_with_mono_cap(
                 ctx.type_classes
                     .insert(hir_decl.qualified_name(), class_entry);
             }
+            // Structural member set for the mailbox-transfer walk: record
+            // fields plus every variant's payload types. Registered under the
+            // same keys as `type_classes` so a module-qualified message type
+            // resolves identically.
+            let member_tys: Vec<ResolvedTy> = hir_decl
+                .fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .chain(hir_decl.variants.iter().flat_map(hew_hir_variant_field_tys))
+                .collect();
+            ctx.type_member_tys
+                .insert(hir_decl.name.clone(), member_tys.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_member_tys
+                    .insert(hir_decl.qualified_name(), member_tys);
+            }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -6915,6 +6931,16 @@ struct LowerCtx {
     /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
     /// into it.
     enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
+    /// Structural member types per named type, in declaration order: record
+    /// fields, plus every enum variant's payload types. Populated alongside
+    /// `type_classes` in the type-decl pre-pass, so it is complete before any
+    /// function body lowers.
+    ///
+    /// `resolved_ty_transfers_ownership_to_mailbox` walks it to see THROUGH an
+    /// aggregate: a plain record carries no ownership marker of its own, but a
+    /// `#[resource]` field inside it still transfers when the record crosses a
+    /// mailbox.
+    type_member_tys: HashMap<String, Vec<ResolvedTy>>,
     /// Checker-resolved per-arm pattern classifications. Cloned from
     /// `tc_output.pattern_resolutions` at construction. Keyed by the
     /// `SpanKey` of each match arm's pattern span. Consumed by
@@ -7339,9 +7365,32 @@ impl PendingProducedValueCarrier {
 ///
 /// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
 /// handle still reaches the serialiser walk and fails closed there.
+/// Positional payload types of a variant, for the mailbox-transfer member set.
+fn hew_hir_variant_field_tys(variant: &HirVariant) -> Vec<ResolvedTy> {
+    variant.field_tys()
+}
+
 fn resolved_ty_transfers_ownership_to_mailbox(
     ty: &ResolvedTy,
     type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+) -> bool {
+    let mut visiting = HashSet::new();
+    transfers_ownership_to_mailbox_guarded(ty, type_classes, type_member_tys, &mut visiting)
+}
+
+/// Recursion body for [`resolved_ty_transfers_ownership_to_mailbox`].
+///
+/// `visiting` makes the walk total over recursive type graphs
+/// (`type Node { next: Vec<Node> }`). Re-entering a name already on the stack
+/// contributes no NEW ownership edge, so it answers `false` — the neutral
+/// element of the `any(...)` disjunction — and the verdict is decided by the
+/// non-recursive members.
+fn transfers_ownership_to_mailbox_guarded(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+    visiting: &mut HashSet<String>,
 ) -> bool {
     match ty {
         ResolvedTy::CancellationToken => true,
@@ -7351,21 +7400,58 @@ fn resolved_ty_transfers_ownership_to_mailbox(
             builtin,
             ..
         } => {
-            builtin.is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
-                || (builtin.is_none()
-                    && matches!(
-                        type_classes.get(name).map(|(marker, _)| *marker),
-                        Some(ResourceMarker::Resource | ResourceMarker::Linear)
-                    ))
-                || args
-                    .iter()
-                    .any(|arg| resolved_ty_transfers_ownership_to_mailbox(arg, type_classes))
+            if builtin
+                .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            // A source-declared lifecycle type reaches some positions spelled
+            // by its qualified path with no `builtin` tag attached, so the tag
+            // test alone misses it. Only the DOTTED spelling resolves here: a
+            // bare user `type MonitorRef` shadow is a clone-total record and
+            // must keep ordinary value semantics.
+            if name.contains('.')
+                && hew_types::lookup_builtin_type(name)
+                    .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            if builtin.is_none()
+                && matches!(
+                    type_classes.get(name).map(|(marker, _)| *marker),
+                    Some(ResourceMarker::Resource | ResourceMarker::Linear)
+                )
+            {
+                return true;
+            }
+            if args.iter().any(|arg| {
+                transfers_ownership_to_mailbox_guarded(arg, type_classes, type_member_tys, visiting)
+            }) {
+                return true;
+            }
+            // A builtin carries no user member set to descend into, and its
+            // ownership verdict is already decided above.
+            if builtin.is_some() || !visiting.insert(name.clone()) {
+                return false;
+            }
+            let carries = type_member_tys.get(name).is_some_and(|members| {
+                members.iter().any(|member| {
+                    transfers_ownership_to_mailbox_guarded(
+                        member,
+                        type_classes,
+                        type_member_tys,
+                        visiting,
+                    )
+                })
+            });
+            visiting.remove(name);
+            carries
         }
-        ResolvedTy::Tuple(elements) => elements
-            .iter()
-            .any(|element| resolved_ty_transfers_ownership_to_mailbox(element, type_classes)),
+        ResolvedTy::Tuple(elements) => elements.iter().any(|element| {
+            transfers_ownership_to_mailbox_guarded(element, type_classes, type_member_tys, visiting)
+        }),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_transfers_ownership_to_mailbox(inner, type_classes)
+            transfers_ownership_to_mailbox_guarded(inner, type_classes, type_member_tys, visiting)
         }
         _ => false,
     }
@@ -7509,6 +7595,7 @@ impl LowerCtx {
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
+            type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
             lang_items: tc_output.lang_items.clone(),
@@ -7826,7 +7913,7 @@ impl LowerCtx {
     /// addresses, so they are excluded on both sides — sending a pid must not
     /// consume the sender's own handle.
     fn resolved_ty_transfers_ownership_to_mailbox(&self, ty: &ResolvedTy) -> bool {
-        resolved_ty_transfers_ownership_to_mailbox(ty, &self.type_classes)
+        resolved_ty_transfers_ownership_to_mailbox(ty, &self.type_classes, &self.type_member_tys)
     }
 
     /// The [`IntentKind`] an actor message argument at `span` must carry.
@@ -35839,17 +35926,12 @@ fn main() {}
     }
 
     /// HIR's recursive mailbox-transfer predicate is the consume-decision half
-    /// of the actor ownership axis. It must dispatch on the typed `builtin`
-    /// discriminant (and, for nominal types, on the `type_classes` marker)
-    /// alone, so a user `record Sender` / `record Receiver` message keeps
-    /// ordinary actor-send treatment while real builtin handles, `#[resource]`
-    /// declarations, and `#[linear]` declarations transfer ownership.
-    ///
-    /// The negative half matters just as much: a shareable actor reference
-    /// (`LocalPid`) and a copy-on-write value must NOT be consumed, or every
-    /// supervisor that hands one pid to two children stops compiling.
-    #[test]
-    fn mailbox_transfer_gate_uses_builtin_discriminant_and_type_class_marker() {
+    /// of the actor ownership axis. These cases fix the four independently
+    /// failable properties of that walk: what it must NOT capture, which
+    /// references stay shareable, which handles own a release, and how far it
+    /// descends into an aggregate.
+    mod mailbox_transfer_gate {
+        use super::*;
         use crate::value_class::TypeClassTable;
 
         fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
@@ -35870,95 +35952,162 @@ fn main() {}
             }
         }
 
-        let mut classes = TypeClassTable::default();
-        classes.insert("Socket".to_string(), (ResourceMarker::Resource, None));
-        classes.insert("Ticket".to_string(), (ResourceMarker::Linear, None));
-        classes.insert("Message".to_string(), (ResourceMarker::None, None));
-        let transfers = |ty: &ResolvedTy| resolved_ty_transfers_ownership_to_mailbox(ty, &classes);
+        /// Marker table and structural member sets exactly as the type-decl
+        /// pre-pass records them: `Holder` wraps a resource, `Outer` wraps
+        /// `Holder`, and `Node` is self-referential through a `Vec`.
+        fn tables() -> (TypeClassTable, HashMap<String, Vec<ResolvedTy>>) {
+            let mut classes = TypeClassTable::default();
+            classes.insert("Socket".to_string(), (ResourceMarker::Resource, None));
+            classes.insert("Ticket".to_string(), (ResourceMarker::Linear, None));
+            classes.insert("Message".to_string(), (ResourceMarker::None, None));
+            classes.insert("Holder".to_string(), (ResourceMarker::None, None));
+            classes.insert("Outer".to_string(), (ResourceMarker::None, None));
+            classes.insert("Node".to_string(), (ResourceMarker::None, None));
 
-        // Name-shadowing user records are not handles.
-        for shadow in ["Sender", "Receiver"] {
-            let user_ty = named_record_ty(shadow);
-            assert!(
-                !transfers(&user_ty),
-                "user type `{shadow}` (builtin: None) must not be consumed as a \
-                 mailbox ownership transfer"
+            let mut members: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
+            members.insert("Socket".to_string(), vec![ResolvedTy::I64]);
+            members.insert("Message".to_string(), vec![ResolvedTy::String]);
+            members.insert("Holder".to_string(), vec![named_record_ty("Socket")]);
+            members.insert(
+                "Outer".to_string(),
+                vec![named_record_ty("Holder"), ResolvedTy::I64],
             );
-            assert!(
-                !transfers(&named_record_ty(&format!("channel.{shadow}"))),
-                "module-qualified user `{shadow}` is still builtin: None"
+            members.insert(
+                "Node".to_string(),
+                vec![ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![named_record_ty("Node")],
+                    builtin: Some(BuiltinType::Vec),
+                    is_opaque: false,
+                }],
             );
+            (classes, members)
+        }
+
+        fn transfers(ty: &ResolvedTy) -> bool {
+            let (classes, members) = tables();
+            resolved_ty_transfers_ownership_to_mailbox(ty, &classes, &members)
+        }
+
+        #[test]
+        fn user_shadow_types_and_cow_values_are_not_transfers() {
+            for shadow in ["Sender", "Receiver"] {
+                let user_ty = named_record_ty(shadow);
+                assert!(
+                    !transfers(&user_ty),
+                    "user type `{shadow}` (builtin: None) must not be consumed as \
+                     a mailbox ownership transfer"
+                );
+                assert!(
+                    !transfers(&named_record_ty(&format!("mypkg.{shadow}"))),
+                    "a user module's `{shadow}` is not the stdlib declaration"
+                );
+                assert!(!transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    user_ty.clone(),
+                ])));
+                assert!(!transfers(&user_generic_over(user_ty.clone())));
+                assert!(!transfers(&ResolvedTy::Array(Box::new(user_ty.clone()), 2)));
+                assert!(!transfers(&ResolvedTy::Slice(Box::new(user_ty))));
+            }
+
+            assert!(!transfers(&named_record_ty("Message")));
+            assert!(!transfers(&named_record_ty("Unregistered")));
+            assert!(!transfers(&ResolvedTy::String));
+            assert!(!transfers(&ResolvedTy::I64));
             assert!(!transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::String,
                 ResolvedTy::I64,
-                user_ty.clone(),
             ])));
-            assert!(!transfers(&user_generic_over(user_ty.clone())));
-            assert!(!transfers(&ResolvedTy::Array(Box::new(user_ty.clone()), 2)));
-            assert!(!transfers(&ResolvedTy::Slice(Box::new(user_ty))));
         }
 
-        // Unmarked nominal records and copy-on-write values stay shared.
-        assert!(!transfers(&named_record_ty("Message")));
-        assert!(!transfers(&named_record_ty("Unregistered")));
-        assert!(!transfers(&ResolvedTy::String));
-        assert!(!transfers(&ResolvedTy::I64));
-        assert!(!transfers(&ResolvedTy::Tuple(vec![
-            ResolvedTy::String,
-            ResolvedTy::I64,
-        ])));
-
-        // A shareable actor reference must NOT be consumed even though its
-        // builtin marker is `Resource` for drop elaboration.
-        assert!(!transfers(&builtin_handle(
-            "LocalPid",
-            BuiltinType::LocalPid
-        )));
-        assert!(!transfers(&builtin_handle(
-            "BoxedActor",
-            BuiltinType::BoxedActor
-        )));
-        assert!(!transfers(&builtin_handle(
-            "MonitorRef",
-            BuiltinType::MonitorRef
-        )));
-
-        // Builtin single-owner handles transfer, directly and nested.
-        for (name, kind) in [
-            ("Sender", BuiltinType::Sender),
-            ("Receiver", BuiltinType::Receiver),
-            ("Stream", BuiltinType::Stream),
-            ("Sink", BuiltinType::Sink),
-            ("Duplex", BuiltinType::Duplex),
-        ] {
-            let handle = builtin_handle(name, kind);
-            assert!(
-                transfers(&handle),
-                "builtin `{name}` must be consumed as a mailbox ownership transfer"
-            );
-            assert!(transfers(&ResolvedTy::Tuple(vec![
-                ResolvedTy::I64,
-                handle.clone(),
-            ])));
-            assert!(transfers(&user_generic_over(handle.clone())));
-            assert!(transfers(&ResolvedTy::Array(Box::new(handle.clone()), 2)));
-            assert!(transfers(&ResolvedTy::Slice(Box::new(handle))));
+        #[test]
+        fn non_owning_actor_references_are_not_transfers() {
+            // `LocalPid` and its raw runtime word carry the `Resource` marker
+            // for drop elaboration but free nothing, and supervisors
+            // legitimately hand one child's pid to several peers.
+            assert!(!transfers(&builtin_handle(
+                "LocalPid",
+                BuiltinType::LocalPid
+            )));
+            assert!(!transfers(&builtin_handle(
+                "HewActor",
+                BuiltinType::HewActor
+            )));
         }
 
-        // User `#[resource]` / `#[linear]` declarations transfer, directly and
-        // nested — the class the actor-ask hole left unowned.
-        for nominal in ["Socket", "Ticket"] {
-            let ty = named_record_ty(nominal);
-            assert!(
-                transfers(&ty),
-                "`{nominal}` carries a single-owner marker and must be consumed"
-            );
-            assert!(transfers(&ResolvedTy::Tuple(vec![
-                ResolvedTy::I64,
-                ty.clone(),
-            ])));
-            assert!(transfers(&user_generic_over(ty.clone())));
-            assert!(transfers(&ResolvedTy::Array(Box::new(ty.clone()), 2)));
-            assert!(transfers(&ResolvedTy::Slice(Box::new(ty))));
+        #[test]
+        fn owning_builtin_handles_transfer_directly_and_nested() {
+            // The lambda wrappers and the monitor registration are here BECAUSE
+            // they look like references but own a release.
+            for (name, kind) in [
+                ("Sender", BuiltinType::Sender),
+                ("Receiver", BuiltinType::Receiver),
+                ("Stream", BuiltinType::Stream),
+                ("Sink", BuiltinType::Sink),
+                ("Duplex", BuiltinType::Duplex),
+                ("LambdaPid", BuiltinType::LambdaPid),
+                ("LambdaActorHandle", BuiltinType::LambdaActorHandle),
+                ("BoxedActor", BuiltinType::BoxedActor),
+                ("MonitorRef", BuiltinType::MonitorRef),
+            ] {
+                let handle = builtin_handle(name, kind);
+                assert!(
+                    transfers(&handle),
+                    "builtin `{name}` must be consumed as a mailbox ownership transfer"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    handle.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(handle.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(handle.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(handle))));
+            }
+        }
+
+        #[test]
+        fn stdlib_declaration_paths_resolve_but_bare_leaf_names_do_not() {
+            // A source-declared lifecycle type reaches declared positions
+            // spelled by its qualified path with NO builtin tag attached (an
+            // actor state field declared `handle: MonitorRef` resolves to
+            // `std.link_monitor.MonitorRef`), so the tag test alone misses it.
+            assert!(transfers(&named_record_ty("std.link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("std.channel.Sender")));
+            assert!(transfers(&named_record_ty("channel.Receiver")));
+            // Resolution is by declaration PATH, never by leaf name.
+            assert!(!transfers(&named_record_ty("MonitorRef")));
+            assert!(!transfers(&named_record_ty(
+                "mypkg.link_monitor.MonitorRef"
+            )));
+        }
+
+        #[test]
+        fn nominal_markers_and_named_member_containment_transfer() {
+            for nominal in ["Socket", "Ticket"] {
+                let ty = named_record_ty(nominal);
+                assert!(
+                    transfers(&ty),
+                    "`{nominal}` carries a single-owner marker and must be consumed"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    ty.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(ty.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(ty.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(ty))));
+            }
+
+            // A plain record wrapping a resource transfers it, at depth 1 and 2.
+            assert!(transfers(&named_record_ty("Holder")));
+            assert!(transfers(&named_record_ty("Outer")));
+        }
+
+        #[test]
+        fn recursive_member_graphs_terminate_without_transferring() {
+            assert!(!transfers(&named_record_ty("Node")));
         }
     }
 

@@ -288,6 +288,18 @@ impl TraitRegistry {
         self.type_fields.contains_key(name)
     }
 
+    /// The registered structural member types for `name`, if any.
+    ///
+    /// This is the same member set marker derivation walks. Ownership
+    /// predicates that must see through an aggregate — an actor message
+    /// argument whose record field is a `#[resource]` still transfers that
+    /// resource — read it here rather than re-deriving field lists, so the two
+    /// walks cannot disagree about what a type contains.
+    #[must_use]
+    pub fn member_types(&self, name: &str) -> Option<&[Ty]> {
+        self.type_fields.get(name).map(Vec::as_slice)
+    }
+
     /// Register a `record` declaration so the marker-derivation path knows to
     /// suppress `Resource` and apply field-driven derivation exhaustively.
     ///

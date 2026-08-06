@@ -2460,6 +2460,16 @@ fn apply_balance_instr(
             if let Some(root) = cx.tracked_root(*dest) {
                 if let Some(entry) = state.get_mut(&root) {
                     entry.confirm_transfer_discharge();
+                    // The moved-from slot now holds an empty static string with
+                    // no heap owner, so a later terminal drop of it (a loop
+                    // back-edge, cancel, or panic scope-exit drop) walks a
+                    // nulled slot and is a no-op, NOT a second discharge of the
+                    // transferred buffer. Mark it neutralized (as
+                    // `NeutralizePayloadSlot` does) so those drops cannot
+                    // manufacture a phantom over-release; a later real defining
+                    // write resets the obligation to a fresh `minted()`, so a
+                    // genuine double-free on the next generation is still caught.
+                    entry.neutralized = PayloadNeutralized::Yes;
                 }
             }
         }

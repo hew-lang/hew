@@ -22725,7 +22725,23 @@ impl LowerCtx {
                 // retry would let compatibility spellings rewrite a different
                 // source-owned declaration (for example `failure.*`).
                 .or_else(|| {
-                    (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
+                    // One shipped declaration, two canonical spellings: the
+                    // shipped `std/concurrency/lambda_actor.hew` source is
+                    // reachable both as a directory-module peer (a direct
+                    // `hew check` of the file lowers it as `std.concurrency`)
+                    // and as the file module every user import resolves
+                    // (`import std::concurrency::lambda_actor` →
+                    // `std.concurrency.lambda_actor`). Matching only the
+                    // former stamped the builtin discriminator on the direct
+                    // path but not through an import, so the same impl block
+                    // was metadata-only one way and a lowered user impl the
+                    // other — the root-vs-import provenance seam the stdlib
+                    // corpus sweep pins. Both spellings stay gated on the
+                    // canonical-source proof above; a user lookalike module
+                    // acquires neither.
+                    (canonical_std_owner
+                        && (name == "std.concurrency.LambdaActorHandle"
+                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
                         .then_some(BuiltinType::LambdaActorHandle)
                 })
         }) {

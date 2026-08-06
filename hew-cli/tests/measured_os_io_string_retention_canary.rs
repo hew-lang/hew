@@ -75,7 +75,7 @@ const SYMBOLS: &[&str] = &[
     "hew_temp_dir",
     "hew_io_read_all",
     "hew_io_read_line",
-    "hew_stream_collect_string",
+    "hew_file_read_stream_collect_string",
     "hew_process_result_stderr",
     "hew_process_result_stdout",
     "hew_file_read",

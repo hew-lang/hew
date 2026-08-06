@@ -392,9 +392,10 @@ fn std$fs$read -> string
     call[bb9 to_string_str -> bb16] ->
       (none)
     goto[bb10->bb5] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb11 std$fs$io_error_from_errno -> bb12] ->
       (none)
     call[bb12 std$fs$io_error_message -> bb13] ->
@@ -405,7 +406,6 @@ fn std$fs$read -> string
       (none)
     goto[bb15->bb10] ->
       drop _23 ty=string kind=cow_heap(hew_string_drop)
-      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb15] ->
       drop _23 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
@@ -416,7 +416,6 @@ fn std$fs$read -> string
       (none)
     goto[bb18->bb10] ->
       drop _30 ty=string kind=cow_heap(hew_string_drop)
-      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb18] ->
       drop _30 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)

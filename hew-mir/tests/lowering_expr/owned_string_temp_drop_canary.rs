@@ -1189,3 +1189,49 @@ fn compose() -> i64 {
         "the final bound concat result remains owned by the ordinary scope-exit path"
     );
 }
+
+/// `var` reassignment from a fresh producer temp is a TRANSFER, not a share.
+/// The `let` path records the produced temp's handoff
+/// (`retire_provisional_owner_for_bound_value`), which suppresses the
+/// share-retain at the initializing move; the assignment path retired the
+/// provisional temp owner but never recorded the handoff, so
+/// `finalize_string_ownership` spliced a `StringRetain` before the
+/// reassignment move with no balancing release of the source temp — one
+/// leaked node per reassignment (`var s = a.to_upper(); s = b.to_upper();`),
+/// on both the normal and the crash-drain path.
+#[test]
+fn var_reassignment_from_fresh_temp_transfers_without_retain() {
+    let pl = pipeline_with_tc(
+        r#"
+fn work() -> i64 {
+    var s = "pre-overwrite-owner".to_upper();
+    s = "post-overwrite-owner".to_upper();
+    s.len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    let retains = pl
+        .raw_mir
+        .iter()
+        .filter(|f| f.name == "work")
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instructions.iter())
+        .filter(|i| matches!(i, Instr::StringRetain { .. }))
+        .count();
+    assert_eq!(
+        retains, 0,
+        "the reassignment move consumes the produced temp; a retain here has \
+         no balancing source release and leaks one node per reassignment"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "work"),
+        1,
+        "exactly one inline release: the overwritten pre-assignment value"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "work"),
+        1,
+        "the binding keeps its single scope-exit drop for the current value"
+    );
+}

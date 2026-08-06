@@ -75,7 +75,6 @@ const SYMBOLS: &[&str] = &[
     "hew_temp_dir",
     "hew_io_read_all",
     "hew_io_read_line",
-    "hew_stream_collect_string",
     "hew_process_result_stderr",
     "hew_process_result_stdout",
     "hew_file_read",
@@ -93,10 +92,13 @@ const SYMBOLS: &[&str] = &[
 const STRING_OWNER_SLOTS: &[&str] = &[
     // os.args, os.env, cwd, home_dir, hostname, temp_dir, stdin line/all,
     // fs.read, fs.try_read, path.absolute, path_error_message, dns direct /
-    // timed, compression error, and the two process-output field clones.
+    // timed, and the two process-output field clones. These are every slot the
+    // witness releases through `hew_string_drop` — the compress `Err(reason)`
+    // and process `output.stdout`/`stderr` ORIGINALS are freed by their
+    // composite's recursive `EnumInPlace`/record drop (asserted below), not a
+    // caller `hew_string_drop`, so no separate compress-error owner slot exists.
     "local_2", "local_5", "local_7", "local_9", "local_11", "local_13", "local_15", "local_17",
-    "local_20", "local_32", "local_35", "local_60", "local_65", "local_69", "local_82", "local_94",
-    "local_96",
+    "local_20", "local_33", "local_36", "local_61", "local_66", "local_70", "local_95", "local_97",
 ];
 
 #[derive(Debug)]
@@ -318,18 +320,26 @@ fn shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases() {
             "%{slot} has unbalanced caller cleanup paths: {unbalanced:?}"
         );
     }
-    // Active enum/record alternatives move their payload to the direct owner
-    // slots above. The in-place drops below are the complementary cleanup for
-    // inactive alternatives, including the `try_get` None/error paths.
+    // Each heap-owning composite whose payload is a clone-drop-safe (string /
+    // bytes / recursively-synthesizable record) leaf keeps its recursive
+    // `EnumInPlace` drop, which frees the ACTIVE payload the arm binder only
+    // borrowed (the `.len()` reads clone or borrow the leaves; the composite
+    // owns and frees the originals). The `Result<CommandOutput, ProcessError>`
+    // entry is the direct proof of the composite-field leak fix: the process
+    // result's own `stdout`/`stderr` strings are freed through this enum drop's
+    // recursion into `__hew_record_drop_inplace_std.process.CommandOutput`, not
+    // leaked. `Result<GlobResult, PathError>` is deliberately absent: its
+    // `#[resource]` payload is closed exactly once by `matches.close()`, so it
+    // keeps no `EnumInPlace` drop (adding one would double-close the resource).
     for destructor in [
-        "__hew_enum_drop_inplace_Result$$string$IoError",
-        "__hew_enum_drop_inplace_Result$$GlobResult$PathError",
+        "__hew_enum_drop_inplace_Result$$string$std$mfs$mIoError",
+        "__hew_enum_drop_inplace_Result$$bytes$string",
         "__hew_enum_drop_inplace_Option$$string",
-        "__hew_record_drop_inplace_CommandOutput",
+        "__hew_enum_drop_inplace_Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError",
     ] {
         assert!(
             body.contains(destructor),
-            "{destructor} must clean inactive measured-string alternatives"
+            "{destructor} must clean the measured composite's owned payload"
         );
     }
 

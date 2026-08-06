@@ -656,3 +656,49 @@ fn main() -> i64 {
         "both ordered match bodies start with the parameter's transfer authority"
     );
 }
+
+/// An alias-returning composite callee's result must stay `Borrowed` — never
+/// minted as a caller-side `__hew_temp_arg` owner — on EVERY compile.
+///
+/// `getself(w)` hands back `w.h`, an interior alias of the still-live `w`;
+/// `w`'s own scope-exit drop is the exactly-once release. The removed
+/// `Borrowed → Owned { Retained }` user-call upgrade minted a SECOND owner
+/// over the same storage (no runtime retain behind it — a double-free), and
+/// whether it fired depended on `HashMap` fixpoint pass order, so the mint
+/// flipped per compiler process. Eight pipelines make the pre-fix flip
+/// reliably observable; the invariant is zero mints on all of them.
+#[test]
+fn getfield_alias_return_result_never_mints_temp_arg_owner() {
+    const SOURCE: &str = "
+type Holder { s: string }
+type Wrap { h: Holder }
+fn borrowLen(h: Holder) -> i64 { h.s.len() }
+fn getself(w: Wrap) -> Holder { w.h }
+fn main() -> i64 {
+    let w: Wrap = Wrap { h: Holder { s: \"a\" + \"b\" } };
+    borrowLen(getself(w))
+}
+";
+    for run in 0..8 {
+        let p = pipeline_with_tc(SOURCE);
+        assert!(
+            p.diagnostics.is_empty(),
+            "run {run}: MIR diagnostics: {:#?}",
+            p.diagnostics
+        );
+        assert_eq!(
+            synthetic_binds(&p, "main", "__hew_temp_arg"),
+            0,
+            "run {run}: the borrowed-alias call result aliases `w.h`; a minted \
+             owner would double-free against `w`'s own scope-exit drop"
+        );
+        let record_drops = record_drops(&p, "main", |_| true);
+        assert!(
+            record_drops
+                .iter()
+                .all(|drop| matches!(drop.ty, hew_types::ResolvedTy::Named { ref name, .. } if name == "Wrap")),
+            "run {run}: only `w: Wrap` may carry a record drop; a Holder drop \
+             is the minted alias double-discharge: {record_drops:#?}"
+        );
+    }
+}

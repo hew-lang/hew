@@ -1,5 +1,5 @@
 //! The clone-safety cap on the `string_binder_read_is_user_fn_borrow`
-//! exemption must be a POSITIVE bit-copy predicate, not "owns no heap".
+//! exemption must be a POSITIVE clone-drop-safe predicate, not "owns no heap".
 //!
 //! `EnumInPlace` seeds the enum clone/drop helper synthesis, and clone
 //! totality refuses every `IoHandle` / closure-pair / `#[resource]` /
@@ -10,6 +10,15 @@
 //! `String || !ty_owns_heap_mir` spelling therefore re-admitted exactly the
 //! composites the cap exists to exclude, re-opening the clone-synthesis
 //! refusal.
+//!
+//! The predicate recurses through every clone-drop-safe shape: a `string`, a
+//! bit-copy scalar, an owned `Vec` of the same, a nested enum/record/tuple/array
+//! built only from such leaves. A NESTED enum payload (`Result<Status, i64>`
+//! whose `Ok` payload is itself a scalar-and-string enum) is synthesizable iff
+//! its own payloads are — the plain-string-only spelling rejected it on its
+//! `Named` payload and leaked the inner `string` sibling (#2717). A nested
+//! enum/record/`Vec` carrying an IoHandle/resource/opaque payload still stays
+//! refused (fail-closed).
 use super::*;
 
 fn builtin(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
@@ -67,7 +76,49 @@ fn admits_with_records(
     ];
     let ty = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
-    enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)], record_field_orders)
+    enum_payloads_are_clone_synthesizable(&ty, &[result_layout(&key, ok)], record_field_orders)
+}
+
+/// A single-argument `Status`-shaped nested enum: one scalar variant and one
+/// `string` variant, named for the mangled key the outer `Ok` payload resolves.
+fn status_layout(name: &str, scalar_or_handle: ResolvedTy) -> crate::model::EnumLayout {
+    crate::model::EnumLayout {
+        name: name.to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Loaded".to_string(),
+                field_tys: vec![scalar_or_handle],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Described".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }
+}
+
+/// `Result<Status, i64>` where `Status` is the nested enum built from
+/// `inner_payload` and a `string`. Resolves both the outer `Result` layout and
+/// the nested `Status` layout so the recursion has both to walk.
+fn admits_nested(inner_payload: ResolvedTy) -> bool {
+    let status = builtin("Status", vec![]);
+    let outer_args = vec![status.clone(), ResolvedTy::I64];
+    let ty = builtin("Result", outer_args.clone());
+    let result_key = crate::lower::mangle_layout_key("Result", &outer_args);
+    // `find_enum_layout` keys an empty-args `Named` on the bare name, so the
+    // nested `Status` layout is named directly.
+    enum_payloads_are_clone_synthesizable(
+        &ty,
+        &[
+            result_layout(&result_key, vec![status]),
+            status_layout("Status", inner_payload),
+        ],
+        &HashMap::new(),
+    )
 }
 
 #[test]
@@ -162,7 +213,7 @@ fn nested_string_enum_payloads_are_admitted() {
     let outer = builtin("Result", args.clone());
     let key = crate::lower::mangle_layout_key("Result", &args);
     assert!(
-        enum_payloads_are_plain_string(
+        enum_payloads_are_clone_synthesizable(
             &outer,
             &[result_layout(&key, vec![inner]), inner_layout],
             &HashMap::new()
@@ -198,9 +249,8 @@ fn record_of_strings_is_admitted_and_record_with_resource_is_refused() {
 
 #[test]
 fn vec_of_clone_safe_elements_is_admitted_and_vec_of_resource_is_refused() {
-    let vec_of = |elem: ResolvedTy| {
-        ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![elem])
-    };
+    let vec_of =
+        |elem: ResolvedTy| ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![elem]);
     assert!(
         admits(vec![vec_of(ResolvedTy::String)]),
         "a `Vec<string>` payload clones and drops element-wise and must be admitted"
@@ -220,13 +270,53 @@ fn vec_of_clone_safe_elements_is_admitted_and_vec_of_resource_is_refused() {
 }
 
 #[test]
+fn nested_scalar_and_string_enum_payload_is_admitted() {
+    // The #2717 headline shape: `Result<Status, i64>` whose `Ok(Status)`
+    // payload is itself a `Loaded(i64) | Described(string)` enum. The nested
+    // enum is fully clone-synthesizable, so the outer composite keeps its
+    // borrow exemption and its recursive `EnumInPlace` frees the inner string.
+    assert!(
+        admits_nested(ResolvedTy::I64),
+        "a nested scalar-and-string enum payload recurses to synthesizable — \
+         the plain-string-only cap leaked the inner Described(string)"
+    );
+}
+
+#[test]
+fn nested_enum_with_io_handle_payload_is_refused() {
+    // Fail-closed through the recursion: a nested enum carrying an IoHandle
+    // has no duplication helper, so the outer composite must stay refused —
+    // re-admitting it would seed a clone helper synthesis that cannot resolve.
+    assert!(
+        !admits_nested(builtin("Stream", vec![ResolvedTy::I64])),
+        "a nested enum whose sibling holds a Stream handle stays refused"
+    );
+    assert!(
+        !admits_nested(opaque("Value")),
+        "a nested enum whose sibling holds an opaque handle stays refused"
+    );
+}
+
+#[test]
 fn an_unresolvable_layout_is_refused() {
     assert!(
-        !enum_payloads_are_plain_string(
+        !enum_payloads_are_clone_synthesizable(
             &builtin("Result", vec![ResolvedTy::String]),
             &[],
             &HashMap::new()
         ),
         "no layout means no proof"
+    );
+    assert!(
+        !enum_payloads_are_clone_synthesizable(
+            &builtin("Result", vec![builtin("Status", vec![])]),
+            &[result_layout(
+                &crate::lower::mangle_layout_key("Result", &[builtin("Status", vec![])]),
+                vec![builtin("Status", vec![])],
+            )],
+            &HashMap::new()
+        ),
+        "a nested enum with no resolvable layout fails closed rather than \
+         admitting the outer composite"
     );
 }

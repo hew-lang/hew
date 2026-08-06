@@ -4073,23 +4073,28 @@ pub(super) fn ty_is_heap_owning_tuple(
         && crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
 }
 /// A payload binder read into an owning sink means the active payload escaped
-/// the composite. We cannot cheaply attribute a binder to a single composite
-/// root (a binder may be reachable from several composites through onward
-/// copies), so — fail-closed — exclude EVERY heap-owning enum composite root
-/// in the function when any payload binder escapes. Over-exclusion leaks; it
-/// never double-frees. The vast majority of real handlers have at most one
-/// matched heap-owning composite per scope, so this coarsening is rarely
-/// observable, and the precise per-root attribution is a follow-on slice if a
-/// fixture ever needs it.
+/// its composite. Exclude only the root THAT binder was projected from, via the
+/// per-candidate `payload_binder_candidate_root` attribution the borrow
+/// exemption already trusts — so a legitimately-escaping non-synthesizable
+/// sibling (a `Result<GlobResult, _>` resource binder consumed by
+/// `matches.close()`) no longer strips a separately-admissible
+/// `Result<bytes, string>` / `Result<CommandOutput, _>` of its `EnumInPlace`
+/// drop. A binder with no known root fails closed to the coarse every-root
+/// posture. Over-exclusion leaks, never double-frees; this mirrors the already
+/// per-root `note_alias_escape` whole-composite escape.
 pub(super) fn note_payload_escape(
-    _payload_binders: &HashMap<u32, Option<ScopeId>>,
-    _escaping_binder: u32,
+    payload_binder_candidate_root: &HashMap<u32, u32>,
+    escaping_binder: u32,
     alias_of: &HashMap<u32, u32>,
     _blocks: &[BasicBlock],
     excluded_roots: &mut HashSet<u32>,
 ) {
-    for &root in alias_of.values() {
+    if let Some(&root) = payload_binder_candidate_root.get(&escaping_binder) {
         excluded_roots.insert(root);
+    } else {
+        for &root in alias_of.values() {
+            excluded_roots.insert(root);
+        }
     }
 }
 /// True when `ty` is a tagged-union enum composite (`Result`/`Option`/user

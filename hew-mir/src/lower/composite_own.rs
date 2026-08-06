@@ -1583,7 +1583,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     }
                     if payload_binders.contains_key(&l) {
                         note_payload_escape(
-                            &payload_binders,
+                            &payload_binder_candidate_root,
                             l,
                             &alias_of,
                             blocks,
@@ -1656,7 +1656,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && dest_local.is_some_and(|dl| !local_is_heap_owning(dl));
                         if !benign_handoff && !benign_bitcopy_extract {
                             note_payload_escape(
-                                &payload_binders,
+                                &payload_binder_candidate_root,
                                 sl,
                                 &alias_of,
                                 blocks,
@@ -1734,7 +1734,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && !vec_iter_cursor_ingress_of(instr, l)
                         {
                             note_payload_escape(
-                                &payload_binders,
+                                &payload_binder_candidate_root,
                                 l,
                                 &alias_of,
                                 blocks,
@@ -1842,7 +1842,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         ));
                     if !read_is_borrow {
                         note_payload_escape(
-                            &payload_binders,
+                            &payload_binder_candidate_root,
                             l,
                             &alias_of,
                             blocks,

@@ -2196,6 +2196,9 @@ pub(super) fn classify_actor_state_load_modes(
     blocks: &mut [BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     let mut load_locals: HashSet<u32> = HashSet::new();
     for block in blocks.iter() {
@@ -2239,6 +2242,9 @@ pub(super) fn classify_actor_state_load_modes(
             &load_locals,
             &mut any_use,
             &mut all_borrow,
+            module_fn_names,
+            module_generic_fn_names,
+            extern_contracts,
         );
     }
 
@@ -2279,7 +2285,14 @@ mod actor_state_load_classifier_direction_lock_tests {
             terminator: Terminator::Return,
         }];
 
-        classify_actor_state_load_modes(&mut blocks, &HashMap::new(), &[]);
+        classify_actor_state_load_modes(
+            &mut blocks,
+            &HashMap::new(),
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+        );
 
         match &blocks[0].instructions[0] {
             Instr::ActorStateFieldLoad { mode, .. } => *mode,
@@ -2375,7 +2388,13 @@ fn record_actor_state_load_instr_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            contract.borrows_string_call_args(),
+                        ),
                     );
                 }
             }
@@ -2425,6 +2444,7 @@ fn call_arg_borrows_state_load(
     locals: &[ResolvedTy],
     arg_index: usize,
     arg_local: u32,
+    callee_borrows_string_args: bool,
 ) -> bool {
     let borrows_receiver = contract.borrows_vec_receiver()
         || contract.borrows_collection_receiver()
@@ -2432,8 +2452,7 @@ fn call_arg_borrows_state_load(
     if arg_index == 0 && borrows_receiver {
         return true;
     }
-    contract.borrows_string_call_args()
-        && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
+    callee_borrows_string_args && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
 }
 /// The `Terminator::Call` analogue of [`record_actor_state_load_instr_uses`]
 /// — the receiver-borrow-arg[0] and string-borrow-arg positive categories
@@ -2441,6 +2460,13 @@ fn call_arg_borrows_state_load(
 /// call. Every other terminator variant falls through to
 /// [`terminator_source_places`] (closed exhaustive match), marked as a
 /// non-borrow use.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the terminator recorder consumes the same string-borrow contract axes \
+              (runtime contract, module fn tables, audited extern table) that \
+              `string_call_borrows` — the single callee-borrows-strings authority — \
+              requires"
+)]
 fn record_actor_state_load_terminator_uses(
     term: &Terminator,
     suspend_kind: Option<&SuspendKind>,
@@ -2448,10 +2474,26 @@ fn record_actor_state_load_terminator_uses(
     load_locals: &HashSet<u32>,
     any_use: &mut HashSet<u32>,
     all_borrow: &mut HashMap<u32, bool>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     match term {
         Terminator::Call { callee, args, .. } => {
             let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+            // The string axis uses `string_call_borrows` — the same single
+            // authority `derive_cow_sole_owner` consults — so a state string
+            // passed by value to an analyzed Hew function (whose parameter is
+            // a borrow: the caller-releases convention) classifies `Borrowed`
+            // instead of minting an `Owned` clone with no balancing release.
+            // Runtime symbols resolve through their ownership contract exactly
+            // as before; unaudited externs stay fail-closed `Owned`.
+            let callee_borrows_string_args = string_call_borrows(
+                callee,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            );
             for (i, place) in args.iter().enumerate() {
                 if let Some(l) = base_local(*place) {
                     mark_actor_state_load_use(
@@ -2459,7 +2501,13 @@ fn record_actor_state_load_terminator_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            callee_borrows_string_args,
+                        ),
                     );
                 }
             }

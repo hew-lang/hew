@@ -720,6 +720,13 @@ struct Builder {
     /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
     /// ordinary calls continue to borrow the caller's reference.
     pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// MIR locals that RECEIVED a variant payload's sole ownership through an
+    /// emitted `NeutralizePayloadSlot { transferee: Some(..) }` on a
+    /// `MachineVariant`/`EnumVariant` slot (the uniform owned-carrier payload
+    /// move-out, D185). The neutralize nulls the carrier's slot, so the
+    /// transferee already holds the one live share — a typed-join branch
+    /// retain on such a local would strand a `+1` nothing discharges.
+    pub(crate) variant_payload_transferee_locals: HashSet<u32>,
     /// Exact join publications whose HIR result fact is a borrowed string.
     /// Return and owning-sink planning may mint a share from this typed row;
     /// ordinary reads keep borrowing the selected source owner.

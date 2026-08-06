@@ -578,6 +578,20 @@ impl Builder {
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
                 });
+                // A variant-payload slot's neutralize hands `dest` the ONE
+                // live share — the carrier's guarded drop releases nothing
+                // for this slot afterwards. Record it so the typed-join
+                // branch retain, which still reads the legacy "payload is
+                // borrowed" HIR fact, does not strand an extra `+1` on the
+                // transferred value (`retain_typed_join_branch`).
+                if matches!(
+                    source,
+                    Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                ) {
+                    if let Some(local) = base_local(dest) {
+                        self.variant_payload_transferee_locals.insert(local);
+                    }
+                }
                 if let Some(flag) = transfer_guard {
                     self.push_instr(Instr::ConstI64 {
                         dest: flag,

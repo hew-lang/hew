@@ -2157,6 +2157,51 @@ fn actor_state_owned_record_self_store_does_not_double_retain_strings() {
     );
 }
 
+/// A string state field read only as a by-value argument to an analyzed Hew
+/// function is a borrow: the callee never frees a string parameter (the
+/// caller-releases convention), so the load must classify `Borrowed` and skip
+/// the retain. The `Owned` clone this shape used to mint had no balancing
+/// release anywhere — not in the caller (no temp owner is adopted for a
+/// state-field argument) and not in the callee — leaking one node per
+/// dispatch (`net.connect(addr)` with `addr: string` state was the reported
+/// case; any user fn taking the field by value reproduces it).
+#[test]
+fn actor_state_string_arg_to_hew_fn_borrows_without_retain() {
+    let pipeline = lower_source(
+        r"
+        fn probe(value: string) -> i64 { value.len() }
+        actor Holder {
+            let addr: string;
+            receive fn show() -> i64 {
+                probe(addr)
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Holder__recv__show")
+        .expect("state-string-arg handler raw MIR present");
+    let modes = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ActorStateFieldLoad { mode, .. } => Some(*mode),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        modes,
+        vec![hew_mir::ActorStateLoadMode::Borrowed],
+        "a state string read only by a borrowing Hew callee must not mint an \
+         unbalanced clone: {:?}",
+        handler.blocks
+    );
+}
+
 /// A cyclic record ingress carries the exact actor-state leaf path while
 /// retaining each borrowed incoming string. The overwrite helper releases the
 /// old String owner even on equal-pointer replacement, balancing one mint

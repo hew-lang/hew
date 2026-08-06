@@ -743,7 +743,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load = load ptr, ptr %local_0, align 4
   store ptr %move_load, ptr %local_1, align 4
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_1, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_1, i64 4, i64 4, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_1, i64 4, i64 4, ptr @__hew_frame_cleanup_7fdeddf79806b8a4, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -871,7 +871,7 @@ helper_crash_cleanup_deactivate_merge50:          ; preds = %helper_crash_cleanu
   %move_load55 = load ptr, ptr %local_19, align 4
   store ptr %move_load55, ptr %local_20, align 4
   %helper_crash_cleanup_prior_token56 = load i64, ptr %helper_crash_cleanup_token_20, align 8
-  %arm_typed_crash_cleanup57 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token56, ptr %local_20, i64 4, i64 4, ptr @__hew_frame_cleanup_1, i32 1, i32 0)
+  %arm_typed_crash_cleanup57 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token56, ptr %local_20, i64 4, i64 4, ptr @__hew_frame_cleanup_01796e325d15e37f, i32 1, i32 0)
   %frame_cleanup_arm_failed58 = icmp eq i64 %arm_typed_crash_cleanup57, -1
   br i1 %frame_cleanup_arm_failed58, label %frame_cleanup_rejected60, label %frame_cleanup_registered59
 
@@ -1240,7 +1240,7 @@ helper_crash_cleanup_deactivate_merge228:         ; preds = %helper_crash_cleanu
   %move_load233 = load ptr, ptr %local_47, align 4
   store ptr %move_load233, ptr %local_48, align 4
   %helper_crash_cleanup_prior_token234 = load i64, ptr %helper_crash_cleanup_token_48, align 8
-  %arm_typed_crash_cleanup235 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token234, ptr %local_48, i64 4, i64 4, ptr @__hew_frame_cleanup_2, i32 1, i32 0)
+  %arm_typed_crash_cleanup235 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token234, ptr %local_48, i64 4, i64 4, ptr @__hew_frame_cleanup_5110292a480a33ee, i32 1, i32 0)
   %frame_cleanup_arm_failed236 = icmp eq i64 %arm_typed_crash_cleanup235, -1
   br i1 %frame_cleanup_arm_failed236, label %frame_cleanup_rejected238, label %frame_cleanup_registered237
 
@@ -1277,7 +1277,7 @@ helper_crash_cleanup_deactivate_merge247:         ; preds = %helper_crash_cleanu
   %move_load252 = load ptr, ptr %local_56, align 4
   store ptr %move_load252, ptr %local_57, align 4
   %helper_crash_cleanup_prior_token253 = load i64, ptr %helper_crash_cleanup_token_57, align 8
-  %arm_typed_crash_cleanup254 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token253, ptr %local_57, i64 4, i64 4, ptr @__hew_frame_cleanup_3, i32 1, i32 0)
+  %arm_typed_crash_cleanup254 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token253, ptr %local_57, i64 4, i64 4, ptr @__hew_frame_cleanup_6e3157b8b1632579, i32 1, i32 0)
   %frame_cleanup_arm_failed255 = icmp eq i64 %arm_typed_crash_cleanup254, -1
   br i1 %frame_cleanup_arm_failed255, label %frame_cleanup_rejected257, label %frame_cleanup_registered256
 
@@ -1311,7 +1311,7 @@ helper_crash_cleanup_deactivate_merge260:         ; preds = %helper_crash_cleanu
   %move_load265 = load ptr, ptr %local_58, align 4
   store ptr %move_load265, ptr %local_59, align 4
   %helper_crash_cleanup_prior_token266 = load i64, ptr %helper_crash_cleanup_token_59, align 8
-  %arm_typed_crash_cleanup267 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token266, ptr %local_59, i64 4, i64 4, ptr @__hew_frame_cleanup_3, i32 1, i32 0)
+  %arm_typed_crash_cleanup267 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token266, ptr %local_59, i64 4, i64 4, ptr @__hew_frame_cleanup_6e3157b8b1632579, i32 1, i32 0)
   %frame_cleanup_arm_failed268 = icmp eq i64 %arm_typed_crash_cleanup267, -1
   br i1 %frame_cleanup_arm_failed268, label %frame_cleanup_rejected270, label %frame_cleanup_registered269
 
@@ -1348,7 +1348,7 @@ helper_crash_cleanup_deactivate_merge273:         ; preds = %helper_crash_cleanu
   %move_load278 = load ptr, ptr %local_60, align 4
   store ptr %move_load278, ptr %local_61, align 4
   %helper_crash_cleanup_prior_token279 = load i64, ptr %helper_crash_cleanup_token_61, align 8
-  %arm_typed_crash_cleanup280 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token279, ptr %local_61, i64 4, i64 4, ptr @__hew_frame_cleanup_3, i32 1, i32 0)
+  %arm_typed_crash_cleanup280 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token279, ptr %local_61, i64 4, i64 4, ptr @__hew_frame_cleanup_6e3157b8b1632579, i32 1, i32 0)
   %frame_cleanup_arm_failed281 = icmp eq i64 %arm_typed_crash_cleanup280, -1
   br i1 %frame_cleanup_arm_failed281, label %frame_cleanup_rejected283, label %frame_cleanup_registered282
 
@@ -2276,7 +2276,7 @@ declare void @hew_trap_with_code(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_7fdeddf79806b8a4(ptr %0) {
 entry:
   %"hew_vec_free drop" = load ptr, ptr %0, align 4
   call void @hew_vec_free(ptr %"hew_vec_free drop")
@@ -2294,7 +2294,7 @@ declare i1 @hew_cont_crash_cleanup_retire(i64)
 
 declare ptr @hew_hashmap_new_with_layout(ptr, ptr)
 
-define internal void @__hew_frame_cleanup_1(ptr %0) {
+define internal void @__hew_frame_cleanup_01796e325d15e37f(ptr %0) {
 entry:
   %"hew_hashmap_free_layout drop" = load ptr, ptr %0, align 4
   call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop")
@@ -2316,7 +2316,7 @@ declare i1 @hew_hashmap_remove_take_layout(ptr, ptr, ptr)
 
 declare ptr @hew_hashset_new_with_layout(ptr)
 
-define internal void @__hew_frame_cleanup_2(ptr %0) {
+define internal void @__hew_frame_cleanup_5110292a480a33ee(ptr %0) {
 entry:
   %"hew_hashset_free_layout drop" = load ptr, ptr %0, align 4
   call void @hew_hashset_free_layout(ptr %"hew_hashset_free_layout drop")
@@ -2332,7 +2332,7 @@ declare i64 @hew_hashset_len_layout(ptr)
 
 declare i1 @hew_hashset_contains_layout(ptr, ptr)
 
-define internal void @__hew_frame_cleanup_3(ptr %0) {
+define internal void @__hew_frame_cleanup_6e3157b8b1632579(ptr %0) {
 entry:
   %"hew_string_drop drop" = load ptr, ptr %0, align 4
   call void @hew_string_drop(ptr %"hew_string_drop drop")

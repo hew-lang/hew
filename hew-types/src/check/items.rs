@@ -345,7 +345,11 @@ impl Checker {
 
             // Look up the actor's init parameter list.  Unknown actors are
             // handled elsewhere; skip here to avoid duplicate diagnostics.
-            let Some(init_params) = self.actor_init_params.get(&child.actor_type).cloned() else {
+            // The registry is keyed by canonical actor identity; a package-
+            // module child stores the alias-prefixed spelling, so canonicalize
+            // before the lookup or this reproducibility wall silently skips.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(init_params) = self.actor_init_params.get(&child_identity).cloned() else {
                 continue;
             };
 
@@ -481,8 +485,12 @@ impl Checker {
             }
 
             // Look up the actor's TypeDef.  If the type is unknown or is not
-            // an actor, a separate diagnostic already covers it.
-            let Some(type_def) = self.type_defs.get(&child.actor_type).cloned() else {
+            // an actor, a separate diagnostic already covers it. The registry is
+            // keyed by canonical actor identity; canonicalize the package-module
+            // child's alias-prefixed spelling before the lookup so the owned-heap
+            // wall does not silently skip.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(type_def) = self.type_defs.get(&child_identity).cloned() else {
                 continue;
             };
             if type_def.kind != TypeDefKind::Actor {
@@ -491,7 +499,7 @@ impl Checker {
 
             // Init params for the child's actor, used to resolve whether an init
             // arg covering an owned field is reproducible (init-thunk path).
-            let init_params = self.actor_init_params.get(&child.actor_type).cloned();
+            let init_params = self.actor_init_params.get(&child_identity).cloned();
 
             for (field_name, field_ty) in &type_def.fields {
                 if !ty_is_known_owned_heap(field_ty) {
@@ -633,11 +641,19 @@ impl Checker {
     }
 
     fn check_supervisor_wired_to(&mut self, sd: &SupervisorDecl, span: &Span) {
-        // Build a sibling-name → actor-type map for fast resolution.
-        let sibling_types: std::collections::HashMap<&str, &str> = sd
+        // Build a sibling-name → actor-type map for fast resolution. The stored
+        // child type is the raw user spelling; canonicalize each to the
+        // registered actor identity so a package-module sibling compares against
+        // the same identity the dependent's init-param annotation resolves to.
+        let sibling_types: std::collections::HashMap<&str, String> = sd
             .children
             .iter()
-            .map(|c| (c.name.as_str(), c.actor_type.as_str()))
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    self.canonical_supervisor_child_type(&c.actor_type),
+                )
+            })
             .collect();
 
         for child in &sd.children {
@@ -647,7 +663,7 @@ impl Checker {
 
             for (param_key, sibling_name) in wired_to {
                 // ── Key resolution: sibling must exist ──────────────────────
-                let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
+                let Some(sibling_type) = sibling_types.get(sibling_name.as_str()) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::SupervisorError {
                             subkind: SupervisorErrorKind::WiredToUnknownSibling,
@@ -675,10 +691,11 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // with type `LocalPid<sibling_type>`.
+                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
                     &child.name,
-                    &child.actor_type,
+                    &dependent_identity,
                     param_key,
                     sibling_type,
                     span,

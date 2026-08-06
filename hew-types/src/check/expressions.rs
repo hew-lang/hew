@@ -6110,9 +6110,15 @@ impl Checker {
                             // rather than re-litigating bound checking at a
                             // sibling site.
                             self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
+                            // The child type is stored as the raw user-spelled
+                            // string (`bank.Account`); canonicalize its module
+                            // prefix to the registered actor identity so the
+                            // synthesised `LocalPid` carries the same dotted
+                            // identity a spawn handle does and method dispatch
+                            // keys `fn_sigs` correctly.
                             let child_ty = Ty::Named {
                                 builtin: None,
-                                name: child_type,
+                                name: self.canonical_supervisor_child_type(&child_type),
                                 args: vec![],
                             };
                             if slot_kind == crate::check::types::ChildKind::Pool {

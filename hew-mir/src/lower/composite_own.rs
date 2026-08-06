@@ -1120,7 +1120,17 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    let mut all_candidates_clone_synthesizable = true;
+    // Per-candidate clone-synthesizability. The borrow exemption keeps a
+    // candidate's `EnumInPlace` owner alive across an arm-binder read, which is
+    // sound iff the helper family can clone AND drop every active payload of
+    // THAT candidate. The decision is a property of the candidate's OWN payload
+    // leaves, so it is recorded per candidate root — not ANDed function-wide. A
+    // function-wide conjunction let one non-synthesizable composite (a
+    // `Result<Child, _>` whose affine `#[resource]` payload has no clone helper)
+    // poison the exemption for a separately-admissible sibling
+    // (`Result<bytes, string>`), leaking the sibling that the composite itself
+    // was perfectly able to free. Each candidate stands on its own leaves.
+    let mut synthesizable_candidate_locals: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1131,12 +1141,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_clone_synthesizable &= enum_payloads_are_clone_synthesizable(
+        if enum_payloads_are_clone_synthesizable(
             ty,
             enum_layouts,
             record_field_orders,
             type_classes,
-        );
+        ) {
+            synthesizable_candidate_locals.insert(local);
+        }
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1194,6 +1206,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // bindings whose scope is not the same or nested are filtered out and the
     // source escape scan below treats the move as an unbound-destination escape.
     let mut payload_binders: HashMap<u32, Option<ScopeId>> = HashMap::new();
+    // Which candidate composite each payload binder was projected out of, so the
+    // borrow exemption can be judged against THAT candidate's own
+    // clone-synthesizability (FIX: per-candidate, not function-wide). Seeded from
+    // the interior projection's aliased source (its `alias_of` root is the
+    // candidate local) and carried along every onward hand-off below.
+    let mut payload_binder_candidate_root: HashMap<u32, u32> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1219,6 +1237,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                     payload_binders
                                         .entry(dl)
                                         .or_insert_with(|| local_scope.get(&dl).copied());
+                                    // Attribute this binder to the candidate it
+                                    // was projected from (the aliased source's
+                                    // root). First seed wins, matching the
+                                    // payload-binder identity above.
+                                    payload_binder_candidate_root.entry(dl).or_insert_with(|| {
+                                        alias_of.get(&sl).copied().unwrap_or(sl)
+                                    });
                                 }
                             }
                         }
@@ -1288,6 +1313,11 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             // `dl`'s real lifetime; fall back to the source's
                             // scope for MIR temps.
                             payload_binders.insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                            // The hand-off carries the same candidate attribution
+                            // as its source binder.
+                            if let Some(&root) = payload_binder_candidate_root.get(&sl) {
+                                payload_binder_candidate_root.entry(dl).or_insert(root);
+                            }
                             changed = true;
                         }
                     }
@@ -1317,6 +1347,11 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             if local_is_heap_owning(dl) && !payload_binders.contains_key(&dl) {
                                 payload_binders
                                     .insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                                // The loaded field inherits its record binder's
+                                // candidate attribution.
+                                if let Some(&root) = payload_binder_candidate_root.get(&sl) {
+                                    payload_binder_candidate_root.entry(dl).or_insert(root);
+                                }
                                 changed = true;
                             }
                         }
@@ -1784,7 +1819,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // outer composite keeps its `EnumInPlace` drop (#2717 — the
                     // scalar sibling of the NESTED enum, not a Move, was the
                     // residual leak the plain-string-only cap left excluded).
-                    let read_is_borrow = all_candidates_clone_synthesizable
+                    // Per-candidate: the borrow exemption is granted only when
+                    // the candidate composite THIS binder was projected from is
+                    // itself clone-synthesizable. A non-synthesizable sibling
+                    // (different root) no longer poisons an admissible one. A
+                    // binder with no known root fails closed (excluded).
+                    let read_is_borrow = payload_binder_candidate_root
+                        .get(&l)
+                        .is_some_and(|root| synthesizable_candidate_locals.contains(root))
                         && (binder_read_is_borrow_safe_terminator(
                             &block.terminator,
                             suspend_kinds.get(&block.id),

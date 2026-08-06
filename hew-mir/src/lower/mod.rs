@@ -5510,7 +5510,14 @@ pub(crate) fn lower_function(
     // codegen. A no-op here for every non-actor-handler lowering entry point
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
-    classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
+    classify_actor_state_load_modes(
+        &mut blocks,
+        &builder.suspend_kinds,
+        &builder.locals,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+    );
     let projection_tainted = temp_drop::compute_projection_alias_taint(
         &blocks,
         &builder.match_project_consumed_binder_locals,

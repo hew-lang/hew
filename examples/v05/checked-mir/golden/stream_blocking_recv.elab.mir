@@ -1,6 +1,5 @@
 fn main -> ()
   statements:
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sink<bytes>, Stream<bytes>)
     use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sink<bytes>, Stream<bytes>) intent=Read
     bind BindingId(2) sink site=SiteId(4) ty=Sink<bytes>
@@ -13,12 +12,12 @@ fn main -> ()
     use BindingId(3) input site=SiteId(23) ty=Stream<bytes> intent=Read
     bind BindingId(4) b site=SiteId(13) ty=bytes
     use BindingId(4) b site=SiteId(15) ty=bytes intent=Read
-    bind BindingId(4294967230) __hew_produced_value site=SiteId(14) ty=string
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(14) ty=string
     eval site=SiteId(33) ty=()
     use BindingId(3) input site=SiteId(35) ty=Stream<bytes> intent=Consume
     bind BindingId(5) b site=SiteId(25) ty=bytes
     use BindingId(5) b site=SiteId(27) ty=bytes intent=Read
-    bind BindingId(4294967229) __hew_produced_value site=SiteId(26) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(26) ty=string
     eval site=SiteId(34) ty=()
     drop BindingId(1) __tuple_0 ty=(Sink<bytes>, Stream<bytes>)
   drop_plans:

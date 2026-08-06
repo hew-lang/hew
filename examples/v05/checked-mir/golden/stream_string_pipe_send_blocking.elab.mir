@@ -1,6 +1,5 @@
 fn main -> ()
   statements:
-    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=(Sink<string>, Stream<string>)
     bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sink<string>, Stream<string>)
     use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sink<string>, Stream<string>) intent=Read
     bind BindingId(2) sink site=SiteId(4) ty=Sink<string>

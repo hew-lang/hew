@@ -202,7 +202,7 @@ fn call_argument_is_proven_owned(
 }
 
 /// Refinements a single site's fact can ever take: `Unknown -> concrete`, then
-/// `-> NoOwner`, plus the one `Borrowed -> Owned` upgrade
+/// `-> NoOwner`, plus the shim-authored `Borrowed` refinement
 /// [`resolve_user_call_facts`] may apply to its own earlier answer. Every pass
 /// moves one way along that chain, so this is the per-site ceiling the loop
 /// bound multiplies by.
@@ -755,28 +755,19 @@ fn resolve_user_call_facts(
         } else {
             summary
         };
-        let summary = if matches!(summary, Ownership::Borrowed)
-            && verifier.site_types.get(site) == Some(&ResolvedTy::String)
-        {
-            let arguments = verifier.user_call_arguments.get(site);
-            if arguments.is_some_and(|arguments| {
-                !arguments.is_empty()
-                    && arguments.iter().all(|argument| {
-                        call_argument_is_proven_owned(
-                            *argument,
-                            verifier,
-                            facts,
-                            &mut HashSet::new(),
-                        )
-                    })
-            }) {
-                Ownership::owned(ProducedValueAcquisition::Retained)
-            } else {
-                summary
-            }
-        } else {
-            summary
-        };
+        // A `Borrowed` summary stays `Borrowed` — NO owned upgrade. A callee
+        // whose return summary is `Borrowed` hands back an alias of one of its
+        // by-value (borrowed) arguments; the caller-side storage that alias
+        // roots in — a named `let`, or an anonymous temp already finalized as
+        // its own `__hew_temp_arg` at this very call — keeps its own exactly
+        // -once release. Upgrading the result to `Owned { Retained }` minted a
+        // SECOND owner over the same storage with no runtime retain behind it:
+        // a deterministic double-free whenever the mint fired. Worse, the
+        // upgrade read the arguments' facts mid-fixpoint, so whether it fired
+        // depended on `HashMap` pass order — the alias-return double-free
+        // oracle flipped per compile. Borrowed-alias results stay non-fresh;
+        // the fail-closed worst case of declining is a missed drop, never a
+        // double release.
         let refinable_own_answer =
             shim_published.contains(site) && matches!(summary, Ownership::Owned { .. });
         let Some(fact) = facts.get_mut(site) else {

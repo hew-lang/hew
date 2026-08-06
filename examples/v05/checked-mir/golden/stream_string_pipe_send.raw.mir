@@ -328,184 +328,188 @@ fn std$fs$io_error_from_kind(i64, i64) -> std.fs.IoError [conv=default]
 fn std$fs$io_error_message(std.fs.IoError) -> string [conv=default]
   locals:
     _0: std.fs.IoError
-    _1: string
-    _2: i64
+    _1: i64
+    _2: string
     _3: i64
-    _4: bool
-    _5: i64
-    _6: bool
-    _7: i64
-    _8: bool
-    _9: i64
-    _10: bool
-    _11: i64
-    _12: bool
-    _13: i64
-    _14: bool
-    _15: i64
-    _16: string
+    _4: i64
+    _5: bool
+    _6: i64
+    _7: bool
+    _8: i64
+    _9: bool
+    _10: i64
+    _11: bool
+    _12: i64
+    _13: bool
+    _14: i64
+    _15: bool
+    _16: i64
     _17: string
     _18: string
     _19: string
     _20: string
-    _21: i64
-    _22: string
+    _21: string
+    _22: i64
     _23: string
     _24: string
     _25: string
     _26: string
-    _27: i64
-    _28: string
+    _27: string
+    _28: i64
     _29: string
     _30: string
     _31: string
     _32: string
-    _33: i64
-    _34: string
+    _33: string
+    _34: i64
     _35: string
     _36: string
     _37: string
     _38: string
-    _39: i64
-    _40: string
+    _39: string
+    _40: i64
     _41: string
     _42: string
     _43: string
     _44: string
-    _45: i64
-    _46: string
+    _45: string
+    _46: i64
     _47: string
     _48: string
     _49: string
     _50: string
+    _51: string
   bb0:
     stmt: use BindingId(9) e site=SiteId(107) ty=std.fs.IoError intent=Read
-    _2 = move etag0
-    _3 = const.i64 0
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb2 : bb9
+    _1 = const.i64 0
+    _3 = move etag0
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb2 : bb9
   bb1:
     stmt: bind BindingId(4294967219) __hew_produced_value site=SiteId(106) ty=string
     stmt: return site=Some(SiteId(106)) ty=string
-    ret = move _1
+    ret = move _2
+    snapshot_drop _0 ty=std.fs.IoError plan=Enum { name: "std.fs.IoError" } boundary=LocalCall guard=_1
     return
   bb2:
     stmt: bind BindingId(10) code site=SiteId(108) ty=i64
     stmt: use BindingId(10) code site=SiteId(110) ty=i64 intent=Read
-    _15 = move mvar0.0.0
-    _16 = string_lit "NotFound("
-    _17 = call hew_i64_to_string(_15) -> bb14
+    _16 = move mvar0.0.0
+    _17 = string_lit "NotFound("
+    _18 = call hew_i64_to_string(_16) -> bb14
   bb3:
     stmt: bind BindingId(11) code site=SiteId(118) ty=i64
     stmt: use BindingId(11) code site=SiteId(120) ty=i64 intent=Read
-    _21 = move mvar0.1.0
-    _22 = string_lit "PermissionDenied("
-    _23 = call hew_i64_to_string(_21) -> bb15
+    _22 = move mvar0.1.0
+    _23 = string_lit "PermissionDenied("
+    _24 = call hew_i64_to_string(_22) -> bb15
   bb4:
     stmt: bind BindingId(12) code site=SiteId(128) ty=i64
     stmt: use BindingId(12) code site=SiteId(130) ty=i64 intent=Read
-    _27 = move mvar0.2.0
-    _28 = string_lit "AlreadyExists("
-    _29 = call hew_i64_to_string(_27) -> bb16
+    _28 = move mvar0.2.0
+    _29 = string_lit "AlreadyExists("
+    _30 = call hew_i64_to_string(_28) -> bb16
   bb5:
     stmt: bind BindingId(13) code site=SiteId(138) ty=i64
     stmt: use BindingId(13) code site=SiteId(140) ty=i64 intent=Read
-    _33 = move mvar0.3.0
-    _34 = string_lit "TimedOut("
-    _35 = call hew_i64_to_string(_33) -> bb17
+    _34 = move mvar0.3.0
+    _35 = string_lit "TimedOut("
+    _36 = call hew_i64_to_string(_34) -> bb17
   bb6:
     stmt: bind BindingId(14) code site=SiteId(148) ty=i64
     stmt: use BindingId(14) code site=SiteId(150) ty=i64 intent=Read
-    _39 = move mvar0.4.0
-    _40 = string_lit "Cancelled("
-    _41 = call hew_i64_to_string(_39) -> bb18
+    _40 = move mvar0.4.0
+    _41 = string_lit "Cancelled("
+    _42 = call hew_i64_to_string(_40) -> bb18
   bb7:
     stmt: bind BindingId(15) code site=SiteId(158) ty=i64
     stmt: use BindingId(15) code site=SiteId(160) ty=i64 intent=Read
-    _45 = move mvar0.5.0
-    _46 = string_lit "Other("
-    _47 = call hew_i64_to_string(_45) -> bb19
+    _46 = move mvar0.5.0
+    _47 = string_lit "Other("
+    _48 = call hew_i64_to_string(_46) -> bb19
   bb8:
+    snapshot_drop _0 ty=std.fs.IoError plan=Enum { name: "std.fs.IoError" } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb9:
-    _5 = const.i64 1
-    _6 = icmp.eq _2 _5
-    branch _6 ? bb3 : bb10
+    _6 = const.i64 1
+    _7 = icmp.eq _3 _6
+    branch _7 ? bb3 : bb10
   bb10:
-    _7 = const.i64 2
-    _8 = icmp.eq _2 _7
-    branch _8 ? bb4 : bb11
+    _8 = const.i64 2
+    _9 = icmp.eq _3 _8
+    branch _9 ? bb4 : bb11
   bb11:
-    _9 = const.i64 3
-    _10 = icmp.eq _2 _9
-    branch _10 ? bb5 : bb12
+    _10 = const.i64 3
+    _11 = icmp.eq _3 _10
+    branch _11 ? bb5 : bb12
   bb12:
-    _11 = const.i64 4
-    _12 = icmp.eq _2 _11
-    branch _12 ? bb6 : bb13
+    _12 = const.i64 4
+    _13 = icmp.eq _3 _12
+    branch _13 ? bb6 : bb13
   bb13:
-    _13 = const.i64 5
-    _14 = icmp.eq _2 _13
-    branch _14 ? bb7 : bb8
+    _14 = const.i64 5
+    _15 = icmp.eq _3 _14
+    branch _15 ? bb7 : bb8
   bb14:
     stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(112) ty=string
     stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(108) ty=string
-    _18 = call_rt hew_string_concat(_16, _17)
-    drop _17 ty=string fn=release(hew_string_drop)
-    _19 = string_lit ")"
-    _20 = call_rt hew_string_concat(_18, _19)
+    _19 = call_rt hew_string_concat(_17, _18)
     drop _18 ty=string fn=release(hew_string_drop)
-    _1 = move _20
+    _20 = string_lit ")"
+    _21 = call_rt hew_string_concat(_19, _20)
+    drop _19 ty=string fn=release(hew_string_drop)
+    _2 = move _21
     goto bb1
   bb15:
     stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(122) ty=string
     stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(118) ty=string
-    _24 = call_rt hew_string_concat(_22, _23)
-    drop _23 ty=string fn=release(hew_string_drop)
-    _25 = string_lit ")"
-    _26 = call_rt hew_string_concat(_24, _25)
+    _25 = call_rt hew_string_concat(_23, _24)
     drop _24 ty=string fn=release(hew_string_drop)
-    _1 = move _26
+    _26 = string_lit ")"
+    _27 = call_rt hew_string_concat(_25, _26)
+    drop _25 ty=string fn=release(hew_string_drop)
+    _2 = move _27
     goto bb1
   bb16:
     stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(132) ty=string
     stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(128) ty=string
-    _30 = call_rt hew_string_concat(_28, _29)
-    drop _29 ty=string fn=release(hew_string_drop)
-    _31 = string_lit ")"
-    _32 = call_rt hew_string_concat(_30, _31)
+    _31 = call_rt hew_string_concat(_29, _30)
     drop _30 ty=string fn=release(hew_string_drop)
-    _1 = move _32
+    _32 = string_lit ")"
+    _33 = call_rt hew_string_concat(_31, _32)
+    drop _31 ty=string fn=release(hew_string_drop)
+    _2 = move _33
     goto bb1
   bb17:
     stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(142) ty=string
     stmt: bind BindingId(4294967224) __hew_produced_value site=SiteId(138) ty=string
-    _36 = call_rt hew_string_concat(_34, _35)
-    drop _35 ty=string fn=release(hew_string_drop)
-    _37 = string_lit ")"
-    _38 = call_rt hew_string_concat(_36, _37)
+    _37 = call_rt hew_string_concat(_35, _36)
     drop _36 ty=string fn=release(hew_string_drop)
-    _1 = move _38
+    _38 = string_lit ")"
+    _39 = call_rt hew_string_concat(_37, _38)
+    drop _37 ty=string fn=release(hew_string_drop)
+    _2 = move _39
     goto bb1
   bb18:
     stmt: bind BindingId(4294967223) __hew_produced_value site=SiteId(152) ty=string
     stmt: bind BindingId(4294967222) __hew_produced_value site=SiteId(148) ty=string
-    _42 = call_rt hew_string_concat(_40, _41)
-    drop _41 ty=string fn=release(hew_string_drop)
-    _43 = string_lit ")"
-    _44 = call_rt hew_string_concat(_42, _43)
+    _43 = call_rt hew_string_concat(_41, _42)
     drop _42 ty=string fn=release(hew_string_drop)
-    _1 = move _44
+    _44 = string_lit ")"
+    _45 = call_rt hew_string_concat(_43, _44)
+    drop _43 ty=string fn=release(hew_string_drop)
+    _2 = move _45
     goto bb1
   bb19:
     stmt: bind BindingId(4294967221) __hew_produced_value site=SiteId(162) ty=string
     stmt: bind BindingId(4294967220) __hew_produced_value site=SiteId(158) ty=string
-    _48 = call_rt hew_string_concat(_46, _47)
-    drop _47 ty=string fn=release(hew_string_drop)
-    _49 = string_lit ")"
-    _50 = call_rt hew_string_concat(_48, _49)
+    _49 = call_rt hew_string_concat(_47, _48)
     drop _48 ty=string fn=release(hew_string_drop)
-    _1 = move _50
+    _50 = string_lit ")"
+    _51 = call_rt hew_string_concat(_49, _50)
+    drop _49 ty=string fn=release(hew_string_drop)
+    _2 = move _51
     goto bb1
 
 fn std$fs$io_error_timed_out() -> std.fs.IoError [conv=default]
@@ -644,6 +648,7 @@ fn std$fs$read(string) -> string [conv=default]
     _30: string
     _31: !
     _32: string
+    _33: std.fs.IoError
   bb0:
     stmt: use BindingId(18) path site=SiteId(199) ty=string intent=Read
     _1 = call hew_file_read(_0) -> bb1
@@ -702,7 +707,9 @@ fn std$fs$read(string) -> string [conv=default]
     _19 = cast _4 i32 -> i64
     _20 = call std$fs$io_error_from_errno(_19) -> bb12
   bb12:
-    _21 = call std$fs$io_error_message(_20) -> bb13
+    _33 = move _20
+    neutralize_payload _20 -> _33 [SendTransferLastUse]
+    _21 = call std$fs$io_error_message(_33) -> bb13
   bb13:
     stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(222) ty=string
     _22 = call to_string_str(_21) -> bb14

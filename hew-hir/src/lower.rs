@@ -3897,6 +3897,47 @@ pub fn lower_program_with_mono_cap(
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
                         ctx.register_impl_method_fn_entry(symbol_owner, method, &impl_type_params);
+                        // Establish the declaration-keyed body plan for the
+                        // injected builtin impl NOW, before any user body is
+                        // lowered in the third pass. The body itself is emitted
+                        // later in the fourth pass (`lower_impl_block` under
+                        // `lowering_injected_items`), but a direct method call
+                        // such as `x.fmt()` inside a user body resolves its
+                        // callee through `registered_impl_method_symbol` at
+                        // third-pass time — before that emission. Without the
+                        // plan entry the projection is absent and the call fails
+                        // closed (`CallableUnsupportedInMir`), even though the
+                        // identical value renders fine through the f-string
+                        // Display path, which never consults this projection.
+                        // `plan_imported_impl_bodies` covers user/imported
+                        // bodies; the compiler-injected builtins live in a
+                        // separate program, so they must be planned here.
+                        let emitted_symbol =
+                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name);
+                        let source_symbol =
+                            crate::node::HirImplBlock::method_symbol(name, &method.name);
+                        if let Some(declaration) = ctx
+                            .impl_method_declaration_ids
+                            .get(&emitted_symbol)
+                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
+                            .cloned()
+                            .or_else(|| {
+                                builtin_receiver_impl_output.as_ref().and_then(|output| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
+                            })
+                        {
+                            ctx.impl_body_plan
+                                .symbols
+                                .entry(declaration)
+                                .or_insert(emitted_symbol);
+                        }
                     }
                     builtin_receiver_impl_method_symbols.extend(method_symbols);
                 }

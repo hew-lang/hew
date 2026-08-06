@@ -6900,8 +6900,20 @@ impl Builder {
                     dest: event_tag,
                 });
                 let dest = self.alloc_local(ResolvedTy::I64);
+                // The emit-push side (`machine_synth.rs::synthesize_machine_step_fn`)
+                // hashes the class-tagged machine layout key, not the plain
+                // declared name — mirror the same `MachineStateName` pattern
+                // above so `take_emits` hashes the identical key `emit()`
+                // tagged its push with. A plain-name hash here would produce
+                // a different SipHash digest and silently never match a
+                // pushed emit (machine_emit_type_id is `SipHasher13` over
+                // the name bytes).
+                let emit_layout_key = match &receiver.ty {
+                    ResolvedTy::Named { name, args, .. } => hew_hir::machine_layout_key(name, args),
+                    _ => machine_name.clone(),
+                };
                 self.push_instr(Instr::MachineEmitTake {
-                    machine_emit_id: machine_emit_type_id(machine_name),
+                    machine_emit_id: machine_emit_type_id(&emit_layout_key),
                     event_tag,
                     dest,
                 });

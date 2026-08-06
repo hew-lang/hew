@@ -394,7 +394,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load5 = load %Bundle, ptr %local_8, align 4
   store %Bundle %move_load5, ptr %local_9, align 4
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_9, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 8, i64 4, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 8, i64 4, ptr @__hew_frame_cleanup_dd2698fd845d405b, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -1222,7 +1222,7 @@ declare void @hew_trap_with_code(i32)
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_dd2698fd845d405b(ptr %0) {
 entry:
   call void @__hew_record_drop_inplace_Bundle(ptr %0)
   ret void

@@ -1014,7 +1014,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load = load %Holder, ptr %local_4, align 8
   store %Holder %move_load, ptr %local_5, align 8
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_022e4605beb6817e, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -1207,7 +1207,7 @@ helper_crash_cleanup_deactivate_merge73:          ; preds = %helper_crash_cleanu
   %move_load78 = load %Holder, ptr %local_19, align 8
   store %Holder %move_load78, ptr %local_5, align 8
   %helper_crash_cleanup_prior_token79 = load i64, ptr %helper_crash_cleanup_token_5, align 8
-  %arm_typed_crash_cleanup80 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token79, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup80 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token79, ptr %local_5, i64 16, i64 8, ptr @__hew_frame_cleanup_022e4605beb6817e, i32 1, i32 0)
   %frame_cleanup_arm_failed81 = icmp eq i64 %arm_typed_crash_cleanup80, -1
   br i1 %frame_cleanup_arm_failed81, label %frame_cleanup_rejected83, label %frame_cleanup_registered82
 
@@ -2168,7 +2168,7 @@ declare void @hew_gen_coro_destroy(ptr)
 
 declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_022e4605beb6817e(ptr %0) {
 entry:
   call void @__hew_record_drop_inplace_Holder(ptr %0)
   ret void

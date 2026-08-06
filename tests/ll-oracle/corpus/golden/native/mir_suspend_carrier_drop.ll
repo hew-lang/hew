@@ -601,7 +601,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load = load ptr, ptr %local_3, align 8
   store ptr %move_load, ptr %local_4, align 8
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_4, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_4, i64 8, i64 8, ptr @__hew_frame_cleanup_0, i32 0, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_4, i64 8, i64 8, ptr @__hew_frame_cleanup_6e3157b8b1632579, i32 0, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -1395,7 +1395,7 @@ declare ptr @llvm.coro.begin(token, ptr writeonly) #4
 
 declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_6e3157b8b1632579(ptr %0) {
 entry:
   %"hew_string_drop drop" = load ptr, ptr %0, align 8
   call void @hew_string_drop(ptr %"hew_string_drop drop")

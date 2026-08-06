@@ -160,6 +160,57 @@ fn scalar_payloads_are_admitted() {
 }
 
 #[test]
+fn bytes_payloads_are_admitted() {
+    // `bytes` is a refcounted CoW value with the same intrinsic dup+drop family
+    // as `string`, so `Result<bytes, string>` is clone-drop-safe end to end and
+    // must be admitted — the codec `try_gzip_decompress` shape that leaked its
+    // payload while the cap was spelled "string or bit-copy".
+    assert!(
+        admits(vec![ResolvedTy::Bytes]),
+        "a `bytes` payload shares string's clone+drop family and must be admitted"
+    );
+    assert!(
+        admits(vec![ResolvedTy::Tuple(vec![
+            ResolvedTy::Bytes,
+            ResolvedTy::String
+        ])]),
+        "a `(bytes, string)` tuple payload is clone-drop-safe through both leaves"
+    );
+}
+
+#[test]
+fn bytes_beside_resource_payload_is_refused() {
+    // Mixed-sibling: a clone-drop-safe `bytes` leaf sitting BESIDE an affine
+    // `#[resource]` leaf must fail-closed the WHOLE composite. Admitting on the
+    // bytes leaf alone would seed an `EnumInPlace` drop that closes the affine
+    // resource a second time — the class rule 17 names. The `.all()` conjunction
+    // over the value-class gate must hold for `bytes` exactly as it does for
+    // `string`.
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Conn".to_string(),
+        (hew_hir::ResourceMarker::Resource, None),
+    );
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Conn".to_string(),
+        vec![("fd".to_string(), ResolvedTy::I64)],
+    );
+    assert!(
+        !admits_with_classes(
+            vec![ResolvedTy::Tuple(vec![
+                ResolvedTy::Bytes,
+                builtin("Conn", vec![])
+            ])],
+            &orders,
+            &classes
+        ),
+        "a `bytes` leaf beside a `#[resource]` leaf must refuse the whole \
+         composite — the bytes admit must not relax the affine conjunction"
+    );
+}
+
+#[test]
 fn scalar_argument_io_handle_payloads_are_refused() {
     // The load-bearing case: SCALAR type arguments, so the heap authority
     // answers "owns no heap" for both handles. Only a positive bit-copy

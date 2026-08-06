@@ -4921,9 +4921,33 @@ pub fn lower_program_with_mono_cap(
     enum_layouts.extend(extra_enum_layouts);
     ctx.diagnostics.extend(layout_mono_diagnostics);
 
+    // Extern-backed record surface: the `#[extern_symbol]` method names were
+    // collected at impl lowering (the attribute does not survive onto the
+    // lowered `HirFn`); `extern` block fns are folded in here from their
+    // lowered signatures, qualified by their captured defining-module
+    // provenance so the spellings match the `record_registry` keys.
+    let mut extern_backed_records = std::mem::take(&mut ctx.extern_backed_record_names);
+    for item in &items {
+        if let HirItem::ExternFn(extern_fn) = item {
+            for ty in extern_fn
+                .param_tys
+                .iter()
+                .chain(std::iter::once(&extern_fn.return_ty))
+            {
+                for name in crate::value_class::named_type_names(ty) {
+                    if let crate::node::ExternProvenance::Module(module) = &extern_fn.provenance {
+                        extern_backed_records.insert(format!("{module}.{name}"));
+                    }
+                    extern_backed_records.insert(name);
+                }
+            }
+        }
+    }
+
     finalize_user_record_value_classes(
         &ctx.record_registry,
         &record_layouts,
+        &extern_backed_records,
         &mut ctx.type_classes,
     );
 
@@ -5543,12 +5567,38 @@ fn is_exact_release_forwarding_expr(
 fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,
     record_layouts: &[RecordLayout],
+    extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
 ) {
     for name in record_registry.keys() {
         type_classes
             .entry(name.clone())
             .or_insert((ResourceMarker::None, None));
+    }
+
+    // Zero-field records are structurally uninferable, and the bare
+    // `type Empty {}` case is pinned fail-closed by the
+    // `empty_field_user_type_remains_uninferred` oracle. The one honest
+    // exception is the FFI handle stand-in: a zero-field, non-generic record
+    // named in the signature of an `#[extern_symbol]` method or an `extern`
+    // block fn. Its values only exist behind the C ABI (the checker rewrites
+    // every call to the extern symbol; the declared stub body is dead), so
+    // the record is a pointer-width stand-in with no implicit drop — the same
+    // class the `#[opaque]` rule assigns (`ResourceMarker::BitCopy`), with
+    // release explicit through the declared FFI surface. An explicit
+    // `#[resource]`/`#[linear]` marker on such a record wins: only the
+    // unmarked (`None`) state is promoted.
+    for (name, entry) in record_registry {
+        if entry.type_params.is_empty()
+            && entry.fields.is_empty()
+            && extern_backed_records.contains(name)
+        {
+            if let Some(slot) = type_classes.get_mut(name) {
+                if slot.0 == ResourceMarker::None {
+                    slot.0 = ResourceMarker::BitCopy;
+                }
+            }
+        }
     }
 
     let mut changed = true;
@@ -6794,6 +6844,16 @@ struct LowerCtx {
     /// land here with `fields = []`; they never trigger record-layout
     /// emission (their constructor goes through `Expr::Call`).
     record_registry: HashMap<String, RecordEntry>,
+    /// Nominal type names appearing in the signature (params or return) of an
+    /// `#[extern_symbol]` impl method, collected at impl lowering — the only
+    /// stage where the attribute is still visible (the lowered `HirFn` carries
+    /// no extern marker). Stored in the bare spelling and, when lowered under
+    /// a module context, the module-qualified spelling, matching the two
+    /// `record_registry` keys. Consumed by
+    /// `finalize_user_record_value_classes` to admit a zero-field record that
+    /// is provably FFI-backed as a `BitCopy` handle stand-in while a bare
+    /// `type Empty {}` stays fail-closed uninferred.
+    extern_backed_record_names: HashSet<String>,
     /// Bare imported record names that have distinct definitions in more than
     /// one canonical module and therefore require module-qualified identities.
     colliding_imported_record_names: HashSet<String>,
@@ -7610,6 +7670,7 @@ impl LowerCtx {
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
+            extern_backed_record_names: HashSet::new(),
             colliding_imported_record_names: HashSet::new(),
             file_import_module_names: HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
@@ -8762,6 +8823,46 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
         .iter()
         .map(|param| &param.ty.0)
         .chain(method.return_type.as_ref().map(|rt| &rt.0))
+}
+
+/// Collect every nominal leaf name mentioned in a surface `TypeExpr`,
+/// descending through type arguments and structural composites. Source
+/// spellings only — no resolution, no qualification.
+fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            out.push(name.clone());
+            for arg in type_args.as_deref().unwrap_or(&[]) {
+                collect_type_expr_named_leaves(&arg.0, out);
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            collect_type_expr_named_leaves(&ok.0, out);
+            collect_type_expr_named_leaves(&err.0, out);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Array { element: inner, .. }
+        | TypeExpr::Pointer { pointee: inner, .. }
+        | TypeExpr::Borrow(inner) => {
+            collect_type_expr_named_leaves(&inner.0, out);
+        }
+        TypeExpr::Tuple(elements) => {
+            for element in elements {
+                collect_type_expr_named_leaves(&element.0, out);
+            }
+        }
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                collect_type_expr_named_leaves(&param.0, out);
+            }
+            collect_type_expr_named_leaves(&return_type.0, out);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+    }
 }
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
@@ -11638,6 +11739,32 @@ impl LowerCtx {
             ));
             return;
         };
+        // Record the FFI-backed nominal surface of this impl BEFORE any
+        // metadata-only skip below drops the block: a record named in the
+        // signature of an `#[extern_symbol]` method is constructed/consumed
+        // behind the C ABI, which is the signal
+        // `finalize_user_record_value_classes` needs to admit a zero-field
+        // record as a pointer-width handle stand-in.
+        for method in &decl.methods {
+            if !method
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "extern_symbol")
+            {
+                continue;
+            }
+            for ty in method_signature_type_exprs(method) {
+                let mut names = Vec::new();
+                collect_type_expr_named_leaves(ty, &mut names);
+                for name in names {
+                    if let Some(module) = &self.current_module_name {
+                        self.extern_backed_record_names
+                            .insert(format!("{module}.{name}"));
+                    }
+                    self.extern_backed_record_names.insert(name);
+                }
+            }
+        }
         // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
         let type_params: Vec<String> = decl
             .type_params
@@ -22687,7 +22814,23 @@ impl LowerCtx {
                 // retry would let compatibility spellings rewrite a different
                 // source-owned declaration (for example `failure.*`).
                 .or_else(|| {
-                    (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
+                    // One shipped declaration, two canonical spellings: the
+                    // shipped `std/concurrency/lambda_actor.hew` source is
+                    // reachable both as a directory-module peer (a direct
+                    // `hew check` of the file lowers it as `std.concurrency`)
+                    // and as the file module every user import resolves
+                    // (`import std::concurrency::lambda_actor` →
+                    // `std.concurrency.lambda_actor`). Matching only the
+                    // former stamped the builtin discriminator on the direct
+                    // path but not through an import, so the same impl block
+                    // was metadata-only one way and a lowered user impl the
+                    // other — the root-vs-import provenance seam the stdlib
+                    // corpus sweep pins. Both spellings stay gated on the
+                    // canonical-source proof above; a user lookalike module
+                    // acquires neither.
+                    (canonical_std_owner
+                        && (name == "std.concurrency.LambdaActorHandle"
+                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
                         .then_some(BuiltinType::LambdaActorHandle)
                 })
         }) {

@@ -735,7 +735,7 @@ helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanu
   %move_load2 = load ptr, ptr %local_8, align 8
   store ptr %move_load2, ptr %local_9, align 8
   %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_9, align 8
-  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 8, i64 8, ptr @__hew_frame_cleanup_0, i32 1, i32 0)
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_9, i64 8, i64 8, ptr @__hew_frame_cleanup_6fdb4a5e56ec52a6, i32 1, i32 0)
   %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
   br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
@@ -800,7 +800,7 @@ helper_crash_cleanup_deactivate_merge16:          ; preds = %helper_crash_cleanu
   %move_load21 = load ptr, ptr %local_22, align 8
   store ptr %move_load21, ptr %local_23, align 8
   %helper_crash_cleanup_prior_token22 = load i64, ptr %helper_crash_cleanup_token_23, align 8
-  %arm_typed_crash_cleanup23 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token22, ptr %local_23, i64 8, i64 8, ptr @__hew_frame_cleanup_1, i32 1, i32 0)
+  %arm_typed_crash_cleanup23 = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token22, ptr %local_23, i64 8, i64 8, ptr @__hew_frame_cleanup_43b15f687f6a80ab, i32 1, i32 0)
   %frame_cleanup_arm_failed24 = icmp eq i64 %arm_typed_crash_cleanup23, -1
   br i1 %frame_cleanup_arm_failed24, label %frame_cleanup_rejected26, label %frame_cleanup_registered25
 
@@ -1805,7 +1805,7 @@ declare ptr @hew_vec_new_with_layout(ptr)
 
 declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 
-define internal void @__hew_frame_cleanup_0(ptr %0) {
+define internal void @__hew_frame_cleanup_6fdb4a5e56ec52a6(ptr %0) {
 entry:
   %"hew_vec_free drop" = load ptr, ptr %0, align 8
   call void @hew_vec_free(ptr %"hew_vec_free drop")
@@ -1825,7 +1825,7 @@ declare ptr @hew_vec_get_layout(ptr, i64, ptr)
 
 declare ptr @hew_hashmap_new_with_layout(ptr, ptr)
 
-define internal void @__hew_frame_cleanup_1(ptr %0) {
+define internal void @__hew_frame_cleanup_43b15f687f6a80ab(ptr %0) {
 entry:
   %"hew_hashmap_free_layout drop" = load ptr, ptr %0, align 8
   call void @hew_hashmap_free_layout(ptr %"hew_hashmap_free_layout drop")

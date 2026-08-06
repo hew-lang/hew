@@ -11,6 +11,48 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeBindingId(pub u32);
 
+/// A projection path from a binding root down to a sub-place: one field name
+/// per step.
+///
+/// Tuple element access (`t.0`) parses as a field access with a numeric field
+/// name, so field names are the only step kind a place path has to carry.
+/// The EMPTY path denotes the binding itself and is deliberately never stored
+/// in [`Binding::moved_places`]: a whole-binding consume is
+/// [`Binding::is_moved`], which every existing diagnostic already reads.
+pub type PlacePath = Vec<String>;
+
+/// One consumed strict sub-place of a binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedPlace {
+    /// Projection steps from the binding root. Never empty.
+    pub path: PlacePath,
+    /// Where the consuming use happened, for error reporting.
+    pub moved_at: Span,
+}
+
+/// How a use of one place collides with an already-consumed place.
+///
+/// The relation mirrors MIR's partial-move state (`AliasedIntoAggregate` /
+/// `partial_projection`) so the two authorities agree on what a place move
+/// means: sibling-field moves are independent, a whole-value use of a
+/// partially-moved root is refused, and any re-use of a moved place or of
+/// storage under it is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceConflict {
+    /// The exact place was already consumed (`h.sock` after `h.sock`).
+    Exact,
+    /// The use lies UNDER a consumed place (`h.sock.fd` after `h.sock`).
+    UnderMoved,
+    /// The use is a whole-value use of a partially-moved place
+    /// (`h` after `h.sock`).
+    WholeOfPartial,
+}
+
+/// Whether `path` is `prefix` or extends it.
+fn path_extends(path: &[String], prefix: &[String]) -> bool {
+    path.len() >= prefix.len() && path[..prefix.len()] == *prefix
+}
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -24,6 +66,13 @@ pub struct Binding {
     pub is_moved: bool,
     /// Where the move happened, for error reporting
     pub moved_at: Option<Span>,
+    /// Strict sub-places of this binding consumed on the current path.
+    ///
+    /// Separate from `is_moved` because consumption is a fact about a PLACE,
+    /// not about a name: `await a.take(h.sock)` transfers the socket out of
+    /// `h` while leaving `h`'s other fields perfectly usable. Keyed by
+    /// projection path so sibling fields stay independent.
+    pub moved_places: Vec<MovedPlace>,
     /// Where an affine resource's explicit `close` discharged its implicit
     /// scope-exit obligation. Unlike a move, discharge leaves the handle bits
     /// readable so non-consuming operations can report a closed-handle error;
@@ -94,7 +143,7 @@ impl Binding {
 
 /// The move/release facts tracked per execution path for one binding.
 ///
-/// These three fields are the ONLY flow-sensitive ownership state. `read_count`
+/// These four fields are the ONLY flow-sensitive ownership state. `read_count`
 /// and `is_written` are any-path lint accumulators (unused / never-mutated) and
 /// deliberately stay outside the snapshot: restoring them per branch arm would
 /// erase reads and writes that genuinely happened.
@@ -104,6 +153,8 @@ pub struct OwnershipState {
     pub is_moved: bool,
     /// Where the move happened, for error reporting.
     pub moved_at: Option<Span>,
+    /// Strict sub-places consumed on this path.
+    pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
     pub released_at: Option<Span>,
 }
@@ -216,6 +267,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
                     is_written: false,
@@ -239,6 +291,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    moved_places: Vec::new(),
                     released_at: None,
                     read_count: 0,
                     is_written: false,
@@ -306,6 +359,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
+                    moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     is_written: false,
@@ -327,6 +381,77 @@ impl TypeEnv {
             }
         }
         false
+    }
+
+    /// Record a strict sub-place of `name` as consumed, returning `true` if the
+    /// binding was found.
+    ///
+    /// `path` must be non-empty; a whole-binding consume is [`Self::mark_moved`].
+    /// Re-recording an already-consumed place keeps the FIRST consume site,
+    /// which is the one a diagnostic should point at.
+    pub fn mark_place_moved(&mut self, name: &str, path: PlacePath, span: Span) -> bool {
+        debug_assert!(!path.is_empty(), "empty place path is `mark_moved`");
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                if !binding.moved_places.iter().any(|m| m.path == path) {
+                    binding.moved_places.push(MovedPlace {
+                        path,
+                        moved_at: span,
+                    });
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The first already-consumed place of `name` that collides with a use of
+    /// `path`, together with the colliding place and its consume site.
+    ///
+    /// The empty `path` asks the whole-value question: it collides with every
+    /// consumed sub-place, because using a partially-moved aggregate by value
+    /// would hand a second owner the storage that already moved out.
+    #[must_use]
+    pub fn place_move_conflict(
+        &self,
+        name: &str,
+        path: &[String],
+    ) -> Option<(PlaceConflict, PlacePath, Span)> {
+        let binding = self.lookup_ref(name)?;
+        binding.moved_places.iter().find_map(|moved| {
+            let kind = if moved.path == path {
+                PlaceConflict::Exact
+            } else if path_extends(path, &moved.path) {
+                PlaceConflict::UnderMoved
+            } else if path_extends(&moved.path, path) {
+                PlaceConflict::WholeOfPartial
+            } else {
+                // Disjoint siblings: independent storage, independent owners.
+                return None;
+            };
+            Some((kind, moved.path.clone(), moved.moved_at.clone()))
+        })
+    }
+
+    /// Plug the hole a consuming use left: re-initialising `name` at `path`
+    /// gives that storage a fresh owner, discharging every consumed place at or
+    /// under it.
+    ///
+    /// The empty `path` is a whole-binding re-initialisation and additionally
+    /// clears `is_moved`.
+    pub fn reinit_place(&mut self, name: &str, path: &[String]) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding
+                    .moved_places
+                    .retain(|moved| !path_extends(&moved.path, path));
+                if path.is_empty() {
+                    binding.is_moved = false;
+                    binding.moved_at = None;
+                }
+                return;
+            }
+        }
     }
 
     /// Discharge one affine resource without making its closed handle bits
@@ -371,6 +496,7 @@ impl TypeEnv {
                     OwnershipState {
                         is_moved: binding.is_moved,
                         moved_at: binding.moved_at.clone(),
+                        moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
                     },
                 );
@@ -411,6 +537,16 @@ impl TypeEnv {
                 if state.moved_at.is_none() {
                     state.moved_at.clone_from(&exit_state.moved_at);
                 }
+                // Place moves union the same monotone way whole-binding moves
+                // do: a place consumed on ANY path is not usable after the
+                // join, and a place re-initialised on only SOME paths still
+                // carries the obligation. Union only ever ADDS facts, which is
+                // what keeps the join structurally sound.
+                for place in &exit_state.moved_places {
+                    if !state.moved_places.iter().any(|m| m.path == place.path) {
+                        state.moved_places.push(place.clone());
+                    }
+                }
                 if state.released_at.is_none() {
                     state.released_at.clone_from(&exit_state.released_at);
                 }
@@ -429,6 +565,7 @@ impl TypeEnv {
                 if let Some(state) = states.get(&binding.id) {
                     binding.is_moved = state.is_moved;
                     binding.moved_at.clone_from(&state.moved_at);
+                    binding.moved_places.clone_from(&state.moved_places);
                     binding.released_at.clone_from(&state.released_at);
                 }
             }

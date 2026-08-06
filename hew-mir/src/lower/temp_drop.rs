@@ -839,6 +839,30 @@ fn fresh_string_owner_defined_by_predecessor_terminator(
     saw_predecessor
 }
 
+/// Whether any instruction in `block.instructions[..instr_index]` writes to
+/// `local`, redefining it before `instr_index`.
+///
+/// Guards [`fresh_string_owner_defined_by_predecessor_terminator`]: that
+/// check proves only that a PREDECESSOR terminator freshly produced `local`
+/// on the edge into `block` — it has no visibility into `block`'s own
+/// prefix. A join block that redefines the whole local (ANY write, fresh
+/// producer or not) before the ingress retain site makes the predecessor's
+/// answer STALE: the generation actually live at the site is whatever
+/// `block`'s own prefix last wrote, not the predecessor's terminator result.
+/// [`fresh_string_owner_defined_before`] already re-derives freshness
+/// correctly for an in-block write (it walks back to the NEAREST preceding
+/// write and answers directly against it), so this guard exists solely to
+/// stop the predecessor-terminator disjunct from overriding that with a
+/// stale cross-block answer when a redefinition sits in between.
+fn local_redefined_in_block_prefix(block: &BasicBlock, instr_index: usize, local: u32) -> bool {
+    block.instructions[..instr_index].iter().any(|instr| {
+        crate::dataflow::instr_reads_writes(instr)
+            .1
+            .iter()
+            .any(|place| base_local(*place) == Some(local))
+    })
+}
+
 /// Whether the currently-live generation of `local` is read after a site
 /// before every path overwrites it.
 ///
@@ -2197,25 +2221,33 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
+                // A predecessor-terminator freshness verdict is trustworthy
+                // only when THIS block's own prefix never redefines
+                // `src_local` before the ingress site — a redefinition makes
+                // the predecessor's answer stale (see
+                // `local_redefined_in_block_prefix`).
                 if (fresh_string_owner_defined_before(
                     block,
                     instr_index,
                     src_local,
                     locals,
                     owned_string_return_carrier_symbols,
-                ) || fresh_string_owner_defined_by_predecessor_terminator(
-                    blocks,
-                    suspend_kinds,
-                    block.id,
-                    src_local,
-                    owned_string_return_carrier_symbols,
-                )) && !fresh_generation_is_used_after(
-                    blocks,
-                    suspend_kinds,
-                    src_local,
-                    block.id,
-                    instr_index,
-                ) {
+                ) || (!local_redefined_in_block_prefix(block, instr_index, src_local)
+                    && fresh_string_owner_defined_by_predecessor_terminator(
+                        blocks,
+                        suspend_kinds,
+                        block.id,
+                        src_local,
+                        owned_string_return_carrier_symbols,
+                    )))
+                    && !fresh_generation_is_used_after(
+                        blocks,
+                        suspend_kinds,
+                        src_local,
+                        block.id,
+                        instr_index,
+                    )
+                {
                     continue;
                 }
                 if !string_place_is_typed(*src, locals)
@@ -8684,6 +8716,116 @@ mod cow_sole_owner_derivation {
         assert!(
             !derivation.allowed.contains(&binding),
             "an explicit release owns the drop; scope exit must not release again"
+        );
+    }
+}
+#[cfg(test)]
+mod fresh_string_owner_join_prefix_redefinition {
+    //! `fresh_string_owner_defined_by_predecessor_terminator` proves only that
+    //! a PREDECESSOR terminator freshly produced a local on the edge into the
+    //! join block — it has no visibility into the join block's own prefix. A
+    //! join block that redefines the whole local (a plain hand-off from a
+    //! BORROWED source) before the ingress retain site makes that answer
+    //! stale: the generation actually live at the site is the redefinition's,
+    //! not the predecessor's fresh result. `local_redefined_in_block_prefix`
+    //! guards against exactly this — these tests hand-build the redefine-in-
+    //! prefix shape and the handoff shape it must leave unaffected.
+    use super::*;
+
+    fn fresh_trim_call(dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: "hew_string_trim".to_string(),
+            authority: crate::model::CallAuthority::default(),
+            args: vec![Place::Local(7)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
+    fn locals() -> Vec<ResolvedTy> {
+        vec![ResolvedTy::String; 8]
+    }
+
+    fn derive(join_instructions: Vec<Instr>) -> StringDropDerivation {
+        let dest_binding = BindingId(60);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: fresh_trim_call(5, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: join_instructions,
+                terminator: Terminator::Return,
+            },
+        ];
+        derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &[(dest_binding, "d".to_string(), ResolvedTy::String)],
+            &HashMap::from([(dest_binding, Place::Local(6))]),
+            &HashSet::new(),
+            &HashSet::new(),
+            &locals(),
+            &HashSet::from([7]),
+            &HashSet::from([7]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        )
+    }
+
+    /// The join block's FIRST instruction redefines the predecessor-fresh
+    /// local (`local5 = local7`, a plain hand-off from a borrowed param, NOT
+    /// itself a fresh producer) before the ingress site
+    /// (`local6 = local5`). The active generation at the ingress site is the
+    /// redefinition's — a borrowed alias — so the retain must be minted
+    /// there, not elided on the stale predecessor-terminator answer.
+    #[test]
+    fn redefinition_in_join_prefix_mints_the_ingress_retain() {
+        let derivation = derive(vec![
+            Instr::Move {
+                dest: Place::Local(5),
+                src: Place::Local(7),
+            },
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::Local(5),
+            },
+        ]);
+        assert!(
+            derivation.retain_sites.iter().any(|site| site.block == 1
+                && site.instr_index == 1
+                && site.value == Place::Local(5)),
+            "a join-prefix redefinition must not suppress the ingress retain; \
+             got {:?}",
+            derivation.retain_sites
+        );
+    }
+
+    /// The existing handoff shape — no redefinition, the predecessor's fresh
+    /// terminator result flows straight into the ingress `Move` — must still
+    /// elide the retain. Confirms the prefix guard is precise: it fires only
+    /// on an actual redefinition, never on the ordinary cross-block handoff.
+    #[test]
+    fn undisturbed_predecessor_handoff_still_elides_the_retain() {
+        let derivation = derive(vec![Instr::Move {
+            dest: Place::Local(6),
+            src: Place::Local(5),
+        }]);
+        assert!(
+            !derivation
+                .retain_sites
+                .iter()
+                .any(|site| site.block == 1 && site.instr_index == 0),
+            "the undisturbed predecessor-fresh handoff must not mint a retain; \
+             got {:?}",
+            derivation.retain_sites
         );
     }
 }

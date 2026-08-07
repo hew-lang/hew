@@ -4932,6 +4932,16 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
 
+# Regression: trait DEFAULT methods reached through a file import must resolve
+# on the implementing type and lower. Two gaps compounded: the checker gated
+# the imported trait's `trait_defs` entry on `pub`, so the impl inherited no
+# default bodies ("no method `simple` on `RootThing`"); and HIR lowered a
+# materialised default at the impl's module index while the copied body's spans
+# belong to the declaring file, so a default calling back through `self`
+# fail-closed with MethodCallNoRewrite. The fixture exercises both a leaf
+# default and a Self-dispatching one.
+run_check_run_expect_stdout file_import_trait_default_method
+
 # Regression: a file-imported multi-handler actor keeps a DISTINCT message-kind
 # discriminant per receive handler. The spliced file-import lowering path
 # previously missed the checker's protocol descriptor (keyed by module-short

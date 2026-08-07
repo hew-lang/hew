@@ -158,9 +158,21 @@ fn pipeline_accepts_user_fn_call_via_call_terminator() {
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
+    // An ordinary call's canonical target is a checker-published fact
+    // (`direct_call_targets`); HIR lowering fails closed without it. A
+    // default `TypeCheckOutput` would bypass the stage the real driver
+    // always runs, so run the checker for real.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors: {:#?}",
+        tc_output.errors
+    );
+
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &tc_output,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );

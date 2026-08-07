@@ -85,18 +85,26 @@ run_compiled_binary() {
   local stdout_path="$2"
   local stderr_path="$3"
   shift 3
-  # Keep compilation uncapped because linking libhew.a needs substantial
-  # address space; apply the platform-appropriate cap only to execution.
+  # Pin the worker count so the 512 MB virtual-memory cap below is a function
+  # of the fixture, not the host's core count. The Hew runtime defaults to one
+  # worker thread per core, and each worker reserves an 8 MB stack. On a host
+  # with enough cores (e.g. 32), those reservations alone exceed the cap and
+  # thread spawn fails with EAGAIN mid-scheduler-init ("could not spawn worker
+  # N/nproc") — this has nothing to do with the semantics under test. HEW_WORKERS=4
+  # matches CI runners' core counts, so local Linux parity runs match CI's
+  # behaviour instead of an unbounded local host's. A caller-supplied
+  # HEW_WORKERS in "$@" still wins: `env` applies repeated assignments in
+  # order, so a later NAME=VALUE overrides this default.
   if [[ "$(uname -s)" == "Linux" ]]; then
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -v 524288; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   else
     # Darwin and BSD reject ulimit -v; the data-segment cap is the nearest
     # supported proxy and the timeout remains the hard containment boundary.
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -d 524288 2>/dev/null || true; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   fi

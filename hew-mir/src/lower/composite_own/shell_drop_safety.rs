@@ -118,10 +118,29 @@ use std::collections::{HashMap, HashSet};
 ///   flat plain-string cap leaked);
 /// - a nested value record recurses into every registered field.
 ///
+/// ## Why a DECLARED-RELEASE resource-record DIRECT payload is admitted
+///
+/// The affine gate's refusal is right when a second close authority exists
+/// (the S2200 `Result<Conn, string>` shape, where the arm consumes the payload
+/// through the user's `close()`). It is wrong when the declared close is the
+/// composite's SOLE release authority: a lifecycle-registered `#[resource]`
+/// record whose every field passes the clause-3 authority
+/// (`field_is_released_only_by_the_declared_close`) is released ONLY by the
+/// shell's thunk chain (`__hew_enum_drop_inplace` →
+/// `__hew_record_drop_inplace_<R>` → `<R>::close`) — its binder owns no heap
+/// and mints no owner, and an arm that DOES consume it is a payload escape
+/// that excludes the shell before this predicate is consulted. Refusing that
+/// shape leaves zero releases, not one. The carve-out is DIRECT-payload only
+/// (`depth == 1`), mirroring the bare-opaque admission's soundness scope, and
+/// its admission/refusal boundary is the same clause-3 conjunction the
+/// adoption boundary (`DeclaredReleaseTypes`) applies — a registered record
+/// with a teardown-freeable field stays refused.
+///
 /// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, a
 /// generic record whose fields resolve only after substitution, a
 /// closure/borrow leaf, a nested opaque handle, or ANY affine /
-/// lifecycle-registered leaf answers `false` and keeps its composite on the
+/// lifecycle-registered leaf outside the declared-release carve-out answers
+/// `false` and keeps its composite on the
 /// pre-existing fail-closed leak posture — never a double-free or double-close.
 /// A recursion budget bounds pathological mutually-nested layouts (a genuinely
 /// recursive enum is `is_indirect` and short-circuits).
@@ -174,6 +193,52 @@ fn payload_leaf_is_shell_drop_safe(
 ) -> bool {
     if depth > 32 {
         return false;
+    }
+    // Declared-release carve-out, DIRECT variant payloads only. A
+    // lifecycle-registered `#[resource]` RECORD whose every field passes the
+    // clause-3 authority (`field_is_released_only_by_the_declared_close`) has
+    // its declared `close` as its ENTIRE release plan, and — when it rides an
+    // enum out of a producer — the candidate shell's `EnumInPlace` drop is the
+    // ONE authority that ever schedules that close (`__hew_enum_drop_inplace`
+    // → `__hew_record_drop_inplace_<R>` → `<R>::close`): the payload binder
+    // owns no heap and earns no owner of its own, and an arm that CONSUMES the
+    // payload (an explicit `h.close()`) is a payload escape that excludes the
+    // shell fail-closed before this predicate's answer matters. Refusing here
+    // therefore leaves ZERO releases for the adopted handle, not one — the
+    // declared-release contract's leak. The answer is the clause-3 conjunction
+    // itself: a registered record with a field the post-close teardown CAN
+    // free (`log: string`) answers false and stays on the affine refusal
+    // below, so admission and refusal read the same authority the adoption
+    // boundary uses (`DeclaredReleaseTypes`).
+    //
+    // Depth-1 only: the soundness argument covers the candidate shell's own
+    // drop steps. A declared-release record reached through a nested
+    // aggregate is that aggregate's helper family's problem and stays on the
+    // fail-closed leak posture, same as the bare-opaque carve-out below.
+    if depth == 1 {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            is_opaque: false,
+            ..
+        } = ty
+        {
+            if args.is_empty()
+                && lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(name))
+                    .is_some()
+            {
+                let opaques: HashSet<&str> =
+                    opaque_handle_names.iter().map(String::as_str).collect();
+                return record_field_orders.get(name).is_some_and(|fields| {
+                    fields.iter().all(|(_, field_ty)| {
+                        crate::return_provenance::field_is_released_only_by_the_declared_close(
+                            field_ty, &opaques,
+                        )
+                    })
+                });
+            }
+        }
     }
     // Affine leaves (`#[resource]` records, closeable opaque resources, owned
     // runtime handles, `@linear` / `Task` values) carry their own consume-once

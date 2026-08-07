@@ -670,10 +670,11 @@ fn supervisor_child_with_machine_state_fails_closed() {
 /// channel elements through the sealed select arm and the received
 /// snapshot pattern-matches on state variants, including the heap-payload
 /// `Failed { reason }` extraction. Multi-iteration: two snapshots, then
-/// the close-driven `None` teardown. Pins the deferred (post-machine)
-/// enum-registration pass — before it, `Option<Conn>`'s payload was sized
-/// against the still-opaque machine struct, the recv decode wrote past the
-/// alloca, and the second iteration lost its wake.
+/// the close-driven `None` teardown. Pins the machine-payload enum sizing —
+/// when `Option<Conn>` is sized against the still-opaque machine struct, the
+/// recv decode writes past the payload slot and corrupts the frame. The
+/// idiomatic awaited ask replaces the fixed sleep, so completion is
+/// deterministic rather than timing-dependent.
 #[test]
 fn machine_snapshot_select_watch_matches_state_variants() {
     run_inline_scribbled(
@@ -708,7 +709,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          }\n\
          \n\
          actor Owner {\n\
-         \x20   receive fn run() {\n\
+         \x20   receive fn run() -> i64 {\n\
          \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
          \x20       var c: Conn = Conn::Idle;\n\
          \x20       c.step(Connect);\n\
@@ -741,13 +742,16 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20           };\n\
          \x20       }\n\
          \x20       rx.close();\n\
+         \x20       0\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
-         \x20   o.run();\n\
-         \x20   sleep(300ms);\n\
+         \x20   match await o.run() {\n\
+         \x20       Ok(_) => {},\n\
+         \x20       Err(_) => println(\"ask failed\"),\n\
+         \x20   }\n\
          }\n\
          ",
         "open\nfailed: peer reset\nwatch closed\n",
@@ -905,24 +909,25 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// fire-and-forget form (`o.run(); sleep(...)`) never trips it: the AWAIT that
 /// makes the handler a resumed coroutine is required.
 ///
-/// Proven by instrumentation: the `ChannelCore` `Arc` is dropped twice (a
-/// double-free), and both freeing drops originate in the `select`-poll-thread
-/// closure releasing its core clone — the count reaches zero one step early
-/// because the receiver's own reference is lost earlier on the machine path,
-/// without a normal receiver teardown. The extra decrement is timing-entangled
-/// with the machine value's frame-local drops and the crash-cleanup arm/retire
-/// ordering the resumed dispatch drives around each suspend. The leading
-/// hypothesis is the aggregate residual-field discharge in hew-mir
-/// drop-elaboration (the 06a241f40 model, shared root with the
-/// record-sibling-field cleanup work); the exact discharge site is confirmed in
-/// the dedicated fix lane, not with a local patch. Un-ignore once that lands.
+/// Root cause (fixed): `Option<Conn>` — the binding the select's channel arm
+/// decodes into — was sized against the machine's still-opaque LLVM struct.
+/// The deferred (post-machine) enum-registration pass compared the variant
+/// field's surface name (`Conn`) against the canonical machine layout keys
+/// (`mc$$Conn$$`), classified `Option<Conn>` machine-free, and sized it in the
+/// first pass: `get_abi_size` reported the opaque machine as 0 bytes and the
+/// payload lowered as `[1 x i8]`. The recv decode then wrote the 16-byte
+/// machine value through that 1-byte slot — an out-of-bounds write past the
+/// coroutine frame heap allocation, and a read of the string payload pointer
+/// through neighbouring-block bytes. Which neighbour bytes were live depended
+/// on scheduler interleaving, so the deterministic layout bug presented as a
+/// timing-dependent use-after-free. The classifier now projects through
+/// `hew_hir::machine_layout_key`, and `build_tagged_union_layout` fails closed
+/// on any still-opaque variant member.
 ///
-/// The UAF is timing-dependent (roughly a third of single runs trip it), so
-/// this oracle runs the compiled program repeatedly and requires EVERY run to
-/// exit 0 with the exact expected stdout — a single scribbled read of a freed
-/// core anywhere in the batch fails the test.
+/// The corruption was timing-dependent, so this oracle runs the compiled
+/// program repeatedly and requires EVERY run to exit 0 with the exact expected
+/// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
-#[ignore = "tracked: actor-ask + select + machine-heap-payload UAF; fix in hew-mir drop-elaboration residual-field discharge (06a241f40 model)"]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
     const SOURCE: &str = "import std::channel::channel;\n\
          \n\

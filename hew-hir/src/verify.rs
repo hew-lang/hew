@@ -1243,6 +1243,43 @@ impl Verifier {
                     ));
                 }
             }
+            // A subsuming occurrence (a `SubsumedValue` node) exposes exactly
+            // one structural source, and its carrier fact must passthrough to
+            // THAT source. An edge that skips the interposed occurrence and
+            // names a deeper descendant flattens the ordered subsumption
+            // spine, so a consumer walking value identity would step over an
+            // occurrence whose ownership refinement (a timeout boundary, an
+            // await adoption) is load-bearing. Type congruence cannot catch
+            // this: every occurrence on the spine carries the same result
+            // type, so the relabel is only visible structurally.
+            if let Some(HirProducedValueRelation::Subsumes(structural_source)) =
+                self.synthetic_structural_relations.get(site)
+            {
+                if let HirProducedValueRelation::Identity(source)
+                | HirProducedValueRelation::Subsumes(source) = &fact.relation
+                {
+                    if source != structural_source {
+                        let name = if matches!(fact.relation, HirProducedValueRelation::Identity(_))
+                        {
+                            "produced value identity"
+                        } else {
+                            "produced value subsumption"
+                        };
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: name.to_string(),
+                                reason: format!(
+                                    "passthrough source {source} skips the subsuming occurrence's structural source {structural_source}"
+                                ),
+                            },
+                            self.site_spans
+                                .get(site)
+                                .map_or(0..0, |source| source.span.clone()),
+                            "a subsuming occurrence's carrier edge must name its own nested source, preserving the ordered subsumption spine",
+                        ));
+                    }
+                }
+            }
             relation_edges.insert(*site, sources);
         }
         for (site, producer) in &self.observed_producers {

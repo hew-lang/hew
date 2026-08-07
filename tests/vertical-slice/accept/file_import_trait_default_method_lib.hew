@@ -1,0 +1,19 @@
+// Library module for file_import_trait_default_method.hew.
+//
+// `Greet` is deliberately NOT declared `pub`: a file import is flattened into
+// the root program, so its trait declarations join the root's flat namespace
+// and an importing file can impl them. The trait carries one required method
+// and two default methods — a leaf default (`simple`) and a default that
+// dispatches back through the required method (`greeting`) — so the fixture
+// covers both the trivial default body and the Self-dispatching one.
+trait Greet {
+    fn name(self) -> string;
+
+    fn simple(self) -> i64 {
+        42
+    }
+
+    fn greeting(self) -> string {
+        "hello, " + self.name()
+    }
+}

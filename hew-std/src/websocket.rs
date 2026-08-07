@@ -3135,13 +3135,16 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "server close must cancel a stalled handshake promptly"
         );
+        // close drained the accept authority before returning (count == 0 is
+        // deterministic); the accept thread unwinds a few instructions later,
+        // so poll for its exit rather than demanding zero scheduling lag.
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
         assert!(
-            accept_thread.is_finished(),
+            wait_for_thread_exit(&accept_thread, Duration::from_secs(1)),
             "close must drain the active accept before returning"
         );
         assert_eq!(accept_thread.join().expect("accept thread should join"), 0);
-        assert_eq!(inner.active_accepts.count(), 0);
-        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
         drop(stalled_peer);
     }
 
@@ -3282,13 +3285,18 @@ mod tests {
             .expect("write valid websocket handshake");
 
         unsafe { hew_ws_server_close(server) };
+        // The racing accept has published-or-cancelled before close returns —
+        // its guard is dropped only after publish_if_open runs, so count == 0
+        // the instant close returns proves the accept resolved. The thread that
+        // ran it unwinds a few instructions later, so poll for its exit with a
+        // bounded deadline rather than demanding zero scheduling lag.
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
         assert!(
-            accept_thread.is_finished(),
+            wait_for_thread_exit(&accept_thread, Duration::from_secs(1)),
             "server close must not return before the racing accept publishes or cancels"
         );
         let conn = accept_thread.join().expect("accept thread should join") as *mut HewWsConn;
-        assert_eq!(inner.active_accepts.count(), 0);
-        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
         if !conn.is_null() {
             unsafe { hew_ws_close(conn) };
         }
@@ -3315,10 +3323,21 @@ mod tests {
             );
 
             unsafe { hew_ws_server_close(server) };
-            assert!(accept_thread.is_finished());
-            assert_eq!(accept_thread.join().expect("accept thread should join"), 0);
+            // close is synchronous: cancel_and_wait only returns once every
+            // accept guard has dropped, so the accept authority is fully drained
+            // the instant close returns (count == 0 is the deterministic proof).
+            // The OS thread that ran the accept unwinds a few instructions later
+            // — it still has to return the sentinel and let the runtime mark the
+            // JoinHandle finished — so poll for that exit with a bounded deadline
+            // rather than demanding zero scheduling lag (close cannot join the
+            // thread it does not own).
             assert_eq!(inner.active_accepts.count(), 0);
             assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+            assert!(
+                wait_for_thread_exit(&accept_thread, Duration::from_secs(1)),
+                "accept thread must unwind promptly once the authority is drained"
+            );
+            assert_eq!(accept_thread.join().expect("accept thread should join"), 0);
             drop(inner);
             assert!(
                 weak_inner.upgrade().is_none(),

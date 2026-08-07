@@ -591,6 +591,130 @@ fn corroborated_retained_string_move_dest(
         _ => None,
     }
 }
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain` of the SAME `src`.
+///
+/// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
+/// buffer while `v`'s producing reference stays owned inside the callee. This is
+/// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
+/// share shape; `derive_enum_composite_drop_allowed` already recognises it for
+/// the enum shell drop (`is_retained_return_move`).
+fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
+    instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+        .is_some_and(|prev| {
+            matches!(
+                prev,
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::Always,
+                } if *value == src,
+            )
+        })
+}
+/// Whether the corroborated retained co-owner `local` escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`), through a chain of
+/// whole-value `Move`s.
+///
+/// A corroborated retained co-owner (`string.retain x; s = move x`) carries its
+/// own independent `+1` on the buffer. When such a value reaches the caller
+/// solely through a re-retained return, the caller receives the RETURN's
+/// separate reference — not the co-owner's share — so the co-owner's mint is
+/// never transferred out and still needs its scope-exit release. Without it the
+/// share leaks one node per call (`enum_callee_consume_drop_leak_oracle`
+/// `move_out_via_let_share`).
+///
+/// Fail-closed: the co-owner's value must reach the caller ONLY via retained
+/// returns. Any other consuming use of a value on the flow — a plain move into
+/// the `ReturnSlot` (a genuine transfer whose caller owns the co-owner's share,
+/// so a local drop would double-free), a call argument, a container insert, a
+/// terminator escape — answers `false`, and the co-owner keeps its (leaking,
+/// never double-freeing) exclusion. Requires at least one retained return so a
+/// value that merely dead-ends is not spuriously admitted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors the escape-scan parameters"
+)]
+fn retained_co_owner_escapes_only_into_retained_return(
+    blocks: &[BasicBlock],
+    local: u32,
+    retained_string_moves: &HashSet<(u32, usize)>,
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+) -> bool {
+    // Forward whole-value `Move` closure from `local`: every alias that carries
+    // the co-owner's buffer onward.
+    let mut reach: HashSet<u32> = HashSet::from([local]);
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(dl), Some(sl)) = (base_local(*dest), base_local(*src)) {
+                        if reach.contains(&sl) && reach.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut saw_retained_return = false;
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            for &rl in &reach {
+                if cow_owned_string_instr_is_borrow(
+                    instr,
+                    block.id,
+                    instr_index,
+                    rl,
+                    retained_string_moves,
+                ) {
+                    continue;
+                }
+                // `rl` is consumed here. Only two consuming shapes keep the
+                // co-owner's share balanced by its own scope-exit drop:
+                //   - a whole-value move onward within the flow, or
+                //   - a re-retained return (the caller gets the retain's copy).
+                match instr {
+                    Instr::Move {
+                        dest: Place::Local(dl),
+                        src,
+                    } if base_local(*src) == Some(rl) && reach.contains(dl) => {}
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src,
+                    } if base_local(*src) == Some(rl)
+                        && string_move_is_retained_return(block, instr_index, *src) =>
+                    {
+                        saw_retained_return = true;
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        for &rl in &reach {
+            if cow_owned_string_terminator_escapes(
+                &block.terminator,
+                suspend_kinds.get(&block.id),
+                rl,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                return false;
+            }
+        }
+    }
+    saw_retained_return
+}
 fn seed_fresh_string_instruction_locals(
     blocks: &[BasicBlock],
     locals: &[ResolvedTy],
@@ -655,6 +779,88 @@ fn fresh_string_owner_defined_before(
                 .and_then(base_local)
                 == Some(local)
         })
+}
+
+/// Whether `local`'s active generation at a hand-off site was minted by a fresh
+/// string-producing TERMINATOR (`Terminator::Call` for a string transform, or a
+/// `SuspendKind::CallClosure` string invoke) in every normal-flow predecessor
+/// whose edge targets `block_id`.
+///
+/// This is the cross-block completion of [`fresh_string_owner_defined_before`]:
+/// a string transform (`hew_string_trim`, `slice`, …) that terminates a
+/// predecessor block writes its result into the successor, so the in-block
+/// instruction scan never sees the producing write. A block-boundary
+/// reassignment (`ver_str = c.slice(..).trim()` inside an if/else arm) is
+/// exactly this shape: the following move hands the fresh owner onward, so it
+/// must NOT mint a competing `StringRetain`.
+///
+/// Deliberately narrow: it is used only at the local-to-local hand-off site,
+/// where the moved-from source is the fresh producer's own transient result and
+/// carries no independent scope-exit drop. It is NOT used at aggregate/record
+/// ingress shares, where the source is a named binding with its own drop
+/// obligation and a loop-carried store must keep its retain (the `cyclic_blocks`
+/// guard there is load-bearing — dropping it double-frees a per-iteration record
+/// field).
+///
+/// Fail closed: a predecessor that does not fresh-produce `local` for this block
+/// (a `Goto`/`Branch` merge, a non-string call, or a terminator whose normal
+/// edge is elsewhere) makes the whole join non-fresh, so a genuinely needed
+/// retain is never dropped. `Terminator::Call`'s only CFG successor is its
+/// `next` edge (the unwind/`cancel` edge is not in `successors()`), so a
+/// matching predecessor reaches this block solely along the fresh-producing
+/// path.
+fn fresh_string_owner_defined_by_predecessor_terminator(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    local: u32,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    let mut saw_predecessor = false;
+    for pred in blocks {
+        if !pred.successors().contains(&block_id) {
+            continue;
+        }
+        saw_predecessor = true;
+        let suspend_kind = suspend_kinds.get(&pred.id);
+        let produces_local = fresh_string_producer_term_dest(
+            &pred.terminator,
+            suspend_kind,
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
+            == Some(local);
+        let normal_edge_here =
+            fresh_string_producer_term_next(&pred.terminator, suspend_kind) == Some(block_id);
+        if !(produces_local && normal_edge_here) {
+            return false;
+        }
+    }
+    saw_predecessor
+}
+
+/// Whether any instruction in `block.instructions[..instr_index]` writes to
+/// `local`, redefining it before `instr_index`.
+///
+/// Guards [`fresh_string_owner_defined_by_predecessor_terminator`]: that
+/// check proves only that a PREDECESSOR terminator freshly produced `local`
+/// on the edge into `block` — it has no visibility into `block`'s own
+/// prefix. A join block that redefines the whole local (ANY write, fresh
+/// producer or not) before the ingress retain site makes the predecessor's
+/// answer STALE: the generation actually live at the site is whatever
+/// `block`'s own prefix last wrote, not the predecessor's terminator result.
+/// [`fresh_string_owner_defined_before`] already re-derives freshness
+/// correctly for an in-block write (it walks back to the NEAREST preceding
+/// write and answers directly against it), so this guard exists solely to
+/// stop the predecessor-terminator disjunct from overriding that with a
+/// stale cross-block answer when a redefinition sits in between.
+fn local_redefined_in_block_prefix(block: &BasicBlock, instr_index: usize, local: u32) -> bool {
+    block.instructions[..instr_index].iter().any(|instr| {
+        crate::dataflow::instr_reads_writes(instr)
+            .1
+            .iter()
+            .any(|place| base_local(*place) == Some(local))
+    })
 }
 
 /// Whether the currently-live generation of `local` is read after a site
@@ -1791,6 +1997,31 @@ pub(super) fn derive_cow_sole_owner(
             }
         }
     }
+    // Uniform owned-carrier payload transfer (D185): a `NeutralizePayloadSlot`
+    // on a variant-payload projection that names a `transferee` moves the
+    // payload OUT of the carrier and nulls the source slot — the carrier's
+    // guarded drop can no longer release it, so the transferee local carries
+    // the sole share, exactly like a fresh producer. Without this OWNED
+    // classification the legacy borrowed-publication seed on the match join
+    // strands a `+1` retain at the return write (`string.retain; ret = move`)
+    // for a payload nothing borrows any more: one leaked buffer per call.
+    // Whole-local neutralizes (send funnels, returned aggregate members) keep
+    // their own authorities and are deliberately not classified here.
+    for instr in blocks.iter().flat_map(|block| &block.instructions) {
+        let Instr::NeutralizePayloadSlot {
+            place: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+            transferee: Some(transferee),
+            ..
+        } = instr
+        else {
+            continue;
+        };
+        if let Some(bits) =
+            base_local(*transferee).and_then(|local| return_source_bits.get_mut(local as usize))
+        {
+            *bits |= STRING_RETURN_SOURCE_OWNED;
+        }
+    }
     loop {
         let mut changed = false;
         for block in blocks {
@@ -1845,7 +2076,16 @@ pub(super) fn derive_cow_sole_owner(
                 // caller falls back to a retain at the ReturnSlot. That may
                 // conservatively over-retain an overwritten arm, but it can
                 // never hand the caller an unowned alias.
-                if borrowed_param_locals.contains(&local) {
+                //
+                // Only genuine parameter slots carry that writerless entry
+                // definition. A borrowed match-join PUBLICATION local (the
+                // typed borrowed-publication seed) is written by every arm's
+                // explicit `Move`, so the writer scan below sees its complete
+                // definition set — let it take the path-split proof. Bailing
+                // here for those locals pinned the retain at the ReturnSlot
+                // even when every arm's write was a neutralize-transferred
+                // (already-owned) payload, stranding one share per call.
+                if borrowed_param_locals.contains(&local) && parameter_locals.contains(&local) {
                     return false;
                 }
                 let mut saw_definition = false;
@@ -1981,19 +2221,33 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
-                if fresh_string_owner_defined_before(
+                // A predecessor-terminator freshness verdict is trustworthy
+                // only when THIS block's own prefix never redefines
+                // `src_local` before the ingress site — a redefinition makes
+                // the predecessor's answer stale (see
+                // `local_redefined_in_block_prefix`).
+                if (fresh_string_owner_defined_before(
                     block,
                     instr_index,
                     src_local,
                     locals,
                     owned_string_return_carrier_symbols,
-                ) && !fresh_generation_is_used_after(
-                    blocks,
-                    suspend_kinds,
-                    src_local,
-                    block.id,
-                    instr_index,
-                ) {
+                ) || (!local_redefined_in_block_prefix(block, instr_index, src_local)
+                    && fresh_string_owner_defined_by_predecessor_terminator(
+                        blocks,
+                        suspend_kinds,
+                        block.id,
+                        src_local,
+                        owned_string_return_carrier_symbols,
+                    )))
+                    && !fresh_generation_is_used_after(
+                        blocks,
+                        suspend_kinds,
+                        src_local,
+                        block.id,
+                        instr_index,
+                    )
+                {
                     continue;
                 }
                 if !string_place_is_typed(*src, locals)
@@ -2196,6 +2450,9 @@ pub(super) fn classify_actor_state_load_modes(
     blocks: &mut [BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     let mut load_locals: HashSet<u32> = HashSet::new();
     for block in blocks.iter() {
@@ -2239,6 +2496,9 @@ pub(super) fn classify_actor_state_load_modes(
             &load_locals,
             &mut any_use,
             &mut all_borrow,
+            module_fn_names,
+            module_generic_fn_names,
+            extern_contracts,
         );
     }
 
@@ -2279,7 +2539,14 @@ mod actor_state_load_classifier_direction_lock_tests {
             terminator: Terminator::Return,
         }];
 
-        classify_actor_state_load_modes(&mut blocks, &HashMap::new(), &[]);
+        classify_actor_state_load_modes(
+            &mut blocks,
+            &HashMap::new(),
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+        );
 
         match &blocks[0].instructions[0] {
             Instr::ActorStateFieldLoad { mode, .. } => *mode,
@@ -2375,7 +2642,13 @@ fn record_actor_state_load_instr_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            contract.borrows_string_call_args(),
+                        ),
                     );
                 }
             }
@@ -2425,6 +2698,7 @@ fn call_arg_borrows_state_load(
     locals: &[ResolvedTy],
     arg_index: usize,
     arg_local: u32,
+    callee_borrows_string_args: bool,
 ) -> bool {
     let borrows_receiver = contract.borrows_vec_receiver()
         || contract.borrows_collection_receiver()
@@ -2432,8 +2706,7 @@ fn call_arg_borrows_state_load(
     if arg_index == 0 && borrows_receiver {
         return true;
     }
-    contract.borrows_string_call_args()
-        && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
+    callee_borrows_string_args && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
 }
 /// The `Terminator::Call` analogue of [`record_actor_state_load_instr_uses`]
 /// — the receiver-borrow-arg[0] and string-borrow-arg positive categories
@@ -2441,6 +2714,13 @@ fn call_arg_borrows_state_load(
 /// call. Every other terminator variant falls through to
 /// [`terminator_source_places`] (closed exhaustive match), marked as a
 /// non-borrow use.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the terminator recorder consumes the same string-borrow contract axes \
+              (runtime contract, module fn tables, audited extern table) that \
+              `string_call_borrows` — the single callee-borrows-strings authority — \
+              requires"
+)]
 fn record_actor_state_load_terminator_uses(
     term: &Terminator,
     suspend_kind: Option<&SuspendKind>,
@@ -2448,10 +2728,26 @@ fn record_actor_state_load_terminator_uses(
     load_locals: &HashSet<u32>,
     any_use: &mut HashSet<u32>,
     all_borrow: &mut HashMap<u32, bool>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     match term {
         Terminator::Call { callee, args, .. } => {
             let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+            // The string axis uses `string_call_borrows` — the same single
+            // authority `derive_cow_sole_owner` consults — so a state string
+            // passed by value to an analyzed Hew function (whose parameter is
+            // a borrow: the caller-releases convention) classifies `Borrowed`
+            // instead of minting an `Owned` clone with no balancing release.
+            // Runtime symbols resolve through their ownership contract exactly
+            // as before; unaudited externs stay fail-closed `Owned`.
+            let callee_borrows_string_args = string_call_borrows(
+                callee,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            );
             for (i, place) in args.iter().enumerate() {
                 if let Some(l) = base_local(*place) {
                     mark_actor_state_load_use(
@@ -2459,7 +2755,13 @@ fn record_actor_state_load_terminator_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            callee_borrows_string_args,
+                        ),
                     );
                 }
             }
@@ -3813,6 +4115,91 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     allowed
 }
 
+/// Splice one balancing `hew_string_drop` for every corroborated retained
+/// co-owner (`string.retain x; s = move x`) whose share escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`).
+///
+/// Such a co-owner mints an independent `+1` on the buffer. When that value
+/// reaches the caller solely through a re-retained return, the return hands the
+/// caller its OWN reference, so the co-owner's mint is never transferred out and
+/// leaks one node per call unless released inside the callee
+/// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
+/// local-share twin of the enum-shell fix G2 landed in
+/// `derive_enum_composite_drop_allowed`: G2 keeps the shell drop that frees the
+/// still-owned original; this adds the share drop that frees the co-owner's
+/// mint. The two are mutually exclusive references, so together the buffer is
+/// released exactly once per outstanding reference.
+///
+/// The release is spliced at the END of the co-owner's minting block, before its
+/// terminator, and ONLY when that block exits through a single unconditional
+/// `Goto`/`Return` edge: the value is provably still live there (it flows onward
+/// to the return) and no trap/cancel edge reaches the splice, so the frame
+/// cleanup escrow — which covers the enum shell, not this alias — cannot
+/// double-free. Fail-closed: any block shape that is not a proven single exit is
+/// skipped (leaks, never double-frees).
+pub(super) fn splice_retained_return_co_owner_drops(
+    blocks: &mut [BasicBlock],
+    locals: &[ResolvedTy],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+) {
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    // (minting block id, co-owner local) for every co-owner that escapes only
+    // into a re-retained return.
+    let mut splices: Vec<(u32, u32)> = Vec::new();
+    for block in blocks.iter() {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Some(local) = corroborated_retained_string_move_dest(
+                instr,
+                block.id,
+                instr_index,
+                &retained_string_moves,
+            ) else {
+                continue;
+            };
+            if !retained_co_owner_escapes_only_into_retained_return(
+                blocks,
+                local,
+                &retained_string_moves,
+                suspend_kinds,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                continue;
+            }
+            // Fail-closed placement gate: a single unconditional exit proves the
+            // splice point is on the co-owner's only continuation and off every
+            // trap/cancel edge.
+            if !matches!(
+                block.terminator,
+                Terminator::Goto { .. } | Terminator::Return
+            ) {
+                continue;
+            }
+            splices.push((block.id, local));
+        }
+    }
+    if splices.is_empty() {
+        return;
+    }
+    for (block_id, local) in splices {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let at = block.instructions.len();
+        block.instructions.push(Instr::Drop {
+            place: Place::Local(local),
+            ty: ResolvedTy::String,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+        });
+        shift_instr_spans_on_insert(instr_spans, block_id, u32::try_from(at).unwrap_or(u32::MAX));
+    }
+}
+
 fn remove_consumed_cow_bindings(
     allowed: &mut HashSet<BindingId>,
     actor_message_flags: &HashMap<BindingId, Place>,
@@ -4050,6 +4437,19 @@ pub(super) fn finalize_string_ownership(
                     entry.binding == *binding && entry.disposition == Disposition::ScopeExit
                 })
         }),
+    );
+    // Balance the independent `+1` of a corroborated retained co-owner that
+    // escapes only into a re-retained return. Runs last: all share and return
+    // retains are explicit in `raw.blocks`, and no in-function analysis reads
+    // the block stream after this splice.
+    splice_retained_return_co_owner_drops(
+        &mut raw.blocks,
+        &builder.locals,
+        &builder.suspend_kinds,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &mut raw.instr_spans,
     );
     derivation
 }
@@ -8316,6 +8716,116 @@ mod cow_sole_owner_derivation {
         assert!(
             !derivation.allowed.contains(&binding),
             "an explicit release owns the drop; scope exit must not release again"
+        );
+    }
+}
+#[cfg(test)]
+mod fresh_string_owner_join_prefix_redefinition {
+    //! `fresh_string_owner_defined_by_predecessor_terminator` proves only that
+    //! a PREDECESSOR terminator freshly produced a local on the edge into the
+    //! join block — it has no visibility into the join block's own prefix. A
+    //! join block that redefines the whole local (a plain hand-off from a
+    //! BORROWED source) before the ingress retain site makes that answer
+    //! stale: the generation actually live at the site is the redefinition's,
+    //! not the predecessor's fresh result. `local_redefined_in_block_prefix`
+    //! guards against exactly this — these tests hand-build the redefine-in-
+    //! prefix shape and the handoff shape it must leave unaffected.
+    use super::*;
+
+    fn fresh_trim_call(dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: "hew_string_trim".to_string(),
+            authority: crate::model::CallAuthority::default(),
+            args: vec![Place::Local(7)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
+    fn locals() -> Vec<ResolvedTy> {
+        vec![ResolvedTy::String; 8]
+    }
+
+    fn derive(join_instructions: Vec<Instr>) -> StringDropDerivation {
+        let dest_binding = BindingId(60);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: fresh_trim_call(5, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: join_instructions,
+                terminator: Terminator::Return,
+            },
+        ];
+        derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &[(dest_binding, "d".to_string(), ResolvedTy::String)],
+            &HashMap::from([(dest_binding, Place::Local(6))]),
+            &HashSet::new(),
+            &HashSet::new(),
+            &locals(),
+            &HashSet::from([7]),
+            &HashSet::from([7]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        )
+    }
+
+    /// The join block's FIRST instruction redefines the predecessor-fresh
+    /// local (`local5 = local7`, a plain hand-off from a borrowed param, NOT
+    /// itself a fresh producer) before the ingress site
+    /// (`local6 = local5`). The active generation at the ingress site is the
+    /// redefinition's — a borrowed alias — so the retain must be minted
+    /// there, not elided on the stale predecessor-terminator answer.
+    #[test]
+    fn redefinition_in_join_prefix_mints_the_ingress_retain() {
+        let derivation = derive(vec![
+            Instr::Move {
+                dest: Place::Local(5),
+                src: Place::Local(7),
+            },
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::Local(5),
+            },
+        ]);
+        assert!(
+            derivation.retain_sites.iter().any(|site| site.block == 1
+                && site.instr_index == 1
+                && site.value == Place::Local(5)),
+            "a join-prefix redefinition must not suppress the ingress retain; \
+             got {:?}",
+            derivation.retain_sites
+        );
+    }
+
+    /// The existing handoff shape — no redefinition, the predecessor's fresh
+    /// terminator result flows straight into the ingress `Move` — must still
+    /// elide the retain. Confirms the prefix guard is precise: it fires only
+    /// on an actual redefinition, never on the ordinary cross-block handoff.
+    #[test]
+    fn undisturbed_predecessor_handoff_still_elides_the_retain() {
+        let derivation = derive(vec![Instr::Move {
+            dest: Place::Local(6),
+            src: Place::Local(5),
+        }]);
+        assert!(
+            !derivation
+                .retain_sites
+                .iter()
+                .any(|site| site.block == 1 && site.instr_index == 0),
+            "the undisturbed predecessor-fresh handoff must not mint a retain; \
+             got {:?}",
+            derivation.retain_sites
         );
     }
 }

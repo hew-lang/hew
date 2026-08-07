@@ -87,9 +87,12 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
 
     let ir = std::fs::read_to_string(dir.path().join("glob_ownership.ll"))
         .expect("read emitted LLVM IR");
-    assert_one_failure_cleanup(&ir, "define internal %GlobResult @\"path$glob\"");
     assert_one_failure_cleanup(
         &ir,
-        "define internal %\"Result$$GlobResult$PathError\" @\"path$try_glob\"",
+        "define internal %std.path.GlobResult @\"std$path$glob\"",
+    );
+    assert_one_failure_cleanup(
+        &ir,
+        "define internal %\"Result$$std$mpath$mGlobResult$std$mpath$mPathError\" @\"std$path$try_glob\"",
     );
 }

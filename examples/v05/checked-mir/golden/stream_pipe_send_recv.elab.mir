@@ -81,16 +81,19 @@ fn Echo__recv__run -> ()
     branch[bb16: bb18/bb21] ->
       (none)
     goto[bb17->bb13] ->
-      (none)
+      drop _25 ty=Option<bytes> kind=enum_in_place
     cancel[bb17] ->
+      drop _25 ty=Option<bytes> kind=enum_in_place
       drop _7 ty=Stream<bytes> kind=resource fn=rt(StreamClose)
     call[bb18 hew_bytes_to_string -> bb22] ->
       (none)
     goto[bb19->bb17] ->
       (none)
     cancel[bb19] ->
+      drop _25 ty=Option<bytes> kind=enum_in_place
       drop _7 ty=Stream<bytes> kind=resource fn=rt(StreamClose)
     panic[bb20] ->
+      drop _25 ty=Option<bytes> kind=enum_in_place
       drop _7 ty=Stream<bytes> kind=resource fn=rt(StreamClose)
     branch[bb21: bb19/bb20] ->
       (none)
@@ -99,6 +102,7 @@ fn Echo__recv__run -> ()
     goto[bb23->bb17] ->
       (none)
     cancel[bb23] ->
+      drop _25 ty=Option<bytes> kind=enum_in_place
       drop _7 ty=Stream<bytes> kind=resource fn=rt(StreamClose)
     return[bb24] ->
       (none)

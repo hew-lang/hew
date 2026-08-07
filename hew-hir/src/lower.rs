@@ -3447,6 +3447,22 @@ pub fn lower_program_with_mono_cap(
                 ctx.type_classes
                     .insert(hir_decl.qualified_name(), class_entry);
             }
+            // Structural member set for the mailbox-transfer walk: record
+            // fields plus every variant's payload types. Registered under the
+            // same keys as `type_classes` so a module-qualified message type
+            // resolves identically.
+            let member_tys: Vec<ResolvedTy> = hir_decl
+                .fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .chain(hir_decl.variants.iter().flat_map(hew_hir_variant_field_tys))
+                .collect();
+            ctx.type_member_tys
+                .insert(hir_decl.name.clone(), member_tys.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_member_tys
+                    .insert(hir_decl.qualified_name(), member_tys);
+            }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -3881,6 +3897,47 @@ pub fn lower_program_with_mono_cap(
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
                         ctx.register_impl_method_fn_entry(symbol_owner, method, &impl_type_params);
+                        // Establish the declaration-keyed body plan for the
+                        // injected builtin impl NOW, before any user body is
+                        // lowered in the third pass. The body itself is emitted
+                        // later in the fourth pass (`lower_impl_block` under
+                        // `lowering_injected_items`), but a direct method call
+                        // such as `x.fmt()` inside a user body resolves its
+                        // callee through `registered_impl_method_symbol` at
+                        // third-pass time — before that emission. Without the
+                        // plan entry the projection is absent and the call fails
+                        // closed (`CallableUnsupportedInMir`), even though the
+                        // identical value renders fine through the f-string
+                        // Display path, which never consults this projection.
+                        // `plan_imported_impl_bodies` covers user/imported
+                        // bodies; the compiler-injected builtins live in a
+                        // separate program, so they must be planned here.
+                        let emitted_symbol =
+                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name);
+                        let source_symbol =
+                            crate::node::HirImplBlock::method_symbol(name, &method.name);
+                        if let Some(declaration) = ctx
+                            .impl_method_declaration_ids
+                            .get(&emitted_symbol)
+                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
+                            .cloned()
+                            .or_else(|| {
+                                builtin_receiver_impl_output.as_ref().and_then(|output| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
+                            })
+                        {
+                            ctx.impl_body_plan
+                                .symbols
+                                .entry(declaration)
+                                .or_insert(emitted_symbol);
+                        }
                     }
                     builtin_receiver_impl_method_symbols.extend(method_symbols);
                 }
@@ -4864,9 +4921,33 @@ pub fn lower_program_with_mono_cap(
     enum_layouts.extend(extra_enum_layouts);
     ctx.diagnostics.extend(layout_mono_diagnostics);
 
+    // Extern-backed record surface: the `#[extern_symbol]` method names were
+    // collected at impl lowering (the attribute does not survive onto the
+    // lowered `HirFn`); `extern` block fns are folded in here from their
+    // lowered signatures, qualified by their captured defining-module
+    // provenance so the spellings match the `record_registry` keys.
+    let mut extern_backed_records = std::mem::take(&mut ctx.extern_backed_record_names);
+    for item in &items {
+        if let HirItem::ExternFn(extern_fn) = item {
+            for ty in extern_fn
+                .param_tys
+                .iter()
+                .chain(std::iter::once(&extern_fn.return_ty))
+            {
+                for name in crate::value_class::named_type_names(ty) {
+                    if let crate::node::ExternProvenance::Module(module) = &extern_fn.provenance {
+                        extern_backed_records.insert(format!("{module}.{name}"));
+                    }
+                    extern_backed_records.insert(name);
+                }
+            }
+        }
+    }
+
     finalize_user_record_value_classes(
         &ctx.record_registry,
         &record_layouts,
+        &extern_backed_records,
         &mut ctx.type_classes,
     );
 
@@ -5486,12 +5567,38 @@ fn is_exact_release_forwarding_expr(
 fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,
     record_layouts: &[RecordLayout],
+    extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
 ) {
     for name in record_registry.keys() {
         type_classes
             .entry(name.clone())
             .or_insert((ResourceMarker::None, None));
+    }
+
+    // Zero-field records are structurally uninferable, and the bare
+    // `type Empty {}` case is pinned fail-closed by the
+    // `empty_field_user_type_remains_uninferred` oracle. The one honest
+    // exception is the FFI handle stand-in: a zero-field, non-generic record
+    // named in the signature of an `#[extern_symbol]` method or an `extern`
+    // block fn. Its values only exist behind the C ABI (the checker rewrites
+    // every call to the extern symbol; the declared stub body is dead), so
+    // the record is a pointer-width stand-in with no implicit drop — the same
+    // class the `#[opaque]` rule assigns (`ResourceMarker::BitCopy`), with
+    // release explicit through the declared FFI surface. An explicit
+    // `#[resource]`/`#[linear]` marker on such a record wins: only the
+    // unmarked (`None`) state is promoted.
+    for (name, entry) in record_registry {
+        if entry.type_params.is_empty()
+            && entry.fields.is_empty()
+            && extern_backed_records.contains(name)
+        {
+            if let Some(slot) = type_classes.get_mut(name) {
+                if slot.0 == ResourceMarker::None {
+                    slot.0 = ResourceMarker::BitCopy;
+                }
+            }
+        }
     }
 
     let mut changed = true;
@@ -6737,6 +6844,16 @@ struct LowerCtx {
     /// land here with `fields = []`; they never trigger record-layout
     /// emission (their constructor goes through `Expr::Call`).
     record_registry: HashMap<String, RecordEntry>,
+    /// Nominal type names appearing in the signature (params or return) of an
+    /// `#[extern_symbol]` impl method, collected at impl lowering — the only
+    /// stage where the attribute is still visible (the lowered `HirFn` carries
+    /// no extern marker). Stored in the bare spelling and, when lowered under
+    /// a module context, the module-qualified spelling, matching the two
+    /// `record_registry` keys. Consumed by
+    /// `finalize_user_record_value_classes` to admit a zero-field record that
+    /// is provably FFI-backed as a `BitCopy` handle stand-in while a bare
+    /// `type Empty {}` stays fail-closed uninferred.
+    extern_backed_record_names: HashSet<String>,
     /// Bare imported record names that have distinct definitions in more than
     /// one canonical module and therefore require module-qualified identities.
     colliding_imported_record_names: HashSet<String>,
@@ -6915,6 +7032,16 @@ struct LowerCtx {
     /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
     /// into it.
     enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
+    /// Structural member types per named type, in declaration order: record
+    /// fields, plus every enum variant's payload types. Populated alongside
+    /// `type_classes` in the type-decl pre-pass, so it is complete before any
+    /// function body lowers.
+    ///
+    /// `resolved_ty_transfers_ownership_to_mailbox` walks it to see THROUGH an
+    /// aggregate: a plain record carries no ownership marker of its own, but a
+    /// `#[resource]` field inside it still transfers when the record crosses a
+    /// mailbox.
+    type_member_tys: HashMap<String, Vec<ResolvedTy>>,
     /// Checker-resolved per-arm pattern classifications. Cloned from
     /// `tc_output.pattern_resolutions` at construction. Keyed by the
     /// `SpanKey` of each match arm's pattern span. Consumed by
@@ -7322,32 +7449,110 @@ impl PendingProducedValueCarrier {
     }
 }
 
-/// True when `ty` is — or transitively carries through generic args, tuples,
-/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+/// Whether `ty` transitively carries a value whose SOLE ownership crosses an
+/// actor message boundary: a substrate handle (the builtin list owned by
+/// [`hew_types::BuiltinType::transfers_ownership_across_actor_boundary`],
+/// which the env checker reads too, so the two ownership authorities cannot
+/// drift), or a user `#[resource]` / `#[linear]` declaration.
 ///
-/// This mirrors `resolved_ty_contains_channel_handle` in `hew-codegen-rs`, which
-/// drives the xnode-codec skip for handle-bearing message types. Both
-/// predicates dispatch on the typed `builtin` discriminant alone — never the
-/// bare source name — so a user `record Sender` / `record Receiver` resolved
-/// with `builtin: None` keeps its normal actor-send and codec treatment. A type
-/// the codegen predicate marks as handle-bearing must also be marked by this
-/// one so HIR's consume decision and codegen's codec decision agree
-/// (`dedup-semantic-boundary` LESSONS invariant).
+/// The nominal arm dispatches on `type_classes`, never on the bare source
+/// name, and only for `builtin: None` types — a user `record Sender` keeps
+/// ordinary copy treatment while the real builtin handle transfers.
+///
+/// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+/// carry the `Resource` MARKER for drop elaboration but are shareable
+/// addresses; sending a pid must not consume the sender's own handle, so they
+/// are excluded on both sides.
 ///
 /// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
-/// handle still reaches the serialiser walk and fails closed there, so we do
-/// not need to recurse into struct fields here.
-fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+/// handle still reaches the serialiser walk and fails closed there.
+/// Positional payload types of a variant, for the mailbox-transfer member set.
+fn hew_hir_variant_field_tys(variant: &HirVariant) -> Vec<ResolvedTy> {
+    variant.field_tys()
+}
+
+fn resolved_ty_transfers_ownership_to_mailbox(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+) -> bool {
+    let mut visiting = HashSet::new();
+    transfers_ownership_to_mailbox_guarded(ty, type_classes, type_member_tys, &mut visiting)
+}
+
+/// Recursion body for [`resolved_ty_transfers_ownership_to_mailbox`].
+///
+/// `visiting` makes the walk total over recursive type graphs
+/// (`type Node { next: Vec<Node> }`). Re-entering a name already on the stack
+/// contributes no NEW ownership edge, so it answers `false` — the neutral
+/// element of the `any(...)` disjunction — and the verdict is decided by the
+/// non-recursive members.
+fn transfers_ownership_to_mailbox_guarded(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match ty {
-        ResolvedTy::Named { args, builtin, .. } => {
-            matches!(
-                builtin,
-                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
-            ) || args.iter().any(resolved_ty_contains_channel_handle)
+        ResolvedTy::CancellationToken => true,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if builtin
+                .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            // A source-declared lifecycle type reaches some positions spelled
+            // by its qualified path with no `builtin` tag attached, so the tag
+            // test alone misses it. Only the DOTTED spelling resolves here: a
+            // bare user `type MonitorRef` shadow is a clone-total record and
+            // must keep ordinary value semantics.
+            if name.contains('.')
+                && hew_types::lookup_builtin_type(name)
+                    .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            if builtin.is_none()
+                && matches!(
+                    type_classes.get(name).map(|(marker, _)| *marker),
+                    Some(ResourceMarker::Resource | ResourceMarker::Linear)
+                )
+            {
+                return true;
+            }
+            if args.iter().any(|arg| {
+                transfers_ownership_to_mailbox_guarded(arg, type_classes, type_member_tys, visiting)
+            }) {
+                return true;
+            }
+            // A builtin carries no user member set to descend into, and its
+            // ownership verdict is already decided above.
+            if builtin.is_some() || !visiting.insert(name.clone()) {
+                return false;
+            }
+            let carries = type_member_tys.get(name).is_some_and(|members| {
+                members.iter().any(|member| {
+                    transfers_ownership_to_mailbox_guarded(
+                        member,
+                        type_classes,
+                        type_member_tys,
+                        visiting,
+                    )
+                })
+            });
+            visiting.remove(name);
+            carries
         }
-        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Tuple(elements) => elements.iter().any(|element| {
+            transfers_ownership_to_mailbox_guarded(element, type_classes, type_member_tys, visiting)
+        }),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_contains_channel_handle(inner)
+            transfers_ownership_to_mailbox_guarded(inner, type_classes, type_member_tys, visiting)
         }
         _ => false,
     }
@@ -7465,6 +7670,7 @@ impl LowerCtx {
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
+            extern_backed_record_names: HashSet::new(),
             colliding_imported_record_names: HashSet::new(),
             file_import_module_names: HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
@@ -7491,6 +7697,7 @@ impl LowerCtx {
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
+            type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
             lang_items: tc_output.lang_items.clone(),
@@ -7794,35 +8001,42 @@ impl LowerCtx {
             })
     }
 
-    /// True when the checker typed the expression at `span` as a type that
-    /// transitively contains a channel handle (`Sender<T>` / `Receiver<T>`).
+    /// Whether `ty` transitively carries a value whose SOLE ownership crosses
+    /// an actor message boundary: a substrate handle (the builtin list owned by
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], shared with
+    /// the env checker), or a user `#[resource]` / `#[linear]` declaration.
     ///
-    /// This is the recursive version of `checked_span_is_channel_handle` and
-    /// mirrors `resolved_ty_contains_channel_handle` from codegen. A direct
-    /// handle, a tuple carrying one, or a generic whose type arg is a handle
-    /// all return true. Absent or unconvertible entries answer `false` —
-    /// the conservative no-ownership-transfer default.
+    /// The nominal arm reads `type_classes`, which the item passes populate
+    /// before any function body is lowered, so a `Resource` / `Linear` marker
+    /// is always available here.
     ///
-    /// ## Why this matters at the actor-send boundary
+    /// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+    /// carry the `Resource` MARKER for drop elaboration but are shareable
+    /// addresses, so they are excluded on both sides — sending a pid must not
+    /// consume the sender's own handle.
+    fn resolved_ty_transfers_ownership_to_mailbox(&self, ty: &ResolvedTy) -> bool {
+        resolved_ty_transfers_ownership_to_mailbox(ty, &self.type_classes, &self.type_member_tys)
+    }
+
+    /// The [`IntentKind`] an actor message argument at `span` must carry.
     ///
-    /// Channel handles are single-owner on the ownership axis even though they
-    /// are `BitCopy` on the representation axis (`#[opaque]`-only types are
-    /// pointer-width and memcpy'd). The HIR actor-send lowering must issue
-    /// `Consume` intent for any arg whose type transitively carries a handle so
-    /// that the MIR dataflow checker sees a `Use { intent: Consume }` and
-    /// transitions the binding to `Consumed`. Without this, a tuple arg such as
-    /// `(rx, "tag")` is lowered as `Read` (`CowShare` in MIR), the caller binding
-    /// stays live, and a subsequent `rx.close()` is not statically refused —
-    /// producing a double-close at runtime (SIGABRT / SIGSEGV).
-    ///
-    /// Codegen's `resolved_ty_contains_channel_handle` predicate serves the
-    /// same purpose for the xnode-codec skip; the two predicates must stay in
-    /// sync (`dedup-semantic-boundary` LESSONS invariant).
-    fn checked_span_contains_channel_handle(&self, span: &Span) -> bool {
-        self.expr_types
+    /// `Consume` when the mailbox hand-off takes sole ownership (see
+    /// [`Self::resolved_ty_transfers_ownership_to_mailbox`]), `Read` otherwise.
+    /// MIR lowers EVERY message argument through `lower_value_for_move`, so
+    /// this intent is what lets the MIR dataflow checker see the consume and
+    /// refuse a second transfer — the ask/tell/select-arm paths all route
+    /// through here so no argument position is left unowned.
+    fn actor_message_arg_intent(&self, span: &Span) -> IntentKind {
+        let transfers = self
+            .expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .is_some_and(|resolved| resolved_ty_contains_channel_handle(&resolved))
+            .is_some_and(|resolved| self.resolved_ty_transfers_ownership_to_mailbox(&resolved));
+        if transfers {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
     }
 
     /// Construct a `SpanKey` for `span` in the current module context.
@@ -8609,6 +8823,46 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
         .iter()
         .map(|param| &param.ty.0)
         .chain(method.return_type.as_ref().map(|rt| &rt.0))
+}
+
+/// Collect every nominal leaf name mentioned in a surface `TypeExpr`,
+/// descending through type arguments and structural composites. Source
+/// spellings only — no resolution, no qualification.
+fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            out.push(name.clone());
+            for arg in type_args.as_deref().unwrap_or(&[]) {
+                collect_type_expr_named_leaves(&arg.0, out);
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            collect_type_expr_named_leaves(&ok.0, out);
+            collect_type_expr_named_leaves(&err.0, out);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Array { element: inner, .. }
+        | TypeExpr::Pointer { pointee: inner, .. }
+        | TypeExpr::Borrow(inner) => {
+            collect_type_expr_named_leaves(&inner.0, out);
+        }
+        TypeExpr::Tuple(elements) => {
+            for element in elements {
+                collect_type_expr_named_leaves(&element.0, out);
+            }
+        }
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                collect_type_expr_named_leaves(&param.0, out);
+            }
+            collect_type_expr_named_leaves(&return_type.0, out);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+    }
 }
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
@@ -9495,17 +9749,10 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[String],
     ) {
-        // `self_type_name` is the symbol-prefix name — may be the mangled form
-        // for concrete specialised impls (e.g. `"Wrapper$$i64"`). The var-self
-        // check must use the bare AST receiver type name (e.g. `"Wrapper"`) so
-        // the param-type annotation `Wrapper<i64>` still matches (#2270).
-        let bare_type_name = self_type_name
-            .split_once("$$")
-            .map_or(self_type_name, |(bare, _)| bare);
-        let bare_type_name = hew_types::short_name(bare_type_name);
+        let bare_type_name = Self::bare_impl_self_type_name(self_type_name);
         let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
         self.register_fn_entry(&symbol, method);
-        if Self::is_var_self_method_for_type(method, bare_type_name) {
+        if Self::is_var_self_method_for_type(method, Some(bare_type_name)) {
             if let Some(entry) = self.fn_registry.get_mut(&symbol) {
                 let Some(receiver_ty) = entry.param_tys.first().cloned() else {
                     unreachable!(
@@ -9554,17 +9801,39 @@ impl LowerCtx {
         self.extern_fn_names.insert(decl.name.clone());
     }
 
-    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: &str) -> bool {
-        method.params.first().is_some_and(|param| {
-            param.is_mutable && Self::is_receiver_param_for_type(param, self_type_name)
-        })
+    /// Reduce a symbol-prefix impl self-type name to the bare AST receiver
+    /// type name — may be the mangled form for concrete specialised impls
+    /// (e.g. `"Wrapper$$i64"`), and must compare as `"Wrapper"` so the
+    /// param-type annotation `Wrapper<i64>` still matches (#2270).
+    ///
+    /// The SINGLE derivation feeding [`Self::is_var_self_method_for_type`]:
+    /// both the fn-registry ABI registration (dual-return tuple) and the
+    /// body-lowering return wrap key off this same name reduction so the
+    /// registered callee return type and the emitted body agree.
+    fn bare_impl_self_type_name(self_type_name: &str) -> &str {
+        let bare = self_type_name
+            .split_once("$$")
+            .map_or(self_type_name, |(bare, _)| bare);
+        hew_types::short_name(bare)
     }
 
-    fn is_var_self_method(method: &FnDecl) -> bool {
-        method
-            .params
-            .first()
-            .is_some_and(|param| param.is_mutable && Self::is_receiver_param(param))
+    /// THE var-self receiver predicate. A method takes a `var self` receiver
+    /// iff its first parameter is mutable and typed `Self` — or, inside an
+    /// impl block, typed as the impl's own target type (the checker's
+    /// `is_receiver_param` accepts both spellings, so the ABI decision here
+    /// must too). Every site that decides the dual-return `(ret, Self)` ABI
+    /// carrier — registration and body lowering — goes through this one
+    /// function; a second predicate is how the call site and the callee
+    /// disagree on the return struct (the exact fail-closed ABI mismatch a
+    /// `fn next(var p: Pair<T>)` where-clause impl used to hit).
+    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: Option<&str>) -> bool {
+        method.params.first().is_some_and(|param| {
+            param.is_mutable
+                && match self_type_name {
+                    Some(name) => Self::is_receiver_param_for_type(param, name),
+                    None => Self::is_receiver_param(param),
+                }
+        })
     }
 
     fn is_receiver_param_for_type(param: &Param, self_type_name: &str) -> bool {
@@ -11470,6 +11739,32 @@ impl LowerCtx {
             ));
             return;
         };
+        // Record the FFI-backed nominal surface of this impl BEFORE any
+        // metadata-only skip below drops the block: a record named in the
+        // signature of an `#[extern_symbol]` method is constructed/consumed
+        // behind the C ABI, which is the signal
+        // `finalize_user_record_value_classes` needs to admit a zero-field
+        // record as a pointer-width handle stand-in.
+        for method in &decl.methods {
+            if !method
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "extern_symbol")
+            {
+                continue;
+            }
+            for ty in method_signature_type_exprs(method) {
+                let mut names = Vec::new();
+                collect_type_expr_named_leaves(ty, &mut names);
+                for name in names {
+                    if let Some(module) = &self.current_module_name {
+                        self.extern_backed_record_names
+                            .insert(format!("{module}.{name}"));
+                    }
+                    self.extern_backed_record_names.insert(name);
+                }
+            }
+        }
         // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
         let type_params: Vec<String> = decl
             .type_params
@@ -11744,6 +12039,7 @@ impl LowerCtx {
                 &symbol,
                 span.clone(),
                 &type_params,
+                Some(&symbol_self_name),
             );
             // Explicit impl-method bodies are written in the file that declares
             // the impl, so record as root-origin when this impl is lowered from
@@ -11868,6 +12164,7 @@ impl LowerCtx {
                             &symbol,
                             span.clone(),
                             &type_params,
+                            Some(&symbol_self_name),
                         );
                         if let Some(declaration) = &synthetic_default_declaration {
                             hir_method.declaration = declaration.clone();
@@ -11938,7 +12235,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> HirFn {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[])
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
     fn lower_imported_fn_with_name(
@@ -12147,6 +12444,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         impl_type_params: &[String],
+        impl_self_type_name: Option<&str>,
     ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
@@ -12223,7 +12521,13 @@ impl LowerCtx {
                 intrinsic_id: None,
             };
         }
-        let var_self_receiver = if Self::is_var_self_method(func) {
+        // Same predicate AND same name reduction as
+        // `register_impl_method_fn_entry`: the fn-registry entry for `name`
+        // already carries the dual-return `(ret, Self)` tuple when this fires,
+        // so the wrapped body below is what makes the emitted return type
+        // match the ABI every call site was told about.
+        let bare_self_type_name = impl_self_type_name.map(Self::bare_impl_self_type_name);
+        let var_self_receiver = if Self::is_var_self_method_for_type(func, bare_self_type_name) {
             params.first().cloned()
         } else {
             None
@@ -12810,7 +13114,7 @@ impl LowerCtx {
                 };
                 HirSupervisorChild {
                     name: child.name.clone(),
-                    ty: child.actor_type.clone(),
+                    ty: self.canonical_supervisor_child_ty(&child.actor_type),
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,
                         RestartPolicy::Transient => HirRestartPolicy::Transient,
@@ -19171,9 +19475,14 @@ impl LowerCtx {
                 .cloned()
             {
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // Join branches are issued together, like select arm sources:
+                // the same owned value in two branches is a double transfer.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 let reply_ty = ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit);
                 return HirJoinBranch {
@@ -19903,9 +20212,17 @@ impl LowerCtx {
                     };
                 }
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // A select arm source is SEQUENTIAL setup: every arm's ask is
+                // issued before dispatch picks a winner, so an owned argument
+                // handed to two arms is a real double transfer. MIR lowers each
+                // arm's args through `lower_value_for_move`; stamp the matching
+                // intent so the dataflow checker sees the consume.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 HirSelectArmKind::ActorAsk {
                     actor: Box::new(actor),
@@ -22376,6 +22693,30 @@ impl LowerCtx {
             )
     }
 
+    /// Canonicalize a supervisor child's user-spelled actor type to the
+    /// registered actor identity (`qualified_name()`), so the child's MIR
+    /// actor-layout lookup and the child-handle PID agree.
+    ///
+    /// A supervisor child records its actor type as the raw source spelling
+    /// (`child b: bank.Account` stores `bank.Account`), whose prefix is the
+    /// user's import alias. A module actor's identity is `qualified_name()` =
+    /// `{module_full_path}.{name}` (`hew.bank.Account`), which the MIR actor
+    /// layout keys on. Left raw, the alias-prefixed spelling never matches that
+    /// key and MIR rejects the supervisor with an unknown-actor
+    /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
+    /// `module_import_bindings` — the same table the checker's spawn resolution
+    /// uses — so a supervisor-child handle carries the same identity a spawn
+    /// handle does. A bare root-actor spelling has no module prefix and is
+    /// returned unchanged.
+    fn canonical_supervisor_child_ty(&self, raw: &str) -> String {
+        match raw.split_once('.') {
+            Some((module_binding, member)) => {
+                self.imported_module_member_key(module_binding, member)
+            }
+            None => raw.to_string(),
+        }
+    }
+
     /// Whether bare `name` is authored by the scope currently being lowered.
     ///
     /// Root declarations use the root namespace. Every imported module,
@@ -22473,7 +22814,23 @@ impl LowerCtx {
                 // retry would let compatibility spellings rewrite a different
                 // source-owned declaration (for example `failure.*`).
                 .or_else(|| {
-                    (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
+                    // One shipped declaration, two canonical spellings: the
+                    // shipped `std/concurrency/lambda_actor.hew` source is
+                    // reachable both as a directory-module peer (a direct
+                    // `hew check` of the file lowers it as `std.concurrency`)
+                    // and as the file module every user import resolves
+                    // (`import std::concurrency::lambda_actor` →
+                    // `std.concurrency.lambda_actor`). Matching only the
+                    // former stamped the builtin discriminator on the direct
+                    // path but not through an import, so the same impl block
+                    // was metadata-only one way and a lowered user impl the
+                    // other — the root-vs-import provenance seam the stdlib
+                    // corpus sweep pins. Both spellings stay gated on the
+                    // canonical-source proof above; a user lookalike module
+                    // acquires neither.
+                    (canonical_std_owner
+                        && (name == "std.concurrency.LambdaActorHandle"
+                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
                         .then_some(BuiltinType::LambdaActorHandle)
                 })
         }) {
@@ -25347,30 +25704,24 @@ impl LowerCtx {
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .map(|arg| {
-                    // A channel handle (`Sender<T>`/`Receiver<T>`) crossing an
-                    // actor message boundary transfers ownership to the
-                    // receiving handler — the mailbox copies the handle
-                    // pointer, not the channel. Lower such args with
-                    // `IntentKind::Consume` so the move-checker marks the
-                    // caller binding consumed: a later use (`rx.close()`, a
-                    // second send) would race the new owner and double-close
-                    // the underlying channel. Every other arg keeps `Read` —
-                    // the existing boundary copy/clone semantics.
+                    // A single-owner value crossing an actor message boundary
+                    // transfers ownership to the receiving handler — the
+                    // mailbox copies the handle/resource, not the underlying
+                    // thing it owns. Lower such args with `IntentKind::Consume`
+                    // so the move-checker marks the caller binding consumed: a
+                    // later use (`rx.close()`, `s.detach()`, a second send)
+                    // would race the new owner and free the value twice. Every
+                    // other arg keeps `Read` — CoW boundary copy semantics.
                     //
-                    // The predicate is RECURSIVE: a direct `Sender<T>` /
-                    // `Receiver<T>` arg AND any arg whose type transitively
-                    // carries a handle (e.g. a tuple `(Receiver<T>, string)`)
-                    // both transfer the handle pointer. Without the recursive
-                    // check a nested-handle arg is lowered as `Read` (CowShare
-                    // in MIR), the caller binding stays live, and a subsequent
-                    // `rx.close()` silently double-closes the channel.
+                    // The predicate is RECURSIVE: a direct handle/resource arg
+                    // AND any arg whose type transitively carries one (e.g. a
+                    // tuple `(Receiver<T>, string)`) both transfer the owned
+                    // pointer. Without the recursive check a nested-handle arg
+                    // is lowered as `Read` (CowShare in MIR), the caller
+                    // binding stays live, and a subsequent close silently
+                    // double-frees.
                     let spanned = arg.expr();
-                    let intent = if self.checked_span_contains_channel_handle(&spanned.1) {
-                        IntentKind::Consume
-                    } else {
-                        IntentKind::Read
-                    };
-                    self.lower_expr(spanned, intent)
+                    self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
                 })
                 .collect();
             return match dispatch {
@@ -35806,13 +36157,15 @@ fn main() {}
         );
     }
 
-    /// HIR's recursive channel-handle predicate is the consume-decision mirror
-    /// of codegen's xnode-codec-skip predicate. It must dispatch on the typed
-    /// `builtin` discriminant alone so user `record Sender` / `record Receiver`
-    /// messages keep ordinary actor-send treatment while real builtin handles
-    /// still transfer ownership across actor sends.
-    #[test]
-    fn channel_handle_consume_gate_uses_builtin_discriminant_not_shadowed_name() {
+    /// HIR's recursive mailbox-transfer predicate is the consume-decision half
+    /// of the actor ownership axis. These cases fix the four independently
+    /// failable properties of that walk: what it must NOT capture, which
+    /// references stay shareable, which handles own a release, and how far it
+    /// descends into an aggregate.
+    mod mailbox_transfer_gate {
+        use super::*;
+        use crate::value_class::TypeClassTable;
+
         fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
             ResolvedTy::Named {
                 name: name.to_string(),
@@ -35831,61 +36184,162 @@ fn main() {}
             }
         }
 
-        for shadow in ["Sender", "Receiver"] {
-            let user_ty = named_record_ty(shadow);
-            assert!(
-                !resolved_ty_contains_channel_handle(&user_ty),
-                "user type `{shadow}` (builtin: None) must not be consumed as a \
-                 channel-handle transfer"
+        /// Marker table and structural member sets exactly as the type-decl
+        /// pre-pass records them: `Holder` wraps a resource, `Outer` wraps
+        /// `Holder`, and `Node` is self-referential through a `Vec`.
+        fn tables() -> (TypeClassTable, HashMap<String, Vec<ResolvedTy>>) {
+            let mut classes = TypeClassTable::default();
+            classes.insert("Socket".to_string(), (ResourceMarker::Resource, None));
+            classes.insert("Ticket".to_string(), (ResourceMarker::Linear, None));
+            classes.insert("Message".to_string(), (ResourceMarker::None, None));
+            classes.insert("Holder".to_string(), (ResourceMarker::None, None));
+            classes.insert("Outer".to_string(), (ResourceMarker::None, None));
+            classes.insert("Node".to_string(), (ResourceMarker::None, None));
+
+            let mut members: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
+            members.insert("Socket".to_string(), vec![ResolvedTy::I64]);
+            members.insert("Message".to_string(), vec![ResolvedTy::String]);
+            members.insert("Holder".to_string(), vec![named_record_ty("Socket")]);
+            members.insert(
+                "Outer".to_string(),
+                vec![named_record_ty("Holder"), ResolvedTy::I64],
             );
-            assert!(
-                !resolved_ty_contains_channel_handle(&named_record_ty(&format!(
-                    "channel.{shadow}"
-                ))),
-                "module-qualified user `{shadow}` is still builtin: None"
+            members.insert(
+                "Node".to_string(),
+                vec![ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![named_record_ty("Node")],
+                    builtin: Some(BuiltinType::Vec),
+                    is_opaque: false,
+                }],
             );
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, user_ty.clone(),]
+            (classes, members)
+        }
+
+        fn transfers(ty: &ResolvedTy) -> bool {
+            let (classes, members) = tables();
+            resolved_ty_transfers_ownership_to_mailbox(ty, &classes, &members)
+        }
+
+        #[test]
+        fn user_shadow_types_and_cow_values_are_not_transfers() {
+            for shadow in ["Sender", "Receiver"] {
+                let user_ty = named_record_ty(shadow);
+                assert!(
+                    !transfers(&user_ty),
+                    "user type `{shadow}` (builtin: None) must not be consumed as \
+                     a mailbox ownership transfer"
+                );
+                assert!(
+                    !transfers(&named_record_ty(&format!("mypkg.{shadow}"))),
+                    "a user module's `{shadow}` is not the stdlib declaration"
+                );
+                assert!(!transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    user_ty.clone(),
+                ])));
+                assert!(!transfers(&user_generic_over(user_ty.clone())));
+                assert!(!transfers(&ResolvedTy::Array(Box::new(user_ty.clone()), 2)));
+                assert!(!transfers(&ResolvedTy::Slice(Box::new(user_ty))));
+            }
+
+            assert!(!transfers(&named_record_ty("Message")));
+            assert!(!transfers(&named_record_ty("Unregistered")));
+            assert!(!transfers(&ResolvedTy::String));
+            assert!(!transfers(&ResolvedTy::I64));
+            assert!(!transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::String,
+                ResolvedTy::I64,
+            ])));
+        }
+
+        #[test]
+        fn non_owning_actor_references_are_not_transfers() {
+            // `LocalPid` and its raw runtime word carry the `Resource` marker
+            // for drop elaboration but free nothing, and supervisors
+            // legitimately hand one child's pid to several peers.
+            assert!(!transfers(&builtin_handle(
+                "LocalPid",
+                BuiltinType::LocalPid
             )));
-            assert!(!resolved_ty_contains_channel_handle(&user_generic_over(
-                user_ty.clone()
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(user_ty.clone()),
-                2
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(user_ty)
+            assert!(!transfers(&builtin_handle(
+                "HewActor",
+                BuiltinType::HewActor
             )));
         }
 
-        assert!(!resolved_ty_contains_channel_handle(&named_record_ty(
-            "Message"
-        )));
+        #[test]
+        fn owning_builtin_handles_transfer_directly_and_nested() {
+            // The lambda wrappers and the monitor registration are here BECAUSE
+            // they look like references but own a release.
+            for (name, kind) in [
+                ("Sender", BuiltinType::Sender),
+                ("Receiver", BuiltinType::Receiver),
+                ("Stream", BuiltinType::Stream),
+                ("Sink", BuiltinType::Sink),
+                ("Duplex", BuiltinType::Duplex),
+                ("LambdaPid", BuiltinType::LambdaPid),
+                ("LambdaActorHandle", BuiltinType::LambdaActorHandle),
+                ("BoxedActor", BuiltinType::BoxedActor),
+                ("MonitorRef", BuiltinType::MonitorRef),
+            ] {
+                let handle = builtin_handle(name, kind);
+                assert!(
+                    transfers(&handle),
+                    "builtin `{name}` must be consumed as a mailbox ownership transfer"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    handle.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(handle.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(handle.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(handle))));
+            }
+        }
 
-        for (name, kind) in [
-            ("Sender", BuiltinType::Sender),
-            ("Receiver", BuiltinType::Receiver),
-        ] {
-            let handle = builtin_handle(name, kind);
-            assert!(
-                resolved_ty_contains_channel_handle(&handle),
-                "builtin `{name}` (builtin: Some(_)) must still be consumed as \
-                 a channel-handle transfer"
-            );
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, handle.clone(),]
+        #[test]
+        fn stdlib_declaration_paths_resolve_but_bare_leaf_names_do_not() {
+            // A source-declared lifecycle type reaches declared positions
+            // spelled by its qualified path with NO builtin tag attached (an
+            // actor state field declared `handle: MonitorRef` resolves to
+            // `std.link_monitor.MonitorRef`), so the tag test alone misses it.
+            assert!(transfers(&named_record_ty("std.link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("std.channel.Sender")));
+            assert!(transfers(&named_record_ty("channel.Receiver")));
+            // Resolution is by declaration PATH, never by leaf name.
+            assert!(!transfers(&named_record_ty("MonitorRef")));
+            assert!(!transfers(&named_record_ty(
+                "mypkg.link_monitor.MonitorRef"
             )));
-            assert!(resolved_ty_contains_channel_handle(&user_generic_over(
-                handle.clone()
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(handle.clone()),
-                2
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(handle)
-            )));
+        }
+
+        #[test]
+        fn nominal_markers_and_named_member_containment_transfer() {
+            for nominal in ["Socket", "Ticket"] {
+                let ty = named_record_ty(nominal);
+                assert!(
+                    transfers(&ty),
+                    "`{nominal}` carries a single-owner marker and must be consumed"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    ty.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(ty.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(ty.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(ty))));
+            }
+
+            // A plain record wrapping a resource transfers it, at depth 1 and 2.
+            assert!(transfers(&named_record_ty("Holder")));
+            assert!(transfers(&named_record_ty("Outer")));
+        }
+
+        #[test]
+        fn recursive_member_graphs_terminate_without_transferring() {
+            assert!(!transfers(&named_record_ty("Node")));
         }
     }
 

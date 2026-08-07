@@ -6,6 +6,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
 use crate::BuiltinType;
 
@@ -1111,53 +1112,242 @@ impl Checker {
 
     pub(super) fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
-            if let Expr::Identifier(name) = expr {
-                let released_at = self
-                    .env
-                    .lookup_ref(name)
-                    .and_then(|binding| binding.released_at.clone());
-                if let Some(released_at) = released_at {
-                    let mut error = TypeError::new(
-                        TypeErrorKind::UseAfterConsume,
-                        span.clone(),
-                        format!(
-                            "cannot consume released resource `{name}`; its close obligation was already discharged"
-                        ),
-                    )
-                    .with_note(released_at, "resource was closed here");
-                    if let Some(source_module) = &self.current_module {
-                        error = error.with_source_module(source_module.clone());
-                    }
-                    self.errors.push(error);
-                }
-                self.env.mark_moved(name, span.clone());
-            }
+            self.mark_expr_moved(expr, span);
         }
     }
 
-    fn ty_contains_affine_actor_transfer(ty: &Ty) -> bool {
+    /// Mark an identifier binding moved, unconditionally.
+    ///
+    /// Callers that have already PROVEN the value transfers ownership use this
+    /// directly instead of [`Self::mark_expr_moved_if_non_copy`]. The `Copy`
+    /// gate is not merely redundant there, it is wrong: an owned handle whose
+    /// members are all scalars (`MonitorRef { ref_id: u64 }`) derives `Copy`
+    /// structurally under a spelling that carries no negative impl, and the
+    /// gate would then silently skip the move — leaving two owners of one
+    /// registration. Ownership is decided by the transfer predicate, not by
+    /// the representation of the bytes.
+    /// Mark the PLACE an expression denotes as moved, unconditionally.
+    ///
+    /// The place is the root binding plus the projection steps taken from it,
+    /// so a field transfer (`await a.take(h.sock)`) records that `h.sock`
+    /// specifically is gone while `h`'s siblings stay usable. Consuming a
+    /// projection used to no-op here, which is how a transferred field could be
+    /// detached a second time through the same projection.
+    ///
+    /// Deliberately reports nothing: every site that consumes an expression
+    /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
+    /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
+    /// Reporting here as well would double-diagnose one consuming use.
+    fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+        let Some((root, path)) = Self::expr_place(expr) else {
+            return;
+        };
+        if !path.is_empty() {
+            self.env.mark_place_moved(&root, path, span.clone());
+            return;
+        }
+        let released_at = self
+            .env
+            .lookup_ref(&root)
+            .and_then(|binding| binding.released_at.clone());
+        if let Some(released_at) = released_at {
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                span.clone(),
+                format!(
+                    "cannot consume released resource `{root}`; its close obligation was already discharged"
+                ),
+            )
+            .with_note(released_at, "resource was closed here");
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+        self.env.mark_moved(&root, span.clone());
+    }
+
+    /// Resolve an expression to a checker PLACE: the root binding name plus the
+    /// projection steps taken from it.
+    ///
+    /// Tuple element access (`t.0`) parses as a field access with a numeric
+    /// field name, so field steps cover both spellings.
+    ///
+    /// Returns `None` for anything that is not a projection chain rooted in a
+    /// binding — indexing, calls, `this`. Those roots have no binding-level
+    /// ownership slot to attach a fact to, so nothing is recorded for them
+    /// rather than a guess being recorded; element-of-collection places are the
+    /// known remaining hole and belong to the MIR half of this family.
+    pub(super) fn expr_place(expr: &Expr) -> Option<(String, PlacePath)> {
+        match expr {
+            Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
+            Expr::FieldAccess { object, field } => {
+                let (root, mut path) = Self::expr_place(&object.0)?;
+                path.push(field.clone());
+                Some((root, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
+    fn render_place(root: &str, path: &[String]) -> String {
+        std::iter::once(root)
+            .chain(path.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// Report a use of `root`'s place at `path` that collides with a place
+    /// already consumed on this path, if it does.
+    pub(super) fn report_place_use_after_move(&mut self, root: &str, path: &[String], span: &Span) {
+        let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
+        else {
+            return;
+        };
+        // A place read only to project further into it is not a whole-value
+        // use of itself, at any depth: `o.inner` inside `o.inner.ticket` names
+        // an address, not the aggregate. Without this the partially-moved-root
+        // rule would fire on every ancestor of a moved place and stack one
+        // diagnostic per projection step on top of the real one.
+        if conflict == PlaceConflict::WholeOfPartial && self.place_base_depth > 0 {
+            return;
+        }
+        let place = Self::render_place(root, path);
+        let moved_place = Self::render_place(root, &moved_path);
+        let (message, suggestion) = match conflict {
+            PlaceConflict::Exact => (
+                format!("use of moved place `{place}`"),
+                format!(
+                    "`{place}` transferred its value away; re-initialise it \
+                     (`{place} = ...`) before using it again"
+                ),
+            ),
+            PlaceConflict::UnderMoved => (
+                format!("use of `{place}`, which lives inside moved place `{moved_place}`"),
+                format!(
+                    "`{moved_place}` transferred its value away, taking `{place}` with it; \
+                     read it before the transfer, or re-initialise `{moved_place}`"
+                ),
+            ),
+            PlaceConflict::WholeOfPartial => (
+                format!("use of `{place}` after its field `{moved_place}` was moved out"),
+                format!(
+                    "`{place}` is only partially owned here; use the fields that are still \
+                     owned, or re-initialise `{moved_place}` before using `{place}` whole"
+                ),
+            ),
+        };
+        let mut error = TypeError::new(TypeErrorKind::UseAfterMove, span.clone(), message)
+            .with_note(moved_at, "value was consumed here")
+            .with_suggestion(suggestion);
+        if let Some(source_module) = &self.current_module {
+            error = error.with_source_module(source_module.clone());
+        }
+        self.errors.push(error);
+    }
+
+    /// Whether `ty` carries a value whose SOLE ownership crosses an actor
+    /// message boundary — a substrate handle, or a user `#[resource]` /
+    /// `#[linear]` declaration.
+    ///
+    /// The builtin half delegates to
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], the single
+    /// authority HIR's intent stamping also reads. The nominal half is this
+    /// checker's own: `#[resource]` and `#[linear]` types have exactly one
+    /// ownership path, and MIR physically MOVES every message argument out of
+    /// the caller frame (`lower_value_for_move`), so a later use of the caller
+    /// binding is a genuine use-after-move. Without the nominal arm the caller
+    /// kept its binding live and both frames consumed the one value.
+    ///
+    /// Copy-on-write values (`string`, `Vec`, plain records, tuples of them)
+    /// are deliberately NOT here: the boundary copies them and both frames own
+    /// their own copy, which is the language's default value semantics. A
+    /// record that CONTAINS a resource is a different matter — see below.
+    ///
+    /// The walk is structural and total. It descends generic arguments, tuple
+    /// elements, array/slice elements, AND registered record/enum member types,
+    /// because containment is what decides ownership: `type Holder { socket:
+    /// Socket }` transfers the socket just as surely as `(Socket, i64)` does,
+    /// and sending one `Holder` twice gives the socket two drop paths. Skipping
+    /// the named-member edge left exactly that hole open while the tuple edge
+    /// was closed.
+    fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
+        let mut visiting = std::collections::HashSet::new();
+        self.ty_contains_affine_actor_transfer_guarded(ty, &mut visiting)
+    }
+
+    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
+    ///
+    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
+    /// some positions — notably a declared actor state-field type — spelled by
+    /// its qualified path with no `builtin` tag attached, so the tag test alone
+    /// misses it and the handle silently stayed shareable.
+    ///
+    /// The qualification requirement is load-bearing: `lookup_builtin_type`
+    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
+    /// is a clone-total record that must keep ordinary value semantics. Only
+    /// the dotted spelling is the stdlib declaration.
+    fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
+        name.contains('.')
+            && crate::lookup_builtin_type(name)
+                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+    }
+
+    /// Recursion body for [`Self::ty_contains_affine_actor_transfer`].
+    ///
+    /// `visiting` makes the walk total over recursive type graphs
+    /// (`type Node { next: Vec<Node> }`). Re-entering a name already on the
+    /// stack contributes no NEW ownership edge, so it answers `false` — the
+    /// neutral element of the `any(...)` disjunction — and the result is
+    /// decided by the non-recursive members. This mirrors the recursion guard
+    /// marker derivation already uses (`implements_marker_guarded`).
+    fn ty_contains_affine_actor_transfer_guarded(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> bool {
         match ty {
             Ty::CancellationToken => true,
-            Ty::Named { args, builtin, .. } => {
-                matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::Sender
-                            | BuiltinType::Receiver
-                            | BuiltinType::Stream
-                            | BuiltinType::Sink
-                            | BuiltinType::Duplex
-                            | BuiltinType::SendHalf
-                            | BuiltinType::RecvHalf
-                            | BuiltinType::Generator
-                            | BuiltinType::AsyncGenerator
-                            | BuiltinType::CancellationToken
-                    )
-                ) || args.iter().any(Self::ty_contains_affine_actor_transfer)
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                    || Self::qualified_name_resolves_to_transferring_builtin(name)
+                    || self.registry.is_resource(name)
+                    || self.registry.is_linear(name)
+                {
+                    return true;
+                }
+                if args
+                    .iter()
+                    .any(|arg| self.ty_contains_affine_actor_transfer_guarded(arg, visiting))
+                {
+                    return true;
+                }
+                // A builtin carries no user member set to descend into, and its
+                // ownership verdict is already decided above.
+                if builtin.is_some() || !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let members: Vec<Ty> = self
+                    .registry
+                    .member_types(name)
+                    .map(<[Ty]>::to_vec)
+                    .unwrap_or_default();
+                let carries = members
+                    .iter()
+                    .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
+                visiting.remove(name);
+                carries
             }
-            Ty::Tuple(elements) => elements.iter().any(Self::ty_contains_affine_actor_transfer),
+            Ty::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.ty_contains_affine_actor_transfer_guarded(element, visiting)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                Self::ty_contains_affine_actor_transfer(element)
+                self.ty_contains_affine_actor_transfer_guarded(element, visiting)
             }
             _ => false,
         }
@@ -1174,8 +1364,8 @@ impl Checker {
         if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
             self.report_invalid_actor_send(&ty, error_span);
         }
-        if Self::ty_contains_affine_actor_transfer(&ty) {
-            self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
+        if self.ty_contains_affine_actor_transfer(&ty) {
+            self.mark_expr_moved(expr, move_span);
         }
     }
 
@@ -1290,7 +1480,11 @@ impl Checker {
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding.def_span.clone();
-            if is_moved {
+            // The outermost place of an assignment target is written, not read:
+            // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
+            // that plugs the hole, not a use of the value that left.
+            let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
                     Ty::Named { name, .. } if self.registry.is_linear(name)
@@ -1340,6 +1534,14 @@ impl Checker {
                     ));
                 }
                 self.errors.push(err);
+            }
+            // A whole-value use of a partially-moved aggregate would hand a
+            // second owner the storage that already moved out. Projection bases
+            // are exempt (handled inside the reporter, which is the one
+            // authority on that rule) and so are assignment targets, which
+            // write rather than read.
+            if !is_moved && !is_write_target {
+                self.report_place_use_after_move(name, &[], span);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
@@ -5819,7 +6021,20 @@ impl Checker {
             }
         }
 
+        // The object is the BASE of this projection, not a whole-value use of
+        // itself: `h.other` stays legal after `h.sock` moved out.
+        self.place_base_depth += 1;
         let obj_ty = self.synthesize(&object.0, &object.1);
+        self.place_base_depth -= 1;
+        // Reading this projection after it (or storage under it) was consumed
+        // is a use-after-move. Assignment targets are exempt: the outermost
+        // target place is written, not read.
+        if self.place_write_depth == 0 || self.place_base_depth > 0 {
+            if let Some((root, mut path)) = Self::expr_place(&object.0) {
+                path.push(field.to_string());
+                self.report_place_use_after_move(&root, &path, span);
+            }
+        }
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args, .. } => {
@@ -5895,9 +6110,15 @@ impl Checker {
                             // rather than re-litigating bound checking at a
                             // sibling site.
                             self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
+                            // The child type is stored as the raw user-spelled
+                            // string (`bank.Account`); canonicalize its module
+                            // prefix to the registered actor identity so the
+                            // synthesised `LocalPid` carries the same dotted
+                            // identity a spawn handle does and method dispatch
+                            // keys `fn_sigs` correctly.
                             let child_ty = Ty::Named {
                                 builtin: None,
-                                name: child_type,
+                                name: self.canonical_supervisor_child_type(&child_type),
                                 args: vec![],
                             };
                             if slot_kind == crate::check::types::ChildKind::Pool {

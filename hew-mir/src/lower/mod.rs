@@ -126,19 +126,20 @@ use self::consts::{
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
 #[cfg(not(test))]
 use self::drop_plan::{
-    affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
-    binder_read_is_borrow_safe_terminator, builtin_method_arg_is_move_ingress, check_to_diagnostic,
-    classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
-    describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
-    field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
-    note_payload_escape, render_owned_handle_ty, resource_drop_fn, stream_handle_drop_descriptor,
-    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
-    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
-    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    affine_release_needs_drop_flag, attribute_payload_binder_root,
+    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
+    builtin_method_arg_is_move_ingress, check_to_diagnostic, classify_closure_pair_rhs,
+    classify_dyn_trait_storage, cow_value_leaf_drop_symbol, describe_vec_element,
+    dyn_rebind_source_binding, elaborate, exit_block_id, field_override_uses_record_field_drop,
+    is_borrowing_call_abi, is_handle_borrowing_call_abi, note_payload_escape,
+    propagate_payload_binder_root, render_owned_handle_ty, resource_drop_fn,
+    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
+    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
+    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
-    vec_iter_yield_abandonment_diagnostics,
+    vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
 };
 pub use self::drop_plan::{crash_only_param_loan_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
@@ -720,6 +721,13 @@ struct Builder {
     /// borrows. A genuine co-owner mint retains through `hew_string_clone`;
     /// ordinary calls continue to borrow the caller's reference.
     pub(crate) borrowed_string_param_locals: HashSet<u32>,
+    /// MIR locals that RECEIVED a variant payload's sole ownership through an
+    /// emitted `NeutralizePayloadSlot { transferee: Some(..) }` on a
+    /// `MachineVariant`/`EnumVariant` slot (the uniform owned-carrier payload
+    /// move-out, D185). The neutralize nulls the carrier's slot, so the
+    /// transferee already holds the one live share — a typed-join branch
+    /// retain on such a local would strand a `+1` nothing discharges.
+    pub(crate) variant_payload_transferee_locals: HashSet<u32>,
     /// Exact join publications whose HIR result fact is a borrowed string.
     /// Return and owning-sink planning may mint a share from this typed row;
     /// ordinary reads keep borrowing the selected source owner.
@@ -3142,6 +3150,15 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // Exact tagged-union layout keys.  A `ResolvedTy::Named` derives the same
     // key from its full owner plus concrete argument spine before consulting
     // this set; it is never matched by final path segment.
+    // Machines ONLY. `ty_is_machine` must match real machines and never an
+    // inline user enum (which DOES enter the owned call-carrier protocol), so
+    // it consults this set instead of the combined `machine_layout_names`
+    // below. Derived from the same `machine_layouts` before the user-enum keys
+    // are chained in.
+    let machine_decl_layout_names: HashSet<String> = machine_layouts
+        .iter()
+        .flat_map(|layout| [layout.name.clone(), layout.event_name.clone()])
+        .collect();
     let machine_layout_names: HashSet<String> = machine_layouts
         .iter()
         .flat_map(|layout| [layout.name.clone(), layout.event_name.clone()])
@@ -3276,6 +3293,13 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     param_ownership
         .produced_value_facts
         .clone_from(&module.produced_value_facts);
+    // Machine layout keys only exist post-lowering, so inject the machines-only
+    // name authority here (not in the HIR-scoped fact pass). `ty_is_machine`
+    // reads it via the Rc-shared facts to exclude real machines — never inline
+    // user enums — from the owned call-carrier protocol.
+    param_ownership
+        .machine_decl_layout_names
+        .clone_from(&machine_decl_layout_names);
     let param_ownership: Rc<ParamOwnershipFacts> = Rc::new(param_ownership);
     for item in &module.items {
         match item {
@@ -3879,6 +3903,15 @@ pub(crate) struct ParamOwnershipFacts {
     /// Positive checker/HIR authority that the parameter type exposes
     /// caller-visible storage.
     caller_visible_param_projections: HashSet<(hew_hir::ItemId, usize)>,
+    /// Machines-ONLY tagged-union layout keys — every machine layout name plus
+    /// its event-companion key, WITHOUT the user-enum keys carried in the
+    /// Builder's combined `machine_layout_names`. `ty_is_machine` consults this
+    /// so an ordinary inline user enum is never misread as a machine and denied
+    /// the owned call-carrier protocol. Populated from `module.machine_layouts`
+    /// after `compute_param_ownership` (the HIR pass has no layout keys); empty
+    /// until then. Travels on the Rc-shared facts so every Builder — including
+    /// the machine-`__step` synth builders — reads the same authority.
+    machine_decl_layout_names: HashSet<String>,
 }
 
 /// Shared context for the consume-detection and borrow-site walkers. Bundles
@@ -5510,7 +5543,14 @@ pub(crate) fn lower_function(
     // codegen. A no-op here for every non-actor-handler lowering entry point
     // (`load_locals` is empty whenever `current_actor_state_fields` was
     // never populated).
-    classify_actor_state_load_modes(&mut blocks, &builder.suspend_kinds, &builder.locals);
+    classify_actor_state_load_modes(
+        &mut blocks,
+        &builder.suspend_kinds,
+        &builder.locals,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+    );
     let projection_tainted = temp_drop::compute_projection_alias_taint(
         &blocks,
         &builder.match_project_consumed_binder_locals,

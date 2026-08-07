@@ -10000,19 +10000,24 @@ fn frame_cleanup_thunk_cache_rejects_unregistered_generated_name_collision() {
     let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
     alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
+    // The generated name is content-derived, so pre-register whatever name
+    // this exact descriptor/slot-type pair would generate to force the
+    // collision, rather than assuming a first-use-counter value.
+    let expected_name = frame_cleanup_thunk_name(&FrameCleanupThunkKey::new(&descriptor, slot_ty));
     module.add_function(
-        "__hew_frame_cleanup_0",
+        &expected_name,
         ctx.void_type().fn_type(&[ptr_ty.into()], false),
         None,
     );
 
-    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
-    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
     let err = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
         .expect_err("an unregistered generated symbol must not be reused");
     assert!(
         matches!(err, CodegenError::FailClosed(ref message)
-            if message.contains("__hew_frame_cleanup_0") && message.contains("not registered")),
+            if message.contains(&expected_name) && message.contains("not registered")),
         "generated-name collision must fail closed rather than borrowing a foreign function: {err:?}"
     );
     assert!(harness.frame_cleanup_thunks.borrow().entries.is_empty());
@@ -10076,6 +10081,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
         &HashMap::new(),
         &[],
         &HashMap::new(),
+        &HashSet::new(),
     )
     .expect("the exhaustive instruction write-set must admit StringLit");
     assert_eq!(
@@ -10185,6 +10191,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
         )
         .expect("entry cancellation and guarded exits share one owner ritual");
         assert_eq!(descriptors.len(), 1);
@@ -10628,6 +10635,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             &HashMap::new(),
             &[],
             &symbols,
+            &HashSet::new(),
         );
         if admitted {
             assert_eq!(

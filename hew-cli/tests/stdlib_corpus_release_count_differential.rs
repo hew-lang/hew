@@ -81,7 +81,16 @@ const REJECTED: &str = "REJECTED";
 /// differential deliberately permits new release cells (the fix direction),
 /// but a source refresh must not omit one of its new functions from future
 /// regression coverage.
-const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &["examples/mqtt_broker.hew"];
+///
+/// `examples/mqtt_broker.hew` is no longer here: it is REJECTED at the
+/// current compiler by a real, tracked static leak-obligation finding (an
+/// owned value reaching a suspend-abandon exit with more mints than
+/// discharges in `Acceptor__recv__start`), so it no longer has a
+/// `Functions`-shaped block for this mechanism to protect. Its baseline row
+/// is `REJECTED`; the main differential's `(Rejected, Rejected)` branch
+/// covers it, and the suspend-abandon gap itself is a compiler defect to fix
+/// separately, not something this ratchet can paper over.
+const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &[];
 
 /// Cells that stand BELOW the `main` baseline on purpose, each with the reason.
 ///
@@ -95,47 +104,47 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        4,
-        "the request loop and its owned path temporaries moved into serve_forever; main retains only the error-arm reason/detail strings, each released on its normal and cancel exits",
+        9,
+        "refreshed from 5: the join-prefix-redefinition liveness fix (the predecessor-terminator string freshness guard) restores releases on main's error/cancel join edges that were previously miscounted; the post-serve_forever main shape now measures 9, still below the pre-refactor baseline of 10 because the request loop and its owned path temporaries moved into serve_forever",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        8,
-        "the request loop and its owned path temporaries moved into serve_forever; main retains addr across three live exits plus error-arm reason/detail strings on their normal and cancel exits",
-    ),
-    // SMTP constructors now return Result and transfer either the live
-    // connection or error detail directly through the selected match arm.
-    (
-        "examples/smtp_client.hew",
-        "main",
-        35,
-        "fallible SMTP constructors transfer selected Result payloads instead of dropping null-backed temporaries",
+        13,
+        "refreshed from 9: same join-prefix-redefinition liveness fix restores releases on main's error/cancel join edges; the post-serve_forever main shape now measures 13, still below the pre-refactor baseline of 14 because the request loop and its owned path temporaries moved into serve_forever",
     ),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
     // action itself, outside the cow-heap drop count measured here.
+    //
+    // Key renamed (not a count change): commit 0897d68da ("enforce canonical
+    // executable identities") qualifies root-compiled stdlib method names with
+    // their full type path (`Child::close` -> `std.process.Child::close`);
+    // count re-verified unchanged under the new name.
     (
         "std/process.hew",
-        "Child::close",
+        "std.process.Child::close",
         0,
         "Child now wraps an opaque runtime handle; its resource close action owns no Hew heap allocation and therefore emits no cow-heap release",
     ),
     (
         "std/process.hew",
-        "Child::kill",
+        "std.process.Child::kill",
         0,
         "Child now wraps an opaque runtime handle; kill touches only that native handle and therefore has no Hew cow-heap release to emit",
     ),
     (
         "std/process.hew",
-        "Child::wait",
+        "std.process.Child::wait",
         0,
         "Child now wraps an opaque runtime handle; wait touches only that native handle and therefore has no Hew cow-heap release to emit",
     ),
+    // Key renamed (not a count change): same 0897d68da qualification, applied
+    // to a root-compiled free function (`last_process_error` ->
+    // `std$process$last_process_error`); count re-verified unchanged.
     (
         "std/process.hew",
-        "last_process_error",
+        "std$process$last_process_error",
         1,
         "the nonempty message transfers into ProcessError, while the empty-message arm transfers default_message and releases its now-unselected message buffer on that join edge",
     ),
@@ -160,88 +169,125 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     // durable, continuously-run proof that `matches_single` is exactly
     // leak-free across all eight operators plus the unmatched-operator
     // fallthrough.
+    // Keys renamed (not a count change): same 0897d68da qualification, applied
+    // to root-compiled stdlib free functions (`matches_single` ->
+    // `std$text$semver$matches_single`, `try_parse` ->
+    // `std$text$semver$try_parse`); counts re-verified unchanged.
     (
         "std/text/semver/semver.hew",
-        "matches_single",
+        "std$text$semver$matches_single",
         82,
         "pre-migration baseline of 86 held ten `req_ver` return-plan sites under an older function shape; a later source/control-flow migration changed the plan topology, and the scanner ownership repair restores `req_ver`'s release at the one normal-return plan plus eight cancel/unwind plans, giving 82 (25/24/24/9) against the broken merge base's 73 (25/24/24/0) — see `semver_matches_leak_oracle.rs` for the leak-free proof",
     ),
     (
         "std/text/semver/semver.hew",
-        "try_parse",
+        "std$text$semver$try_parse",
         105,
         "the current source retains major_str, minor_str, patch_str, pre, and build as owned strings in the returned Version; its remaining releases are the live error/cancel paths for the cloned and sliced intermediates, so the three transferred component owners are intentionally absent from the pre-migration 108-plan topology",
     ),
 ];
 
 // These files carry inlined copies of the same current `std::net::connect_timeout`
-// helper. The owner has no suspend edge: its fourteen drops are the host's four
-// live terminal/error paths, the restored two receiver error-path releases,
-// and the eight formatting temporaries on the two
-// panic arms. `hew_tcp_connect_timeout(host, ...)` borrows `host`; it does not
-// retain or free it. The former 18-plan shape belonged to the pre-refactor
-// endpoint/control-flow topology, so these copies must remain pinned at 14
-// rather than silently accepting another loss.
+// helper. The owner has no suspend edge: its releases are the host's live
+// terminal/error paths, the receiver error-path releases, and formatting
+// temporaries on the panic arms. `hew_tcp_connect_timeout(host, ...)` borrows
+// `host`; it does not retain or free it. The former 18-plan shape belonged to
+// the pre-refactor endpoint/control-flow topology, so these copies remain
+// pinned below it rather than silently accepting another loss.
+//
+// Keys renamed (not a count change): commit 0897d68da ("enforce canonical
+// executable identities") qualifies root-compiled stdlib function names with
+// their full module path (`net$connect_timeout` -> `std$net$connect_timeout`,
+// and the `std/net/net.hew` root copy's bare `connect_timeout` likewise).
+//
+// Refreshed from 14 to 17: the P0 double-free in `connect_timeout`,
+// bisected to `1b78e7065`, is fixed (the join-prefix-redefinition liveness
+// fix landed). Measured 17 is stable across repeated runs and is one below
+// the obsolete pre-refactor 18-plan topology — the prior 14 was a stale
+// bottom-up estimate written while the double-free made real output
+// unobservable, not a target this fix needed to hit exactly.
 const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
-    ("examples/actor_net_reader.hew", "net$connect_timeout"),
-    ("examples/benchmarks/http_server.hew", "net$connect_timeout"),
+    ("examples/actor_net_reader.hew", "std$net$connect_timeout"),
+    (
+        "examples/benchmarks/http_server.hew",
+        "std$net$connect_timeout",
+    ),
     (
         "examples/benchmarks/http_server_expert.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
-    ("examples/chat_client.hew", "net$connect_timeout"),
-    ("examples/chat_server.hew", "net$connect_timeout"),
-    ("examples/curl_client.hew", "net$connect_timeout"),
-    ("examples/http_server.hew", "net$connect_timeout"),
+    ("examples/chat_client.hew", "std$net$connect_timeout"),
+    ("examples/chat_server.hew", "std$net$connect_timeout"),
+    ("examples/curl_client.hew", "std$net$connect_timeout"),
+    // examples/http_server.hew is not here: the whole file is now REJECTED
+    // (a separate finding — see the report), unreachable through the
+    // per-function comparison branch, and `every_accounted_shortfall_is_a_real_shortfall`
+    // requires an accounted file to still have a `Functions` baseline block.
     (
         "examples/net/await_http_roundtrip.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
-    ("examples/net/await_read.hew", "net$connect_timeout"),
-    ("examples/net/await_read_fanout.hew", "net$connect_timeout"),
-    ("examples/net/await_read_hup.hew", "net$connect_timeout"),
-    ("examples/net/http_await_service.hew", "net$connect_timeout"),
-    ("examples/net/probe_a_conn_field.hew", "net$connect_timeout"),
+    ("examples/net/await_read.hew", "std$net$connect_timeout"),
+    (
+        "examples/net/await_read_fanout.hew",
+        "std$net$connect_timeout",
+    ),
+    ("examples/net/await_read_hup.hew", "std$net$connect_timeout"),
+    (
+        "examples/net/http_await_service.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_a_conn_field.hew",
+        "std$net$connect_timeout",
+    ),
     (
         "examples/net/probe_b2_closure_await_outer_crash.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
     (
         "examples/net/probe_b2_closure_capture_await.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
     (
         "examples/net/probe_b2_closure_multi_await.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
     (
         "examples/net/probe_b2_closure_unit_await.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
     (
         "examples/net/probe_b3_closure_capture_noawait.hew",
-        "net$connect_timeout",
+        "std$net$connect_timeout",
     ),
-    ("examples/net/tls_client.hew", "net$connect_timeout"),
-    ("examples/quic_service/client.hew", "net$connect_timeout"),
-    ("examples/quic_service/server.hew", "net$connect_timeout"),
-    ("examples/static_server.hew", "net$connect_timeout"),
-    ("std/net/dns/dns.hew", "net$connect_timeout"),
-    ("std/net/http/http.hew", "net$connect_timeout"),
-    ("std/net/net.hew", "connect_timeout"),
-    ("std/net/quic/quic.hew", "net$connect_timeout"),
-    ("std/net/tls/tls.hew", "net$connect_timeout"),
-    ("std/net/websocket/websocket.hew", "net$connect_timeout"),
+    ("examples/net/tls_client.hew", "std$net$connect_timeout"),
+    (
+        "examples/quic_service/client.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/quic_service/server.hew",
+        "std$net$connect_timeout",
+    ),
+    // examples/static_server.hew is not here either: same REJECTED-file
+    // reason as examples/http_server.hew above.
+    ("std/net/dns/dns.hew", "std$net$connect_timeout"),
+    ("std/net/http/http.hew", "std$net$connect_timeout"),
+    ("std/net/net.hew", "std$net$connect_timeout"),
+    ("std/net/quic/quic.hew", "std$net$connect_timeout"),
+    ("std/net/tls/tls.hew", "std$net$connect_timeout"),
+    ("std/net/websocket/websocket.hew", "std$net$connect_timeout"),
 ];
 
-const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 14 elaborated drops cover host's four live terminal/error paths, two restored receiver error-path releases, and eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete";
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete. Refreshed from 14 to 17: the P0 double-free in connect_timeout (bisected to 1b78e7065) is fixed by the join-prefix-redefinition liveness fix; the measured count is stable at 17 across repeated runs, one below the obsolete pre-refactor 18, and the prior 14 was a stale bottom-up estimate written while the double-free made real output unobservable.";
 
 fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
 {
     ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
         ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
             .iter()
-            .map(|(file, function)| (*file, *function, 14, NET_CONNECT_TIMEOUT_REASON)),
+            .map(|(file, function)| (*file, *function, 17, NET_CONNECT_TIMEOUT_REASON)),
     )
 }
 

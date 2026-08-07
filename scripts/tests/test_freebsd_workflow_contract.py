@@ -52,6 +52,7 @@ PKG_INSTALL_PREFIX = (
 )
 FREEBSD_TOOL_PACKAGES = (
     "llvm22",
+    "gdb",
     "rust",
     "cmake",
     "ninja",

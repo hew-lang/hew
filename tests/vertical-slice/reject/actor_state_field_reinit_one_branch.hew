@@ -1,0 +1,33 @@
+// Re-initialising on SOME paths is not plugging the hole: the branch that
+// consumes without restoring leaves the next message a consumed socket. Place
+// facts join by union, which is what makes the partial re-init still report.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+actor Vault {
+    var sock: Socket;
+    receive fn maybe_swap(restore: bool) -> i64 {
+        let fd = sock.detach();
+        if restore {
+            sock = Socket { fd: fd + 1 };
+        }
+        return fd;
+    }
+}
+
+fn main() -> i64 {
+    let vault = spawn Vault(sock: Socket { fd: 3 });
+    return match await vault.maybe_swap(true) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+}

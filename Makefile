@@ -1159,15 +1159,16 @@ miri:
 lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
 
-# Pinned, cache-only by default: local lint never downloads a grammar/tool as a
-# side effect. Bootstrap is the explicit CI/first-use acquisition path.
-structural-lint: test-structural-authority-audit
+# Self-provisioning: the pinned toolchain install is a prerequisite of every
+# structural-lint entry point, not a separate manual step. The install path
+# (scripts/ast-grep-lint.sh --bootstrap, via build-ast-grep-lang.sh) is
+# idempotent and checks the pinned lock/version before touching the network
+# or recompiling, so a warm cache makes this a fast no-op — local `make lint`
+# and CI both provision through the same target instead of drifting.
+.NOTPARALLEL: structural-lint structural-lint-bootstrap
+structural-lint: structural-lint-bootstrap-install test-structural-authority-audit
 	scripts/ast-grep-lint.sh
 
-# Keep this graph serialized: the declared edges make every bootstrap contract
-# visible to the reachability proof, while the first prerequisite installs the
-# pinned parser before any parser-backed counterfactual executes.
-.NOTPARALLEL: structural-lint-bootstrap
 structural-lint-bootstrap: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap
 
 structural-lint-bootstrap-install:

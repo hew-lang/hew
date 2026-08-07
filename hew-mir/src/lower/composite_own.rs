@@ -8,30 +8,31 @@ mod bytes_payload_handoff;
 mod foundation;
 mod predicate_string_temp_drop;
 mod retained_string_aliases;
+mod shell_drop_safety;
 mod tuple_handle_projection;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
 use super::{
     aggregate_projection_transfer_dests, alias_projection_chain_owner_seeds,
-    attribute_field_binder_provenance, base_local, binder_read_is_borrow_safe_instr,
-    binder_read_is_borrow_safe_terminator, blocks_reachable_from, bytes_interior_producer_dest,
-    bytes_place_is_typed, bytes_runtime_arg_is_borrow, bytes_share_sink_places,
-    close_alias_binders_forward, collect_record_field_binders,
+    attribute_field_binder_provenance, attribute_payload_binder_root, base_local,
+    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator, blocks_reachable_from,
+    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
+    bytes_share_sink_places, close_alias_binders_forward, collect_record_field_binders,
     compute_collection_interior_alias_taint, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, forward_move_closure, instr_escape_places,
     instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
-    place_is_interior_projection, place_is_tag_read, propagate_whole_value_alias_roots,
-    readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
+    place_is_interior_projection, place_is_tag_read, propagate_payload_binder_root,
+    propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
     retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
     ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
     vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
-    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition, SuspendKind, Terminator,
-    FOR_ITER_CURSOR_NAME_PREFIX,
+    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement,
+    PayloadBinderRoot, Place, ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition,
+    SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
 use aggregate_borrowed_ingress_clone::{
     aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
@@ -47,6 +48,7 @@ use predicate_string_temp_drop::predicate_string_temp_drop_proof;
 use retained_string_aliases::{
     retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
 };
+use shell_drop_safety::enum_payloads_are_shell_drop_safe;
 pub(super) use tuple_handle_projection::derive_owned_tuple_handle_projection_bindings;
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
@@ -1017,83 +1019,6 @@ pub(super) fn proven_borrow_whole_arg_locals(
         .filter_map(|(_, p)| base_local(*p))
         .collect()
 }
-/// True when every variant payload of the tagged-union enum behind `ty` is
-/// either a bit-copy value or a plain `string` leaf.
-///
-/// This bounds the blast radius of the `string_binder_read_is_user_fn_borrow`
-/// exemption. `note_payload_escape` is deliberately coarse — one escaping
-/// binder excludes EVERY candidate root in the function — so the inverse is
-/// also coarse: clearing one binder can readmit every candidate. Readmitting a
-/// composite is not free: an `EnumInPlace` drop makes codegen synthesise the
-/// whole in-place helper family for that layout, and the clone half of that
-/// family fails closed on payloads with no dup symbol (`Stream` / `Sink` /
-/// `Generator` / `CancellationToken` handles, registry-backed resources). A
-/// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
-/// binder is interpolated would otherwise turn a leak into a hard
-/// `E_NOT_YET_IMPLEMENTED` compile failure.
-///
-/// ## Why the payload predicate is a POSITIVE bit-copy test
-///
-/// The obvious spelling — "`string`, or anything the heap authority says owns
-/// no heap" — is not a bit-copy predicate and does not bound the clone
-/// synthesis at all. `Stream<i64>` / `Sink<i64>` are pointer-backed IO handles:
-/// [`crate::model::ty_owns_heap_mir`]'s builtin leaf set omits `Stream`/`Sink`
-/// and its generic `Named` arm only recurses into type arguments and layouts,
-/// so with scalar arguments both answer "owns no heap" — while
-/// `hew-mir/src/state_clone.rs` classifies them as `IoHandle`s with no
-/// duplication helper, which clone totality rejects along with every
-/// closure-pair, `#[resource]`, and opaque-handle class. The
-/// `!ty_owns_heap_mir` spelling therefore re-admitted exactly the composites
-/// the bound exists to exclude.
-///
-/// [`ty_is_bit_copy_payload`] is the conservative alternative the payload leaf
-/// actually needs: a scalar leaf, or a tuple/array built only from such leaves.
-/// Every `Named` payload — builtin handle, user record, nested enum, opaque,
-/// resource — answers `false` and keeps its composite on the pre-existing
-/// fail-closed posture (it keeps leaking, exactly as before, and still
-/// compiles).
-///
-/// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, or any
-/// payload that is neither `string` nor bit-copy answers `false`.
-fn enum_payloads_are_plain_string(
-    ty: &ResolvedTy,
-    enum_layouts: &[crate::model::EnumLayout],
-) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return false;
-    };
-    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
-    let Some(layout) = layout else {
-        return false;
-    };
-    if layout.is_indirect {
-        return false;
-    }
-    layout.variants.iter().all(|variant| {
-        variant.field_tys.iter().all(|field_ty| {
-            matches!(field_ty, ResolvedTy::String) || ty_is_bit_copy_payload(field_ty)
-        })
-    })
-}
-/// True when `ty` is a payload that is copied bit-for-bit and owns nothing: a
-/// scalar leaf, or a tuple / fixed-size array built exclusively from such
-/// leaves.
-///
-/// The scalar leaf set is the shared [`crate::return_provenance::ty_is_scalar_non_heap`]
-/// authority (the same one the audited extern-return table uses to admit a
-/// scalar-return extern), extended here to `char`-sized aggregates of scalars.
-/// Deliberately EXHAUSTIVE-by-rejection: every non-listed form — `Named` (which
-/// covers `Stream`/`Sink`/`Generator`/`CancellationToken` and resources, every
-/// user record and nested enum, every `#[opaque]` handle and `#[resource]`),
-/// `String`, `Bytes`, `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`,
-/// `TraitObject`, `Task`, `TypeParam` — answers `false`.
-fn ty_is_bit_copy_payload(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Tuple(elems) => elems.iter().all(ty_is_bit_copy_payload),
-        ResolvedTy::Array(elem, _) => ty_is_bit_copy_payload(elem),
-        other => crate::return_provenance::ty_is_scalar_non_heap(other),
-    }
-}
 /// W5.020 — fail-closed sole-owner derivation for **heap-owning enum
 /// composite** bindings (`Result<T, string>`, `Option<string>`, any user
 /// `enum` whose active variant owns heap). Returns the subset of
@@ -1143,6 +1068,45 @@ fn ty_is_bit_copy_payload(ty: &ResolvedTy) -> bool {
 /// exhaustive `instr_source_places` / `terminator_source_places` machinery
 /// `derive_cow_sole_owner` uses, so a future alias-producing instruction
 /// auto-excludes rather than silently re-opening a double-free.
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
+///
+/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
+/// while `v`'s original reference stays owned by whatever produced it (here, an
+/// enum composite's variant payload slot). This is the `ReturnSlot` analogue of
+/// `corroborated_retained_string_move_sites`' `Move { dest: Local, src }` shape:
+/// there the destination local is the new owner and the source stays an alias
+/// released by its parent; at a return the caller is the new owner and the
+/// composite keeps release authority. Treating the read as an ESCAPE excludes
+/// the composite's `EnumInPlace` drop, so the retain's extra reference is never
+/// balanced — one leaked payload node per call (the enum twin of the
+/// returned-member retain leak, `enum_callee_consume_drop_leak_oracle`
+/// `move_out_arm`).
+fn is_retained_return_move(
+    block: &BasicBlock,
+    instr_index: usize,
+    dest: Place,
+    src: Place,
+) -> bool {
+    if !matches!(dest, Place::ReturnSlot) {
+        return false;
+    }
+    let Some(prev) = instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+    else {
+        return false;
+    };
+    matches!(
+        prev,
+        Instr::StringRetain {
+            value,
+            condition: StringRetainCondition::Always,
+        } if *value == src,
+    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the body is four sequential single-purpose passes — candidate \
@@ -1170,6 +1134,10 @@ pub(super) fn derive_enum_composite_drop_allowed(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    type_classes: &hew_hir::TypeClassTable,
+    record_layouts: &[crate::model::RecordLayout],
+    opaque_handle_names: &[String],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     proven_borrow_call_args: &HashMap<u32, HashSet<usize>>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
@@ -1191,7 +1159,17 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // The candidate composite locals: base locals of heap-owning enum
     // composite bindings.
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    let mut all_candidates_are_plain_string_payload = true;
+    // Per-candidate shell-drop safety. The borrow exemption keeps a
+    // candidate's `EnumInPlace` owner alive across an arm-binder read, which is
+    // sound iff the shell drop can release every active payload of THAT
+    // candidate without double-releasing anything. The decision is a property of the candidate's OWN payload
+    // leaves, so it is recorded per candidate root — not ANDed function-wide. A
+    // function-wide conjunction let one non-synthesizable composite (a
+    // `Result<Child, _>` whose affine `#[resource]` payload has no clone helper)
+    // poison the exemption for a separately-admissible sibling
+    // (`Result<bytes, string>`), leaking the sibling that the composite itself
+    // was perfectly able to free. Each candidate stands on its own leaves.
+    let mut shell_drop_safe_candidate_locals: HashSet<u32> = HashSet::new();
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1202,7 +1180,17 @@ pub(super) fn derive_enum_composite_drop_allowed(
         let Some(local) = base_local(*place) else {
             continue;
         };
-        all_candidates_are_plain_string_payload &= enum_payloads_are_plain_string(ty, enum_layouts);
+        if enum_payloads_are_shell_drop_safe(
+            ty,
+            enum_layouts,
+            record_field_orders,
+            type_classes,
+            record_layouts,
+            opaque_handle_names,
+            lifecycle_registry,
+        ) {
+            shell_drop_safe_candidate_locals.insert(local);
+        }
         candidate_local_to_binding.insert(local, *binding);
     }
     if candidate_local_to_binding.is_empty() {
@@ -1260,6 +1248,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // bindings whose scope is not the same or nested are filtered out and the
     // source escape scan below treats the move as an unbound-destination escape.
     let mut payload_binders: HashMap<u32, Option<ScopeId>> = HashMap::new();
+    // Which candidate composite each payload binder was projected out of, so the
+    // borrow exemption can be judged against THAT candidate's own
+    // clone-synthesizability (FIX: per-candidate, not function-wide). Seeded from
+    // the interior projection's aliased source (its `alias_of` root is the
+    // candidate local) and carried along every onward hand-off below.
+    let mut payload_binder_candidate_root: HashMap<u32, PayloadBinderRoot> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -1285,6 +1279,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                                     payload_binders
                                         .entry(dl)
                                         .or_insert_with(|| local_scope.get(&dl).copied());
+                                    // Attribute this binder to its projected-from
+                                    // candidate; a second, differing root marks it
+                                    // `Conflict` (see `attribute_payload_binder_root`).
+                                    attribute_payload_binder_root(
+                                        &mut payload_binder_candidate_root,
+                                        dl,
+                                        alias_of.get(&sl).copied().unwrap_or(sl),
+                                    );
                                 }
                             }
                         }
@@ -1354,6 +1356,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             // `dl`'s real lifetime; fall back to the source's
                             // scope for MIR temps.
                             payload_binders.insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                            // The hand-off carries the same candidate attribution
+                            // as its source binder; an already-`Conflict` source
+                            // propagates the conflict onward, never a stale root.
+                            propagate_payload_binder_root(
+                                &mut payload_binder_candidate_root,
+                                sl,
+                                dl,
+                            );
                             changed = true;
                         }
                     }
@@ -1383,6 +1393,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             if local_is_heap_owning(dl) && !payload_binders.contains_key(&dl) {
                                 payload_binders
                                     .insert(dl, local_scope.get(&dl).copied().or(src_scope));
+                                // The loaded field inherits its record binder's
+                                // candidate attribution; a `Conflict` source
+                                // propagates onward rather than a stale root.
+                                propagate_payload_binder_root(
+                                    &mut payload_binder_candidate_root,
+                                    sl,
+                                    dl,
+                                );
                                 changed = true;
                             }
                         }
@@ -1614,7 +1632,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     }
                     if payload_binders.contains_key(&l) {
                         note_payload_escape(
-                            &payload_binders,
+                            &payload_binder_candidate_root,
                             l,
                             &alias_of,
                             blocks,
@@ -1627,7 +1645,8 @@ pub(super) fn derive_enum_composite_drop_allowed(
             // discriminates a benign hand-off from a real escape, so it needs
             // its own analysis rather than the blanket source scan below.
             if let Instr::Move { dest, src } = instr {
-                let retained_string_move = retained_string_moves.contains(&(block.id, instr_index));
+                let retained_string_move = retained_string_moves.contains(&(block.id, instr_index))
+                    || is_retained_return_move(block, instr_index, *dest, *src);
                 let retained_bytes_move = retained_bytes_moves.contains(&(block.id, instr_index));
                 let src_local = base_local(*src);
                 let dest_local = base_local(*dest);
@@ -1687,7 +1706,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && dest_local.is_some_and(|dl| !local_is_heap_owning(dl));
                         if !benign_handoff && !benign_bitcopy_extract {
                             note_payload_escape(
-                                &payload_binders,
+                                &payload_binder_candidate_root,
                                 sl,
                                 &alias_of,
                                 blocks,
@@ -1765,7 +1784,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             && !vec_iter_cursor_ingress_of(instr, l)
                         {
                             note_payload_escape(
-                                &payload_binders,
+                                &payload_binder_candidate_root,
                                 l,
                                 &alias_of,
                                 blocks,
@@ -1836,30 +1855,50 @@ pub(super) fn derive_enum_composite_drop_allowed(
                 if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
                     // Every borrow exemption keeps the enclosing enum's
                     // EnumInPlace owner alive. That is sound only when the
-                    // helper family can clone and drop every possible active
-                    // payload. A sibling affine/IO/resource/opaque nominal has
-                    // drop-only semantics, so even a perfectly ordinary read
+                    // shell's drop cannot double-release ANY possible active
+                    // payload: plain strings (shell is the sole owner, the
+                    // binder a no-retain alias), bit-copy leaves (nothing to
+                    // release), and bare `#[opaque]` handles (the thunk's drop
+                    // is a structural no-op and no other close authority
+                    // exists). A sibling affine/IO/`#[resource]` nominal has a
+                    // REAL drop-only close, so even a perfectly ordinary read
                     // of the string arm must exclude the whole enum owner: the
                     // active payload binder (if any) is then the sole close
                     // authority. This is the same positive cap used for user
                     // functions, applied to the complete borrow-safe surface.
-                    let read_is_borrow = all_candidates_are_plain_string_payload
-                        && (binder_read_is_borrow_safe_terminator(
-                            &block.terminator,
-                            suspend_kinds.get(&block.id),
-                            l,
-                        ) || string_binder_read_is_user_fn_borrow(
-                            &block.terminator,
-                            suspend_kinds.get(&block.id),
-                            l,
-                            local_tys.get(l as usize),
-                            module_fn_names,
-                            module_generic_fn_names,
-                            extern_contracts,
-                        ));
+                    // The cap recurses through NESTED enum payloads: a
+                    // `Result<Status, i64>` whose `Ok` payload is itself a
+                    // scalar-and-string enum stays synthesizable, so the inner
+                    // `Described(s)` string read is correctly a borrow and the
+                    // outer composite keeps its `EnumInPlace` drop (#2717 — the
+                    // scalar sibling of the NESTED enum, not a Move, was the
+                    // residual leak the plain-string-only cap left excluded).
+                    // Per-candidate: the borrow exemption is granted only when
+                    // the candidate composite THIS binder was projected from is
+                    // itself shell-drop-safe. A non-safe sibling (different
+                    // root) no longer poisons an admissible one. A binder with
+                    // no known root, or a `Conflict` attribution, fails closed
+                    // (excluded).
+                    let read_is_borrow = matches!(
+                        payload_binder_candidate_root.get(&l),
+                        Some(PayloadBinderRoot::Root(root))
+                            if shell_drop_safe_candidate_locals.contains(root)
+                    ) && (binder_read_is_borrow_safe_terminator(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    ) || string_binder_read_is_user_fn_borrow(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                        local_tys.get(l as usize),
+                        module_fn_names,
+                        module_generic_fn_names,
+                        extern_contracts,
+                    ));
                     if !read_is_borrow {
                         note_payload_escape(
-                            &payload_binders,
+                            &payload_binder_candidate_root,
                             l,
                             &alias_of,
                             blocks,
@@ -8591,6 +8630,8 @@ mod tuple_composite_field_drop_exclusion {
 #[cfg(test)]
 mod enum_composite_field_drop_exemption;
 #[cfg(test)]
+mod payload_binder_conflicting_roots;
+#[cfg(test)]
 mod tuple_projection_forward_transfer_proof;
 #[cfg(test)]
 mod witness_verifier_composite_traversal {
@@ -9954,4 +9995,4 @@ mod plain_vec_drop_interior_alias_and_escape {
 }
 
 #[cfg(test)]
-mod plain_string_payload_cap;
+mod shell_drop_safety_payload_cap;

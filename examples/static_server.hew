@@ -8,7 +8,7 @@
 //
 // Usage: hew build static_server.hew -o serve && ./serve [port] [root]
 // Defaults: port 8080, root "."
-import std::net::http::http::{Request, Server};
+import std::net::http::{Request, Server};
 
 import std::fs;
 

@@ -1797,7 +1797,24 @@ impl FrameCleanupThunkKey {
 #[derive(Default)]
 pub(crate) struct FrameCleanupThunkCache<'ctx> {
     entries: HashMap<FrameCleanupThunkKey, FunctionValue<'ctx>>,
-    next_internal_name: u64,
+}
+
+/// Derive a thunk name from the descriptor's CONTENT rather than first-use
+/// order. `entries` is a `HashMap`, and module lowering visits functions in
+/// whatever order the compiler walks them, so a first-use counter assigned a
+/// different `__hew_frame_cleanup_N` suffix to the SAME descriptor on
+/// consecutive runs of the same input — the same "iteration order decided
+/// emission" defect already fixed for guard initialization in
+/// `initialize_helper_crash_cleanup_guards`. A name drawn from the key's
+/// content is requested-order-independent: the same descriptor always hashes
+/// to the same suffix regardless of which function reaches it first.
+fn frame_cleanup_thunk_name(key: &FrameCleanupThunkKey) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in format!("{key:?}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("__hew_frame_cleanup_{hash:016x}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2122,6 +2139,15 @@ enum HelperCrashCleanupDisposition {
     Owned,
     /// Caller-owned representation loan: success only retires the token.
     CrashOnlyLoan,
+    /// Reassigned `while let` scrutinee SNAPSHOT owner: a byte-copy alias of
+    /// the still-live loop variable, dropped ONLY on the loop back-edge (the
+    /// MIR `back_edge_only_iteration_owners` contract deliberately excludes it
+    /// from every ordinary exit drop — see `drop_plan::elaborate`). On a normal
+    /// return the loop variable owns the value and its own scope-exit drop is
+    /// the single release; the crash registry must RETIRE this snapshot's token
+    /// WITHOUT dropping. Dropping it too is a double-free — a `break` BEFORE the
+    /// back-edge reassignment reaches the return sweep with both aliases live.
+    BackEdgeSnapshot,
 }
 
 #[derive(Clone, Debug)]
@@ -21872,7 +21898,7 @@ fn get_or_emit_frame_cleanup_thunk<'ctx>(
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let key = FrameCleanupThunkKey::new(drop, slot_ty);
     let name = {
-        let mut cache = fn_ctx.frame_cleanup_thunks.borrow_mut();
+        let cache = fn_ctx.frame_cleanup_thunks.borrow();
         if let Some(existing) = cache.entries.get(&key) {
             return Ok(*existing);
         }
@@ -21887,18 +21913,13 @@ fn get_or_emit_frame_cleanup_thunk<'ctx>(
                 key.descriptor, existing.slot_type, key.slot_type
             )));
         }
-        let name = format!("__hew_frame_cleanup_{}", cache.next_internal_name);
+        let name = frame_cleanup_thunk_name(&key);
         if fn_ctx.llvm_mod.get_function(&name).is_some() {
             return Err(CodegenError::FailClosed(format!(
                 "frame-cleanup thunk generated name `{name}` already exists but is not \
                  registered in the module cleanup-thunk cache"
             )));
         }
-        cache.next_internal_name = cache.next_internal_name.checked_add(1).ok_or_else(|| {
-            CodegenError::FailClosed(
-                "frame-cleanup thunk generated-name counter overflowed".to_string(),
-            )
-        })?;
         name
     };
 
@@ -22170,7 +22191,48 @@ fn collect_helper_crash_cleanup_descriptors(
     record_field_tys: &HashMap<String, Vec<ResolvedTy>>,
     enum_layouts: &[EnumLayout],
     fn_symbols: &FnSymbolMap<'_>,
+    back_edge_blocks: &HashSet<u32>,
 ) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
+    // Places whose ENTIRE drop-plan footprint is the loop back-edge Goto and
+    // nothing else are reassigned-`while let` scrutinee snapshots: a byte-copy
+    // alias of the still-live loop variable that the MIR drop-elaboration
+    // contract (`back_edge_only_iteration_owners`) releases exclusively on the
+    // back-edge and excludes from every ordinary exit drop. The loop variable
+    // owns the value on every loop-exit path, so the return sweep must retire
+    // such a snapshot's token WITHOUT dropping — dropping it too double-frees
+    // the value the loop variable's own scope-exit drop already released (a
+    // `break` before the back-edge reassignment leaves both aliases live).
+    //
+    // Soundness of this drop-footprint predicate: `enumerate_exits` emits a
+    // Return/exit-path drop for EVERY owner still live at that exit, so a genuine
+    // sole owner live at a function return always carries a non-back-edge drop and
+    // lands in `off_back_edge` below. The ONLY owners with a back-edge drop and no
+    // exit-path drop are the ones drop-elaboration deliberately filtered out of
+    // the ordinary exits — exactly the back-edge-only while-let snapshots (aliased
+    // with a live loop variable). Panic/Cancel cleanup edges also count as
+    // non-back-edge, so a body-local dropped at body-end across a fallible op is
+    // excluded too. The set is computed over ALL drops (a single non-back-edge
+    // appearance disqualifies a place), so a real live-at-return owner is never
+    // mis-marked retire-only and leaked.
+    let mut on_back_edge: HashSet<Place> = HashSet::new();
+    let mut off_back_edge: HashSet<Place> = HashSet::new();
+    if let Some(elab) = elab {
+        for (exit, plan) in &elab.drop_plans {
+            let is_back_edge = matches!(
+                exit,
+                ExitPath::Goto { block, .. } if back_edge_blocks.contains(block)
+            );
+            for drop in &plan.drops {
+                if is_back_edge {
+                    on_back_edge.insert(drop.place);
+                } else {
+                    off_back_edge.insert(drop.place);
+                }
+            }
+        }
+    }
+    let back_edge_only_snapshots: HashSet<Place> =
+        on_back_edge.difference(&off_back_edge).copied().collect();
     // Every generated calling convention may execute beneath an actor
     // dispatch. Non-suspending functions use dispatch-scoped snapshots when no
     // tracked coroutine is active; outside a cooperative dispatch the runtime
@@ -22371,6 +22433,19 @@ fn collect_helper_crash_cleanup_descriptors(
             descriptor,
             disposition: HelperCrashCleanupDisposition::CrashOnlyLoan,
         });
+    }
+
+    // Re-mark reassigned-`while let` scrutinee snapshots as retire-only on the
+    // return sweep. Done as a post-pass so the ordinary `Owned` merge/registration
+    // logic above is untouched; only the return-sweep disposition changes. The
+    // back-edge drop-plan drop, the arm/retire lifecycle, and the crash handler
+    // are all unaffected (they never consult this disposition).
+    for entry in &mut descriptors {
+        if entry.disposition == HelperCrashCleanupDisposition::Owned
+            && back_edge_only_snapshots.contains(&entry.descriptor.place)
+        {
+            entry.disposition = HelperCrashCleanupDisposition::BackEdgeSnapshot;
+        }
     }
 
     descriptors.sort_by_key(|entry| match entry.descriptor.place {
@@ -23513,6 +23588,13 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
         // residual: retire its token first, then run the same guarded drop
         // ritual used by ordinary elaborated cleanup. Trapping here turned a
         // recoverable live owner into a post-success SIGTRAP.
+        //
+        // A `CrashOnlyLoan` (caller-owned representation loan) and a
+        // `BackEdgeSnapshot` (reassigned-`while let` scrutinee alias of a
+        // still-live loop variable) are NOT frame-owned here: on a normal return
+        // their value is owned elsewhere (the caller / the loop variable's own
+        // scope-exit drop). Retire the token WITHOUT dropping — dropping either
+        // would double-free.
         fn_ctx.builder.position_at_end(active_drop_bb);
         emit_helper_crash_cleanup_retire_before_drop(fn_ctx, &owner.descriptor)?;
         if owner.disposition == HelperCrashCleanupDisposition::Owned {
@@ -34161,6 +34243,18 @@ fn lower_function<'ctx>(
     // suspend-ramp helper) read the same per-function plan set.
     let drop_plans: &[(ExitPath, hew_mir::DropPlan)] =
         elab.map(|e| e.drop_plans.as_slice()).unwrap_or(&[]);
+    // Loop back-edge block ids, so the crash-cleanup collector can recognise a
+    // reassigned-`while let` scrutinee snapshot (dropped only on the back-edge
+    // Goto) and retire — never drop — it on the return sweep.
+    let back_edge_blocks: HashSet<u32> = checked
+        .map(|c| {
+            c.cooperate_sites
+                .iter()
+                .filter(|site| site.kind == CooperateKind::LoopBackEdge)
+                .map(|site| site.bb_id)
+                .collect()
+        })
+        .unwrap_or_default();
     let helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
         ctx,
         &builder,
@@ -34171,6 +34265,7 @@ fn lower_function<'ctx>(
             record_field_resolved_tys,
             enum_layouts,
             fn_symbols,
+            &back_edge_blocks,
         )?,
         if has_suspend {
             CrashCleanupStorage::DirectFrame

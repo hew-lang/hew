@@ -279,12 +279,20 @@ fn run_prebuilt(bin: &Path, label: &str, expected: &str) {
     assert_eq!(stdout, expected, "{label} stdout mismatch");
 }
 
+/// Class-tagged mangled machine layout name (`hew-hir/src/mono/mangle.rs`,
+/// `SymbolClass::Machine.tag() == "mc"`) — every declared machine, generic
+/// or not, compiles under this quoted `mc$$<Name>$$` identity as of
+/// `0897d68da` ("feat: enforce canonical executable identities").
+fn mangled_machine(machine: &str) -> String {
+    format!("mc$${machine}$$")
+}
+
 fn step_function_body<'a>(ir: &'a str, machine: &str) -> &'a str {
-    let marker = format!("define %{} @{}__step(", machine, machine);
+    let mangled = mangled_machine(machine);
+    let marker = format!("@\"{mangled}__step\"(");
     let start = ir
         .find(&marker)
-        .or_else(|| ir.find(&format!("@{}__step(", machine)))
-        .unwrap_or_else(|| panic!("missing step helper `{machine}__step` in IR:\n{ir}"));
+        .unwrap_or_else(|| panic!("missing step helper `{mangled}__step` in IR:\n{ir}"));
     let tail = &ir[start..];
     let end = tail.find("\n}\n").unwrap_or(tail.len());
     &tail[..end]
@@ -334,7 +342,7 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
         let main_body = main_function_body(&ir);
 
         assert!(
-            ir.contains(&format!("@{}__step(", fixture.machine)),
+            ir.contains(&format!("@\"{}__step\"(", mangled_machine(fixture.machine))),
             "{} LLVM must contain the synthesised step helper",
             fixture.stem
         );
@@ -395,11 +403,9 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
             fixture.stem,
             step_body
         );
+        let mangled = mangled_machine(fixture.machine);
         assert!(
-            main_body.contains(&format!(
-                "call %{} @{}__step(",
-                fixture.machine, fixture.machine
-            )),
+            main_body.contains(&format!("call %\"{mangled}\" @\"{mangled}__step\"(",)),
             "{} call site must call the internal step helper and not expose its result:\n{}",
             fixture.stem,
             main_body
@@ -407,7 +413,7 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
         assert!(
             main_body.contains("store %")
                 && main_body.contains("%call_result")
-                && main_body.contains(&format!("store %{} %move_load", fixture.machine))
+                && main_body.contains(&format!("store %\"{mangled}\" %move_load"))
                 && main_body.contains("ptr %local_"),
             "{} call site must store the step helper result back through MIR Move:\n{}",
             fixture.stem,
@@ -415,8 +421,8 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
         );
 
         let table = format!(
-            "@__hew_state_name_table__{} = private constant [{} x ptr]",
-            fixture.machine, fixture.states
+            "@\"__hew_state_name_table__{mangled}\" = private constant [{} x ptr]",
+            fixture.states
         );
         assert!(
             ir.contains(&table),

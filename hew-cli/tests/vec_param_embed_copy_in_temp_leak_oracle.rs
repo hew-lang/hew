@@ -739,6 +739,40 @@ fn llvm_basic_block<'a>(function: &'a str, label: &str) -> &'a str {
     &function[byte_start..byte_end.min(function.len())]
 }
 
+/// Concatenated text of every basic block reachable from `start` (inclusive),
+/// following the `label %target` references in each block's terminator.
+///
+/// A function whose parameter earns an elaborated plan drop arms the typed
+/// helper crash-cleanup, and its return block then BRANCHES into
+/// `helper_crash_cleanup_retire*` continuation blocks that LLVM prints far
+/// from their predecessor — the plan drop the return path actually executes
+/// lands in the retire-merge continuation, not in the return block's own
+/// textual body (the same emission shape every admitted `EnumInPlace` local
+/// drop has, e.g. a matched `Result<i64, string>` call scrutinee). A textual
+/// `bb1:`..`bb2:` slice therefore misses the drop; the CFG walk follows the
+/// path the machine takes.
+fn llvm_reachable_path(function: &str, start: &str) -> String {
+    use std::collections::VecDeque;
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = VecDeque::from([start.to_string()]);
+    let mut path = String::new();
+    while let Some(label) = queue.pop_front() {
+        if !visited.insert(label.clone()) {
+            continue;
+        }
+        let block = llvm_basic_block(function, &label);
+        path.push_str(block);
+        for successor in block.split("label %").skip(1) {
+            let name: String = successor
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            queue.push_back(name);
+        }
+    }
+    path
+}
+
 fn projection_neutralize_destination<'a>(section: &'a str, fields: &str) -> &'a str {
     let marker = format!("aggregate_projection_neutralize _0 fields={fields} -> ");
     section
@@ -972,17 +1006,13 @@ fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
             target,
         );
         let inspect = llvm_function_body(&ir, "inspect");
-        let return_block = inspect
-            .split("bb1:")
-            .nth(1)
-            .and_then(|section| section.split("\nbb2:").next())
-            .expect("inspect return block");
+        let return_path = llvm_reachable_path(inspect, "bb1");
         assert_eq!(
-            return_block
+            return_path
                 .matches("call void @__hew_enum_drop_inplace_Mixed(")
                 .count(),
             1,
-            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_block}"
+            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_path}"
         );
         assert_eq!(
             inspect

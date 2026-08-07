@@ -1,0 +1,32 @@
+// Actor state outlives the handler that consumed it, and messages arrive in
+// arbitrary order, so a state field consumed without re-initialisation is a
+// hole the NEXT message consumes again: two `steal` messages detach one
+// socket twice. The per-invocation binding used to hide this — each
+// invocation rebound `sock` unmoved.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+actor Vault {
+    let sock: Socket;
+    receive fn steal() -> i64 {
+        return sock.detach();
+    }
+}
+
+fn main() -> i64 {
+    let vault = spawn Vault(sock: Socket { fd: 3 });
+    let first = match await vault.steal() {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    return first;
+}

@@ -1813,7 +1813,11 @@ impl Checker {
                                 let child_type = &statics[i].1;
                                 return Ty::local_pid(Ty::Named {
                                     builtin: None,
-                                    name: child_type.clone(),
+                                    // Canonicalize the raw user-spelled child
+                                    // type (`bank.Account`) to the registered
+                                    // actor identity so the PID matches the
+                                    // spawn-derived identity and dispatches.
+                                    name: self.canonical_supervisor_child_type(child_type),
                                     args: vec![],
                                 });
                             }

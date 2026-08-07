@@ -842,6 +842,21 @@ impl Checker {
         !provable_conflict
     }
 
+    /// Whether a bare TYPE reference is in scope for the current module because
+    /// the module being checked declares (and exports) this type itself — a
+    /// same-owner self-reference, which is not cross-module and must not route
+    /// through the owner-qualified import-visibility gate. An actor field
+    /// `let inner: Inner;` in the same file that declares `Inner` is always in
+    /// scope; the gate exists for a reference to ANOTHER module's type a plain
+    /// `import` did not publish unqualified, so gating a module against its own
+    /// declaration is the over-fire. A genuinely cross-module bare reference
+    /// matches this not at all and stays gated, so #1919's tightening is intact.
+    fn bare_type_reference_in_own_scope(&self, owner_modules: &[&str]) -> bool {
+        self.current_module
+            .as_deref()
+            .is_some_and(|current| owner_modules.contains(&current))
+    }
+
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
     /// ill-formed: more than one imported module *published* the bare name
     /// (ambiguous), or one or more modules export it but none published it (not
@@ -853,6 +868,10 @@ impl Checker {
     /// record constructor (`check_struct_init`) so `fn f(x: Gadget)` and
     /// `Gadget { … }` reject the same ill-formed cases identically rather than
     /// the constructor silently binding a last-write-wins bare def.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cohesive scope gate with a diagnostic branch per ill-formed case"
+    )]
     pub(super) fn report_bare_type_scope_error(&mut self, name: &str, span: &Span) -> bool {
         // While registering shipped stdlib declarations, their own source
         // member signatures are being collected before normal importer-scope
@@ -881,6 +900,9 @@ impl Checker {
             .collect();
         owner_modules.sort_unstable();
         owner_modules.dedup();
+        if self.bare_type_reference_in_own_scope(&owner_modules) {
+            return false;
+        }
         // Each published entry is the owner-qualified SOURCE identity
         // (`owner.OriginalName`) — the spelling that disambiguates an aliased
         // opt-in. Used directly as the candidate suggestion; no reconstruction

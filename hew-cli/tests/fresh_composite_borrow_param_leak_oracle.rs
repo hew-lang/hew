@@ -64,6 +64,39 @@ fn borrow_letbound_composite_source(frames: usize) -> String {
     )
 }
 
+/// A producer whose fresh local reaches the return through a BLOCK rather than
+/// as the bare tail reference (`let o = Outer { .. }; { o }`).
+///
+/// The returned expression is then a site whose own producer is not a binding
+/// reference — the block interposes a value-identity relation. A return-ownership
+/// rule that tests the syntactic return site instead of the value it resolves to
+/// reports `Borrowed` here, the caller mints no owner for the temporary, and the
+/// composite's two strings leak once per call. Measured at the regression:
+/// 5 leaks at 3 frames, 99 at 50.
+///
+/// The same relation-mediated family covers a nested block, an explicit
+/// `return o;`, and an `if` / `match` yielding one local per arm; those are
+/// pinned structurally in
+/// `hew-mir/tests/lowering_expr/borrowed_forwarder_retained_owner_class.rs`,
+/// which runs on every host. This slope oracle carries the shape that actually
+/// regressed.
+fn borrow_block_return_composite_source(frames: usize) -> String {
+    format!(
+        "type Inner {{ a: string, b: string }}\n\
+         type Outer {{ inner: Inner }}\n\
+         fn mkOuter(i: i64) -> Outer {{ let o = Outer {{ inner: Inner {{ a: f\"x{{i % 10}}\", b: f\"y{{i % 10}}\" }} }}; {{ o }} }}\n\
+         fn borrowSum(o: Outer) -> i64 {{ o.inner.a.len() + o.inner.b.len() }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       total = total + borrowSum(mkOuter(i));\n\
+         \x20   }}\n\
+         \x20   if total != {frames} * 4 {{ return 75; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 fn assert_no_double_free(shape_name: &str, source: &str) {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -122,5 +155,29 @@ fn borrow_letbound_composite_call_does_not_double_free() {
     assert_no_double_free(
         "fresh_composite_borrow_letbound_df",
         &borrow_letbound_composite_source(50),
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn borrow_block_return_composite_call_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fresh_composite_borrow_block_return",
+        borrow_block_return_composite_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn borrow_block_return_composite_call_does_not_double_free() {
+    assert_no_double_free(
+        "fresh_composite_borrow_block_return_df",
+        &borrow_block_return_composite_source(50),
     );
 }

@@ -1175,6 +1175,9 @@ pub(super) fn compute_param_ownership(
         call_param_consume,
         call_param_owned_carrier,
         caller_visible_param_projections: caller_visible_param_projections.clone(),
+        // Populated from `module.machine_layouts` by the caller once layout keys
+        // exist; the HIR-scoped fact pass has no canonical machine layout keys.
+        machine_decl_layout_names: HashSet::new(),
     }
 }
 

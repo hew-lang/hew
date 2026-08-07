@@ -882,8 +882,9 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         "expected the positional resource-record clone-totality diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("VecIter<MonitorRef>")
-            && combined.contains("resource `MonitorRef` has an affine close contract"),
+        combined.contains("VecIter<std.link_monitor.MonitorRef>")
+            && combined
+                .contains("resource `std.link_monitor.MonitorRef` has an affine close contract"),
         "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
     );
 }
@@ -3730,32 +3731,40 @@ fn check_cross_module_generic_fn_value_ambiguous_rejected() {
     );
 }
 
-/// A context-determined GENERIC cross-module named function used as a value
-/// is now accepted (A156): the type parameters are inferred from the binding
-/// annotation, the monomorphisation is registered, and the compiled binary
-/// produces the expected output.
+/// A generic named function used as a value (context-determined by a
+/// binding annotation) is honestly diagnosed as not yet implemented rather
+/// than silently mis-lowered. MIR lowering only supports non-generic named
+/// functions as values today; generic-fn-as-value is deferred post-rc1.
 #[test]
-fn cross_module_generic_fn_value_context_determined_accepted() {
+fn cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented() {
     require_codegen();
 
     let source =
         repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
 
     assert!(
-        output.status.success(),
-        "cross_module_generic_fn_value should succeed; stdout: {}\nstderr: {}",
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected the oracle lines from main.expected; got: {actual:?}"
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("E_NOT_YET_IMPLEMENTED")
+            && combined.contains("named function")
+            && combined.contains("used as a value")
+            && combined.contains("only non-generic named functions are currently supported"),
+        "expected the generic-fn-as-value NYI diagnostic; got: {combined}"
     );
 }
 

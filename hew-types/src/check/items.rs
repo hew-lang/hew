@@ -345,7 +345,11 @@ impl Checker {
 
             // Look up the actor's init parameter list.  Unknown actors are
             // handled elsewhere; skip here to avoid duplicate diagnostics.
-            let Some(init_params) = self.actor_init_params.get(&child.actor_type).cloned() else {
+            // The registry is keyed by canonical actor identity; a package-
+            // module child stores the alias-prefixed spelling, so canonicalize
+            // before the lookup or this reproducibility wall silently skips.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(init_params) = self.actor_init_params.get(&child_identity).cloned() else {
                 continue;
             };
 
@@ -481,8 +485,12 @@ impl Checker {
             }
 
             // Look up the actor's TypeDef.  If the type is unknown or is not
-            // an actor, a separate diagnostic already covers it.
-            let Some(type_def) = self.type_defs.get(&child.actor_type).cloned() else {
+            // an actor, a separate diagnostic already covers it. The registry is
+            // keyed by canonical actor identity; canonicalize the package-module
+            // child's alias-prefixed spelling before the lookup so the owned-heap
+            // wall does not silently skip.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(type_def) = self.type_defs.get(&child_identity).cloned() else {
                 continue;
             };
             if type_def.kind != TypeDefKind::Actor {
@@ -491,7 +499,7 @@ impl Checker {
 
             // Init params for the child's actor, used to resolve whether an init
             // arg covering an owned field is reproducible (init-thunk path).
-            let init_params = self.actor_init_params.get(&child.actor_type).cloned();
+            let init_params = self.actor_init_params.get(&child_identity).cloned();
 
             for (field_name, field_ty) in &type_def.fields {
                 if !ty_is_known_owned_heap(field_ty) {
@@ -633,11 +641,19 @@ impl Checker {
     }
 
     fn check_supervisor_wired_to(&mut self, sd: &SupervisorDecl, span: &Span) {
-        // Build a sibling-name → actor-type map for fast resolution.
-        let sibling_types: std::collections::HashMap<&str, &str> = sd
+        // Build a sibling-name → actor-type map for fast resolution. The stored
+        // child type is the raw user spelling; canonicalize each to the
+        // registered actor identity so a package-module sibling compares against
+        // the same identity the dependent's init-param annotation resolves to.
+        let sibling_types: std::collections::HashMap<&str, String> = sd
             .children
             .iter()
-            .map(|c| (c.name.as_str(), c.actor_type.as_str()))
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    self.canonical_supervisor_child_type(&c.actor_type),
+                )
+            })
             .collect();
 
         for child in &sd.children {
@@ -647,7 +663,7 @@ impl Checker {
 
             for (param_key, sibling_name) in wired_to {
                 // ── Key resolution: sibling must exist ──────────────────────
-                let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
+                let Some(sibling_type) = sibling_types.get(sibling_name.as_str()) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::SupervisorError {
                             subkind: SupervisorErrorKind::WiredToUnknownSibling,
@@ -675,10 +691,11 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // with type `LocalPid<sibling_type>`.
+                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
                     &child.name,
-                    &child.actor_type,
+                    &dependent_identity,
                     param_key,
                     sibling_type,
                     span,
@@ -1206,6 +1223,7 @@ impl Checker {
                 self.bind_actor_fields(&ad.fields);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
+                self.reject_unplugged_actor_state_fields(&ad.fields);
                 self.env.pop_scope();
                 continue;
             }
@@ -1371,6 +1389,72 @@ impl Checker {
         }
     }
 
+    /// Reject an actor state field left CONSUMED at the end of a body that
+    /// bound the actor's fields as bare names.
+    ///
+    /// An actor's state outlives every handler invocation and messages arrive
+    /// in arbitrary order, so a consuming use of a state field that the body
+    /// does not re-initialise leaves a hole the NEXT message consumes again —
+    /// `receive fn steal() { return sock.detach(); }` detaches one socket once
+    /// per message. No ordering discipline can plug that from outside; the
+    /// sound rule is that the body must plug it itself, on every path. Because
+    /// place facts join by union, a field re-initialised on only some paths is
+    /// still reported.
+    ///
+    /// This is deliberately a CHECKER reject and NOT a lowering change: a naive
+    /// retain at `ActorStateFieldLoad` regressed once
+    /// (`state-load-retains-unless-borrow-proven`) and an unconditional
+    /// projected-leaf drop double-freed once
+    /// (`state-drop-unconditional-projected-leaf-is-borrow`). The escape hatch
+    /// is re-initialisation, which the assignment path already discharges.
+    ///
+    /// Call sites run this AFTER popping any parameter scope, so a parameter
+    /// that shadows a field name cannot be mistaken for the field.
+    pub(super) fn reject_unplugged_actor_state_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let Some(binding) = self.env.lookup_ref(&field.name) else {
+                continue;
+            };
+            let (place, moved_at) = if binding.is_moved {
+                let Some(moved_at) = binding.moved_at.clone() else {
+                    continue;
+                };
+                (field.name.clone(), moved_at)
+            } else {
+                let Some(moved) = binding.moved_places.first() else {
+                    continue;
+                };
+                (
+                    std::iter::once(field.name.as_str())
+                        .chain(moved.path.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    moved.moved_at.clone(),
+                )
+            };
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                moved_at,
+                format!(
+                    "actor state `{place}` is consumed here and never re-initialised; \
+                     the next message would consume it again"
+                ),
+            )
+            .with_note(
+                field.ty.1.clone(),
+                "actor state outlives the handler that consumed it",
+            )
+            .with_suggestion(format!(
+                "re-initialise `{place}` before the body returns, or take a copy \
+                 instead of consuming the state"
+            ));
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+    }
+
     /// Bind actor fields as writable regardless of declared mutability.
     ///
     /// `init { }` is the actor's constructor: it must be able to assign
@@ -1419,6 +1503,7 @@ impl Checker {
         self.current_return_type = None;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1521,6 +1606,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1700,6 +1786,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1795,6 +1882,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1870,6 +1958,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -2152,6 +2241,7 @@ impl Checker {
             self.generic_ctx.pop();
         }
         self.env.pop_scope(); // params scope
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope(); // fields scope
     }
 

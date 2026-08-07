@@ -4,46 +4,50 @@ fn checked_mir_colour_tag(CheckedMirColour) -> i64 [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: bool
-    _5: i64
-    _6: bool
-    _7: i64
-    _8: bool
-    _9: i64
+    _4: i64
+    _5: bool
+    _6: i64
+    _7: bool
+    _8: i64
+    _9: bool
     _10: i64
     _11: i64
+    _12: i64
   bb0:
     stmt: use BindingId(0) c site=SiteId(1) ty=CheckedMirColour intent=Read
-    _2 = move etag0
-    _3 = const.i64 0
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb2 : bb6
+    _1 = const.i64 0
+    _3 = move etag0
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb2 : bb6
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
-    ret = move _1
+    ret = move _2
+    snapshot_drop _0 ty=CheckedMirColour plan=Enum { name: "CheckedMirColour" } boundary=LocalCall guard=_1
     return
   bb2:
-    _9 = const.i64 1
-    _1 = move _9
+    _10 = const.i64 1
+    _2 = move _10
     goto bb1
   bb3:
-    _10 = const.i64 2
-    _1 = move _10
+    _11 = const.i64 2
+    _2 = move _11
     goto bb1
   bb4:
-    _11 = const.i64 3
-    _1 = move _11
+    _12 = const.i64 3
+    _2 = move _12
     goto bb1
   bb5:
+    snapshot_drop _0 ty=CheckedMirColour plan=Enum { name: "CheckedMirColour" } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb6:
-    _5 = const.i64 1
-    _6 = icmp.eq _2 _5
-    branch _6 ? bb3 : bb7
+    _6 = const.i64 1
+    _7 = icmp.eq _3 _6
+    branch _7 ? bb3 : bb7
   bb7:
-    _7 = const.i64 2
-    _8 = icmp.eq _2 _7
-    branch _8 ? bb4 : bb5
+    _8 = const.i64 2
+    _9 = icmp.eq _3 _8
+    branch _9 ? bb4 : bb5
 
 fn main() -> () [conv=default]
   locals:
@@ -87,6 +91,7 @@ fn main() -> () [conv=default]
     _37: bool
     _38: CheckedMirPoint
     _39: i64
+    _40: CheckedMirColour
   bb0:
     _0 = call Vec::new() [authority=Runtime(VecNew)] -> bb1
   bb1:
@@ -136,7 +141,9 @@ fn main() -> () [conv=default]
     trap(IndexOutOfBounds)
   bb9:
     _18 = call_rt hew_vec_get_layout(_14, _15)
-    _19 = call checked_mir_colour_tag(_18) -> bb10
+    _40 = move _18
+    neutralize_payload _18 -> _40 [SendTransferLastUse]
+    _19 = call checked_mir_colour_tag(_40) -> bb10
   bb10:
     call println_i64(_19) -> bb11
   bb11:

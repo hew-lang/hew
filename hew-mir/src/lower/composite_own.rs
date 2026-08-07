@@ -1170,6 +1170,37 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // (`Result<bytes, string>`), leaking the sibling that the composite itself
     // was perfectly able to free. Each candidate stands on its own leaves.
     let mut shell_drop_safe_candidate_locals: HashSet<u32> = HashSet::new();
+    // Candidates whose DIRECT variant payload carries a lifecycle-registered
+    // resource record (the declared-release carve-out class). Their shell drop
+    // runs USER code — `__hew_record_drop_inplace_<R>` → `<R>::close(self)` —
+    // which, unlike the string/bytes/opaque drop steps, is NOT a no-op over a
+    // neutralized (zeroed) payload slot: the tag survives the neutralize, so
+    // the thunk would close zeroed storage. Tracked so the neutralize scan
+    // below can exclude such a candidate the moment its payload is handed off.
+    let mut declared_release_payload_candidate_locals: HashSet<u32> = HashSet::new();
+    let direct_payload_has_registered_resource_record = |ty: &ResolvedTy| -> bool {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return false;
+        };
+        crate::model::find_enum_layout(name, args, enum_layouts).is_some_and(|layout| {
+            layout.variants.iter().any(|variant| {
+                variant.field_tys.iter().any(|field_ty| match field_ty {
+                    ResolvedTy::Named {
+                        name,
+                        args,
+                        is_opaque: false,
+                        ..
+                    } => {
+                        args.is_empty()
+                            && lifecycle_registry
+                                .resource_record(&hew_types::DefId::new(name))
+                                .is_some()
+                    }
+                    _ => false,
+                })
+            })
+        })
+    };
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1190,6 +1221,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
             lifecycle_registry,
         ) {
             shell_drop_safe_candidate_locals.insert(local);
+        }
+        if direct_payload_has_registered_resource_record(ty) {
+            declared_release_payload_candidate_locals.insert(local);
         }
         candidate_local_to_binding.insert(local, *binding);
     }
@@ -1905,6 +1939,36 @@ pub(super) fn derive_enum_composite_drop_allowed(
                             &mut excluded_roots,
                         );
                     }
+                }
+            }
+        }
+    }
+
+    // A payload hand-off out of a declared-release candidate excludes it. The
+    // neutralize-transfer protocol's soundness claim — "the carrier's guarded
+    // drop releases nothing for a neutralized slot" — is a NULL-SAFETY
+    // property of the payload's drop step: a zeroed string/bytes pointer is a
+    // no-op free and an opaque slot has no drop at all. A declared-release
+    // record's drop step is the user's `close(self)` run by
+    // `__hew_record_drop_inplace_<R>` behind the still-set variant tag, which
+    // executes unconditionally over the zeroed storage — the S2200 double
+    // close, resurrected through the consume path (`Ok(c) => c.close()`)
+    // instead of the borrow path. Any `NeutralizePayloadSlot` on such a
+    // candidate's variant slot therefore excludes the whole candidate,
+    // fail-closed: the arm's own consume/close is then the sole release and
+    // the sibling variant leaks, exactly like every other payload escape.
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::NeutralizePayloadSlot {
+                place: place @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
+                ..
+            } = instr
+            {
+                if let Some(root) = base_local(*place)
+                    .and_then(|local| alias_of.get(&local).copied())
+                    .filter(|root| declared_release_payload_candidate_locals.contains(root))
+                {
+                    excluded_roots.insert(root);
                 }
             }
         }

@@ -3130,21 +3130,51 @@ run_accept_expect_stdout "receive_gen_fn_record_stream_break"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return_close"
 
+# Assert a receive-gen fault fixture faulted the stream cleanly: the fault
+# diagnostic is present AND the abort is the DESIGNED fault trap, not a heap
+# allocator abort. Both `exit 134` (the designed trap) and a glibc double-free
+# abort share the SIGABRT exit status, so the status check alone cannot tell a
+# clean fault from a memory-safety crash on the fault-cleanup path (#2865). A
+# bare `grep` here had no failure message: under `set -euo pipefail` a crash
+# that printed the allocator error before the fault message made the grep fail
+# with no context, silently killing the whole run at an unrelated point. This
+# reports the failure AT the fixture, and fails closed on any allocator-abort
+# signature glibc prints to stderr on a double-free / heap corruption.
+assert_receive_gen_stream_faulted() {
+  local fixture="$1"
+  if ! grep -qF -- 'receive-gen stream: producer actor' "${stderr_output}"; then
+    echo "expected ${fixture} stderr to carry the receive-gen fault diagnostic" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  if grep -qE 'double free|free\(\): |corrupted|malloc\(\): |munmap_chunk|tcache|Invalid free' \
+      "${stderr_output}"; then
+    echo "${fixture}: heap allocator abort on the fault-cleanup path (double-free/corruption)" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The
 # trap crashes the actor (SIGABRT via the runtime's abort-on-internal-panic
-# convention, same as the bytes/string index-oob traps), exit 134.
+# convention, same as the bytes/string index-oob traps), exit 134. The fault
+# fires while the producer generator is RUNNING, so its coro frame is
+# raw-reclaimed by crash recovery AND owned by the pump's crash-cleanup escrow;
+# the frame must be freed exactly once (#2865).
 run_accept_expect_status "receive_gen_fn_fault_trap" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_fault_trap"
 
 # Fault (producer teardown): an actor stopped (via `supervisor_stop`)
 # while its stream is live and undrained must fault-close the stream on the
 # consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
 # and exit code as the crash case above; the deterministic buffered-value
-# count (8, the receive-gen stream capacity) is asserted via stdout.
+# count (8, the receive-gen stream capacity) is asserted via stdout. Here the
+# generator is SUSPENDED at teardown, the mirror case to the running-crash
+# fixture above.
 run_accept_expect_status "receive_gen_fn_teardown_fault" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_teardown_fault"
 
 # Owned actor-state fields are snapshotted through the same clone-total plan as
 # direct generator parameters.

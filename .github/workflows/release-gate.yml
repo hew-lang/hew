@@ -513,7 +513,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime gdb
+            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -620,7 +620,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime gdb
+            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux

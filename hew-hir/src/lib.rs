@@ -3,6 +3,7 @@
 //! analysis attaches value-model decisions.
 
 pub mod builtin_type_classes;
+pub mod declared_release;
 pub mod diagnostic;
 pub mod dispatch;
 pub mod dump;

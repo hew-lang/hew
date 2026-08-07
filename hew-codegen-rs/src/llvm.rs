@@ -2905,7 +2905,21 @@ fn emit_const_globals<'ctx>(
 fn resolved_ty_references_machine(ty: &ResolvedTy, machine_names: &HashSet<&str>) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
+            // `machine_names` holds the CANONICAL machine layout keys (the
+            // class-tagged mono projection, e.g. `mc$$Conn$$`), while a variant
+            // field type carries the surface spelling (`Named { name: "Conn" }`).
+            // Project through the same single authority `resolve_ty` uses for
+            // its machine lookup (`hew_hir::machine_layout_key`) so both sides
+            // compare in one namespace. Comparing the raw surface name against
+            // the mangled key set classified `Option<Conn>` as machine-free,
+            // sized its payload against the machine's still-opaque struct
+            // (ABI size 0 -> `[1 x i8]`), and let the channel-recv decode write
+            // a 16-byte machine value through a 1-byte payload slot — an
+            // out-of-bounds write past the coroutine frame allocation. The raw
+            // name check is kept for any producer that already carries the
+            // canonical key.
             machine_names.contains(name.as_str())
+                || machine_names.contains(hew_hir::machine_layout_key(name, args).as_str())
                 || args
                     .iter()
                     .any(|a| resolved_ty_references_machine(a, machine_names))

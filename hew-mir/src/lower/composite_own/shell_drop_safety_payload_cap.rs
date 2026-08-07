@@ -551,6 +551,161 @@ fn lifecycle_registered_resource_beside_string_is_refused() {
     );
 }
 
+/// A registered resource-record lifecycle for `Handle { close }`, the
+/// declared-release carve-out's condition (a).
+fn handle_record_lifecycle_registry() -> hew_hir::LifecycleRegistry {
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes
+        .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
+            resource_declaration: hew_types::DefId::new("Handle"),
+            close_declaration: hew_types::DefId::new("Handle::close"),
+            close_symbol: "Handle::close".to_string(),
+        })
+        .expect("unique test lifecycle");
+    classes.lifecycle_registry().clone()
+}
+
+#[test]
+fn declared_release_record_payload_is_admitted() {
+    // The adoption shape: a lifecycle-registered `#[resource]` record whose
+    // only field is a bare `#[opaque]` handle (clause-3-clean). The declared
+    // close is the composite's SOLE release authority — the shell's thunk
+    // chain is the one place it is ever scheduled — so the carve-out must
+    // admit the DIRECT payload; refusing it closes the handle ZERO times.
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Handle".to_string(),
+        vec![("raw".to_string(), opaque("Dq"))],
+    );
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Handle".to_string(),
+        (
+            hew_hir::ResourceMarker::Resource,
+            Some("Handle::close".to_string()),
+        ),
+    );
+    assert!(
+        admits_full(
+            vec![builtin("Handle", vec![])],
+            &orders,
+            &classes,
+            &handle_record_lifecycle_registry(),
+        ),
+        "a lifecycle-registered resource record whose declared close is the \
+         whole release plan must be admitted as a DIRECT payload — the shell \
+         drop is its sole close authority"
+    );
+    // Scalar-field spelling of the same admission (`Conn { fd: i64 }`).
+    orders.insert(
+        "Handle".to_string(),
+        vec![("fd".to_string(), ResolvedTy::I64)],
+    );
+    assert!(
+        admits_full(
+            vec![builtin("Handle", vec![])],
+            &orders,
+            &classes,
+            &handle_record_lifecycle_registry(),
+        ),
+        "scalar fields pass clause 3 the same way an opaque handle does"
+    );
+}
+
+#[test]
+fn declared_release_record_with_teardown_freeable_field_is_refused() {
+    // Clause-3 polarity: the SAME registered record with a `log: string`
+    // field is NOT admitted — the post-close field-wise teardown really does
+    // free `log`, so the declared close is not the whole drop plan and the
+    // affine refusal stands (leak, never a double close).
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Handle".to_string(),
+        vec![
+            ("raw".to_string(), opaque("Dq")),
+            ("log".to_string(), ResolvedTy::String),
+        ],
+    );
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Handle".to_string(),
+        (
+            hew_hir::ResourceMarker::Resource,
+            Some("Handle::close".to_string()),
+        ),
+    );
+    assert!(
+        !admits_full(
+            vec![builtin("Handle", vec![])],
+            &orders,
+            &classes,
+            &handle_record_lifecycle_registry(),
+        ),
+        "a registered record with a field the teardown frees must stay refused \
+         — clause 3 is the admission boundary, not the registry alone"
+    );
+}
+
+#[test]
+fn unregistered_affine_record_payload_is_still_refused() {
+    // Condition (a) polarity: the same clause-3-clean field order WITHOUT a
+    // lifecycle registration (a `#[resource]` marker with no admitted close)
+    // keeps the affine refusal — the carve-out keys on the registry, not on
+    // the marker.
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Handle".to_string(),
+        vec![("raw".to_string(), opaque("Dq"))],
+    );
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Handle".to_string(),
+        (hew_hir::ResourceMarker::Resource, None),
+    );
+    assert!(
+        !admits_full(
+            vec![builtin("Handle", vec![])],
+            &orders,
+            &classes,
+            &hew_hir::LifecycleRegistry::default(),
+        ),
+        "an unregistered affine record must stay on the value-class refusal"
+    );
+}
+
+#[test]
+fn declared_release_record_nested_beyond_depth_one_is_refused() {
+    // Depth polarity: the admitted record reached through a NESTED aggregate
+    // (a tuple payload) is beyond the candidate shell's own drop steps and
+    // stays refused, exactly like the nested bare-opaque position.
+    let mut orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    orders.insert(
+        "Handle".to_string(),
+        vec![("raw".to_string(), opaque("Dq"))],
+    );
+    let mut classes = hew_hir::TypeClassTable::default();
+    classes.insert(
+        "Handle".to_string(),
+        (
+            hew_hir::ResourceMarker::Resource,
+            Some("Handle::close".to_string()),
+        ),
+    );
+    assert!(
+        !admits_full(
+            vec![ResolvedTy::Tuple(vec![
+                builtin("Handle", vec![]),
+                ResolvedTy::I64
+            ])],
+            &orders,
+            &classes,
+            &handle_record_lifecycle_registry(),
+        ),
+        "a declared-release record inside a tuple payload sits at depth 2 and \
+         must stay refused — the carve-out's soundness argument is depth-1 only"
+    );
+}
+
 #[test]
 fn bare_opaque_beside_resource_marker_is_refused() {
     // Belt-and-braces on the OTHER authority: the same `#[opaque]` spelling

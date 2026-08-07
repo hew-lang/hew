@@ -11,6 +11,83 @@ use hew_hir::{TypeClassTable, ValueClass};
 use hew_types::ResolvedTy;
 use std::collections::{HashMap, HashSet};
 
+use super::{base_local, BasicBlock, Instr, Place};
+
+/// True when a candidate enum's DIRECT variant payload carries a
+/// lifecycle-registered resource record (the declared-release carve-out
+/// class). Such a payload's shell-drop step is USER code —
+/// `__hew_record_drop_inplace_<R>` → `<R>::close(self)` — which, unlike the
+/// string/bytes/opaque drop steps, is NOT a no-op over a neutralized (zeroed)
+/// payload slot: the variant tag survives the neutralize, so the thunk would
+/// close zeroed storage. The prover tracks these candidates so
+/// [`note_declared_release_neutralize_exclusions`] can exclude them the
+/// moment their payload is handed off.
+pub(super) fn direct_payload_has_registered_resource_record(
+    ty: &ResolvedTy,
+    enum_layouts: &[crate::model::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+) -> bool {
+    let ResolvedTy::Named { name, args, .. } = ty else {
+        return false;
+    };
+    crate::model::find_enum_layout(name, args, enum_layouts).is_some_and(|layout| {
+        layout.variants.iter().any(|variant| {
+            variant.field_tys.iter().any(|field_ty| match field_ty {
+                ResolvedTy::Named {
+                    name,
+                    args,
+                    is_opaque: false,
+                    ..
+                } => {
+                    args.is_empty()
+                        && lifecycle_registry
+                            .resource_record(&hew_types::DefId::new(name))
+                            .is_some()
+                }
+                _ => false,
+            })
+        })
+    })
+}
+
+/// Exclude a declared-release candidate the moment its payload is handed off.
+///
+/// The neutralize-transfer protocol's soundness claim — "the carrier's guarded
+/// drop releases nothing for a neutralized slot" — is a NULL-SAFETY property
+/// of the payload's drop step: a zeroed string/bytes pointer is a no-op free
+/// and an opaque slot has no drop at all. A declared-release record's drop
+/// step is the user's `close(self)` run by `__hew_record_drop_inplace_<R>`
+/// behind the still-set variant tag, which executes unconditionally over the
+/// zeroed storage — the S2200 double close, resurrected through the consume
+/// path (`Ok(c) => c.close()`) instead of the borrow path. Any
+/// `NeutralizePayloadSlot` on such a candidate's variant slot therefore
+/// excludes the whole candidate, fail-closed: the arm's own consume/close is
+/// then the sole release and the sibling variant leaks, exactly like every
+/// other payload escape.
+pub(super) fn note_declared_release_neutralize_exclusions(
+    blocks: &[BasicBlock],
+    alias_of: &HashMap<u32, u32>,
+    declared_release_payload_candidate_locals: &HashSet<u32>,
+    excluded_roots: &mut HashSet<u32>,
+) {
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::NeutralizePayloadSlot {
+                place: place @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
+                ..
+            } = instr
+            {
+                if let Some(root) = base_local(*place)
+                    .and_then(|local| alias_of.get(&local).copied())
+                    .filter(|root| declared_release_payload_candidate_locals.contains(root))
+                {
+                    excluded_roots.insert(root);
+                }
+            }
+        }
+    }
+}
+
 /// True when every heap leaf reachable through a candidate composite `ty` is
 /// shell-drop-safe: a `string`, `bytes`, a bit-copy scalar, an owned `Vec` of
 /// the same, a nested enum/record/tuple/array built only from such leaves — or,
@@ -118,10 +195,30 @@ use std::collections::{HashMap, HashSet};
 ///   flat plain-string cap leaked);
 /// - a nested value record recurses into every registered field.
 ///
+/// ## Why a DECLARED-RELEASE resource-record DIRECT payload is admitted
+///
+/// The affine gate's refusal is right when a second close authority exists
+/// (the S2200 `Result<Conn, string>` shape, where the arm consumes the payload
+/// through the user's `close()`). It is wrong when the declared close is the
+/// composite's SOLE release authority: a lifecycle-registered `#[resource]`
+/// record whose every field passes the clause-3 authority
+/// (`field_is_released_only_by_the_declared_close`) is released ONLY by the
+/// shell's thunk chain (`__hew_enum_drop_inplace` →
+/// `__hew_record_drop_inplace_<R>` → `<R>::close`) — its binder owns no heap
+/// and mints no owner, and an arm that DOES consume it neutralizes the slot,
+/// which the prover's neutralize scan turns into a whole-candidate exclusion
+/// (a record close is not null-safe over a zeroed slot). Refusing that
+/// shape leaves zero releases, not one. The carve-out is DIRECT-payload only
+/// (`depth == 1`), mirroring the bare-opaque admission's soundness scope, and
+/// its admission/refusal boundary is the same clause-3 conjunction the
+/// adoption boundary (`DeclaredReleaseTypes`) applies — a registered record
+/// with a teardown-freeable field stays refused.
+///
 /// Fail-closed: an unresolvable layout, an indirect (heap-boxed) enum, a
 /// generic record whose fields resolve only after substitution, a
 /// closure/borrow leaf, a nested opaque handle, or ANY affine /
-/// lifecycle-registered leaf answers `false` and keeps its composite on the
+/// lifecycle-registered leaf outside the declared-release carve-out answers
+/// `false` and keeps its composite on the
 /// pre-existing fail-closed leak posture — never a double-free or double-close.
 /// A recursion budget bounds pathological mutually-nested layouts (a genuinely
 /// recursive enum is `is_indirect` and short-circuits).
@@ -174,6 +271,54 @@ fn payload_leaf_is_shell_drop_safe(
 ) -> bool {
     if depth > 32 {
         return false;
+    }
+    // Declared-release carve-out, DIRECT variant payloads only. A
+    // lifecycle-registered `#[resource]` RECORD whose every field passes the
+    // clause-3 authority (`field_is_released_only_by_the_declared_close`) has
+    // its declared `close` as its ENTIRE release plan, and — when it rides an
+    // enum out of a producer — the candidate shell's `EnumInPlace` drop is the
+    // ONE authority that ever schedules that close (`__hew_enum_drop_inplace`
+    // → `__hew_record_drop_inplace_<R>` → `<R>::close`): the payload binder
+    // owns no heap and earns no owner of its own, and an arm that CONSUMES the
+    // payload (an explicit `h.close()`) hands it off through a
+    // `NeutralizePayloadSlot`, which the prover's neutralize scan turns into a
+    // whole-candidate exclusion (a record close is not null-safe over a
+    // zeroed slot, so the shell must not drop after a hand-off). Refusing here
+    // therefore leaves ZERO releases for the adopted handle, not one — the
+    // declared-release contract's leak. The answer is the clause-3 conjunction
+    // itself: a registered record with a field the post-close teardown CAN
+    // free (`log: string`) answers false and stays on the affine refusal
+    // below, so admission and refusal read the same authority the adoption
+    // boundary uses (`DeclaredReleaseTypes`).
+    //
+    // Depth-1 only: the soundness argument covers the candidate shell's own
+    // drop steps. A declared-release record reached through a nested
+    // aggregate is that aggregate's helper family's problem and stays on the
+    // fail-closed leak posture, same as the bare-opaque carve-out below.
+    if depth == 1 {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            is_opaque: false,
+            ..
+        } = ty
+        {
+            if args.is_empty()
+                && lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(name))
+                    .is_some()
+            {
+                let opaques: HashSet<&str> =
+                    opaque_handle_names.iter().map(String::as_str).collect();
+                return record_field_orders.get(name).is_some_and(|fields| {
+                    fields.iter().all(|(_, field_ty)| {
+                        crate::return_provenance::field_is_released_only_by_the_declared_close(
+                            field_ty, &opaques,
+                        )
+                    })
+                });
+            }
+        }
     }
     // Affine leaves (`#[resource]` records, closeable opaque resources, owned
     // runtime handles, `@linear` / `Task` values) carry their own consume-once

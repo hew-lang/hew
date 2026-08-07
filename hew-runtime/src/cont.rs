@@ -249,6 +249,57 @@ thread_local! {
     /// Registration and recovery APIs fail closed in this phase so re-entry
     /// cannot attach to, or accidentally pop, an older dispatch scope.
     static CRASH_CLEANUP_DRAIN_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// Coro frame pointers this thread has RAW-RECLAIMED during an in-progress
+    /// crash drain (`drain_active_coroutine_frames_excluding`).
+    ///
+    /// A `receive gen fn` producer generator that faults WHILE RUNNING leaves
+    /// its coro frame positively tracked on `ACTIVE_COROUTINE_FRAMES`, so the
+    /// crash drain raw-reclaims it (frees the abandoned allocation without
+    /// re-entering its cleanup outline — the outline of a mid-execution frame is
+    /// not legal to re-run). That SAME generator is ALSO owned by the pump
+    /// frame's crash-cleanup escrow, whose `hew_gen_coro_destroy` thunk reads the
+    /// companion's coro handle and `hew_cont_destroy`s it. Both authorities would
+    /// otherwise free the one frame twice.
+    ///
+    /// LIFO drain order guarantees the child generator frame is raw-reclaimed
+    /// (and recorded here) BEFORE the parent pump frame's escrow thunk runs, so
+    /// `hew_cont_destroy` consults this ledger and treats an already-reclaimed
+    /// handle as spent — the frame is freed EXACTLY ONCE. A generator that was
+    /// SUSPENDED at teardown is not on the active stack, is never recorded here,
+    /// and is still destroyed by the escrow exactly once. Entries are consumed on
+    /// match and any residue is truncated when the outermost drain unwinds, so a
+    /// pointer never survives its drain to alias a later allocation.
+    static CRASH_RAW_RECLAIMED_FRAMES: RefCell<Vec<*mut c_void>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Record a coro frame the crash drain has raw-reclaimed, so a crash-cleanup
+/// escrow thunk that also owns it (a pump destroying its running-crashed
+/// generator companion) does not free it a second time.
+fn note_raw_reclaimed_frame(frame: *mut c_void) {
+    if frame.is_null() {
+        return;
+    }
+    CRASH_RAW_RECLAIMED_FRAMES.with(|frames| frames.borrow_mut().push(frame));
+}
+
+/// Consume a raw-reclaimed record for `handle` if present. Returns true when the
+/// crash drain already freed this frame, meaning `hew_cont_destroy` must not
+/// re-enter its cleanup outline or re-free it.
+fn take_raw_reclaimed_frame(handle: *mut c_void) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    CRASH_RAW_RECLAIMED_FRAMES.with(|frames| {
+        let mut frames = frames.borrow_mut();
+        if let Some(index) = frames.iter().rposition(|&frame| frame == handle) {
+            frames.remove(index);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 struct CrashCleanupDrainGuard;
@@ -1672,6 +1723,10 @@ unsafe fn drain_active_coroutine_frames_excluding(
         ACTIVE_COROUTINE_FRAMES.with(|active| std::mem::take(&mut *active.borrow_mut()));
     let mut retained_excluded = None;
     let mut reclaimed = 0;
+    // A nested drain (a finalizer that crash-recovers another continuation) must
+    // only unwind its own reclaimed-frame records. Snapshot the ledger depth on
+    // entry and truncate back to it on exit so no pointer outlives its drain.
+    let reclaimed_ledger_base = CRASH_RAW_RECLAIMED_FRAMES.with(|frames| frames.borrow().len());
     while let Some(record) = abandoned.pop() {
         let frame = record.frame;
         // Typed escrow is independent of raw-allocation ownership. Even an
@@ -1689,6 +1744,10 @@ unsafe fn drain_active_coroutine_frames_excluding(
         // can populate this stack. Re-check the header marker before raw
         // reclamation so corrupted/mismatched records fail closed.
         if unsafe { frame_is_tracked(frame) } {
+            // Record BEFORE the free so a still-to-run parent escrow thunk
+            // (LIFO: the parent frame is drained after this child) observes
+            // this frame as already reclaimed and does not free it again.
+            note_raw_reclaimed_frame(frame);
             reclaim(frame);
             reclaimed += 1;
         }
@@ -1701,6 +1760,9 @@ unsafe fn drain_active_coroutine_frames_excluding(
             active.borrow_mut().insert(0, record);
         });
     }
+    // Drop any records this drain never matched (frames with no owning escrow)
+    // so a freed pointer cannot alias a later allocation across drains.
+    CRASH_RAW_RECLAIMED_FRAMES.with(|frames| frames.borrow_mut().truncate(reclaimed_ledger_base));
     reclaimed
 }
 
@@ -1844,6 +1906,16 @@ pub unsafe extern "C" fn hew_cont_poll(handle: *mut c_void, out_value: *mut c_vo
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
     if handle.is_null() {
+        return;
+    }
+    // Exactly-once reconciliation with the crash drain. If this handle's frame
+    // was already RAW-RECLAIMED by an in-progress crash recovery (a `receive
+    // gen fn` generator that faulted while running, so its coro frame was
+    // abandoned on the active stack and freed there), a pump escrow thunk that
+    // also owns the generator companion must NOT re-enter the now-freed frame's
+    // cleanup outline or free it a second time. The record is consumed here, so
+    // this is a one-shot skip for the frame the drain already reclaimed.
+    if take_raw_reclaimed_frame(handle) {
         return;
     }
     // Make the frame registry discoverable to cleanup-outline deactivate /
@@ -2121,6 +2193,72 @@ mod tests {
 
     fn take_crash_cleanup_panic_payload_drops() -> u64 {
         CRASH_CLEANUP_PANIC_PAYLOAD_DROPS.with(|drops| drops.replace(0))
+    }
+
+    // ── Crash-drain / escrow exactly-once reconciliation (#2865) ────────────
+
+    #[test]
+    fn raw_reclaimed_ledger_is_consumed_exactly_once() {
+        // A pointer never noted is not treated as reclaimed.
+        let a = 0x1000 as *mut c_void;
+        assert!(!take_raw_reclaimed_frame(a));
+        // Once noted it matches exactly once, then is spent.
+        note_raw_reclaimed_frame(a);
+        assert!(take_raw_reclaimed_frame(a));
+        assert!(!take_raw_reclaimed_frame(a));
+        // A null frame is never recorded and never matches.
+        note_raw_reclaimed_frame(ptr::null_mut());
+        assert!(!take_raw_reclaimed_frame(ptr::null_mut()));
+    }
+
+    #[test]
+    fn raw_reclaimed_ledger_matches_per_pointer() {
+        let a = 0x2000 as *mut c_void;
+        let b = 0x3000 as *mut c_void;
+        note_raw_reclaimed_frame(a);
+        note_raw_reclaimed_frame(b);
+        // Consuming one leaves the other; each is independent.
+        assert!(take_raw_reclaimed_frame(a));
+        assert!(!take_raw_reclaimed_frame(a));
+        assert!(take_raw_reclaimed_frame(b));
+        assert!(!take_raw_reclaimed_frame(b));
+    }
+
+    #[test]
+    fn hew_cont_destroy_skips_a_raw_reclaimed_frame() {
+        // The crash-recovery ordering the fix reconciles: the generator's coro
+        // frame is RAW-RECLAIMED by the active-frames drain (recorded here),
+        // then the pump's crash-cleanup escrow reaches the SAME frame through
+        // `hew_cont_destroy`. With the reconciliation, destroy is a one-shot
+        // skip — it must NOT re-enter the frame's cleanup outline or free it.
+        //
+        // A real, live tracked frame stands in for the generator coro frame so
+        // the skip's contract is observable: a non-skipping destroy would drive
+        // `coro_destroy` into the frame and free it; the skip leaves it intact.
+        // SAFETY: the tracked allocator accepts any size and returns a live
+        // frame requiring one matching free (performed at the end of the test).
+        let frame = unsafe { hew_cont_frame_alloc_tracked(64) };
+        assert!(!frame.is_null());
+        let sentinel: u64 = 0xA5A5_5A5A_1234_5678;
+        // SAFETY: `frame` has 64 writable bytes.
+        unsafe { ptr::write(frame.cast::<u64>(), sentinel) };
+
+        note_raw_reclaimed_frame(frame);
+        // SAFETY: the reconciliation guard fires before any dereference of the
+        // handle, so this is sound even though `frame` is not a real coroutine.
+        unsafe { hew_cont_destroy(frame) };
+
+        // The record is consumed (a later real destroy is not spuriously
+        // skipped) and the frame was left untouched by the skipped destroy.
+        assert!(
+            !take_raw_reclaimed_frame(frame),
+            "skip must consume the reclaimed record exactly once"
+        );
+        // SAFETY: the skip left the frame allocated and its bytes intact.
+        assert_eq!(unsafe { ptr::read(frame.cast::<u64>()) }, sentinel);
+
+        // SAFETY: `frame` is still the live tracked allocation; free it once.
+        unsafe { hew_cont_frame_free(frame) };
     }
 
     unsafe extern "C-unwind" fn record_u64_cleanup_then_panic(slot: *mut c_void) {

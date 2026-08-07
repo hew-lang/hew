@@ -19,13 +19,13 @@ checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	5	stage-2
 checker-hir-fact-relation	hir-relation-consumer	hew-hir/src/verify.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-consumer	hew-mir/src/lower/ownership.rs	4	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-use	hew-hir/src/lower.rs	2	stage-2	real checker/HIR produced-value carrier inventory
-checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	19	stage-2	real checker/HIR produced-value carrier inventory
+checker-hir-fact-relation	hir-relation-use	hew-hir/src/verify.rs	22	stage-2	real checker/HIR produced-value carrier inventory; +3 for the subsumption-spine guardrail (Subsumes/Identity edge-skip check publishing CheckerBoundaryViolation)
 checker-hir-fact-relation	hir-relation-use	hew-mir/src/lower/ownership.rs	8	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	hir-relation-variant	hew-hir/src/node.rs	6	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	63	stage-2	real checker/HIR produced-value carrier inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	RC1 syntax-node authority inventory
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	RC1 syntax-node authority inventory
-checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	2	stage-2	RC1 syntax-node authority inventory
+checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	3	stage-2	RC1 syntax-node authority inventory; +1 for the range-bound identifier declaration-site expr_types re-record
 checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	1	stage-2	RC1 syntax-node authority inventory
 legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	2	stage-5	RC1 syntax-node authority inventory
 legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	2	stage-5	RC1 syntax-node authority inventory

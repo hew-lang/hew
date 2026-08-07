@@ -1273,10 +1273,25 @@ fn collect_inherent_impl_consuming_methods_from_items(
 /// Collect trait default method bodies from the complete module graph.  Root
 /// traits retain their root spelling; imported traits are keyed by their full
 /// declaration owner so same-final-module traits cannot overwrite one another.
-fn collect_trait_default_methods(program: &Program) -> HashMap<String, Vec<TraitMethod>> {
+/// Also returns the `module_idx` the checker stamped each declaring trait's
+/// `SpanKey` facts with.
+///
+/// A default body materialised onto an impl keeps the SPANS of the trait
+/// declaration it was copied from, but is lowered at the impl's site. When the
+/// trait lives in another module the impl's `current_module_idx` does not match
+/// the index the checker recorded those spans under, so every `mk_key` lookup
+/// inside the body misses and the fail-closed contract fires
+/// (`MethodCallNoRewrite` for a `self.other()` call in a default body). The
+/// index numbering mirrors `Checker::check_program` exactly: skip the root,
+/// bump a 1-based counter for every module present in `modules`, in topo order.
+fn collect_trait_default_methods(
+    program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
+) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
+    let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect = |items: &[(Item, Span)], module: Option<&str>| {
-        for (item, _) in items {
+    let mut collect = |items: &[(Item, Span)], module: Option<(&str, u32)>| {
+        for (item_idx, (item, _)) in items.iter().enumerate() {
             let Item::Trait(trait_decl) = item else {
                 continue;
             };
@@ -1291,22 +1306,37 @@ fn collect_trait_default_methods(program: &Program) -> HashMap<String, Vec<Trait
             if !defaults.is_empty() {
                 let key = module.map_or_else(
                     || trait_decl.name.clone(),
-                    |owner| format!("{owner}.{}", trait_decl.name),
+                    |(owner, _)| format!("{owner}.{}", trait_decl.name),
                 );
+                // A trait spliced into the ROOT items by a file import keeps
+                // its bare root spelling, but the checker validated it during
+                // the module walk under that file's own index — recover it
+                // per item rather than assuming root (0).
+                let idx = module.map_or_else(
+                    || file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
+                    |(_, idx)| idx,
+                );
+                owner_module_idx.insert(key.clone(), idx);
                 out.insert(key, defaults);
             }
         }
     };
     collect(&program.items, None);
     if let Some(graph) = &program.module_graph {
-        for (module_id, module) in &graph.modules {
-            if *module_id != graph.root {
-                let owner = module_id.path.join(".");
-                collect(&module.items, Some(&owner));
+        let mut module_idx = 0_u32;
+        for module_id in &graph.topo_order {
+            if *module_id == graph.root {
+                continue;
             }
+            let Some(module) = graph.modules.get(module_id) else {
+                continue;
+            };
+            module_idx += 1;
+            let owner = module_id.path.join(".");
+            collect(&module.items, Some((&owner, module_idx)));
         }
     }
-    out
+    (out, owner_module_idx)
 }
 
 fn collect_trait_declaring_surfaces(
@@ -2322,7 +2352,10 @@ pub fn lower_program_with_mono_cap(
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
-    ctx.trait_default_methods = collect_trait_default_methods(program);
+    let (trait_defaults, trait_default_module_idx) =
+        collect_trait_default_methods(program, &file_import_module_idx);
+    ctx.trait_default_methods = trait_defaults;
+    ctx.trait_default_module_idx = trait_default_module_idx;
     let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
     ctx.trait_super = trait_super;
     ctx.trait_declared_methods = trait_declared_methods;
@@ -7087,6 +7120,12 @@ struct LowerCtx {
     /// so that `lower_impl_block` can lower default methods that are not
     /// overridden in the concrete impl.
     trait_default_methods: HashMap<String, Vec<TraitMethod>>,
+    /// The checker `module_idx` each entry of `trait_default_methods` was
+    /// recorded under, keyed identically. A default body materialised onto an
+    /// impl in another module must be lowered under its DECLARING module's
+    /// index or every `mk_key` lookup inside the copied body misses the
+    /// checker fact recorded against the trait's own source.
+    trait_default_module_idx: HashMap<String, u32>,
     trait_super: HashMap<String, Vec<String>>,
     trait_declared_methods: HashMap<String, HashSet<String>>,
     /// Short names of every `#[opaque]` type declaration in the program
@@ -7705,6 +7744,7 @@ impl LowerCtx {
             current_impl_self_ty: None,
             current_fn_type_params: HashSet::new(),
             trait_default_methods: HashMap::new(),
+            trait_default_module_idx: HashMap::new(),
             trait_super: HashMap::new(),
             trait_declared_methods: HashMap::new(),
             opaque_type_short_names: HashSet::new(),
@@ -12101,6 +12141,20 @@ impl LowerCtx {
             if let Some(default_owner_key) = self.trait_default_owner_key(&tb.name) {
                 if let Some(defaults) = self.trait_default_methods.get(&default_owner_key).cloned()
                 {
+                    // The bodies below were copied from the trait declaration,
+                    // so their spans index the DECLARING module's source. The
+                    // checker recorded their facts under that module's index
+                    // (it checks each trait's default bodies once, during the
+                    // module walk). Lower them under the same index or every
+                    // `mk_key` lookup inside a copied body misses — a
+                    // `self.other()` call in a default body then fails closed
+                    // with `MethodCallNoRewrite`. Restored below.
+                    let saved_module_idx = self.current_module_idx;
+                    self.current_module_idx = self
+                        .trait_default_module_idx
+                        .get(&default_owner_key)
+                        .copied()
+                        .unwrap_or(saved_module_idx);
                     for default_method in &defaults {
                         if overridden.contains(default_method.name.as_str()) {
                             continue;
@@ -12193,6 +12247,7 @@ impl LowerCtx {
                         );
                         method_declaring_traits.push(declaring_trait);
                     }
+                    self.current_module_idx = saved_module_idx;
                 }
             }
         }

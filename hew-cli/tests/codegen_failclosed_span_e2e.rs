@@ -18,15 +18,15 @@
 //!     false caret here; only the carried origin can.
 //! (d) black-hole regression: a root fail-closed carries a source location,
 //!     never a bare location-free message.
-//! (e) generated impl DEFAULT-METHOD from a file-imported trait, UNUSED: the
-//!     default body is synthesised at the root impl site but, being unused,
-//!     is dead-code eliminated before the codegen-legality check — the
-//!     program compiles and runs. A sibling test proves the codegen-legality
-//!     check still fires when a default method with an unsupported-type body
-//!     IS actually called (reachable code is not excused by the dead-code
-//!     path).
+//! (e) generated impl DEFAULT-METHOD from a file-imported trait: the default
+//!     body is synthesised at the root impl site, so its unsupported-type
+//!     signature reaches the codegen-legality check and fails closed — but
+//!     its span belongs to the imported trait's source, so the diagnostic
+//!     must stay bare rather than carting a caret against the root file. A
+//!     sibling test pins the same fail-closed for a default that is actually
+//!     called.
 //!
-//! Each false-caret case (b, c) is a revert-repro: it fails (a false root
+//! Each false-caret case (b, c, e) is a revert-repro: it fails (a false root
 //! caret appears) if origin-carrying is disabled by making
 //! `SourceOrigin::renders_root_caret` always return `true`.
 
@@ -294,11 +294,13 @@ fn regression_failclosed_carries_location_not_blackhole() {
 /// ids from `root_item_ids`, so it resolves away from `RootUnit` and its span is
 /// stripped. Revert-repro: fails if origin-carrying is disabled.
 #[test]
-fn file_imported_trait_default_method_unused_unsupported_type_accepted() {
+fn file_imported_trait_default_method_unsupported_type_no_false_root_caret() {
     // Imported trait: `make` is a DEFAULT method whose signature/body use an
     // array type the codegen boundary rejects. `tag` is required (no default).
-    // `make` is never called, so dead-code elimination removes it before the
-    // codegen-legality check runs — unused code need not be codegen-legal.
+    // The impl does not override `make`, so the default body is materialised
+    // onto `RootThing` and its signature reaches the codegen-legality check —
+    // exactly as it does for a same-file trait. The assertion here is about
+    // WHERE that diagnostic points, not whether it fires.
     let trait_lib = concat!(
         "trait Emit {\n",
         "    fn tag(self) -> i64;\n",
@@ -346,29 +348,25 @@ fn file_imported_trait_default_method_unused_unsupported_type_accepted() {
         .expect("hew binary must run");
 
     assert!(
-        check_output.status.success(),
-        "hew check must accept the unused default-method's unsupported array type \
-         (dead-code eliminated before the codegen-legality check); stdout: {}\nstderr: {}",
+        !check_output.status.success(),
+        "the materialised default's unsupported array type must fail closed at the \
+         codegen boundary; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&check_output.stdout),
         String::from_utf8_lossy(&check_output.stderr),
     );
 
-    let run_output = Command::new(hew_binary())
-        .args(["run", main_path.to_str().unwrap()])
-        .current_dir(fixture.path())
-        .output()
-        .expect("hew binary must run");
-
+    let stderr = strip_ansi(&String::from_utf8_lossy(&check_output.stderr));
     assert!(
-        run_output.status.success(),
-        "program must compile and run despite the unused illegal default method; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&run_output.stdout),
-        String::from_utf8_lossy(&run_output.stderr),
+        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED")
+            && stderr.contains("Array type — composite lowering is Cluster 2"),
+        "the imported default's illegal type must surface as the codegen-front \
+         diagnostic; got:\n{stderr}"
     );
-    let stdout = strip_ansi(&String::from_utf8_lossy(&run_output.stdout));
-    assert_eq!(
-        stdout, "1\n",
-        "expected RootThing.tag() output; got: {stdout:?}"
+    // CRITICAL: the generated body's span indexes trait_lib.hew, so it must NOT
+    // render a caret against main.hew even though the offset is in bounds there.
+    assert!(
+        !has_root_error_caret(&stderr),
+        "generated default-method span must NOT produce a main.hew: error: caret; got:\n{stderr}"
     );
 }
 

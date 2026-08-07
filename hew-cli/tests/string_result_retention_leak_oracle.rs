@@ -202,6 +202,59 @@ fn static_crash_source() -> String {
     )
 }
 
+/// The observable-close variant of `SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE`:
+/// main keeps the accepted peer of the reader-owned connection alive across
+/// the crash and then reads from it. An orderly EOF is only possible when the
+/// crash path closed the reader's connection — `leaks(1)` cannot see an
+/// unclosed `Connection` (the handle registration keeps it reachable and the
+/// file descriptor is not a heap node), so peer-side EOF is the behavioural
+/// witness for the close obligation itself.
+const SUSPENDING_CLOSURE_PEER_EOF_SOURCE: &str = r#"
+import std::net::{Listener};
+
+actor Reader {
+    let addr: string;
+
+    receive fn go(trigger: i64) -> i64 {
+        let conn = net.connect(addr);
+        let read_once = |value: string| {
+            if trigger >= 0 {
+                panic("crash before child suspend");
+            }
+            let _ = await conn.read_string();
+            value
+        };
+        let _ = read_once("crash-owner".to_upper());
+        0
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = listener.local_port();
+    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    let result = await reader.go(0);
+    match result {
+        Ok(_) => println("unexpected-ok"),
+        Err(_) => println("crash-fallback"),
+    }
+    let peer = listener.accept();
+    match peer.try_read() {
+        Ok(buf) => {
+            if buf.len() == 0 {
+                println("peer-eof");
+            } else {
+                println("peer-data");
+            }
+        },
+        Err(_) => println("peer-error"),
+    }
+    peer.close();
+    listener.close();
+    println("main-done");
+}
+"#;
+
 /// A bounded low/high-frame crash probe for the TCP resource pair.  Each frame
 /// creates one listener, connects one reader-owned connection, accepts the
 /// peer, then crashes the reader before its closure can suspend.  The main
@@ -875,6 +928,53 @@ fn suspending_closure_codegen_uses_one_typed_fresh_arg_cleanup_authority() {
         0,
         "a borrowed static literal carries no typed crash-unwind ownership obligation:\n\
          {static_handler}"
+    );
+}
+
+/// Crash-path close-EXACTLY-once witness for the reader-owned connection of a
+/// suspending closure, from the peer's point of view.
+///
+/// - **At least once**: the peer's `try_read` must return an orderly EOF.
+///   An unclosed connection blocks the bounded read until its timeout and the
+///   run fails — the leak polarity a `leaks(1)` slope cannot detect.
+/// - **At most once**: the run executes under the poisoned-allocator pair
+///   (`MallocScribble`/`MallocPreScribble`), so a second cleanup authority
+///   releasing the same connection touches scribbled memory and aborts before
+///   stdout settles — the double-free polarity.
+///
+/// Both polarities must keep holding through any change to how the typed
+/// crash-cleanup arms in `Reader__recv__go` and its closure frame are
+/// distributed (the arm-count oracle above counts sites; this one proves the
+/// close behaviour those sites exist for).
+#[test]
+fn suspending_closure_crash_peer_observes_connection_close_exactly_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suspending-closure-peer-eof-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        SUSPENDING_CLOSURE_PEER_EOF_SOURCE,
+        dir.path(),
+        "suspending_closure_crash_peer_eof",
+    );
+    let mut command = Command::new(&bin);
+    command
+        .env("HEW_WORKERS", "1")
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1");
+    let output = run_bounded_command(command, "run suspending-closure peer-EOF crash fixture");
+    assert!(
+        output.status.success(),
+        "peer-EOF crash fixture failed (a hang here means the crash path never \
+         closed the reader connection; an abort means it was closed twice):\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "crash-fallback\npeer-eof\nmain-done\n",
+        "the peer must observe an orderly EOF exactly once after the reader \
+         crashes, before main's own controls close"
     );
 }
 

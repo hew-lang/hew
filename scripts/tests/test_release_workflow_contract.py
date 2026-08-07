@@ -594,8 +594,10 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
     # build matrix: macOS Unix + Windows; Linux matrix; two FreeBSD jobs.
     assert release.count("scripts/test-release-lib-link.sh") == 4
     assert release.count("scripts/test-release-lib-link.ps1") == 1
-    # Linux x86_64/aarch64, macOS, Windows, and both FreeBSD gate jobs.
-    assert gate.count("scripts/test-release-lib-link.sh") == 4
+    # Linux x86_64/aarch64, macOS, Windows, and the FreeBSD x86_64 gate job.
+    # The FreeBSD aarch64 gate leg is intentionally scoped to build+smoke
+    # (lib-link coverage is retained on freebsd-x86_64 and linux-aarch64).
+    assert gate.count("scripts/test-release-lib-link.sh") == 3
     assert gate.count("scripts/test-release-lib-link.ps1") == 1
     assert gate.count("make test-release-lib-link") == 1
     for text in (release, gate):
@@ -611,7 +613,9 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
     assert release.count("command -v bash") == 2
     assert gate.count("command -v bash") == 2
     assert release.count("bash scripts/test-release-lib-link.sh") == 2
-    assert gate.count("bash scripts/test-release-lib-link.sh") == 2
+    # Gate: FreeBSD x86_64 only — the aarch64 gate leg is intentionally
+    # scoped to build+smoke (coverage retained on freebsd-x86_64/linux-aarch64).
+    assert gate.count("bash scripts/test-release-lib-link.sh") == 1
 
     for job_name in ("  build-freebsd:\n", "  build-freebsd-aarch64:\n"):
         start = release.index(job_name)
@@ -1319,8 +1323,10 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
         assert command in validator
     assert "make macos-leak-oracle" in validator
     assert "macos-14" in gate and "macos-15-intel" in gate
-    assert gate.count("gmake test-vertical-slice") == 2
-    assert gate.count("gmake test-hew-ratchet") == 2
+    # FreeBSD x86_64 only — the aarch64 gate leg is intentionally scoped to
+    # build+smoke (suite coverage retained on freebsd-x86_64 and linux-aarch64).
+    assert gate.count("gmake test-vertical-slice") == 1
+    assert gate.count("gmake test-hew-ratchet") == 1
 
 
 def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:

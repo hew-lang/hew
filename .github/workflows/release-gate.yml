@@ -127,7 +127,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            libssl-dev pkg-config zlib1g-dev libzstd-dev mosquitto-clients
+            libssl-dev pkg-config zlib1g-dev libzstd-dev mosquitto-clients gdb
           command -v mosquitto_pub
           command -v mosquitto_sub
 
@@ -265,7 +265,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev gdb
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -513,7 +513,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime gdb
 
           run: |
             set -eux
@@ -620,7 +620,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime gdb
 
           run: |
             set -eux

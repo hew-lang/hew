@@ -303,7 +303,14 @@ jobs:
   parser-fuzz-smoke:
     name: Parser fuzz smoke (libFuzzer, bounded)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 3 targets x (cold-cache libFuzzer-instrumented build + 120s run) plus
+    # checkout/toolchain/cache overhead. A local timing probe at a 5s fuzz
+    # budget put per-target build+run around 3-3.5min on warm local caches;
+    # at the real 120s budget and a cold CI cache that is ~5-6min/target,
+    # ~15-18min total before setup — 40min leaves real margin for the first
+    # run of the week (cold sccache-equivalent) rather than sitting at the
+    # ceiling with none.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

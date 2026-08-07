@@ -4942,6 +4942,13 @@ run_check_run_expect_stdout file_import_trait_impl
 # default and a Self-dispatching one.
 run_check_run_expect_stdout file_import_trait_default_method
 
+# Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
+# declarations (constructs a type and calls a free function declared beside
+# the trait) must resolve them even though the default is materialised at an
+# impl site in the importing file — the copied body's spans belong to the
+# trait's file while the impl's module context is the root.
+run_check_run_expect_stdout file_import_trait_default_local_type
+
 # Regression: a file-imported multi-handler actor keeps a DISTINCT message-kind
 # discriminant per receive handler. The spliced file-import lowering path
 # previously missed the checker's protocol descriptor (keyed by module-short

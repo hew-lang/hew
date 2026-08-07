@@ -11092,17 +11092,26 @@ impl Checker {
                             self.mark_imported_trait_used(None, &super_trait.name);
                         }
                     }
-                    if !tr.visibility.is_pub() {
-                        continue;
-                    }
-                    if !self.register_flat_file_import_type_name(
-                        &mut current_import_pub_spans,
-                        &tr.name,
-                        span,
-                    ) {
-                        continue;
-                    }
+                    // A file import is flattened into the root program before
+                    // HIR, so its items share the root's flat namespace: the
+                    // importer can already write `impl <Trait> for <RootType>`
+                    // against a non-pub imported trait and call its required
+                    // methods. Only the `trait_defs` entry was gated on `pub`,
+                    // which left the impl with no view of the trait's DEFAULT
+                    // method bodies (and silently skipped method-set
+                    // validation) — `x.default_method()` failed with
+                    // "no method". Register the declaration for every imported
+                    // trait; `pub` still governs the namespace claim below.
                     let info = Self::trait_info_from_decl(tr);
+                    if tr.visibility.is_pub()
+                        && !self.register_flat_file_import_type_name(
+                            &mut current_import_pub_spans,
+                            &tr.name,
+                            span,
+                        )
+                    {
+                        continue;
+                    }
                     self.trait_defs.insert(tr.name.clone(), info);
                 }
                 Item::Actor(ad) => {

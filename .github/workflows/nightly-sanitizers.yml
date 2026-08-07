@@ -276,3 +276,52 @@ jobs:
         # hand-roll a copy with a "keep in sync" comment, which meant the target
         # ran nowhere in CI and the two could drift silently.
         run: make miri MIRI_TOOLCHAIN=nightly-2026-06-14
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Parser fuzz smoke — bounded libFuzzer run over the parser fuzz targets
+  #
+  # Scope: fuzz_structured (structured statement/expression generation),
+  # fuzz_mir (typecheck-clean source through HIR/MIR lowering), and
+  # fuzz_check (parse-clean source through the checker). Each runs for a
+  # fixed wall-clock budget (-max_total_time=120) and the job fails on any
+  # crash artifact libFuzzer writes.
+  #
+  # Nightly-only, deliberately: this is a corpus-driven exploratory run, so
+  # its outcome depends on which inputs libFuzzer's mutator happens to try in
+  # the time budget — the same commit can pass one run and trip on another.
+  # That nondeterminism is fine for a nightly signal but is excluded from
+  # ci.yml, whose per-PR gates must be deterministic. The differential
+  # fuzz-oracle (`make fuzz-oracle`, replaying the tracked regression corpus)
+  # is the deterministic per-PR fuzz gate and already runs there.
+  #
+  # `make fuzz-smoke` self-provisions cargo-fuzz on the nightly toolchain
+  # (scripts/fuzz/smoke-bootstrap.sh) the same way `make structural-lint`
+  # self-provisions its pinned ast-grep toolchain: the install is a
+  # prerequisite of the gate target, not a separate manual step, so a warm
+  # cache makes it a fast no-op.
+  # ─────────────────────────────────────────────────────────────────────────
+  parser-fuzz-smoke:
+    name: Parser fuzz smoke (libFuzzer, bounded)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: nightly
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cargo/bin/cargo-fuzz
+            hew-parser/fuzz/target/
+          key: parser-fuzz-smoke-${{ runner.os }}-${{ hashFiles('hew-parser/fuzz/Cargo.lock') }}
+          restore-keys: parser-fuzz-smoke-${{ runner.os }}-
+
+      - name: Run bounded parser fuzz smoke
+        # scripts/fuzz/run-smoke.sh — 120s per target, fails on a non-zero
+        # cargo-fuzz exit OR a new file under fuzz/artifacts/<target>/.
+        run: make fuzz-smoke

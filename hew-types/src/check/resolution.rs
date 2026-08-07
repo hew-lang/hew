@@ -1710,7 +1710,7 @@ impl Checker {
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
-        for (span, var, maybe_value, inner_span, module_idx) in
+        for (span, var, maybe_value, inner_span, module_idx, binding_var) in
             std::mem::take(&mut self.deferred_range_bounds)
         {
             let resolved = self
@@ -1751,6 +1751,41 @@ impl Checker {
                         ),
                     );
                     continue;
+                }
+            }
+            // When the bound is a bare identifier referring to an unannotated
+            // `let` literal, its own binding var is a SEPARATE unknown from
+            // `var` (the range's element var) — promote it too so every
+            // reference to that identifier (not just this range's bound
+            // span) agrees with the range's resolved element type. Skip if
+            // it already resolved to a different concrete type (a real
+            // conflict some other constraint already settled); only promote
+            // while it is still open (`Var`) or literal-defaulting.
+            if let Some(binding_var) = binding_var {
+                let current = self.subst.resolve(&Ty::Var(binding_var));
+                if matches!(current, Ty::Var(_)) || current.is_integer_literal() {
+                    self.subst.insert(binding_var, &resolved).expect(
+                        "promoting a range-bound identifier's literal-defaulting var to the \
+                         range's resolved element type must stay acyclic",
+                    );
+                    // The exported `expr_types` snapshot was taken (via
+                    // `normalize_for_use`) BEFORE this promotion ran, so the
+                    // identifier's DECLARATION-site span (e.g. the `6` in
+                    // `let n = 6;`) is still stale in `expr_types` even
+                    // though `self.subst` now agrees. HIR's identifier
+                    // lowering reads the declaration site (via its own
+                    // binding table, built once from that site's `expr_types`
+                    // entry), not the reference site inside the range — so
+                    // the declaration site is the one that must be
+                    // re-recorded here.
+                    if let Some((value_span, value_module_idx)) =
+                        self.literal_binding_value_spans.get(&binding_var).cloned()
+                    {
+                        expr_types.insert(
+                            SpanKey::in_module(&value_span, value_module_idx),
+                            resolved.clone(),
+                        );
+                    }
                 }
             }
             // Re-record the outer span with the resolved element type so the

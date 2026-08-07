@@ -4424,6 +4424,27 @@ impl Checker {
                         // and defaults to the literal type (i64).
                         if left_is_coercible && right_is_coercible {
                             let var_tv = TypeVar::fresh();
+                            // When a bound is a bare identifier referring to an
+                            // unannotated `let`-bound literal (`let n = 6; ...
+                            // 0 .. n`), that identifier's OWN inference var
+                            // (from `infer_integer_literal_binding_type`) is
+                            // already bound to `IntLiteral` by the time this
+                            // range is checked — it is a SEPARATE unknown from
+                            // the range's fresh `var_tv`. A later use-site
+                            // constraint on the loop variable (e.g.
+                            // `vec.push(i)` forcing `i32`) narrows only
+                            // `var_tv`; the bound identifier's own var still
+                            // defaults to `i64` independently, producing a
+                            // `Range<i32>` whose own end-bound expression
+                            // resolves to `i64` — a self-inconsistent range
+                            // MIR correctly rejects as a narrowing. Record each
+                            // identifier bound's own binding var alongside the
+                            // deferred span so `apply_deferred_range_bound_types`
+                            // can promote it too once `var_tv` resolves.
+                            let left_binding_var =
+                                Self::coercible_identifier_binding_var(&self.env, &left.0);
+                            let right_binding_var =
+                                Self::coercible_identifier_binding_var(&self.env, &right.0);
                             // Stash the bound spans + literal values for the
                             // post-inference pass that re-records them with
                             // the concrete resolved element type.
@@ -4475,6 +4496,7 @@ impl Checker {
                                 extract_integer_literal_value(&left.0),
                                 left_inner_span,
                                 self.current_module_idx,
+                                left_binding_var,
                             ));
                             self.deferred_range_bounds.push((
                                 right.1.clone(),
@@ -4482,6 +4504,7 @@ impl Checker {
                                 extract_integer_literal_value(&right.0),
                                 right_inner_span,
                                 self.current_module_idx,
+                                right_binding_var,
                             ));
                             Ty::range(Ty::Var(var_tv))
                         } else {
@@ -4504,6 +4527,26 @@ impl Checker {
                     Ty::range(left_ty)
                 }
             }
+        }
+    }
+
+    /// If `expr` is a bare identifier bound (via an unannotated `let`) to a
+    /// still-open literal-defaulting `TypeVar`, return that var.
+    ///
+    /// Only `infer_integer_literal_binding_type` creates this shape — it
+    /// gives an unannotated `let n = 6;` its own `Ty::Var` (immediately
+    /// unified with `IntLiteral`, but re-promotable later, same as any other
+    /// literal-defaulting var) rather than the plain `Ty::IntLiteral` tag a
+    /// bare literal expression carries. A range-bound identifier of this
+    /// shape needs its OWN var promoted alongside the range's fresh element
+    /// var — see the call site in `check_binary_op`'s Range arm.
+    fn coercible_identifier_binding_var(env: &crate::env::TypeEnv, expr: &Expr) -> Option<TypeVar> {
+        let Expr::Identifier(name) = expr else {
+            return None;
+        };
+        match env.lookup_ref(name)?.ty {
+            Ty::Var(v) => Some(v),
+            _ => None,
         }
     }
 

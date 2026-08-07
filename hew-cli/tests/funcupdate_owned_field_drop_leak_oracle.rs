@@ -164,6 +164,68 @@ fn direct_string_self_store_source(frames: usize) -> String {
     )
 }
 
+/// A heap-string field reassigned inside a CALLEE that is invoked once per
+/// frame. Unlike the in-`main` loop shapes above, the reassigned owner is
+/// abandoned at the CALLEE'S scope exit, so a lost record scope-drop leaks one
+/// buffer PER CALL — a per-frame slope, not a constant. The in-`main` loops
+/// leak the final value only once (constant) and so cannot see the record's
+/// missing `RecordInPlace` scope drop; this callee shape is the coverage that
+/// was absent when a `RecordFieldStore` into a non-inline-enum field dropped
+/// the record's scope-exit obligation.
+fn callee_scope_string_store_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         record Cfg {{ label: string, count: i64 }}\n\
+         fn churn(seed: string) -> i64 {{\n\
+         \x20   var c = Cfg {{ label: seed, count: 0 }};\n\
+         \x20   c.label = string.repeat(\"b\", 32);\n\
+         \x20   c.label.len()\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var acc: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       acc = acc + churn(string.repeat(\"a\", 32));\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if acc > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// The MIXED rule-17 case: a callee record carrying an affine `#[resource]`
+/// field BESIDE the reassigned heap-string sibling. The string is reassigned
+/// (fresh owner) and the resource is explicitly closed, both inside the callee.
+/// The record must keep its `RecordInPlace` scope drop to release the string
+/// sibling, while that same drop must NOT re-close the already-discharged
+/// handle. A missing scope drop leaks the string (slope); a widened drop that
+/// re-runs the closed handle double-frees under `MallocScribble`.
+fn callee_scope_resource_string_sibling_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         #[resource]\n\
+         type Handle {{ fd: i64 }}\n\
+         impl Handle {{ fn close(consuming self) {{}} }}\n\
+         type Carrier {{ handle: Handle, note: string }}\n\
+         fn consume_it(seed: string) -> i64 {{\n\
+         \x20   var c = Carrier {{ handle: Handle {{ fd: 1 }}, note: seed }};\n\
+         \x20   c.note = string.repeat(\"b\", 32);\n\
+         \x20   let n = c.note.len();\n\
+         \x20   c.handle.close();\n\
+         \x20   n\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var acc: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       acc = acc + consume_it(string.repeat(\"a\", 32));\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if acc > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
 fn direct_bytes_field_store_source(frames: usize) -> String {
     format!(
         "record Holder {{ payload: bytes }}\n\
@@ -612,6 +674,56 @@ fn direct_string_field_stores_are_clean_under_malloc_scribble() {
     assert_scribble_clean(
         "direct_string_self_store",
         &direct_string_self_store_source(32),
+    );
+}
+
+/// A record whose heap-string field is reassigned inside a per-frame callee
+/// must retain its scope-exit `RecordInPlace` drop: pre-fix each call abandoned
+/// the reassigned buffer at the callee's scope exit — a per-frame slope the
+/// in-`main` loop shapes cannot see; post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn callee_scope_string_store_has_flat_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "callee_scope_string_store",
+        callee_scope_string_store_source,
+    );
+}
+
+/// The rule-17 mixed case: a callee record with an affine `#[resource]` field
+/// beside the reassigned string sibling must release the string sibling once
+/// per frame (flat slope) WITHOUT re-closing the discharged handle.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn callee_scope_resource_string_sibling_has_flat_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "callee_scope_resource_string_sibling",
+        callee_scope_resource_string_sibling_source,
+    );
+}
+
+/// The rule-17 double-free guard: the mixed resource+string callee must exit
+/// cleanly under `MallocScribble` — the record's `RecordInPlace` drop releases
+/// the string sibling but must not re-run the already-closed handle's release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the deterministic poisoned-allocator contract is macOS-only"
+)]
+#[test]
+fn callee_scope_resource_string_sibling_is_clean_under_malloc_scribble() {
+    assert_scribble_clean(
+        "callee_scope_resource_string_sibling",
+        &callee_scope_resource_string_sibling_source(32),
+    );
+    assert_scribble_clean(
+        "callee_scope_string_store",
+        &callee_scope_string_store_source(32),
     );
 }
 

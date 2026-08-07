@@ -1,6 +1,7 @@
 #[cfg(not(test))]
 use super::temp_drop::{
     corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
+    is_retained_return_move,
 };
 mod aggregate_borrowed_ingress_clone;
 mod builtin_handle_record_field_overwrite;
@@ -1068,45 +1069,6 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// exhaustive `instr_source_places` / `terminator_source_places` machinery
 /// `derive_cow_sole_owner` uses, so a future alias-producing instruction
 /// auto-excludes rather than silently re-opening a double-free.
-/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
-/// retained-return co-owner mint: the instruction immediately before it is an
-/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
-///
-/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
-/// while `v`'s original reference stays owned by whatever produced it (here, an
-/// enum composite's variant payload slot). This is the `ReturnSlot` analogue of
-/// `corroborated_retained_string_move_sites`' `Move { dest: Local, src }` shape:
-/// there the destination local is the new owner and the source stays an alias
-/// released by its parent; at a return the caller is the new owner and the
-/// composite keeps release authority. Treating the read as an ESCAPE excludes
-/// the composite's `EnumInPlace` drop, so the retain's extra reference is never
-/// balanced — one leaked payload node per call (the enum twin of the
-/// returned-member retain leak, `enum_callee_consume_drop_leak_oracle`
-/// `move_out_arm`).
-fn is_retained_return_move(
-    block: &BasicBlock,
-    instr_index: usize,
-    dest: Place,
-    src: Place,
-) -> bool {
-    if !matches!(dest, Place::ReturnSlot) {
-        return false;
-    }
-    let Some(prev) = instr_index
-        .checked_sub(1)
-        .and_then(|i| block.instructions.get(i))
-    else {
-        return false;
-    };
-    matches!(
-        prev,
-        Instr::StringRetain {
-            value,
-            condition: StringRetainCondition::Always,
-        } if *value == src,
-    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "the body is four sequential single-purpose passes — candidate \
@@ -1171,36 +1133,11 @@ pub(super) fn derive_enum_composite_drop_allowed(
     // was perfectly able to free. Each candidate stands on its own leaves.
     let mut shell_drop_safe_candidate_locals: HashSet<u32> = HashSet::new();
     // Candidates whose DIRECT variant payload carries a lifecycle-registered
-    // resource record (the declared-release carve-out class). Their shell drop
-    // runs USER code — `__hew_record_drop_inplace_<R>` → `<R>::close(self)` —
-    // which, unlike the string/bytes/opaque drop steps, is NOT a no-op over a
-    // neutralized (zeroed) payload slot: the tag survives the neutralize, so
-    // the thunk would close zeroed storage. Tracked so the neutralize scan
-    // below can exclude such a candidate the moment its payload is handed off.
+    // resource record (the declared-release carve-out class). Tracked so the
+    // neutralize scan below can exclude such a candidate the moment its
+    // payload is handed off — see
+    // `shell_drop_safety::direct_payload_has_registered_resource_record`.
     let mut declared_release_payload_candidate_locals: HashSet<u32> = HashSet::new();
-    let direct_payload_has_registered_resource_record = |ty: &ResolvedTy| -> bool {
-        let ResolvedTy::Named { name, args, .. } = ty else {
-            return false;
-        };
-        crate::model::find_enum_layout(name, args, enum_layouts).is_some_and(|layout| {
-            layout.variants.iter().any(|variant| {
-                variant.field_tys.iter().any(|field_ty| match field_ty {
-                    ResolvedTy::Named {
-                        name,
-                        args,
-                        is_opaque: false,
-                        ..
-                    } => {
-                        args.is_empty()
-                            && lifecycle_registry
-                                .resource_record(&hew_types::DefId::new(name))
-                                .is_some()
-                    }
-                    _ => false,
-                })
-            })
-        })
-    };
     for (binding, _name, ty) in owned_locals {
         if !ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts) {
             continue;
@@ -1222,7 +1159,11 @@ pub(super) fn derive_enum_composite_drop_allowed(
         ) {
             shell_drop_safe_candidate_locals.insert(local);
         }
-        if direct_payload_has_registered_resource_record(ty) {
+        if shell_drop_safety::direct_payload_has_registered_resource_record(
+            ty,
+            enum_layouts,
+            lifecycle_registry,
+        ) {
             declared_release_payload_candidate_locals.insert(local);
         }
         candidate_local_to_binding.insert(local, *binding);
@@ -1944,35 +1885,14 @@ pub(super) fn derive_enum_composite_drop_allowed(
         }
     }
 
-    // A payload hand-off out of a declared-release candidate excludes it. The
-    // neutralize-transfer protocol's soundness claim — "the carrier's guarded
-    // drop releases nothing for a neutralized slot" — is a NULL-SAFETY
-    // property of the payload's drop step: a zeroed string/bytes pointer is a
-    // no-op free and an opaque slot has no drop at all. A declared-release
-    // record's drop step is the user's `close(self)` run by
-    // `__hew_record_drop_inplace_<R>` behind the still-set variant tag, which
-    // executes unconditionally over the zeroed storage — the S2200 double
-    // close, resurrected through the consume path (`Ok(c) => c.close()`)
-    // instead of the borrow path. Any `NeutralizePayloadSlot` on such a
-    // candidate's variant slot therefore excludes the whole candidate,
-    // fail-closed: the arm's own consume/close is then the sole release and
-    // the sibling variant leaks, exactly like every other payload escape.
-    for block in blocks {
-        for instr in &block.instructions {
-            if let Instr::NeutralizePayloadSlot {
-                place: place @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
-                ..
-            } = instr
-            {
-                if let Some(root) = base_local(*place)
-                    .and_then(|local| alias_of.get(&local).copied())
-                    .filter(|root| declared_release_payload_candidate_locals.contains(root))
-                {
-                    excluded_roots.insert(root);
-                }
-            }
-        }
-    }
+    // A payload hand-off out of a declared-release candidate excludes it —
+    // see `shell_drop_safety::note_declared_release_neutralize_exclusions`.
+    shell_drop_safety::note_declared_release_neutralize_exclusions(
+        blocks,
+        &alias_of,
+        &declared_release_payload_candidate_locals,
+        &mut excluded_roots,
+    );
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {

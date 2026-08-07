@@ -294,8 +294,18 @@ fn shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases() {
         "measured wrapper witness must compile:\n{}",
         describe_output(&output)
     );
+    // LLVM's `print_to_file` (via `LLVMPrintModuleToFile`) opens the `.ll`
+    // destination in Windows text mode, translating every emitted `\n` to
+    // `\r\n` — a platform convention of LLVM's own IR-text writer, not a
+    // codegen defect (the module's structure, including this function's
+    // closing brace, is unaffected). Normalize once here so every
+    // byte-oriented search below (`function_body`'s `"\n}\n"` scan in
+    // particular) sees the same shape on every platform; `.lines()`-based
+    // parsing elsewhere in this file already tolerates CRLF, so this is the
+    // single place the raw text needs it.
     let ir = std::fs::read_to_string(dir.path().join("os_io_retention.ll"))
-        .expect("read generated LLVM IR");
+        .expect("read generated LLVM IR")
+        .replace("\r\n", "\n");
     for symbol in SYMBOLS {
         let uses = ir.matches(&format!("@{symbol}(")).count();
         assert!(

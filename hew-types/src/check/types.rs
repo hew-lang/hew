@@ -3325,7 +3325,8 @@ pub struct Checker {
     pub(super) last_lambda_generic_sig: Option<GenericLambdaSig>,
     /// Range bounds whose element type is deferred until surrounding inference
     /// settles. Each entry is:
-    ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated)
+    ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated,
+    ///    module-idx, identifier-binding-var-if-any)
     /// The fourth field carries the inner literal span when the bound is a
     /// negated integer literal (`-5`) so `apply_deferred_range_bound_types`
     /// can re-record the inner span too.  Without this, the inner literal's
@@ -3333,16 +3334,40 @@ pub struct Checker {
     /// `materialize_literal_defaults`), while the outer span is correctly
     /// narrowed to the resolved type (e.g. `I32`), causing a
     /// `UnaryOperatorUnsupportedInMir` width mismatch in HIR.
+    /// The sixth field carries the bound's own binding `TypeVar` when the
+    /// bound is a bare identifier referring to an unannotated `let` literal
+    /// (`let n = 6; ... 0 .. n`) — see `coercible_identifier_binding_var`.
+    /// That identifier's own var is a SEPARATE unknown from the range's
+    /// element var; without also promoting it here, the identifier's
+    /// declaration-site type stays defaulted to `i64` even after the range's
+    /// element var narrows to a concrete width elsewhere (e.g. `i32` from a
+    /// loop-variable use-site constraint), producing a self-inconsistent
+    /// range MIR fail-closes on.
     /// Processed in `apply_deferred_range_bound_types` after all inference and
     /// literal defaulting is complete.
-    // The tuple carries (span, var, literal_value, inner_span, module_idx). A named
-    // struct would be cleaner but the field is private and short-lived — it never
-    // escapes the deferred-resolution pass.
+    // The tuple carries (span, var, literal_value, inner_span, module_idx,
+    // identifier_binding_var). A named struct would be cleaner but the field is
+    // private and short-lived — it never escapes the deferred-resolution pass.
     #[allow(
         clippy::type_complexity,
         reason = "short-lived tuple; a named struct would be overkill for an internal deferred-resolution pass"
     )]
-    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>, Option<Span>, u32)>,
+    pub(super) deferred_range_bounds: Vec<(
+        Span,
+        TypeVar,
+        Option<i64>,
+        Option<Span>,
+        u32,
+        Option<TypeVar>,
+    )>,
+    /// Maps a literal-defaulting `TypeVar` (created by
+    /// `infer_integer_literal_binding_type` for an unannotated `let`/`var`
+    /// integer literal) back to the span + module index where that literal
+    /// was recorded, so `apply_deferred_range_bound_types` can re-record the
+    /// DECLARATION site when it promotes such a var via a range-bound
+    /// identifier reference — not just the reference site that triggered the
+    /// promotion. See the call site in `infer_integer_literal_binding_type`.
+    pub(super) literal_binding_value_spans: HashMap<TypeVar, (Span, u32)>,
     /// Intrinsic declarations seen during registration: fn name → intrinsic key.
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
@@ -3694,6 +3719,7 @@ impl Checker {
             lambda_poly_sig_map: HashMap::new(),
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
+            literal_binding_value_spans: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pending_let_closure_name: None,
             pending_pattern_resolutions: HashMap::new(),

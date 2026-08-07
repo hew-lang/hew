@@ -5,13 +5,31 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn emit_ll(source: &str, module_name: &str) -> String {
+    emit_ll_with_registry(source, module_name, ModuleRegistry::new(vec![]))
+}
+
+/// Variant that resolves `import std::…` from the repository stdlib, the same
+/// module-registry stage the real driver always runs. The `math.*` intrinsic
+/// rewrites are keyed off the `#[intrinsic]` declarations in
+/// `std/math/math.hew`, so a test exercising the module-qualified surface must
+/// register that source — an empty registry bypasses the stage and fails
+/// closed at HIR with `MethodCallNoRewrite`.
+fn emit_ll_with_std(source: &str, module_name: &str) -> String {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate dir has a parent")
+        .to_path_buf();
+    emit_ll_with_registry(source, module_name, ModuleRegistry::new(vec![repo_root]))
+}
+
+fn emit_ll_with_registry(source: &str, module_name: &str, registry: ModuleRegistry) -> String {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
         parsed.errors
     );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut checker = Checker::new(registry);
     let tc_output = checker.check_program(&parsed.program);
     assert!(
         tc_output.errors.is_empty(),
@@ -195,8 +213,10 @@ fn builtins_print_overloads_use_print_value_tags() {
 
 #[test]
 fn free_math_builtins_emit_llvm_intrinsics() {
-    let ll = emit_ll(
+    let ll = emit_ll_with_std(
         r#"
+        import std::math;
+
         fn main() -> i64 {
             let a: f64 = sqrt(9.0);
             let b: i64 = abs(-7);

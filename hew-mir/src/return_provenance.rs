@@ -156,8 +156,10 @@ impl DeclaredReleaseTypes {
 }
 
 // The clause-3 field predicate (`field_is_released_only_by_the_declared_close`)
-// is hosted beside the admission loop in `hew_hir::declared_release`, keeping
-// it the one authority every consumer names.
+// is hosted beside the admission loop in `hew_hir::declared_release`; the
+// re-export keeps it the one authority every MIR consumer names (the
+// shell-drop cap's declared-release carve-out reads it through this path).
+pub(crate) use hew_hir::declared_release::field_is_released_only_by_the_declared_close;
 
 // ---------------------------------------------------------------------------
 // The three-state may-alias lattice

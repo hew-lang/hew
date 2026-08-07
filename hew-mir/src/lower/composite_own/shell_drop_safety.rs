@@ -128,8 +128,9 @@ use std::collections::{HashMap, HashSet};
 /// (`field_is_released_only_by_the_declared_close`) is released ONLY by the
 /// shell's thunk chain (`__hew_enum_drop_inplace` →
 /// `__hew_record_drop_inplace_<R>` → `<R>::close`) — its binder owns no heap
-/// and mints no owner, and an arm that DOES consume it is a payload escape
-/// that excludes the shell before this predicate is consulted. Refusing that
+/// and mints no owner, and an arm that DOES consume it neutralizes the slot,
+/// which the prover's neutralize scan turns into a whole-candidate exclusion
+/// (a record close is not null-safe over a zeroed slot). Refusing that
 /// shape leaves zero releases, not one. The carve-out is DIRECT-payload only
 /// (`depth == 1`), mirroring the bare-opaque admission's soundness scope, and
 /// its admission/refusal boundary is the same clause-3 conjunction the
@@ -202,8 +203,10 @@ fn payload_leaf_is_shell_drop_safe(
     // ONE authority that ever schedules that close (`__hew_enum_drop_inplace`
     // → `__hew_record_drop_inplace_<R>` → `<R>::close`): the payload binder
     // owns no heap and earns no owner of its own, and an arm that CONSUMES the
-    // payload (an explicit `h.close()`) is a payload escape that excludes the
-    // shell fail-closed before this predicate's answer matters. Refusing here
+    // payload (an explicit `h.close()`) hands it off through a
+    // `NeutralizePayloadSlot`, which the prover's neutralize scan turns into a
+    // whole-candidate exclusion (a record close is not null-safe over a
+    // zeroed slot, so the shell must not drop after a hand-off). Refusing here
     // therefore leaves ZERO releases for the adopted handle, not one — the
     // declared-release contract's leak. The answer is the clause-3 conjunction
     // itself: a registered record with a field the post-close teardown CAN

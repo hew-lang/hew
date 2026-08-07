@@ -194,6 +194,20 @@ fn assert_clean(p: &IrPipeline) {
     );
 }
 
+/// Every `Drop` statement lowered into the named function. A foreign-owned
+/// (`NoOwner`) extern result must not acquire a caller-side release anywhere
+/// in the frame that observed it — the fail-closed direction is a missed
+/// drop, never a second claim over memory the host still owns.
+fn drop_statements_in(p: &IrPipeline, function: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .filter(|f| f.name == function)
+        .flat_map(|f| &f.blocks)
+        .flat_map(|block| &block.statements)
+        .filter(|statement| matches!(statement, hew_mir::MirStatement::Drop { .. }))
+        .count()
+}
+
 const FORWARDER: &str = r"
     fn passthru(x: Result<string, string>) -> Result<string, string> { x }
 ";
@@ -470,8 +484,19 @@ fn fresh_producer_match_publishes_fresh_fact() {
     assert_clean(&p);
 }
 
+// An extern-produced nominal without an audited transfer lifecycle completes
+// as `NoOwner`: the value is foreign-owned and this program must not invent a
+// release obligation for it. The former contract refused these programs
+// outright (`Unknown` + the unresolved-scrutinee rejection); the completed
+// derivation instead admits them with NO caller-side owner anywhere — the
+// fail-closed direction is a missed drop, never a free of host memory. The
+// teeth: the fact is `NoOwner` (never `Owned`), no typed owner is minted at
+// the site, no `Drop` is lowered in any frame that observed the value, and a
+// foreign value that DOES reach an owner-minting sink is still refused (see
+// `unknown_extern_arg_stays_unknown_beneath_fresh_wrapper` above).
+
 #[test]
-fn opaque_only_module_fn_stays_unknown_and_fails_closed() {
+fn opaque_only_module_fn_completes_foreign_no_owner_and_mints_no_release() {
     let src = r#"
         extern "C" {
             fn ext_make() -> Result<string, string>;
@@ -482,14 +507,15 @@ fn opaque_only_module_fn_stays_unknown_and_fails_closed() {
         }
     "#;
     let p = pipeline(src);
-    assert_authority(&p, "ext_make()", Ownership::Unknown);
-    assert_authority(&p, "wrap()", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_authority(&p, "ext_make()", Ownership::NoOwner);
+    assert_authority(&p, "wrap()", Ownership::NoOwner);
+    assert_clean(&p);
+    assert_eq!(drop_statements_in(&p, "wrap"), 0);
+    assert_eq!(drop_statements_in(&p, "use_it"), 0);
 }
 
 #[test]
-fn direct_heap_extern_scrutinee_stays_unknown_and_fails_closed() {
+fn direct_heap_extern_scrutinee_completes_foreign_no_owner_and_mints_no_release() {
     let src = r#"
         extern "C" {
             fn ext_make() -> Result<string, string>;
@@ -499,13 +525,13 @@ fn direct_heap_extern_scrutinee_stays_unknown_and_fails_closed() {
         }
     "#;
     let p = pipeline(src);
-    assert_authority(&p, "ext_make()", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_authority(&p, "ext_make()", Ownership::NoOwner);
+    assert_clean(&p);
+    assert_eq!(drop_statements_in(&p, "use_it"), 0);
 }
 
 #[test]
-fn spoofed_recv_symbol_extern_stays_unknown_and_fails_closed() {
+fn spoofed_recv_symbol_extern_acquires_no_delivery_owner() {
     let src = r#"
         extern "C" {
             fn hew_channel_recv_layout(ch: i64) -> Result<string, string>;
@@ -515,9 +541,12 @@ fn spoofed_recv_symbol_extern_stays_unknown_and_fails_closed() {
         }
     "#;
     let p = pipeline(src);
-    assert_authority(&p, "hew_channel_recv_layout(0)", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    // A user extern declaration spoofing the runtime recv symbol must not
+    // acquire the runtime's owned Delivery contract: foreign-owned, no owner
+    // minted, no release lowered.
+    assert_authority(&p, "hew_channel_recv_layout(0)", Ownership::NoOwner);
+    assert_clean(&p);
+    assert_eq!(drop_statements_in(&p, "use_it"), 0);
 }
 
 #[test]
@@ -551,7 +580,7 @@ fn owned_record_getter_move_out_publishes_clone_fact() {
 }
 
 #[test]
-fn opaque_only_module_fn_move_out_stays_unknown_and_fails_closed() {
+fn opaque_only_module_fn_move_out_binds_payload_without_release() {
     let src = r#"
         extern "C" {
             fn ext_make() -> Result<string, string>;
@@ -563,9 +592,14 @@ fn opaque_only_module_fn_move_out_stays_unknown_and_fails_closed() {
         }
     "#;
     let p = pipeline(src);
-    assert_authority(&p, "wrap()", Ownership::Unknown);
-    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
-    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
+    assert_authority(&p, "wrap()", Ownership::NoOwner);
+    assert_clean(&p);
+    // The projected payload binder is in the proven-foreign ledger: `inner`
+    // binds the host-owned string and is withheld a scope-exit owner, so no
+    // frame ever releases it — leak-only, never a double free.
+    assert_eq!(drop_statements_in(&p, "wrap"), 0);
+    assert_eq!(drop_statements_in(&p, "use_it"), 0);
+    assert_eq!(drop_statements_in(&p, "sink"), 0);
 }
 
 #[test]
@@ -764,4 +798,23 @@ fn guard_buried_return_forwarder_publishes_retained_fact() {
     let p = pipeline(src);
     assert_owned(&p, "evil(p, 0)", Acquisition::Retained);
     assert_clean(&p);
+}
+
+#[test]
+fn indirect_function_value_scrutinee_stays_unknown_and_fails_closed() {
+    let src = r#"
+        fn make(s: string) -> Result<string, string> { Ok(s) }
+        fn use_it() -> i64 {
+            let f = make;
+            match f("x") { Ok(_) => 1, Err(_) => 0 }
+        }
+    "#;
+    let p = pipeline(src);
+    // An indirect call has no resolvable return summary, so the completed
+    // fact stays `Unknown` and the ownership-demanding sink refuses it —
+    // the compile-time fail-closed tooth the extern-Named shapes above no
+    // longer exercise now that they complete as foreign `NoOwner`.
+    assert_authority(&p, "f(\"x\")", Ownership::Unknown);
+    assert_eq!(unresolved_ownership_count(&p), 1, "{:#?}", p.diagnostics);
+    assert_eq!(p.diagnostics.len(), 1, "{:#?}", p.diagnostics);
 }

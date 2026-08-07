@@ -78,7 +78,7 @@
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
-.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest
+.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: ll-diff ll-golden ll-identity-selftest
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -468,6 +468,20 @@ fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 # report PASS over a candidate set below its floor.
 fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
+
+# Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
+# A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run
+# and not the next), which the deterministic per-PR fuzz-oracle above does
+# not tolerate — so this stays off ci.yml. Self-provisioning mirrors
+# structural-lint: the toolchain install is a prerequisite of the gate
+# target, not a separate manual step, and it is idempotent.
+FUZZ_SMOKE_MAX_TOTAL_TIME ?= 120
+
+fuzz-smoke-bootstrap-install:
+	bash scripts/fuzz/smoke-bootstrap.sh
+
+fuzz-smoke: fuzz-smoke-bootstrap-install
+	FUZZ_SMOKE_MAX_TOTAL_TIME="$(FUZZ_SMOKE_MAX_TOTAL_TIME)" bash scripts/fuzz/run-smoke.sh
 
 bootstrap: install-hooks
 

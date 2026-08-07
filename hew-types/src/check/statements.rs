@@ -619,9 +619,25 @@ impl Checker {
             return val_ty;
         };
         if is_integer_literal(expr) && val_ty.is_integer_literal() {
-            let inferred = Ty::Var(TypeVar::fresh());
+            let var = TypeVar::fresh();
+            let inferred = Ty::Var(var);
             self.expect_type(&inferred, &val_ty, span);
             self.record_integer_literal_type(expr, span, &inferred);
+            // Remember where this var's literal was recorded so a later
+            // promotion (e.g. `apply_deferred_range_bound_types` narrowing a
+            // range-bound identifier's own var to a concrete width) can
+            // re-record the DECLARATION-site span too, not just the
+            // reference site that triggered the promotion. Without this, an
+            // unannotated `let n = 6;` later used as a range bound
+            // (`0 .. n`) that gets narrowed via loop-variable usage keeps
+            // its declaration-site span defaulted to `i64` in the exported
+            // `expr_types` snapshot (`check_program` takes that snapshot
+            // once, before defaulting/promotion runs) even though the
+            // reference site inside the range is correctly narrowed — HIR's
+            // identifier lowering reads the DECLARATION site, not the
+            // reference site, so the stale entry is the one that matters.
+            self.literal_binding_value_spans
+                .insert(var, (span.clone(), self.current_module_idx));
             inferred
         } else {
             val_ty

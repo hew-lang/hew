@@ -219,7 +219,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # Explicit acquisition is cacheable but never implicit in local lint.
+      # A cold runner always pays this once; make structural-lint (below and
+      # in local `make lint`) provisions through the same idempotent target,
+      # so a warm cache anywhere in the chain makes this a no-op.
       - name: Bootstrap pinned structural lint toolchain
         run: make structural-lint-bootstrap
 

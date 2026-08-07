@@ -2279,12 +2279,19 @@ mod tests {
     // address back and a later destroy aliases the stale record → leak + UAF.
     // These statics let one such cleanup thunk observe whether the address of a
     // frame the drain is holding gets reused mid-drain.
+    // Native-only: exercises the crash-drain reclaim path, which is
+    // `#[cfg(not(target_arch = "wasm32"))]` (wasm is single-threaded and has no
+    // cross-frame crash drain).
+    #[cfg(not(target_arch = "wasm32"))]
     static ABA_HELD_FRAME: std::sync::atomic::AtomicPtr<c_void> =
         std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+    #[cfg(not(target_arch = "wasm32"))]
     static ABA_THUNK_ALLOC: std::sync::atomic::AtomicPtr<c_void> =
         std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+    #[cfg(not(target_arch = "wasm32"))]
     const ABA_FRAME_SIZE: u64 = 128;
 
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe extern "C-unwind" fn aba_alias_probe_cleanup(_slot: *mut c_void) {
         // Runs from the PARENT frame's crash cleanup DURING the drain, after the
         // child frame was claimed (held). Allocate a frame of the child's exact
@@ -2299,6 +2306,7 @@ mod tests {
         unsafe { hew_cont_frame_free(probe) };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn crash_drain_holds_reclaimed_frame_so_a_cleanup_cannot_alias_it() {
         ABA_HELD_FRAME.store(ptr::null_mut(), Ordering::Release);

@@ -961,6 +961,14 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("break {src}:12"),
             "-ex",
             "run",
+            // gdb auto-detects the DWARF source language as Rust from the
+            // producer; in Rust mode `print` renders record fields as
+            // `Payload {code: 7}` instead of the C-style `code = 7` this
+            // assertion expects. Forcing C mode makes the rendering match
+            // the other gdb assertions in this suite (see `set language c`
+            // above).
+            "-ex",
+            "set language c",
             "-ex",
             "print status",
             bin,

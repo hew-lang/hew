@@ -86,13 +86,33 @@ fn timeout_await_operation_preserves_ordered_subsumption_spine() {
         )
     }));
 
+    // Every occurrence on the subsumption spine carries the same result type,
+    // so a receiver tamper aimed at the spine is invisible to the type
+    // congruence guard. Aim it at the `echo` binding reference instead: it is
+    // inside the timeout occurrence's structural subtree but actor-handle
+    // typed, so the receiver-identity check must reject the storage mismatch.
+    let (&scrutinee_site, _) = facts
+        .iter()
+        .find(|(site, fact)| {
+            fact.producer == hew_hir::HirProducedValueProducer::BindingRef && {
+                let mut current = **site;
+                loop {
+                    match parents.get(&current).copied().flatten() {
+                        Some(parent) if parent == timeout_site => break true,
+                        Some(parent) => current = parent,
+                        None => break false,
+                    }
+                }
+            }
+        })
+        .expect("actor-handle binding reference inside the timeout subtree");
     let mut wrong_receiver = output.module.clone();
     let fact = wrong_receiver
         .produced_value_facts
         .get_mut(&timeout_site)
         .expect("timeout fact");
     fact.ownership = hew_types::ProducedValueOwnership::ReceiverIdentity;
-    fact.receiver = Some(operation_site);
+    fact.receiver = Some(scrutinee_site);
     fact.receiver_boundary = Some(hew_types::ProducedArgumentBoundary::Transfer);
     assert!(verify_hir(&wrong_receiver).iter().any(|diagnostic| {
         matches!(

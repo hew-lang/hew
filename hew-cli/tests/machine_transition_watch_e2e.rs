@@ -890,3 +890,132 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
         "worker got 99\ndone\n",
     );
 }
+
+/// Regression oracle for the actor-ask + select + machine-heap-payload
+/// use-after-free.
+///
+/// The composition that fires the defect: an actor `receive fn run() -> i64`
+/// whose body runs a `select`/`after` arm over a channel carrying a `machine`
+/// value with a heap-payload state (`Failed { reason: string }`), invoked with
+/// the idiomatic AWAITED ask form (`await o.run()`). Under `MallocScribble` the
+/// channel's `ChannelCore` is released one time too many on this path — the
+/// receiver reference is lost while a `select`-poll thread and the resumed
+/// handler still hold it — so the next `try_recv` reads a freed core. The same
+/// shape with a plain `enum` element (not a `machine`) stays clean, and the
+/// fire-and-forget form (`o.run(); sleep(...)`) never trips it: the AWAIT that
+/// makes the handler a resumed coroutine is required.
+///
+/// Proven by instrumentation: the `ChannelCore` `Arc` is dropped twice (a
+/// double-free), and both freeing drops originate in the `select`-poll-thread
+/// closure releasing its core clone — the count reaches zero one step early
+/// because the receiver's own reference is lost earlier on the machine path,
+/// without a normal receiver teardown. The extra decrement is timing-entangled
+/// with the machine value's frame-local drops and the crash-cleanup arm/retire
+/// ordering the resumed dispatch drives around each suspend. The leading
+/// hypothesis is the aggregate residual-field discharge in hew-mir
+/// drop-elaboration (the 06a241f40 model, shared root with the
+/// record-sibling-field cleanup work); the exact discharge site is confirmed in
+/// the dedicated fix lane, not with a local patch. Un-ignore once that lands.
+///
+/// The UAF is timing-dependent (roughly a third of single runs trip it), so
+/// this oracle runs the compiled program repeatedly and requires EVERY run to
+/// exit 0 with the exact expected stdout — a single scribbled read of a freed
+/// core anywhere in the batch fails the test.
+#[test]
+#[ignore = "tracked: actor-ask + select + machine-heap-payload UAF; fix in hew-mir drop-elaboration residual-field discharge (06a241f40 model)"]
+fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
+    const SOURCE: &str = "import std::channel::channel;\n\
+         \n\
+         machine Conn {\n\
+         \x20   events {\n\
+         \x20       Connect;\n\
+         \x20       Fail { reason: string; }\n\
+         \x20   }\n\
+         \n\
+         \x20   state Idle;\n\
+         \x20   state Open;\n\
+         \x20   state Failed { reason: string; }\n\
+         \n\
+         \x20   on Connect: Idle => Open {\n\
+         \x20       Open\n\
+         \x20   }\n\
+         \x20   on Fail: Open => Failed {\n\
+         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20   }\n\
+         \x20   on Connect: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         \x20   on Fail: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         actor Owner {\n\
+         \x20   receive fn run() -> i64 {\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       c.step(Connect);\n\
+         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       tx.send(c);\n\
+         \x20       tx.close();\n\
+         \x20       select {\n\
+         \x20           snap from rx.recv() => {\n\
+         \x20               match snap {\n\
+         \x20                   Some(s) => {\n\
+         \x20                       match s {\n\
+         \x20                           Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                           Conn::Open => println(\"open\"),\n\
+         \x20                           Conn::Idle => println(\"idle\"),\n\
+         \x20                       }\n\
+         \x20                   },\n\
+         \x20                   None => println(\"watch closed\"),\n\
+         \x20               }\n\
+         \x20           },\n\
+         \x20           after 2s => println(\"timeout\"),\n\
+         \x20       };\n\
+         \x20       rx.close();\n\
+         \x20       42\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let o = spawn Owner;\n\
+         \x20   match await o.run() {\n\
+         \x20       Ok(r) => println(f\"r={r}\"),\n\
+         \x20       Err(_) => println(\"ask failed\"),\n\
+         \x20   }\n\
+         }\n";
+
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("awaited_ask_select_machine.hew");
+    std::fs::write(&path, SOURCE).unwrap();
+
+    for iteration in 0..24 {
+        let mut command = Command::new(hew_binary());
+        command
+            .arg("run")
+            .arg(&path)
+            .current_dir(dir.path())
+            .env("MallocScribble", "1")
+            .env("MallocPreScribble", "1");
+        let output = support::run_bounded_command(
+            command,
+            format!("awaited_ask_select_machine #{iteration}"),
+        );
+
+        assert!(
+            output.status.success(),
+            "iteration {iteration}: awaited ask + select + machine-heap-payload must exit 0 \
+             under MallocScribble; stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "failed: peer reset\nr=42\n",
+            "iteration {iteration}: unexpected stdout",
+        );
+    }
+}

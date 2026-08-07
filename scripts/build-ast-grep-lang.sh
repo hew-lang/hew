@@ -99,6 +99,19 @@ if ! need; then
     mv "$tmp" "$GRAMMAR_ARCHIVE"
 fi
 
+# Idempotence: skip the extract/patch/regenerate/compile cycle when a stamp
+# matching the pinned lock proves the checked-out grammar is already built
+# for this exact contract. The archive checksum above still runs on every
+# call, so a corrupted or stale cache is never silently trusted — only the
+# expensive native rebuild is skipped, which is what makes repeated
+# invocations (make lint, the bootstrap self-tests, CI) cheap instead of
+# re-running a native build every time.
+if [[ -f "$OUT" ]] && [[ -f "$ARTIFACT_DIR/hew-lang.stamp" ]] &&
+    [[ "$(cat "$ARTIFACT_DIR/hew-lang.stamp")" == "$(printf '%s\n%s' "$TREE_SITTER_HEW_ARCHIVE_SHA256" "$TREE_SITTER_HEW_LANGUAGE_ABI")" ]]; then
+    echo "pinned Hew grammar already built: $OUT"
+    exit 0
+fi
+
 rm -rf "$GRAMMAR_DIR"
 mkdir -p "$GRAMMAR_DIR"
 tar -xzf "$GRAMMAR_ARCHIVE" --strip-components=1 -C "$GRAMMAR_DIR"

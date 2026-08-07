@@ -1956,11 +1956,16 @@ impl Builder {
     /// Prove that one ordinary record-field overwrite preserves the enclosing
     /// record's final ownership.
     ///
-    /// The proof is intentionally narrow: only a registered inline enum field
-    /// with a total recursive clone/drop plan qualifies. Every formerly
-    /// unsupported overwrite (unknown/indirect/resource/mixed payload) keeps the
-    /// previous fail-closed owner exclusion in
-    /// `derive_owned_record_drop_allowed`.
+    /// Any droppable field whose overwrite-release is TOTAL and reaches no
+    /// forbidden boundary qualifies — a `string`, `Vec<string>`, owned record,
+    /// inline enum, or bit-copy field. `lower_record_field_store` frees the
+    /// abandoned value before storing the replacement, so the record keeps sole
+    /// ownership of the freshly-stored value and retains its scope-exit
+    /// `RecordInPlace` drop; excluding it here leaked the reassigned owner.
+    /// Every unsupported overwrite (affine `#[resource]`/IO/opaque/indirect-enum
+    /// payload) keeps the fail-closed owner exclusion in
+    /// `derive_owned_record_drop_allowed`, dropping the record by no path rather
+    /// than double-freeing a handle the store could not release.
     pub(crate) fn record_field_store_preserves_record_owner(
         &self,
         record: Place,
@@ -1983,7 +1988,7 @@ impl Builder {
         };
         let field_ty = self.normalize_machine_field_ty(field_ty);
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::inline_enum_overwrite_drop_is_ready(
+        crate::state_clone::field_overwrite_release_preserves_owner(
             &field_ty,
             &record_layouts,
             &self.enum_layouts,

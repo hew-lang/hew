@@ -1141,6 +1141,65 @@ pub fn inline_enum_overwrite_drop_is_ready(
     )
 }
 
+/// Return whether storing a replacement into a record field of type `ty`
+/// leaves the enclosing record its final sole owner — the general owner-
+/// preservation proof the owned-record sole-owner scan consumes for ANY
+/// droppable field, not only an inline enum.
+///
+/// `lower_record_field_store` (hew-codegen-rs/src/llvm.rs) emits an
+/// `emit_field_overwrite_release` for the destination field before storing the
+/// replacement, freeing the abandoned value. When that release is TOTAL (the
+/// field's clone/drop plan covers every leaf) and the field reaches no
+/// forbidden overwrite boundary, the record keeps sole ownership of exactly the
+/// freshly-stored value and MUST retain its scope-exit `RecordInPlace` drop —
+/// otherwise the reassigned owner (a `string`, `Vec<string>`, owned record, …)
+/// leaks at scope exit. This is the string/collection/record analogue of
+/// [`inline_enum_overwrite_drop_is_ready`]: same readiness proof, without the
+/// `StateFieldCloneKind::Enum`-only gate.
+///
+/// Fail-closed for the classes the overwrite-release cannot safely balance: an
+/// affine `#[resource]` / IO / opaque / closure-pair leaf (via `is_clone_total`)
+/// and any field reaching a user `#[resource]` record or indirect enum (via
+/// `type_reaches_forbidden_overwrite_boundary`) return `false`, keeping the
+/// pre-existing owner exclusion so the record is dropped by no path rather than
+/// risking a double-free of a handle the store could not release.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] when classification or recursive layout
+/// resolution fails.
+pub fn field_overwrite_release_preserves_owner(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &hew_hir::LifecycleRegistry,
+    resource_record_names: &[String],
+) -> Result<bool, ClassificationError> {
+    if type_reaches_forbidden_overwrite_boundary(
+        ty,
+        record_layouts,
+        enum_layouts,
+        resource_record_names,
+        &mut HashSet::new(),
+    ) {
+        return Ok(false);
+    }
+    let plan = classify_value_snapshot_plan_with_lifecycle_registry(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )?;
+    plan.is_clone_total(
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )
+}
+
 /// Return whether `ty` is a registered record with a total recursive
 /// clone/drop plan and at least one registered inline enum field.
 ///

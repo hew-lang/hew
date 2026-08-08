@@ -1355,40 +1355,40 @@ fn collect_trait_default_methods(
 ) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
     let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect = |items: &[(Item, Span)], module: Option<(&str, u32)>| {
-        for (item_idx, (item, _)) in items.iter().enumerate() {
-            let Item::Trait(trait_decl) = item else {
-                continue;
-            };
-            let defaults: Vec<TraitMethod> = trait_decl
-                .items
-                .iter()
-                .filter_map(|ti| match ti {
-                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                    _ => None,
-                })
-                .collect();
-            if !defaults.is_empty() {
-                let key = module.map_or_else(
-                    || trait_decl.name.clone(),
-                    |(owner, _)| format!("{owner}.{}", trait_decl.name),
-                );
-                // A trait spliced into the ROOT items by a file import keeps
-                // its bare root spelling, but the checker validated it during
-                // the module walk under that file's own index — recover it
-                // per item rather than assuming root (0).
-                let idx = module.map_or_else(
-                    || file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
-                    |(_, idx)| idx,
-                );
-                owner_module_idx.insert(key.clone(), idx);
-                out.insert(key, defaults);
+    let mut collect =
+        |items: &[(Item, Span)], owner: Option<&str>, idx_for: &dyn Fn(usize) -> u32| {
+            for (item_idx, (item, _)) in items.iter().enumerate() {
+                let Item::Trait(trait_decl) = item else {
+                    continue;
+                };
+                let defaults: Vec<TraitMethod> = trait_decl
+                    .items
+                    .iter()
+                    .filter_map(|ti| match ti {
+                        TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if !defaults.is_empty() {
+                    let key = owner.map_or_else(
+                        || trait_decl.name.clone(),
+                        |owner| format!("{owner}.{}", trait_decl.name),
+                    );
+                    // A trait spliced into the ROOT items by a file import keeps
+                    // its bare root spelling, but the checker validated it during
+                    // the module walk under that file's own index. A trait in a
+                    // directory module's peer file likewise owns that PEER's index,
+                    // not the assembled module's base — recover both per item.
+                    owner_module_idx.insert(key.clone(), idx_for(item_idx));
+                    out.insert(key, defaults);
+                }
             }
-        }
-    };
-    collect(&program.items, None);
+        };
+    collect(&program.items, None, &|item_idx| {
+        file_import_module_idx.get(&item_idx).copied().unwrap_or(0)
+    });
     if let Some(graph) = &program.module_graph {
-        let mut module_idx = 0_u32;
+        let span_indices = graph.file_span_indices();
         for module_id in &graph.topo_order {
             if *module_id == graph.root {
                 continue;
@@ -1396,9 +1396,10 @@ fn collect_trait_default_methods(
             let Some(module) = graph.modules.get(module_id) else {
                 continue;
             };
-            module_idx += 1;
             let owner = module_id.path.join(".");
-            collect(&module.items, Some((&owner, module_idx)));
+            collect(&module.items, Some(&owner), &|item_idx| {
+                span_indices.item_index(module_id, item_idx).unwrap_or(0)
+            });
         }
     }
     (out, owner_module_idx)
@@ -1916,24 +1917,9 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
         return map;
     };
 
-    // Module index by canonical source path, counted exactly as the checker
-    // counts `current_module_idx` during its non-root body-check walk.
-    let mut idx_by_path: HashMap<PathBuf, u32> = HashMap::new();
-    let mut module_idx: u32 = 0;
-    for mod_id in &mg.topo_order {
-        if *mod_id == mg.root {
-            continue;
-        }
-        if let Some(module) = mg.modules.get(mod_id) {
-            module_idx += 1;
-            for p in &module.source_paths {
-                idx_by_path.entry(p.clone()).or_insert(module_idx);
-            }
-        }
-    }
-    if idx_by_path.is_empty() {
-        return map;
-    }
+    // Index by canonical source path, from the one allocation the checker
+    // stamped `current_module_idx` with during its non-root body-check walk.
+    let span_indices = mg.file_span_indices();
 
     // Re-derive the flattened tail block, mirroring `flatten_file_import_items`:
     // each file-path import decl contributed its resolved items (minus nested
@@ -1960,7 +1946,9 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
                 .get(k)
                 .map(PathBuf::as_path)
                 .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
-            let idx = path.and_then(|p| idx_by_path.get(p).copied()).unwrap_or(0);
+            let idx = path
+                .and_then(|p| span_indices.path_index(p))
+                .unwrap_or_default();
             appended.push(idx);
         }
     }
@@ -2380,22 +2368,13 @@ pub fn lower_program_with_mono_cap(
     // declaration namespace.  Compute the checker-aligned module-name carrier
     // once and use it in every HIR pass that creates declaration identity,
     // not only while lowering executable bodies in the third pass.
-    let module_idx_to_name: HashMap<u32, String> = {
-        let mut names = HashMap::new();
-        if let Some(module_graph) = &program.module_graph {
-            let mut module_idx = 0_u32;
-            for module_id in &module_graph.topo_order {
-                if *module_id == module_graph.root {
-                    continue;
-                }
-                if module_graph.modules.contains_key(module_id) {
-                    module_idx += 1;
-                    names.insert(module_idx, module_id.path.join("."));
-                }
-            }
-        }
-        names
-    };
+    // Every index a module owns — one per source file, so a directory module's
+    // peers all carry their assembled module's name.
+    let span_indices = program
+        .module_graph
+        .as_ref()
+        .map(hew_parser::module::ModuleGraph::file_span_indices)
+        .unwrap_or_default();
     ctx.seed_stdlib_fn_registry();
     let builtin_receiver_impl_program = builtin_receiver_impl_program();
     let builtin_receiver_impl_output = builtin_receiver_impl_program
@@ -2511,7 +2490,9 @@ pub fn lower_program_with_mono_cap(
     // in the second pass, which is where canonical diagnostics are emitted.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         match item {
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
@@ -3509,7 +3490,9 @@ pub fn lower_program_with_mono_cap(
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         if let Item::TypeDecl(decl) = item {
             ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-            ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+            ctx.current_module_name = span_indices
+                .module_name(ctx.current_module_idx)
+                .map(str::to_string);
             let hir_decl = if let Some(module) = ctx.current_module_name.clone() {
                 ctx.lower_imported_type_decl(decl, span.clone(), &module)
             } else {
@@ -4071,7 +4054,9 @@ pub fn lower_program_with_mono_cap(
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+        ctx.current_module_name = span_indices
+            .module_name(ctx.current_module_idx)
+            .map(str::to_string);
         if ctx.current_module_idx != const_fold_module_idx {
             ctx.folded_integer_consts.clear();
             const_fold_module_idx = ctx.current_module_idx;
@@ -4326,27 +4311,17 @@ pub fn lower_program_with_mono_cap(
         // Prefer a source-specific package module's impl over a byte-identical
         // copy absorbed by a directory superset. Unique impls in the superset
         // still lower normally. See `preferred_package_module_ids`.
-        // Mirror the checker's 1-based non-root module index. The checker
-        // increments `current_module_idx` before each non-root topo-order
-        // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
-        // lowering must assign the same index when looking up those keys so
-        // `self.mk_key(span)` resolves to the correct entry and byte-offset
-        // collisions across files are not misread as same-file types.
-        let mut module_idx: u32 = 0;
+        // Read the checker's per-SOURCE-FILE span index. The checker stamps
+        // `SpanKey`s in `expr_types` with it, so HIR must assign the same index
+        // when looking those keys back up or `self.mk_key(span)` resolves to
+        // another file's entry and byte-offset collisions across files are
+        // misread as same-file types.
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                // Increment INSIDE the `Some(module)` guard so this walk's
-                // 1-based index stays byte-for-byte isomorphic with the
-                // checker, which bumps `current_module_idx` only for modules
-                // present in `modules` (see `Checker::check_program`). A
-                // `topo_order` id absent from `modules` (e.g. a dangling
-                // import that survived to lowering) must NOT advance the index
-                // on one side only, or every subsequent module would read the
-                // wrong file's checker facts.
-                module_idx += 1;
+                let module_idx = span_indices.module_base(mod_id).unwrap_or_default();
                 ctx.current_module_idx = module_idx;
                 let source_module = mod_id.path.join(".");
                 // Match the checker's `current_module` key (full dotted path,
@@ -4442,7 +4417,12 @@ pub fn lower_program_with_mono_cap(
                 let prev_module_consts = ctx.imported_module_consts.replace(module_consts_scope);
 
                 let previous_folded_integer_consts = std::mem::take(&mut ctx.folded_integer_consts);
-                for (item, span) in &module.items {
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    // Re-key per item: a directory module's peer files share
+                    // this module but each owns its own span index.
+                    ctx.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or(module_idx);
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
                             if item_is_duplicated_in_distinct_leaf_module(

@@ -4962,6 +4962,17 @@ run_check_run_expect_stdout file_import_trait_default_method
 # are exercised.
 run_check_run_expect_stdout dir_module_trait_default/main
 
+# Regression: two peer files of a directory module that declare same-shaped
+# types at the same byte offsets must keep DISTINCT type identities. A
+# directory module assembles its peer `.hew` files into one module whose items
+# keep file-relative spans, while the checker keyed facts by
+# `(byte range, module index)` — one index per MODULE, so byte-parallel peers
+# shared keys. `make_cat` was recorded as returning `Dog` and codegen aborted
+# with `Move type mismatch: src=%zoo.Dog dest=%zoo.Cat`. The fixture's peer
+# files are byte-for-byte parallel on purpose; it covers a string leaf and a
+# scalar leaf.
+run_check_run_expect_stdout dir_module_peer_span_identity/main
+
 # Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
 # declarations (constructs a type and calls a free function declared beside
 # the trait) must resolve them even though the default is materialised at an

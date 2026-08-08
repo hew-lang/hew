@@ -1,0 +1,27 @@
+// Regression: two peer files of a directory module that declare
+// same-shaped types at the same byte offsets must keep DISTINCT type
+// identities.
+//
+// A directory module assembles its entry file plus every peer `.hew` into one
+// module whose items keep their own file-relative spans, while the checker
+// keyed every recorded fact by `(byte range, module index)`. Byte-parallel
+// peers therefore shared keys: `make_cat` was recorded as returning `Dog`, and
+// codegen aborted with
+// `fail-closed: Move type mismatch: src=%zoo.Dog dest=%zoo.Cat`.
+//
+// Whether it bit depended only on byte offsets, so renaming a field looked
+// like a fix. `cat.hew`/`dog.hew` and `num.hew`/`cnt.hew` below are each
+// byte-for-byte parallel on purpose — remove that parallelism and the fixture
+// stops proving anything.
+import zoo;
+
+fn main() {
+    let d = zoo.make_dog("Rex");
+    let c = zoo.make_cat("Tom");
+    println(d.speak());
+    println(c.speak());
+    let n = zoo.make_num(1);
+    let t = zoo.make_cnt(2);
+    println(zoo.num_value(n));
+    println(zoo.cnt_value(t));
+}

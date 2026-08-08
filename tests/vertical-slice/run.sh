@@ -4950,6 +4950,55 @@ run_check_run_expect_stdout file_import_trait_impl
 # default and a Self-dispatching one.
 run_check_run_expect_stdout file_import_trait_default_method
 
+# Regression: the same guarantee across a DIRECTORY MODULE. The trait and its
+# defaults are declared in the module's entry file; the implementing type and
+# its `impl` live in a peer file. Two gaps compounded: the checker published a
+# materialised default only onto the BARE `Dog` type entry, never onto the
+# declaring module's `greeting.Dog` entry a qualified receiver resolves
+# through ("no method `greet` on `greeting.Dog`"); and HIR's pre-lowering body
+# plan covered only an impl's EXPLICIT methods, so a root call to a default
+# was lowered before the module's body emission and failed closed with
+# `CallableUnsupportedInMir`. Calls from both the root and inside the module
+# are exercised.
+run_check_run_expect_stdout dir_module_trait_default/main
+
+# Regression: two peer files of a directory module that declare same-shaped
+# types at the same byte offsets must keep DISTINCT type identities. A
+# directory module assembles its peer `.hew` files into one module whose items
+# keep file-relative spans, while the checker keyed facts by
+# `(byte range, module index)` — one index per MODULE, so byte-parallel peers
+# shared keys. `make_cat` was recorded as returning `Dog` and codegen aborted
+# with `Move type mismatch: src=%zoo.Dog dest=%zoo.Cat`. The fixture's peer
+# files are byte-for-byte parallel on purpose; it covers a string leaf and a
+# scalar leaf.
+#
+# The parallelism IS the test: if the peers stop sharing byte offsets, the
+# fixture still compiles and still prints the expected output even with the
+# fix reverted, because the old per-module key no longer collides. A comment
+# asking future editors to preserve the alignment is not enough, so assert it.
+# Equal per-line byte lengths imply equal declaration offsets, and any edit
+# that shifts a span in one peer without the other fails here with a message
+# saying why the alignment matters.
+assert_peer_files_offset_aligned() {
+  local a="$1" b="$2"
+  local la lb
+  la=$(awk '{ print length($0) }' "$a")
+  lb=$(awk '{ print length($0) }' "$b")
+  if [[ "$la" != "$lb" ]]; then
+    echo "FAIL peer-offset-alignment: $a and $b no longer line up byte-for-byte." >&2
+    echo "  These peers must keep identical per-line lengths so their declarations" >&2
+    echo "  sit at identical byte offsets. That collision is what the fixture" >&2
+    echo "  exercises; without it the test passes even with the fix reverted." >&2
+    diff <(printf '%s\n' "$la") <(printf '%s\n' "$lb") >&2 || true
+    exit 1
+  fi
+}
+_peer_dir="${ROOT}/tests/vertical-slice/accept/dir_module_peer_span_identity/zoo"
+assert_peer_files_offset_aligned "$_peer_dir/dog.hew" "$_peer_dir/cat.hew"
+assert_peer_files_offset_aligned "$_peer_dir/num.hew" "$_peer_dir/cnt.hew"
+unset _peer_dir
+run_check_run_expect_stdout dir_module_peer_span_identity/main
+
 # Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
 # declarations (constructs a type and calls a free function declared beside
 # the trait) must resolve them even though the default is materialised at an

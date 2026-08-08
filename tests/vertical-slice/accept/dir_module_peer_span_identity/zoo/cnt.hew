@@ -1,0 +1,11 @@
+// Peer file: Cnt. Byte-for-byte parallel to num.hew. Scalar (BitCopy) leaf,
+// so the collision is covered for a second value class, not only for string.
+pub type Cnt { v: i64; }
+
+pub fn make_cnt(v: i64) -> Cnt {
+    Cnt { v: v }
+}
+
+pub fn cnt_value(c: Cnt) -> i64 {
+    c.v + 200
+}

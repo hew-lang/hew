@@ -575,6 +575,7 @@ impl Checker {
         // `self.deferred_inference_holes` and are drained by
         // `report_unresolved_inference_holes` at the end of check_program.
         if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -582,10 +583,12 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name.clone());
-                    // Assign a fresh 1-based index so `record_type` stamps a
-                    // per-file discriminator onto `SpanKey`, preventing byte-
-                    // offset collisions across module files.
-                    self.current_module_idx += 1;
+                    // Index per SOURCE FILE, not per module: a directory
+                    // module assembles its peer `.hew` files into one module
+                    // whose items keep file-relative spans, so a per-module
+                    // index lets two peers with same-offset expressions
+                    // overwrite each other in `expr_types`.
+                    self.current_module_idx = span_indices.module_base(mod_id).unwrap_or_default();
                     // Temporarily scope local_type_defs / local_trait_defs to
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
@@ -658,7 +661,10 @@ impl Checker {
                         self.is_stdlib_source = true;
                     }
 
-                    for (item, span) in &module.items {
+                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        self.current_module_idx = span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or(self.current_module_idx);
                         self.check_item(item, span);
                     }
 
@@ -1712,20 +1718,21 @@ impl Checker {
         for (item, _) in &program.items {
             self.classify_escapes_in_item(item);
         }
-        // Mirror the per-module index assignment used during body checking
-        // (topo order, skip root, 1-based index bumped only when the module
-        // is present) so each `closure_escape_facts` entry is stamped with
-        // the same `module_idx` the HIR consumer reads back via `mk_key` and
-        // the fail-closed validator keys on. `current_module_idx` was reset
-        // to 0 before this pass, so the root items above used idx 0.
-        let module_order: Vec<_> = match &program.module_graph {
-            Some(mg) => mg
-                .topo_order
-                .iter()
-                .filter(|mod_id| **mod_id != mg.root)
-                .cloned()
-                .collect(),
-            None => Vec::new(),
+        // Read the SAME per-file index allocation body checking used, so each
+        // `closure_escape_facts` entry is stamped with the `module_idx` the HIR
+        // consumer reads back via `mk_key` and the fail-closed validator keys
+        // on. `current_module_idx` was reset to 0 before this pass, so the root
+        // items above used idx 0.
+        let (module_order, span_indices) = match &program.module_graph {
+            Some(mg) => (
+                mg.topo_order
+                    .iter()
+                    .filter(|mod_id| **mod_id != mg.root)
+                    .cloned()
+                    .collect(),
+                Some(mg.file_span_indices()),
+            ),
+            None => (Vec::new(), None),
         };
         for mod_id in &module_order {
             if let Some(module) = program
@@ -1733,8 +1740,11 @@ impl Checker {
                 .as_ref()
                 .and_then(|mg| mg.modules.get(mod_id))
             {
-                self.current_module_idx += 1;
-                for (item, _) in &module.items {
+                for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                    self.current_module_idx = span_indices
+                        .as_ref()
+                        .and_then(|indices| indices.item_index(mod_id, item_idx))
+                        .unwrap_or_default();
                     self.classify_escapes_in_item(item);
                 }
             }
@@ -1764,30 +1774,29 @@ impl Checker {
         for (item, _) in &program.items {
             self.lint_item(item, 0, None, levels, out);
         }
-        let module_order: Vec<_> = match &program.module_graph {
-            Some(mg) => mg
-                .topo_order
-                .iter()
-                .filter(|mod_id| **mod_id != mg.root)
-                .cloned()
-                .collect(),
-            None => Vec::new(),
+        let (module_order, span_indices) = match &program.module_graph {
+            Some(mg) => (
+                mg.topo_order
+                    .iter()
+                    .filter(|mod_id| **mod_id != mg.root)
+                    .cloned()
+                    .collect(),
+                Some(mg.file_span_indices()),
+            ),
+            None => (Vec::new(), None),
         };
-        let mut module_idx = 0u32;
         for mod_id in &module_order {
             if let Some(module) = program
                 .module_graph
                 .as_ref()
                 .and_then(|mg| mg.modules.get(mod_id))
             {
-                module_idx += 1;
                 // Builtin/standard-library modules (`std::`, `hew::`,
                 // `ecosystem::`) ship with the compiler rather than the user's
                 // project, so lint findings inside them are noise the user
-                // cannot act on. Skip them — but only AFTER advancing
-                // `module_idx`, so span tagging for later user modules stays
-                // aligned with the checker's module indexing. Mirrors
-                // `is_builtin_module` in `hew-compile`.
+                // cannot act on. Skip them; the index allocation is shared with
+                // body checking, so skipping cannot shift a later module's
+                // span tagging. Mirrors `is_builtin_module` in `hew-compile`.
                 //
                 // Real stdlib modules are at least 2 path segments deep
                 // (e.g. ["std", "iter"]).  A single-segment module named
@@ -1801,10 +1810,18 @@ impl Checker {
                     continue;
                 }
                 let module_name = mod_id.path.join(".");
+                let module_base = span_indices
+                    .as_ref()
+                    .and_then(|indices| indices.module_base(mod_id))
+                    .unwrap_or_default();
                 if let Some(source) = self.lint_sources.source_for(Some(&module_name)) {
-                    self.lint_source(source, module_idx, Some(&module_name), levels, out);
+                    self.lint_source(source, module_base, Some(&module_name), levels, out);
                 }
-                for (item, _) in &module.items {
+                for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                    let module_idx = span_indices
+                        .as_ref()
+                        .and_then(|indices| indices.item_index(mod_id, item_idx))
+                        .unwrap_or(module_base);
                     self.lint_item(item, module_idx, Some(&module_name), levels, out);
                 }
             }

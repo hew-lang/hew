@@ -1,0 +1,23 @@
+// Regression: a trait DEFAULT method declared in a directory module must
+// resolve on a type whose `impl` lives in a peer file of that module.
+//
+// Two gaps compounded. The checker materialised the default only onto the BARE
+// `Dog` type-definition entry, never onto the declaring module's `greeting.Dog`
+// entry that a qualified receiver resolves through — so `d.greet()` reported
+// "no method `greet` on `greeting.Dog`". And HIR's pre-lowering body plan
+// covered only an impl's EXPLICIT methods, so a root call to a materialised
+// default was lowered before the module's fourth-pass body emission and failed
+// closed with `CallableUnsupportedInMir`.
+import greeting;
+
+fn main() {
+    let d = greeting.make_dog("Rex");
+    // Required method: worked before the fix; pins that it still does.
+    println(d.name());
+    // Leaf default, called from the ROOT across the module boundary.
+    println(d.shout());
+    // Self-dispatching default, called from the ROOT.
+    println(d.greet());
+    // Same default, reached through a caller INSIDE the module.
+    println(greeting.describe(d));
+}

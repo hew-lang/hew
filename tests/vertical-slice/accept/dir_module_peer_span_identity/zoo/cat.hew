@@ -1,0 +1,13 @@
+// Peer file: Cat. Byte-for-byte parallel to dog.hew — every declaration has
+// the same length, so each expression sits at the SAME byte offset in both.
+pub type Cat { name: string; }
+
+pub fn make_cat(name: string) -> Cat {
+    Cat { name: name }
+}
+
+impl Speaker for Cat {
+    fn speak(val: Cat) -> string {
+        f"{val.name} says meow"
+    }
+}

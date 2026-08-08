@@ -17,6 +17,89 @@ use super::{
 };
 use crate::model::ActorHandlerKind;
 
+/// A cursor into the MIR a machine step arm has emitted so far: the number of
+/// sealed blocks plus the length of the open block's instruction buffer.
+///
+/// Taken before a transition's exit hook runs and consumed by
+/// [`emit_machine_transition_out_drops`], which needs to know which of the
+/// source state's payload fields the hook and body moved out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MachineEmissionMark {
+    sealed_blocks: usize,
+    open_instructions: usize,
+}
+
+impl Builder {
+    /// Snapshot the emission cursor for a machine transition arm.
+    pub(super) fn machine_emission_mark(&self) -> MachineEmissionMark {
+        MachineEmissionMark {
+            sealed_blocks: self.pending_blocks.len(),
+            open_instructions: self.instructions.len(),
+        }
+    }
+
+    /// Payload field indices of `local`'s `variant_idx` state that were READ as
+    /// a source operand by any MIR emitted since `mark`.
+    ///
+    /// A read of a `Place::MachineVariant` is a move of that payload out of the
+    /// state — an affine `#[resource]` has no non-consuming read — so the set
+    /// returned here is exactly the set of fields whose ownership left the
+    /// source state during the transition.
+    ///
+    /// Fail-closed direction: the operand classification comes from the
+    /// exhaustive, wildcard-free `instr_source_places` /
+    /// `terminator_source_places` authorities. A new instruction that aliases a
+    /// machine payload therefore lands in this set automatically, suppressing
+    /// the source drop (a leak) rather than silently keeping it (a
+    /// double-close).
+    pub(super) fn machine_variant_fields_read_since(
+        &self,
+        mark: MachineEmissionMark,
+        local: u32,
+        variant_idx: u32,
+    ) -> HashSet<u32> {
+        let mut read = HashSet::new();
+        let mut record = |place: &Place| {
+            if let Place::MachineVariant {
+                local: l,
+                variant_idx: v,
+                field_idx,
+            } = place
+            {
+                if *l == local && *v == variant_idx {
+                    read.insert(*field_idx);
+                }
+            }
+        };
+        for block in self.pending_blocks.iter().skip(mark.sealed_blocks) {
+            for instr in &block.instructions {
+                for place in super::instr_source_places(instr) {
+                    record(&place);
+                }
+            }
+            for place in super::terminator_source_places(
+                &block.terminator,
+                self.suspend_kinds.get(&block.id),
+            ) {
+                record(&place);
+            }
+        }
+        // The open block's buffer holds the instructions emitted after the last
+        // seal; its terminator does not exist yet.
+        let open_start = if mark.sealed_blocks == self.pending_blocks.len() {
+            mark.open_instructions
+        } else {
+            0
+        };
+        for instr in self.instructions.iter().skip(open_start) {
+            for place in super::instr_source_places(instr) {
+                record(&place);
+            }
+        }
+        read
+    }
+}
+
 fn with_actor_handler_identity(
     mut lowered: LoweredFunction,
     actor: &HirActorDecl,
@@ -1693,11 +1776,18 @@ fn emit_machine_step_transition_return(
         .unwrap_or(state_idx);
     let invokes_lifecycle_hooks = target_idx != state_idx || transition.reenter;
 
+    // Mark the emission cursor BEFORE the exit hook so the transferred-field
+    // scan below observes every read the hook and the transition body make of
+    // the source state's payload. The transition-out drops are emitted AFTER
+    // both have run: a body that carries a payload field through
+    // (`Active { h: self.h }`) must read the live field, and the field it moved
+    // is now owned by the target value, so the source must not release it.
+    let emission_mark = builder.machine_emission_mark();
+
     if invokes_lifecycle_hooks {
         if let Some(exit) = &state.exit {
             lower_machine_lifecycle_block(builder, self_binding, self_place, exit, machine_emit_id);
         }
-        emit_machine_transition_out_drops(builder, state, state_idx, self_place);
     }
 
     let prev_machine_self = builder.current_machine_self_binding.replace(self_binding);
@@ -1762,6 +1852,14 @@ fn emit_machine_step_transition_return(
     };
 
     if invokes_lifecycle_hooks {
+        emit_machine_transition_out_drops(
+            builder,
+            state,
+            state_idx,
+            self_place,
+            next,
+            emission_mark,
+        );
         if let Some(target_state) = md.states.get(target_idx) {
             if let Some(entry) = &target_state.entry {
                 lower_machine_lifecycle_block(builder, self_binding, next, entry, machine_emit_id);
@@ -1831,12 +1929,38 @@ pub(super) fn build_machine_layout(
             .collect(),
     }
 }
+/// Release the source state's `#[resource]` payload fields that the transition
+/// did NOT hand to the target value.
+///
+/// Exactly-once authority for a machine payload resource:
+///
+/// - A field the exit hook or the transition body READ has moved out of the
+///   source state (an affine resource has no non-consuming read), so its sole
+///   owner is now whatever the body built. Releasing it here as well is the
+///   double-close. The transferred set is derived from the MIR the hook and
+///   body actually emitted, via the exhaustive `instr_source_places` /
+///   `terminator_source_places` classifiers — a future instruction that aliases
+///   a `Place::MachineVariant` is therefore classified as a transfer by
+///   construction and can only ever LEAK, never double-close.
+/// - A field nothing read is still owned by the source state, whose storage the
+///   step function is about to overwrite with the target value, so it is
+///   released here — exactly once.
+/// - A passthrough body returns the SOURCE value itself (`next == self_place`).
+///   Nothing left the state, and the returned value is the live state: no field
+///   may be released.
 fn emit_machine_transition_out_drops(
     builder: &mut Builder,
     state: &hew_hir::HirMachineState,
     state_idx: usize,
     self_place: Place,
+    next: Place,
+    emission_mark: MachineEmissionMark,
 ) {
+    // The body handed the whole source state back as the next state. Every
+    // payload field is still live and now belongs to the returned value.
+    if next == self_place {
+        return;
+    }
     let Place::Local(self_local) = self_place else {
         builder.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::UnsupportedNode {
@@ -1853,6 +1977,8 @@ fn emit_machine_transition_out_drops(
     };
 
     let variant_idx = u32::try_from(state_idx).expect("state index exceeds u32::MAX");
+    let transferred =
+        builder.machine_variant_fields_read_since(emission_mark, self_local, variant_idx);
     // Enumerate only the fields of the source variant proven live by the arm's
     // dominating MachineTag check; inactive union payload bytes are not touched.
     for (field_idx, field) in state.fields.iter().enumerate().rev() {
@@ -1860,6 +1986,9 @@ fn emit_machine_transition_out_drops(
             continue;
         }
         let field_idx = u32::try_from(field_idx).expect("field index exceeds u32::MAX");
+        if transferred.contains(&field_idx) {
+            continue;
+        }
         let place = Place::MachineVariant {
             local: self_local,
             variant_idx,

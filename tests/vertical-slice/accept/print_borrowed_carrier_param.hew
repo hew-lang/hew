@@ -56,7 +56,6 @@
 //   true
 //   3
 //   xyz
-
 fn print_direct(k: string) {
     println(k);
 }
@@ -121,7 +120,6 @@ fn main() -> i64 {
     // A heap string, not a literal: the caller holds a real drop obligation
     // that every borrow below must leave intact.
     let owned = "ab".to_upper();
-
     print_direct(owned);
     print_without_newline(owned);
     concat_direct(owned);
@@ -133,13 +131,10 @@ fn main() -> i64 {
 
     // Still the caller's value after eight borrows.
     println(owned);
-
     let names: Vec<string> = ["alpha", "beta"];
     print_vec_param(names);
-
     let counts: HashMap<string, i64> = {"a": 7};
     print_map_param(counts);
-
     print_bytes_param("xyz".to_bytes());
     0
 }

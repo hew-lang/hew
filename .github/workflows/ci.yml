@@ -357,6 +357,11 @@ jobs:
         run: cargo install cargo-about --locked --version 0.9.0 --features cli
 
       - name: Verify THIRD-PARTY-LICENSES is current
+        # Placed outside CI-PARITY-STEPS, and deliberately absent from
+        # CI_REQUIRED_CHECKS, so the preflight↔CI parity assertion is
+        # unaffected: this gate needs cargo-about, which the step above
+        # installs at a pinned version. Requiring every local preflight to
+        # install a pinned cargo subcommand is a cost the gate does not repay.
         run: make licenses-check
 
   # ─────────────────────────────────────────────────────────────────────────

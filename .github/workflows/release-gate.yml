@@ -476,6 +476,10 @@ jobs:
       - name: Install WASI prerequisites
         shell: bash
         run: |
+          # The installer edits a shell profile after extracting the binaries
+          # and exits non-zero when none exists; the runner has no ~/.profile,
+          # so create it. The PATH that matters for later steps is GITHUB_PATH.
+          touch "$HOME/.profile"
           curl https://wasmtime.dev/install.sh -sSf | bash
           # GITHUB_PATH needs the Windows-style path so the non-bash steps that
           # follow (cargo nextest) resolve wasmtime as well.

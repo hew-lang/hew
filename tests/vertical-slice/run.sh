@@ -482,6 +482,7 @@ run_accept_expect_stdout "nested_string_concat_temp"
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+run_accept_expect_stdout "enum_mixed_leaf_resource_drop"
 
 # Imported std::bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.

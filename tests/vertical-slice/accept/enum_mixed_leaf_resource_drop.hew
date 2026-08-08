@@ -1,0 +1,36 @@
+// Mixed-leaf enum payload: one variant carries BOTH a heap leaf (`string`)
+// and a `#[resource]`. Admission to the tag-aware `EnumInPlace` scope-exit
+// drop is the DROP-OBLIGATION axis (heap ownership OR a registered close
+// contract), so the composite must release BOTH leaves exactly once — the
+// resource's `close` prints (asserted below); a double release of either
+// leaf surfaces as a scribble/guard crash under the CI guard allocator.
+// Companion shapes: the resource-ONLY payload (`Full(Handle)` with no heap
+// sibling) is the exact divergence that leaked when admission keyed on heap
+// alone (`Result<Tok, string>` closed while `Result<Tok, i64>` leaked).
+
+#[resource]
+type Handle {
+    id: i64
+}
+
+impl Handle {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+enum Slot {
+    Empty;
+    Full(Handle, string);
+}
+
+enum Bare {
+    Nothing;
+    Held(Handle);
+}
+
+pub fn main() {
+    let _s: Slot = Full(Handle { id: 1 }, "leaf");
+    let _b: Bare = Held(Handle { id: 2 });
+    println("body");
+}

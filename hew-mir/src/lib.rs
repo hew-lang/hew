@@ -7,6 +7,7 @@
 
 pub mod closure_env;
 pub mod dataflow;
+pub mod drop_obligation;
 pub mod dump;
 pub mod dyn_vtable_registry;
 pub mod ffi_contracts;
@@ -54,17 +55,18 @@ pub use hew_types::short_name;
 pub use model::{
     classify_extern_string_ownership, container_ingress_is_copy_in, is_indirect_enum,
     machine_enum_view, machine_enum_views, mangle_dyn_drop_in_place_symbol,
-    mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, ty_contains_closure_value,
-    ty_contains_heap_owning, ty_contains_unclonable_opaque,
-    ty_contains_unclonable_opaque_with_names, ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir,
-    validate_context_markers, ActorHandlerKind, ActorHandlerLayout, ActorLayout,
-    ActorStateLoadMode, ActorStateStoreHandoff, AggregateOwner, BasicBlock, BlockKind, BorrowKind,
-    CallAuthority, CaptureKind, CheckedMirFunction, ChildInitArg, ClosureEnvAllocation,
-    ClosureEnvFieldInit, ClosureEnvFieldOwnership, ClosureEnvMode, ClosurePairVecKind, CmpPred,
+    mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, ty_carries_drop_obligation,
+    ty_carries_drop_obligation_mir, ty_contains_closure_value, ty_contains_heap_owning,
+    ty_contains_unclonable_opaque, ty_contains_unclonable_opaque_with_names, ty_drop_obligation,
+    ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir, validate_context_markers, ActorHandlerKind,
+    ActorHandlerLayout, ActorLayout, ActorStateLoadMode, ActorStateStoreHandoff, AggregateOwner,
+    BasicBlock, BlockKind, BorrowKind, CallAuthority, CaptureKind, CheckedMirFunction,
+    ChildInitArg, CloseObligationRegistry, ClosureEnvAllocation, ClosureEnvFieldInit,
+    ClosureEnvFieldOwnership, ClosureEnvMode, ClosurePairVecKind, CmpPred,
     CollectionLayoutProbeKind, CompilerCallKind, CooperateKind, CooperateSite, CoroutineFacts,
-    CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan, DynVtableInstance,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl,
-    ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
+    CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropObligation, DropPlan,
+    DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
+    ExternDecl, ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
     GeneratorEnvFieldPlan, GeneratorEnvPlan, HeapOwnership, HeapOwnershipLayouts,
     IdentityAggregateKind, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
     LambdaActorShape, LambdaCapture, LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout,

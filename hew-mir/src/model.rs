@@ -1711,6 +1711,90 @@ impl HeapOwnership {
     }
 }
 
+/// Structural drop-obligation facts for a resolved type — the release-authority
+/// axis of the value-context lattice (see [`crate::drop_obligation`]).
+///
+/// [`HeapOwnership`] answers "does this type own heap MEMORY?"; that axis is
+/// necessary but NOT sufficient for drop admission. A `#[resource]` record with
+/// only scalar fields (`type Tok { id: i64 }` with a `close(self)` contract)
+/// owns no heap yet still carries an exactly-once release obligation. Admitting
+/// values to scope-exit / element / payload drops on the heap axis alone leaks
+/// every such resource silently — and admits it only INCIDENTALLY when a heap
+/// sibling happens to sit next to it (`Result<Tok, string>` released, `Result<
+/// Tok, i64>` leaked: same payload, divergent authority). This fact is the
+/// corrected axis: heap ownership OR a registered close contract, computed by
+/// the same single walker so the two can never disagree on structure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DropObligation {
+    /// The structural heap-ownership projection (identical to what
+    /// [`ty_heap_ownership`] reports — one walker body, two entries).
+    pub heap: HeapOwnership,
+    /// The type is or transitively contains a registered closeable
+    /// `#[resource]` (record or opaque lifecycle) whose exactly-once
+    /// `close(self)` must fire on every exit path.
+    pub needs_close: bool,
+}
+
+impl DropObligation {
+    const NONE: Self = Self {
+        heap: HeapOwnership::NONE,
+        needs_close: false,
+    };
+
+    const HEAP: Self = Self {
+        heap: HeapOwnership::HEAP,
+        needs_close: false,
+    };
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            heap: self.heap.union(other.heap),
+            needs_close: self.needs_close || other.needs_close,
+        }
+    }
+
+    /// True when a value of this type must be discharged exactly once on every
+    /// exit path — the admission predicate every value-bearing position of the
+    /// context lattice consults.
+    #[must_use]
+    pub const fn carries_obligation(&self) -> bool {
+        self.heap.owns_heap || self.needs_close
+    }
+}
+
+/// Close-contract lookup for the drop-obligation axis of [`ty_drop_obligation`].
+///
+/// Deliberately a SEPARATE required capability from [`HeapOwnershipLayouts`]:
+/// the obligation entry points cannot be called without a registry by
+/// construction, so no consult site can silently receive `needs_close == false`
+/// because an adapter forgot to wire resource knowledge. The heap-only entries
+/// ([`ty_owns_heap`] / [`ty_heap_ownership`]) do not expose `needs_close` at
+/// all, so the stub they walk with is unobservable.
+pub trait CloseObligationRegistry {
+    /// True when the named user type (a `Named { builtin: None, .. }` leaf) is a
+    /// registered closeable `#[resource]` — a field-bearing resource record or a
+    /// single-slot opaque resource handle with an admitted close lifecycle.
+    fn named_is_closeable_resource(&self, name: &str) -> bool;
+}
+
+impl CloseObligationRegistry for hew_hir::LifecycleRegistry {
+    fn named_is_closeable_resource(&self, name: &str) -> bool {
+        let decl = hew_types::DefId::new(name);
+        self.resource_record(&decl).is_some() || self.opaque_resource(&decl).is_some()
+    }
+}
+
+/// The walker stub behind the heap-only entries: answers "no close contract"
+/// unconditionally. Never reachable from an obligation entry point — those
+/// require a real [`CloseObligationRegistry`] by signature.
+struct NoCloseObligations;
+
+impl CloseObligationRegistry for NoCloseObligations {
+    fn named_is_closeable_resource(&self, _name: &str) -> bool {
+        false
+    }
+}
+
 /// The SINGLE structural heap-ownership authority for the whole compiler.
 ///
 /// Answers "does `ty` transitively own heap memory?" — `true` when `ty` is, or
@@ -1762,7 +1846,62 @@ pub fn ty_owns_heap(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> boo
 /// through an indirect enum representation.
 #[must_use]
 pub fn ty_heap_ownership(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -> HeapOwnership {
-    ty_heap_ownership_inner(ty, layouts, &mut HashSet::new())
+    ty_drop_obligation_inner(ty, layouts, &NoCloseObligations, &mut HashSet::new()).heap
+}
+
+/// The single structural DROP-OBLIGATION authority — the admission predicate of
+/// the value-context lattice ([`crate::drop_obligation`]).
+///
+/// True when a value of `ty` must be discharged exactly once on every exit
+/// path: it is, or transitively contains, a heap-owning leaf (the
+/// [`ty_owns_heap`] axis) OR a registered closeable `#[resource]` (the
+/// `closes` axis). Every position that decides "does this value get a drop /
+/// element descriptor / payload discharge" consults THIS predicate, not the
+/// heap axis alone — the heap axis mis-admits by construction: a scalar-field
+/// `#[resource]` record owns no heap yet must close, and was previously
+/// released only when a heap-owning sibling happened to admit its container
+/// (`Result<Tok, string>` closed, `Result<Tok, i64>` leaked).
+///
+/// The registry parameter is REQUIRED by signature (fail-closed at the type
+/// level): no consult site can reach a `needs_close == false` verdict because
+/// an adapter forgot to wire resource knowledge.
+#[must_use]
+pub fn ty_carries_drop_obligation(
+    ty: &ResolvedTy,
+    layouts: &impl HeapOwnershipLayouts,
+    closes: &impl CloseObligationRegistry,
+) -> bool {
+    ty_drop_obligation(ty, layouts, closes).carries_obligation()
+}
+
+/// The complete structural drop-obligation fact (both axes plus indirection).
+#[must_use]
+pub fn ty_drop_obligation(
+    ty: &ResolvedTy,
+    layouts: &impl HeapOwnershipLayouts,
+    closes: &impl CloseObligationRegistry,
+) -> DropObligation {
+    ty_drop_obligation_inner(ty, layouts, closes, &mut HashSet::new())
+}
+
+/// Record-aware MIR convenience for [`ty_carries_drop_obligation`], mirroring
+/// [`ty_owns_heap_mir`]'s loose-borrow shape with the mandatory lifecycle
+/// registry as the close-contract authority.
+#[must_use]
+pub fn ty_carries_drop_obligation_mir<S: std::hash::BuildHasher>(
+    ty: &ResolvedTy,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>, S>,
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
+) -> bool {
+    ty_carries_drop_obligation(
+        ty,
+        &MirHeapLayouts {
+            record_field_orders,
+            enum_layouts,
+        },
+        lifecycle_registry,
+    )
 }
 
 /// [`HeapOwnershipLayouts`] adapter that supplies enum/machine variant payloads
@@ -1801,11 +1940,17 @@ impl HeapOwnershipLayouts for EnumLayoutsOnly<'_> {
     }
 }
 
-fn ty_heap_ownership_inner(
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every ResolvedTy shape IS the authority; \
+              splitting it scatters the leaf set the walker exists to unify"
+)]
+fn ty_drop_obligation_inner(
     ty: &ResolvedTy,
     layouts: &impl HeapOwnershipLayouts,
+    closes: &impl CloseObligationRegistry,
     visited: &mut HashSet<String>,
-) -> HeapOwnership {
+) -> DropObligation {
     match ty {
         // The single heap-leaf set, identical to `ValueClass::of_ty`'s heap
         // classification (`dedup-semantic-boundary`):
@@ -1845,7 +1990,7 @@ fn ty_heap_ownership_inner(
                     | hew_types::BuiltinType::Weak,
                 ),
             ..
-        } => HeapOwnership::HEAP,
+        } => DropObligation::HEAP,
         // A bare function pair has no owned environment. This type-level
         // predicate tracks a closure's captured payload ownership; whether a
         // particular escaping closure has an env box is a construction-site fact
@@ -1853,8 +1998,8 @@ fn ty_heap_ownership_inner(
         ResolvedTy::Closure { captures, .. } => {
             captures
                 .iter()
-                .fold(HeapOwnership::NONE, |ownership, capture| {
-                    ownership.union(ty_heap_ownership_inner(capture, layouts, visited))
+                .fold(DropObligation::NONE, |ownership, capture| {
+                    ownership.union(ty_drop_obligation_inner(capture, layouts, closes, visited))
                 })
         }
         ResolvedTy::Named {
@@ -1863,13 +2008,21 @@ fn ty_heap_ownership_inner(
             builtin,
             ..
         } => {
-            let mut ownership = HeapOwnership {
-                owns_heap: false,
-                via_indirection: layouts.enum_is_indirect(name, args),
+            let mut ownership = DropObligation {
+                heap: HeapOwnership {
+                    owns_heap: false,
+                    via_indirection: layouts.enum_is_indirect(name, args),
+                },
+                // The close-obligation leaf: a registered closeable
+                // `#[resource]` (record or opaque lifecycle). Builtins can
+                // never be user resources; the registries key user
+                // declarations only.
+                needs_close: builtin.is_none() && closes.named_is_closeable_resource(name),
             };
             // 1. Type arguments first (fast path: `Option<string>`, etc.).
             for arg in args {
-                ownership = ownership.union(ty_heap_ownership_inner(arg, layouts, visited));
+                ownership =
+                    ownership.union(ty_drop_obligation_inner(arg, layouts, closes, visited));
             }
             // 2. Record fields (DIV-1: a bare nested user-record carrying a heap
             //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
@@ -1880,10 +2033,11 @@ fn ty_heap_ownership_inner(
                 if !visited.insert(key.clone()) {
                     // Recursive value type: the checker rejects these; force the
                     // fail-closed path so the drop fires.
-                    return ownership.union(HeapOwnership::HEAP);
+                    return ownership.union(DropObligation::HEAP);
                 }
                 for field in &fields {
-                    ownership = ownership.union(ty_heap_ownership_inner(field, layouts, visited));
+                    ownership =
+                        ownership.union(ty_drop_obligation_inner(field, layouts, closes, visited));
                 }
                 visited.remove(&key);
             }
@@ -1893,25 +2047,27 @@ fn ty_heap_ownership_inner(
             if let Some(variants) = layouts.enum_variant_field_tys(name, args) {
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
-                    return ownership.union(HeapOwnership::HEAP);
+                    return ownership.union(DropObligation::HEAP);
                 }
                 for fields in &variants {
                     for field in fields {
-                        ownership =
-                            ownership.union(ty_heap_ownership_inner(field, layouts, visited));
+                        ownership = ownership
+                            .union(ty_drop_obligation_inner(field, layouts, closes, visited));
                     }
                 }
                 visited.remove(&key);
             }
             ownership
         }
-        ResolvedTy::Tuple(elems) => elems
-            .iter()
-            .fold(HeapOwnership::NONE, |ownership, element| {
-                ownership.union(ty_heap_ownership_inner(element, layouts, visited))
-            }),
+        ResolvedTy::Tuple(elems) => {
+            elems
+                .iter()
+                .fold(DropObligation::NONE, |ownership, element| {
+                    ownership.union(ty_drop_obligation_inner(element, layouts, closes, visited))
+                })
+        }
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            ty_heap_ownership_inner(inner, layouts, visited)
+            ty_drop_obligation_inner(inner, layouts, closes, visited)
         }
         ResolvedTy::I8
         | ResolvedTy::I16
@@ -1935,7 +2091,7 @@ fn ty_heap_ownership_inner(
         | ResolvedTy::Borrow { .. }
         | ResolvedTy::TraitObject { .. }
         | ResolvedTy::Task(_)
-        | ResolvedTy::TypeParam { .. } => HeapOwnership::NONE,
+        | ResolvedTy::TypeParam { .. } => DropObligation::NONE,
     }
 }
 
@@ -7819,6 +7975,107 @@ mod heap_owning_tests {
         // The exact DIV-2 element shape: `(Generator<i64,()>, i64)`.
         let pair = ResolvedTy::Tuple(vec![generator_ty(), ResolvedTy::I64]);
         assert!(ty_owns_heap(&pair, &layouts));
+    }
+
+    /// Build a lifecycle registry with one closeable resource record `Tok`.
+    fn tok_lifecycle_registry() -> hew_hir::LifecycleRegistry {
+        let mut table = hew_hir::TypeClassTable::new();
+        table
+            .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
+                resource_declaration: hew_types::DefId::new("Tok"),
+                close_declaration: hew_types::DefId::new("Tok::close"),
+                close_symbol: "Tok__close".to_string(),
+            })
+            .expect("fresh registry admits Tok");
+        table.lifecycle_registry().clone()
+    }
+
+    #[test]
+    fn scalar_resource_record_carries_obligation_without_owning_heap() {
+        // The class defect this axis closes: `Tok { id: i64 }` with a
+        // `close(self)` contract owns NO heap, so heap-axis admission leaked it
+        // in every composite position; the obligation axis must see it in every
+        // structural context through the same one walker.
+        let mut orders = HashMap::new();
+        orders.insert("Tok".to_string(), vec![("id".to_string(), ResolvedTy::I64)]);
+        let enums = vec![EnumLayout {
+            name: "Held".to_string(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "One".to_string(),
+                field_tys: vec![ResolvedTy::named_user("Tok", vec![])],
+                field_names: vec![],
+            }],
+            is_indirect: false,
+        }];
+        let closes = tok_lifecycle_registry();
+        let tok = ResolvedTy::named_user("Tok", vec![]);
+
+        // Heap axis unchanged: a scalar resource owns no heap memory.
+        assert!(!ty_owns_heap_mir(&tok, &orders, &enums));
+        // Obligation axis: bare, tuple element, enum payload, Option payload,
+        // Vec type-arg — every structural route reaches the same verdict.
+        assert!(ty_carries_drop_obligation_mir(
+            &tok, &orders, &enums, &closes
+        ));
+        let pair = ResolvedTy::Tuple(vec![ResolvedTy::I64, tok.clone()]);
+        assert!(ty_carries_drop_obligation_mir(
+            &pair, &orders, &enums, &closes
+        ));
+        let held = ResolvedTy::named_user("Held", vec![]);
+        assert!(ty_carries_drop_obligation_mir(
+            &held, &orders, &enums, &closes
+        ));
+        let option_tok = ResolvedTy::Named {
+            name: "Option".to_string(),
+            args: vec![tok.clone()],
+            builtin: Some(hew_types::BuiltinType::Option),
+            is_opaque: false,
+        };
+        assert!(ty_carries_drop_obligation_mir(
+            &option_tok,
+            &orders,
+            &enums,
+            &closes
+        ));
+
+        // A non-resource scalar record reaches NO obligation on either axis.
+        let mut point_orders = HashMap::new();
+        point_orders.insert(
+            "Point".to_string(),
+            vec![
+                ("x".to_string(), ResolvedTy::I64),
+                ("y".to_string(), ResolvedTy::I64),
+            ],
+        );
+        let point = ResolvedTy::named_user("Point", vec![]);
+        assert!(!ty_carries_drop_obligation_mir(
+            &point,
+            &point_orders,
+            &[],
+            &closes
+        ));
+    }
+
+    #[test]
+    fn obligation_axis_is_invisible_to_the_heap_entries() {
+        // `ty_heap_ownership` walks with the no-close stub; its fact must be
+        // byte-identical to the pre-axis authority even for a registered
+        // resource — the heap entries answer heap questions only.
+        let mut orders = HashMap::new();
+        orders.insert("Tok".to_string(), vec![("id".to_string(), ResolvedTy::I64)]);
+        let layouts = MirHeapLayouts {
+            record_field_orders: &orders,
+            enum_layouts: &[],
+        };
+        let tok = ResolvedTy::named_user("Tok", vec![]);
+        assert_eq!(
+            ty_heap_ownership(&tok, &layouts),
+            HeapOwnership {
+                owns_heap: false,
+                via_indirection: false,
+            }
+        );
     }
 
     #[test]

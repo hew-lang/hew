@@ -6195,7 +6195,9 @@ impl Builder {
                     let arg_place =
                         self.lower_method_arg_value(arg, is_vec_element_store || move_ingress)?;
                     arg_places.push(arg_place);
-                    if move_ingress {
+                    if move_ingress
+                        && !self.retain_borrowed_string_collection_ingress(arg, arg_place)
+                    {
                         self.consume_moved_builtin_method_arg(arg);
                     }
                     if vec_owned_move_array_ingress {

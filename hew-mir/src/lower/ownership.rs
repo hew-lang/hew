@@ -4171,6 +4171,52 @@ impl Builder {
                 .declared_release_types(),
         )
     }
+    /// Retain a `string` operand entering a `HashMap`/`HashSet` MOVE ingress
+    /// when this function does not own it. Returns `true` when the retain was
+    /// emitted and the caller must NOT record a consume.
+    ///
+    /// WHY: `string` is on the `CoW` borrow spine, so a by-value `string`
+    /// parameter is BORROWED — `lower_params` registers it in
+    /// `borrowed_string_param_locals` and mints no callee-side owner, and the
+    /// CALLER keeps the count and drops it at its own scope exit. The map's
+    /// ingress is a MOVE, so the slot becomes a second owner of that same
+    /// count: the map's teardown and the caller's scope exit both release it.
+    /// The local static consume cannot suppress the caller's drop — it is in
+    /// another frame — so the consume alone is not a sound pairing for a
+    /// borrowed operand.
+    ///
+    /// A retain makes the ingress balanced: `+1` before the move, so the map
+    /// owns the new count and the caller still owns its own. It mirrors what
+    /// `let k2 = k; m.insert(k2, ..)` already emits for the same value
+    /// (the `mir_share` retain on a borrowed-param share) and what
+    /// `hew_vec_push_str` does at the `Vec<string>` seam, where the caller
+    /// likewise keeps its drop obligation.
+    ///
+    /// The codegen overwrite-path release (`emit_insert_overwrite_key_release`)
+    /// stays correct under this pairing: on the vacant path the map owns the
+    /// retained count, on the overwrite path the release consumes it. Exactly
+    /// one release either way, and the caller's own count is untouched.
+    pub(crate) fn retain_borrowed_string_collection_ingress(
+        &mut self,
+        operand: &HirExpr,
+        place: Place,
+    ) -> bool {
+        if !matches!(self.subst_ty(&operand.ty), ResolvedTy::String) {
+            return false;
+        }
+        let Some(local) = base_local(place) else {
+            return false;
+        };
+        if !self.borrowed_string_param_locals.contains(&local) {
+            return false;
+        }
+        self.push_instr(Instr::StringRetain {
+            value: place,
+            condition: crate::model::StringRetainCondition::Always,
+        });
+        true
+    }
+
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,

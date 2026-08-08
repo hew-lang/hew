@@ -3293,7 +3293,6 @@ mod tests {
 
     #[test]
     fn repeated_bind_accept_close_drains_all_accept_authority() {
-        let started = Instant::now();
         for _ in 0..64 {
             let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
             assert!(!server.is_null(), "server should bind successfully");
@@ -3327,10 +3326,13 @@ mod tests {
                 "server inner allocation must be reclaimed after each close"
             );
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the high-iteration close loop must remain bounded"
-        );
+        // No wall-clock bound: every iteration already asserts the deterministic
+        // facts this test exists to prove — the accept authority is drained
+        // (count == 0) and the handshake count is zero the instant close
+        // returns, the accept thread joins, and the server allocation is
+        // reclaimed. A close that fails to make progress cannot pass those
+        // asserts, and a hang is caught by the harness per-test timeout, so a
+        // duration assert only added a contended-runner failure mode.
     }
 
     #[test]

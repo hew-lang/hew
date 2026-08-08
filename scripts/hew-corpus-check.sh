@@ -123,6 +123,15 @@ is_reject_fixture() {
         *"/reject/"*)
             return 0
             ;;
+        tests/core-matrix/cells/*)
+            # The core matrix is a deliberate enumeration of primitive x
+            # operation, so a large minority of its cells are combinations the
+            # compiler does not yet support. Their outcome is recorded per cell
+            # in tests/core-matrix/matrix.tsv and gated by make test-core-matrix,
+            # which fails on drift in either direction. Sweeping them here would
+            # duplicate that verdict as a second, weaker expected-failures list.
+            return 0
+            ;;
     esac
     case "$base" in
         *"reject"*)

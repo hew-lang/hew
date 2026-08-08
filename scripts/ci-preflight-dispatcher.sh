@@ -40,6 +40,7 @@ command_timeout_floor() {
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
         "make test-hew-ratchet") echo 600 ;;
+        "make test-core-matrix") echo 600 ;;
         "make test-o2-differential") echo 1200 ;;
         "make o2-differential-selftest") echo 30 ;;
         "make doc-ratchet-selftest") echo 45 ;;
@@ -99,6 +100,7 @@ CI_REQUIRED_CHECKS=(
     "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
+    "Core matrix primitive x operation (ci.yml: make test-core-matrix)	make test-core-matrix"
     "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
     "O2-differential gate self-test (ci.yml: make o2-differential-selftest)	make o2-differential-selftest"
     "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
@@ -367,7 +369,7 @@ is_vertical_slice_path() {
 
 is_hew_tests_path() {
     case "$1" in
-        tests/hew/*)
+        tests/hew/*|tests/core-matrix/*|scripts/core-matrix.py|scripts/core-matrix-gen.py)
             return 0
             ;;
     esac
@@ -796,6 +798,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-hew-ratchet"
+        add_command "make test-core-matrix"
         add_command "make test-stdlib-ratchet"
         ;;
     runtime-net)

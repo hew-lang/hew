@@ -18,6 +18,16 @@ AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 MANIFEST = ROOT / "scripts/opaque-resource-lifecycle-evidence.json"
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
+
+# run_bounded caps the child's RLIMIT_AS, which bounds ADDRESS SPACE, not
+# resident memory. Wasmtime reserves a fixed 0x1_0400_0000 (4 GiB + 64 MiB
+# guard) region per wasm32 linear memory at instantiation, so any bound at or
+# below 4096 MiB makes every wasm run fail with "mmap failed to reserve
+# 0x104000000 bytes: Cannot allocate memory (os error 12)" — a provisioning
+# artefact that reads as a lifecycle rejection. Bound the wasm-executing
+# children above that reservation; the runtime cost stays bounded by the
+# per-call timeout.
+WASM_RUNTIME_MEMORY_MB = 8192
 sys.path.insert(0, str(ROOT / "scripts"))
 from bounded_subprocess import assert_bounding_contract, run_bounded
 
@@ -610,7 +620,7 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     ],
                     cwd=ROOT,
                     timeout_seconds=60,
-                    memory_mb=4096,
+                    memory_mb=WASM_RUNTIME_MEMORY_MB,
                 )
                 assert_wasm_disposition(
                     carrier,
@@ -682,7 +692,7 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                     ],
                     cwd=ROOT,
                     timeout_seconds=60,
-                    memory_mb=4096,
+                    memory_mb=WASM_RUNTIME_MEMORY_MB,
                 )
                 if validated.returncode != 0:
                     fail(

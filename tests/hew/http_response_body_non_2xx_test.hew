@@ -1,0 +1,67 @@
+//! Regression: a non-2xx HTTP response still carries the body the server
+//! sent. `hew_http_response_body` previously discarded it — ureq's default
+//! `http_status_as_error` config turned 4xx/5xx into `Err(StatusCode)`,
+//! which `send_request` mapped to a hardcoded empty-string body, so
+//! `.body()` silently returned "" even though the server sent real bytes.
+//!
+//! One-process loopback round-trip, same shape as
+//! `http_server_client_roundtrip_test.hew`: the `Client` actor runs the
+//! blocking request on its own worker while the test thread accepts and
+//! responds with a 404 carrying a real body; mailbox ordering (`fetch`
+//! before the status/body asks) makes the readback race-free without a
+//! sleep.
+
+import std::net::http::http_client;
+
+import std::net::http;
+
+import std::testing;
+
+actor Client {
+    let url: string;
+    var status: i64;
+    var body: string;
+
+    receive fn fetch(unused: i64) {
+        http_client.set_timeout(3000);
+        let resp = http_client.get(url);
+        status = resp.status();
+        body = resp.body();
+        resp.close();
+    }
+
+    receive fn status_result() -> i64 {
+        status
+    }
+
+    receive fn body_result() -> string {
+        body
+    }
+}
+
+/// A 404 response still round-trips its exact body bytes.
+#[test]
+fn test_non_2xx_response_body_round_trips() {
+    match http.listen("127.0.0.1:0") {
+        Ok(server) => {
+            let port = http.server_port(server);
+            let client = spawn Client(url: f"http://127.0.0.1:{port}/missing", status: 0, body: "");
+            client.fetch(0);
+            let req = server.accept();
+            let _ = req.try_respond_text(404, "not found: the resource does not exist");
+            req.close();
+            server.close();
+            match await client.status_result() {
+                Ok(status) => testing.assert_eq(status, 404),
+                Err(_e) => testing.assert_true(false),
+            }
+            match await client.body_result() {
+                Ok(body) => testing.assert_eq_str(body, "not found: the resource does not exist"),
+                Err(_e) => testing.assert_true(false),
+            }
+        },
+        Err(_err) => {
+            testing.assert_true(false);
+        },
+    }
+}

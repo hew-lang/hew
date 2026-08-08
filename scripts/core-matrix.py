@@ -59,9 +59,15 @@ def classify(name):
     exp_path = os.path.join(CELLS, name + ".expected")
     with open(exp_path) as f:
         expected = f.read()
+    # Diagnostics echo the path they were given. Passing a REPO-RELATIVE path
+    # (the child already runs with cwd=ROOT) keeps the recorded `detail` column
+    # identical across checkouts; an absolute path would rewrite every
+    # rejected row's detail on a re-record from a different worktree, burying
+    # the actual class change in whole-file churn.
+    rel_src = os.path.relpath(src, ROOT)
     try:
         p = subprocess.run(
-            [HEW, "run", src],
+            [HEW, "run", rel_src],
             capture_output=True,
             timeout=TIMEOUT,
             cwd=ROOT,

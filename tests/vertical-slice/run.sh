@@ -767,6 +767,13 @@ run_accept_expect_status "hashset_managed_record_elem" 0
 # Owned-key drop ratchet: insert/overwrite/remove/free churn of owned string
 # keys. Verified clean under the guard allocator (MallocScribble / GuardEdges).
 run_accept_expect_status "hashmap_managed_key_drop" 0
+# Borrowed-string ingress: a `string` key/value/element that reaches the MOVE
+# ingress through a by-value `string` parameter is retained before the move, so
+# the collection and the caller each release exactly one count. Regressing the
+# retain aborts at teardown with a `free_cstring` sentinel failure AFTER the
+# fixture prints correct output, so the stdout diff alone is not the oracle —
+# the exit status is.
+run_accept_expect_stdout "hashmap_borrowed_string_key_ingress"
 # Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \

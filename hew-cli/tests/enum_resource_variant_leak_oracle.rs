@@ -259,6 +259,10 @@ fn xml_string_return_temporary_is_released() {
     assert_exact_zero_leaks(&bin, "xml_string_return_temporary");
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn projected_resource_close_then_crash_releases_source_snapshot_once() {
     require_codegen();
@@ -286,6 +290,10 @@ fn projected_resource_close_then_crash_releases_source_snapshot_once() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bytes_runtime_mutation_then_crash_releases_refreshed_snapshot_once() {
     require_codegen();

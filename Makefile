@@ -78,7 +78,7 @@
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
-.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest
+.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: ll-diff ll-golden ll-identity-selftest
 .PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -469,6 +469,20 @@ fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
 	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
 
+# Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
+# A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run
+# and not the next), which the deterministic per-PR fuzz-oracle above does
+# not tolerate — so this stays off ci.yml. Self-provisioning mirrors
+# structural-lint: the toolchain install is a prerequisite of the gate
+# target, not a separate manual step, and it is idempotent.
+FUZZ_SMOKE_MAX_TOTAL_TIME ?= 120
+
+fuzz-smoke-bootstrap-install:
+	bash scripts/fuzz/smoke-bootstrap.sh
+
+fuzz-smoke: fuzz-smoke-bootstrap-install
+	FUZZ_SMOKE_MAX_TOTAL_TIME="$(FUZZ_SMOKE_MAX_TOTAL_TIME)" bash scripts/fuzz/run-smoke.sh
+
 bootstrap: install-hooks
 
 install-hooks:
@@ -786,6 +800,14 @@ test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-pkg
 	$(MAKE) test-opaque-resource-lifecycle-matrix
 
+# Both lifecycle targets read the pinned ast-grep at
+# .ast-grep/tool/bin/ast-grep and abort when it is absent. The toolchain is
+# provisioned at the job level (.github/actions/setup-ast-grep, the same
+# cache-then-verify shape as setup-llvm and the wasmtime install), not as a
+# make prerequisite: `structural-lint-bootstrap-install` cargo-installs
+# tree-sitter-cli and ast-grep and then runs a full authority scan, which is
+# minutes of work that has no place inside a test target invoked from three
+# other targets. Locally, any `make lint` provisions the same tree.
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py
@@ -1161,10 +1183,13 @@ lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path
-# (scripts/ast-grep-lint.sh --bootstrap, via build-ast-grep-lang.sh) is
-# idempotent and checks the pinned lock/version before touching the network
-# or recompiling, so a warm cache makes this a fast no-op — local `make lint`
-# and CI both provision through the same target instead of drifting.
+# (scripts/ast-grep-lint.sh --bootstrap --install-only, via
+# build-ast-grep-lang.sh) is idempotent and checks the pinned lock/version
+# before touching the network or recompiling, so a warm cache makes this a
+# fast no-op — local `make lint` and CI both provision through the same
+# target instead of drifting. --install-only stops after the verified
+# install: the audit and the scan belong to the structural-lint recipe
+# below, so provisioning a consumer never re-runs the lint gate.
 .NOTPARALLEL: structural-lint structural-lint-bootstrap
 structural-lint: structural-lint-bootstrap-install test-structural-authority-audit
 	scripts/ast-grep-lint.sh
@@ -1172,7 +1197,7 @@ structural-lint: structural-lint-bootstrap-install test-structural-authority-aud
 structural-lint-bootstrap: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap
 
 structural-lint-bootstrap-install:
-	scripts/ast-grep-lint.sh --bootstrap
+	scripts/ast-grep-lint.sh --bootstrap --install-only
 
 test-structural-authority-audit:
 	python3 scripts/tests/test_structural_authority_audit.py

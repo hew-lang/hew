@@ -64,6 +64,16 @@
 # os_io_string_retention,websocket_string_result_retention}.rs, and
 # hew-std/src/http/string_result_retention.rs (hew-lang/hew#2828).
 #
+# Those criteria do not catch one shape: a callee that allocates fresh, hands
+# the caller a genuinely sole-owned buffer, and separately stashes a raw
+# non-refcounted pointer to it that it frees at shutdown. Every probe passes
+# and the caller's release is still correct at the call site, but the buffer is
+# freed twice at process teardown. Nothing in the family does this today; the
+# axis rows were corroborated against the implementation sites. But a reader
+# adding a new symbol should know exactly what "measured" covers and what it
+# does not, rather than inferring that a passing oracle is a proof of sole
+# ownership for all time.
+#
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
 #

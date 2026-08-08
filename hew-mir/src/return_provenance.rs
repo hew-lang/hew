@@ -128,44 +128,15 @@ pub struct DeclaredReleaseTypes {
 
 impl DeclaredReleaseTypes {
     /// Build from the module's type declarations and its `#[resource]` close
-    /// registry. See the type docs for the three admission clauses.
+    /// registry. See the type docs for the three admission clauses. The
+    /// computation is hosted in [`hew_hir::declared_release`] so HIR's
+    /// produced-value fact resolution reads the IDENTICAL admission — one
+    /// authority, two IR consumers.
     #[must_use]
     pub fn from_module(module: &hew_hir::HirModule) -> Self {
-        let opaque_handles: HashSet<&str> = module
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => {
-                    Some(decl.declaration.full_path())
-                }
-                _ => None,
-            })
-            .collect();
-        let mut names = HashSet::new();
-        for item in &module.items {
-            let hew_hir::HirItem::TypeDecl(decl) = item else {
-                continue;
-            };
-            // Clauses 1 and 2 — the `#[resource]` marker AND a declared close,
-            // read from the one table codegen's thunk synthesis reads.
-            let declares_close = module
-                .type_classes
-                .get(decl.declaration.full_path())
-                .is_some_and(|(marker, close)| {
-                    matches!(marker, hew_hir::ResourceMarker::Resource) && close.is_some()
-                });
-            if !declares_close || decl.fields.is_empty() {
-                continue;
-            }
-            // Clause 3 — the post-close field-wise teardown must free nothing.
-            if !decl.fields.iter().all(|field| {
-                field_is_released_only_by_the_declared_close(&field.ty, &opaque_handles)
-            }) {
-                continue;
-            }
-            names.insert(decl.declaration.full_path().to_string());
+        Self {
+            names: hew_hir::declared_release::declared_release_type_names(module),
         }
-        Self { names }
     }
 
     /// True when a construction of `name` is an adoption: the constructed
@@ -184,38 +155,11 @@ impl DeclaredReleaseTypes {
     }
 }
 
-/// True for a field type the `#[resource]` record-drop thunk's post-close
-/// field-wise teardown provably does not free: a scalar leaf, or a named
-/// `#[opaque]` handle declared in this module.
-///
-/// Deliberately narrow. It answers from the field type's own spelling plus the
-/// module's `#[opaque]` declaration set, so an unknown or unresolved named type
-/// answers `false` and its declaring `#[resource]` type is simply not admitted.
-/// Widening this to "not heap-owning under the layout registry" would admit more
-/// types, but a layout registry that is absent or partial reads a composite as
-/// non-heap, which is the permissive direction — the exact `Default`-shaped
-/// fail-open the authority was hardened against.
-fn field_is_released_only_by_the_declared_close(
-    ty: &ResolvedTy,
-    opaque_handles: &HashSet<&str>,
-) -> bool {
-    if ty_is_scalar_non_heap(ty) {
-        return true;
-    }
-    let ResolvedTy::Named {
-        name,
-        args,
-        is_opaque,
-        ..
-    } = ty
-    else {
-        return false;
-    };
-    if !args.is_empty() {
-        return false;
-    }
-    *is_opaque || opaque_handles.contains(name.as_str())
-}
+// The clause-3 field predicate (`field_is_released_only_by_the_declared_close`)
+// is hosted beside the admission loop in `hew_hir::declared_release`; the
+// re-export keeps it the one authority every MIR consumer names (the
+// shell-drop cap's declared-release carve-out reads it through this path).
+pub(crate) use hew_hir::declared_release::field_is_released_only_by_the_declared_close;
 
 // ---------------------------------------------------------------------------
 // The three-state may-alias lattice
@@ -1329,34 +1273,11 @@ pub fn compute_fn_return_carries_proven_foreign(
 /// that provably owns no heap and therefore cannot alias any heap parameter.
 ///
 /// Conservative on purpose: it fires ONLY for the primitive-scalar leaves the
-/// type short-circuit needs without a layout registry (`semver`'s `maj/min/pat`
-/// are `i64`). A composite whose fields are all scalar is NOT short-circuited
-/// here — that needs the `ty_owns_heap` layout authority, threaded in at the
-/// wiring site (S2); leaving it to the structural aggregate recursion is sound
-/// (less precise, never unsound).
-#[must_use]
-pub fn ty_is_scalar_non_heap(ty: &ResolvedTy) -> bool {
-    matches!(
-        ty,
-        ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::Unit
-            | ResolvedTy::Never
-    )
-}
+/// type short-circuit needs without a layout registry. Hosted in
+/// [`hew_hir::declared_release`] beside the clause-3 field predicate that
+/// consumes it; re-exported here so every established MIR path keeps naming
+/// the one authority.
+pub use hew_hir::declared_release::ty_is_scalar_non_heap;
 
 // ---------------------------------------------------------------------------
 // Method-call return contract — keyed on the EMITTED runtime symbol [F1]

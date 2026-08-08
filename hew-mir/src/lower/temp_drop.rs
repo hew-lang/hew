@@ -593,6 +593,46 @@ fn corroborated_retained_string_move_dest(
 }
 /// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
 /// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
+///
+/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
+/// while `v`'s original reference stays owned by whatever produced it (there,
+/// an enum composite's variant payload slot). This is the `ReturnSlot`
+/// analogue of `corroborated_retained_string_move_sites`' `Move { dest: Local,
+/// src }` shape: there the destination local is the new owner and the source
+/// stays an alias released by its parent; at a return the caller is the new
+/// owner and the composite keeps release authority. Treating the read as an
+/// ESCAPE excludes the composite's `EnumInPlace` drop, so the retain's extra
+/// reference is never balanced — one leaked payload node per call (the enum
+/// twin of the returned-member retain leak,
+/// `enum_callee_consume_drop_leak_oracle` `move_out_arm`). Consumed by
+/// `derive_enum_composite_drop_allowed`; hosted here beside its retained-move
+/// corroboration siblings.
+pub(super) fn is_retained_return_move(
+    block: &BasicBlock,
+    instr_index: usize,
+    dest: Place,
+    src: Place,
+) -> bool {
+    if !matches!(dest, Place::ReturnSlot) {
+        return false;
+    }
+    let Some(prev) = instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+    else {
+        return false;
+    };
+    matches!(
+        prev,
+        Instr::StringRetain {
+            value,
+            condition: StringRetainCondition::Always,
+        } if *value == src,
+    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
+}
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
 /// unconditional `StringRetain` of the SAME `src`.
 ///
 /// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the

@@ -6534,6 +6534,15 @@ pub(super) fn enumerate_exits(
             .or_insert(binding);
     }
 
+    // Payload-alias → carrier composite map: `Ok(w)` / `Some(s)` binders whose
+    // heap ownership was NOT transferred out by a `NeutralizePayloadSlot` are
+    // non-owning interior aliases of the composite they were destructured from.
+    // Reuses the exact authority the obligation checker folds discharges
+    // through (`collect_payload_alias_map`), so the elaboration's exclusion and
+    // the checker's balance accounting agree on which binders alias which
+    // carrier.
+    let payload_alias_carrier = collect_payload_alias_map(blocks);
+
     // Narrow the function-wide LIFO to the drops whose owning binding is
     // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
     // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
@@ -6544,7 +6553,7 @@ pub(super) fn enumerate_exits(
         dataflow::BindingState,
     >|
      -> Vec<ElabDrop> {
-        drops_template
+        let live: Vec<ElabDrop> = drops_template
             .iter()
             .filter(|drop| match place_to_binding.get(&drop.place) {
                 Some(binding) => matches!(
@@ -6567,6 +6576,40 @@ pub(super) fn enumerate_exits(
                 None => false,
             })
             .cloned()
+            .collect();
+        // A projection-alias payload binder (`Ok(w)` destructured out of a
+        // call-scrutinee `Result<Resource, _>`) is freed by its OWNING
+        // composite's recursive `EnumInPlace` scope-exit drop. When the sibling
+        // arm diverges (`Err(_) => panic()`/`return`) the `Return` block's only
+        // reaching predecessor is the move-out arm, so the binder is still
+        // `Live` here and its independent drop lands alongside the composite's —
+        // a double-free of the shared payload. Exclude the binder's drop ONLY
+        // when its carrier composite's drop is co-present at this same exit: the
+        // composite covers the payload, so exactly one release fires. If the
+        // carrier is absent (consumed / moved out / not admitted for its own
+        // scope-exit drop), the binder is the live sole owner and keeps its
+        // drop — leak-not-double-free. This is the `Return`/`Panic`/`Cancel`
+        // sibling of the DI-020 exclusion `drops_for_scope_close_goto` already
+        // applies on scope-close `Goto` edges. The alias set exempts neutralized
+        // ownership transfers (`Ok(x) => x`) and fresh recv/generator/vec-iter
+        // payloads, which remain independently dropped.
+        let carrier_locals_present: HashSet<u32> = live
+            .iter()
+            .filter_map(|drop| base_local(drop.place))
+            .collect();
+        live.into_iter()
+            .filter(|drop| {
+                let Some(l) = base_local(drop.place) else {
+                    return true;
+                };
+                if !projection_alias_tainted.contains(&l) {
+                    return true;
+                }
+                match payload_alias_carrier.get(&l) {
+                    Some(carrier) => !carrier_locals_present.contains(carrier),
+                    None => true,
+                }
+            })
             .collect()
     };
 

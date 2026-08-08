@@ -667,6 +667,68 @@ fn for_range_mixed_width_bounds_resolves_to_wider_type() {
     );
 }
 
+/// `for i in 0 .. n` where BOTH bounds are unannotated literal-coercible
+/// (the start literal `0` and an unannotated `let n = 6;` local) — and the
+/// loop variable `i` is later forced to `i32` by a use-site constraint
+/// (`Vec<i32>::push(i)`). Regression: `check_binary_op`'s Range arm created a
+/// fresh `TypeVar` for the range's element type but never unified it with
+/// `n`'s own binding var. The loop-var constraint narrowed only the fresh
+/// var to `i32`; `n`'s independent var still defaulted to `i64`, producing a
+/// `Range<i32>` whose own end-bound expression resolved to `i64` — a
+/// self-inconsistent range MIR correctly fail-closed on (`E_MIR`, corpus class
+/// D). Unifying the fresh var with both bounds' own types at creation ties
+/// the identity together so the loop-var constraint propagates to `n` too.
+#[test]
+fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
+    let source = r"
+        fn main() {
+            let n = 6;
+            let xs: Vec<i32> = Vec::new();
+            for i in 0 .. n {
+                xs.push(i);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "for-range with an unannotated end-bound local narrowed by loop-var \
+         use must not error: {:#?}",
+        output.errors
+    );
+}
+
+/// Same shape as above but the range appears AFTER an unrelated for-range
+/// over a genuinely concrete `i64` bound (`Vec::len()`). Regression: the
+/// unification fix must not leak the narrowed width across sibling
+/// for-range statements — each range's fresh `TypeVar` is independent.
+#[test]
+fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() {
+    let source = r"
+        fn main() {
+            let n = 6;
+            let xs: Vec<i32> = Vec::new();
+            for i in 0 .. n {
+                xs.push(i);
+            }
+            let ys: Vec<i32> = Vec::new();
+            ys.push(1);
+            let len = ys.len();
+            for e in 0 .. len {
+                println(e);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a sibling for-range over a concrete i64 `.len()` bound must stay \
+         i64 regardless of an unrelated i32-narrowed range earlier in the \
+         same function: {:#?}",
+        output.errors
+    );
+}
+
 /// Mixed signedness is not an implicit range conversion. Keeping this rejected
 /// is the counterfactual for MIR's signedness-aware widening: every accepted
 /// mixed-width range has one unambiguous extension mode.

@@ -515,6 +515,25 @@ pub(crate) fn register_enum_layouts<'ctx>(
     Ok(())
 }
 
+/// True when `ty` is, or transitively contains (struct fields, array
+/// elements), an OPAQUE LLVM struct — a named struct whose body has not been
+/// set yet. Sizing such a type via `TargetData::get_abi_size` silently
+/// reports the opaque member as zero bytes; every consumer of this module
+/// must treat that as a hard error, never a size.
+fn basic_type_contains_opaque_struct(ty: BasicTypeEnum<'_>) -> bool {
+    match ty {
+        BasicTypeEnum::StructType(st) => {
+            st.is_opaque()
+                || st
+                    .get_field_types()
+                    .into_iter()
+                    .any(basic_type_contains_opaque_struct)
+        }
+        BasicTypeEnum::ArrayType(at) => basic_type_contains_opaque_struct(at.get_element_type()),
+        _ => false,
+    }
+}
+
 /// Shared builder for the machine-value and event-companion tagged-union
 /// LLVM types. Both share the `{ tag: iW, payload: [N x i8] }` shape
 /// described in the layout-invariants block above.
@@ -579,6 +598,23 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
                 resolve_ty(ctx, target_data, fty, record_layout_map)
             })
             .collect::<CodegenResult<Vec<_>>>()?;
+        // Fail closed on a still-opaque member ANYWHERE in this variant's
+        // field types. `get_abi_size` on a struct containing an opaque named
+        // struct reports 0 for the opaque member, silently under-sizing the
+        // payload array; the runtime then writes the member's real byte width
+        // through the undersized slot — out-of-bounds heap corruption, not a
+        // diagnostic. This is the registration-ORDER hazard the topological
+        // enum sort and the deferred machine-referencing pass exist to
+        // prevent; this guard converts any remaining (or future) ordering gap
+        // from a silent miscompile into a compile error naming the member.
+        for (fty, resolved) in field_tys.iter().zip(&variant.field_tys) {
+            if basic_type_contains_opaque_struct(*fty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "tagged-union `{outer_name}` variant `{}` field of type `{resolved}`                      resolves to a still-opaque LLVM struct — its layout body is not yet                      registered, so the payload array would be under-sized (silent                      out-of-bounds corruption). Register the member's layout before this                      tagged union (dependency-ordered registration).",
+                    variant.name
+                )));
+            }
+        }
         variant_struct_tys.push(ctx.struct_type(&field_tys, false));
         variant_field_tys.push(variant.field_tys.clone());
     }

@@ -1,7 +1,8 @@
 use super::*;
+use hew_hir::IntentKind;
 use hew_mir::{
     BasicBlock, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind, DecisionFact,
-    IrPipeline,
+    IrPipeline, MirStatement,
 };
 use inkwell::values::AnyValue;
 
@@ -13196,18 +13197,30 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
             )),
         "the source must retain a projection-neutralize ownership handoff: {consume_raw:#?}"
     );
+    // Since 06a241f40 (discharge affine resources exactly once), an
+    // explicit `witness.close()` is lowered as `IntentKind::Discharge`: the
+    // affine resource's release ritual runs at the discharge site itself,
+    // so the parameter carries no exit-cleanup drop-plan entry — an empty
+    // `drop_plans` for this local is the correct post-06a241f40 shape, not
+    // a regression. The dataflow fact under test moves from "retains a
+    // drop-plan descriptor" to "the checker recorded the discharge".
     let consume_elab = pipeline
         .elaborated_mir
         .iter()
         .find(|function| function.name == "consume")
         .expect("consume elaborated MIR");
     assert!(
-        consume_elab
-            .drop_plans
-            .iter()
-            .flat_map(|(_, plan)| &plan.drops)
-            .any(|drop| drop.place == Place::Local(0)),
-        "the source parameter must retain a typed cleanup descriptor: {consume_elab:#?}"
+        consume_elab.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::Use {
+                name,
+                intent: IntentKind::Discharge,
+                ..
+            } if name == "witness"
+        )),
+        "the projected witness binding must discharge its affine resource \
+         exactly once (IntentKind::Discharge), not retain a separate \
+         exit-cleanup drop-plan descriptor: {consume_elab:#?}"
     );
 
     for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
@@ -13231,37 +13244,40 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
             .print_to_string()
             .to_string();
 
-        let deactivate = helper
-            .find("call i1 @hew_cont_crash_cleanup_deactivate")
-            .unwrap_or_else(|| panic!("{triple}: missing source snapshot deactivate:\n{helper}"));
+        // Since 06a241f40, a Discharge-intent parameter runs its release
+        // ritual unconditionally at the discharge site itself, before the
+        // crash-triggering branch is even reached — there is no later
+        // window in which crash-cleanup replay could observe (and
+        // double-release) this resource, so no snapshot escrow is
+        // registered for it. `projected_resource_close_then_crash_releases_source_snapshot_once`
+        // (hew-cli/tests/enum_resource_variant_leak_oracle.rs) proves the
+        // equivalent enum-payload shape end to end under MallocScribble
+        // (exit 0, exact stdout, both the normal and the handled-crash
+        // path) — the invariant under test here (neutralize before close)
+        // stays covered; only the escrow bookkeeping it used to route
+        // through is gone.
         let neutralize = helper
             .find("store %Witness zeroinitializer")
             .unwrap_or_else(|| panic!("{triple}: missing projected payload neutralize:\n{helper}"));
-        let refresh = helper[neutralize..]
-            .find("call i64 @hew_cont_crash_cleanup_arm")
-            .map(|offset| neutralize + offset)
-            .unwrap_or_else(|| panic!("{triple}: missing refreshed source snapshot:\n{helper}"));
         let close = helper
             .find("call i8 @\"Witness::close\"")
             .unwrap_or_else(|| panic!("{triple}: missing transferred owner close:\n{helper}"));
 
         assert!(
-            deactivate < neutralize && neutralize < refresh && refresh < close,
-            "{triple}: source authority must deactivate, neutralize, and refresh before \
-             the transferred owner can close:\n{helper}"
+            neutralize < close,
+            "{triple}: the projected payload must be neutralized before the \
+             transferred owner closes it:\n{helper}"
         );
         assert!(
-            helper[refresh..close].contains(", i32 1, i32 0)"),
-            "{triple}: refreshed source owner must remain a Snapshot escrow:\n{helper}"
+            !helper.contains("hew_cont_crash_cleanup"),
+            "{triple}: a Discharge-intent parameter closes its resource at the \
+             discharge site itself and must not register a separate \
+             crash-cleanup escrow for it:\n{helper}"
         );
         assert!(
-            !helper.contains("helper_crash_cleanup_return_drop")
-                && helper.contains("@hew_panic_msg")
-                && helper.contains("cancel_exit")
-                && helper.contains("helper_crash_cleanup_retire")
-                && helper.contains("helper_crash_cleanup_return_retire"),
-            "{triple}: the same helper must retain normal-return, crash, and \
-             cancellation cleanup paths without a duplicate return destructor:\n{helper}"
+            helper.contains("@hew_panic_msg") && helper.contains("cancel_exit"),
+            "{triple}: the same helper must retain the panic and \
+             actor-cancellation cooperate paths:\n{helper}"
         );
     }
 }

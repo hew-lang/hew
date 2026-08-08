@@ -104,15 +104,23 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        9,
-        "refreshed from 5: the join-prefix-redefinition liveness fix (the predecessor-terminator string freshness guard) restores releases on main's error/cancel join edges that were previously miscounted; the post-serve_forever main shape now measures 9, still below the pre-refactor baseline of 10 because the request loop and its owned path temporaries moved into serve_forever",
+        8,
+        "refreshed from 9 to 8: main hands the listener `Server` to `serve_forever` (moved in at the call), so the declared-release resource-close of that `Server` on the call's cancel/handoff continuation is now excluded once the payload is handed off — a close-after-handoff of a `Server` main no longer owns is removed, not a leak (verified against origin/release/v0.6.0-rc1: the sole dropped plan entry is `drop Server kind=resource user_close(Server::close)` on the `serve_forever` cancel edge, where the Server was already moved into serve_forever). The remaining 8 stand below the pre-refactor baseline of 10 because the request loop and its owned path temporaries moved into serve_forever",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        13,
-        "refreshed from 9: same join-prefix-redefinition liveness fix restores releases on main's error/cancel join edges; the post-serve_forever main shape now measures 13, still below the pre-refactor baseline of 14 because the request loop and its owned path temporaries moved into serve_forever",
+        12,
+        "refreshed from 13 to 12: same handed-off resource-close exclusion as http_server.hew::main — the `Server` moved into `serve_forever` no longer takes a spurious `Server::close` on the call's cancel/handoff continuation (verified base-vs-tip: the single removed plan entry is that resource close). Still below the pre-refactor baseline of 14 because the request loop and its owned path temporaries moved into serve_forever",
     ),
+    // Same handed-off-resource exclusion at the non-benchmark server examples:
+    // main hands its listener `Server` to `serve_forever`, so the declared-release
+    // `Server::close` that base planned on the handoff/cancel continuation is now
+    // correctly dropped (base-vs-tip diff: the sole removed plan entry is
+    // `drop Server kind=resource user_close(Server::close)`). One release each,
+    // not a leak — main no longer owns the Server after the move.
+    ("examples/http_server.hew", "main", 24, "the listener Server is moved into serve_forever; its declared-release close is no longer planned on main's handoff/cancel continuation (25 -> 24, the one removed plan entry is Server::close, verified against origin/release/v0.6.0-rc1)"),
+    ("examples/static_server.hew", "main", 24, "same handed-off Server::close exclusion as examples/http_server.hew::main (25 -> 24, verified base-vs-tip: the single removed plan entry is the Server resource close)"),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
     // action itself, outside the cow-heap drop count measured here.

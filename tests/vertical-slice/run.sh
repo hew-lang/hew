@@ -85,18 +85,26 @@ run_compiled_binary() {
   local stdout_path="$2"
   local stderr_path="$3"
   shift 3
-  # Keep compilation uncapped because linking libhew.a needs substantial
-  # address space; apply the platform-appropriate cap only to execution.
+  # Pin the worker count so the 512 MB virtual-memory cap below is a function
+  # of the fixture, not the host's core count. The Hew runtime defaults to one
+  # worker thread per core, and each worker reserves an 8 MB stack. On a host
+  # with enough cores (e.g. 32), those reservations alone exceed the cap and
+  # thread spawn fails with EAGAIN mid-scheduler-init ("could not spawn worker
+  # N/nproc") — this has nothing to do with the semantics under test. HEW_WORKERS=4
+  # matches CI runners' core counts, so local Linux parity runs match CI's
+  # behaviour instead of an unbounded local host's. A caller-supplied
+  # HEW_WORKERS in "$@" still wins: `env` applies repeated assignments in
+  # order, so a later NAME=VALUE overrides this default.
   if [[ "$(uname -s)" == "Linux" ]]; then
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -v 524288; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   else
     # Darwin and BSD reject ulimit -v; the data-segment cap is the nearest
     # supported proxy and the timeout remains the hard containment boundary.
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -d 524288 2>/dev/null || true; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   fi
@@ -3130,21 +3138,51 @@ run_accept_expect_stdout "receive_gen_fn_record_stream_break"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return_close"
 
+# Assert a receive-gen fault fixture faulted the stream cleanly: the fault
+# diagnostic is present AND the abort is the DESIGNED fault trap, not a heap
+# allocator abort. Both `exit 134` (the designed trap) and a glibc double-free
+# abort share the SIGABRT exit status, so the status check alone cannot tell a
+# clean fault from a memory-safety crash on the fault-cleanup path (#2865). A
+# bare `grep` here had no failure message: under `set -euo pipefail` a crash
+# that printed the allocator error before the fault message made the grep fail
+# with no context, silently killing the whole run at an unrelated point. This
+# reports the failure AT the fixture, and fails closed on any allocator-abort
+# signature glibc prints to stderr on a double-free / heap corruption.
+assert_receive_gen_stream_faulted() {
+  local fixture="$1"
+  if ! grep -qF -- 'receive-gen stream: producer actor' "${stderr_output}"; then
+    echo "expected ${fixture} stderr to carry the receive-gen fault diagnostic" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  if grep -qE 'double free|free\(\): |corrupted|malloc\(\): |munmap_chunk|tcache|Invalid free' \
+      "${stderr_output}"; then
+    echo "${fixture}: heap allocator abort on the fault-cleanup path (double-free/corruption)" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The
 # trap crashes the actor (SIGABRT via the runtime's abort-on-internal-panic
-# convention, same as the bytes/string index-oob traps), exit 134.
+# convention, same as the bytes/string index-oob traps), exit 134. The fault
+# fires while the producer generator is RUNNING, so its coro frame is
+# raw-reclaimed by crash recovery AND owned by the pump's crash-cleanup escrow;
+# the frame must be freed exactly once (#2865).
 run_accept_expect_status "receive_gen_fn_fault_trap" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_fault_trap"
 
 # Fault (producer teardown): an actor stopped (via `supervisor_stop`)
 # while its stream is live and undrained must fault-close the stream on the
 # consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
 # and exit code as the crash case above; the deterministic buffered-value
-# count (8, the receive-gen stream capacity) is asserted via stdout.
+# count (8, the receive-gen stream capacity) is asserted via stdout. Here the
+# generator is SUSPENDED at teardown, the mirror case to the running-crash
+# fixture above.
 run_accept_expect_status "receive_gen_fn_teardown_fault" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_teardown_fault"
 
 # Owned actor-state fields are snapshotted through the same clone-total plan as
 # direct generator parameters.
@@ -4901,6 +4939,23 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # verification to fail with "Global is external, but doesn't have external
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
+
+# Regression: trait DEFAULT methods reached through a file import must resolve
+# on the implementing type and lower. Two gaps compounded: the checker gated
+# the imported trait's `trait_defs` entry on `pub`, so the impl inherited no
+# default bodies ("no method `simple` on `RootThing`"); and HIR lowered a
+# materialised default at the impl's module index while the copied body's spans
+# belong to the declaring file, so a default calling back through `self`
+# fail-closed with MethodCallNoRewrite. The fixture exercises both a leaf
+# default and a Self-dispatching one.
+run_check_run_expect_stdout file_import_trait_default_method
+
+# Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
+# declarations (constructs a type and calls a free function declared beside
+# the trait) must resolve them even though the default is materialised at an
+# impl site in the importing file — the copied body's spans belong to the
+# trait's file while the impl's module context is the root.
+run_check_run_expect_stdout file_import_trait_default_local_type
 
 # Regression: a file-imported multi-handler actor keeps a DISTINCT message-kind
 # discriminant per receive handler. The spliced file-import lowering path

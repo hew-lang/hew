@@ -484,10 +484,25 @@ fn resolve_aggregate_facts(
                 }
             }
         }
-        if verifier.resource_record_constructors.contains(site) && !owns_payload && !borrows_payload
-        {
-            resolved = true;
-            owns_payload = true;
+        // A registered resource-record construction answers ONLY through the
+        // declared-release authority, never through its payloads' facts. When
+        // the declared close is the type's entire release plan (the clause-3
+        // admission), constructing it is the program taking delivery: the
+        // value is Owned{Fresh} regardless of how foreign its operands are.
+        // When the type is registered but a field survives to the post-close
+        // field-wise teardown, the composite rule's premise holds again and
+        // payload-derived ownership must NOT resolve it — a foreign operand
+        // reaching such a field would be freed by a plan the program never
+        // declared. Ownership stays Unknown, which the owner mints read as a
+        // fail-closed refusal (a leak, never an undeclared release).
+        if verifier.resource_record_constructors.contains(site) {
+            if verifier.declared_release_constructors.contains(site) {
+                resolved = true;
+                owns_payload = true;
+                borrows_payload = false;
+            } else {
+                continue;
+            }
         }
         if !resolved {
             continue;
@@ -852,6 +867,15 @@ struct Verifier {
     aggregate_transfer_payloads: HashSet<SiteId>,
     resource_record_constructors: HashSet<SiteId>,
     resource_record_types: HashSet<DefId>,
+    /// Registered resource-record types whose declared `close` is their ENTIRE
+    /// release plan — the three-clause [`crate::declared_release`] admission.
+    /// A construction of one is an adoption the program owns. A construction
+    /// of a registered type OUTSIDE this set has a post-close field-wise
+    /// teardown that really can free a field, so its ownership stays
+    /// unresolved (fail-closed: a withheld owner costs a leak, never a
+    /// release the program did not declare).
+    declared_release_types: HashSet<String>,
+    declared_release_constructors: HashSet<SiteId>,
     binding_definitions: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_sites: HashMap<BindingId, Vec<SiteId>>,
     binding_reference_targets: HashMap<SiteId, BindingId>,
@@ -875,6 +899,7 @@ impl Verifier {
             .resource_records()
             .map(|lifecycle| lifecycle.resource_declaration.clone())
             .collect();
+        self.declared_release_types = crate::declared_release::declared_release_type_names(module);
         for item in &module.items {
             let HirItem::Impl(implementation) = item else {
                 continue;
@@ -1241,6 +1266,43 @@ impl Verifier {
                             .map_or(0..0, |source| source.span.clone()),
                         "specialised ownership subsumption must preserve its ordered nested source spine",
                     ));
+                }
+            }
+            // A subsuming occurrence (a `SubsumedValue` node) exposes exactly
+            // one structural source, and its carrier fact must passthrough to
+            // THAT source. An edge that skips the interposed occurrence and
+            // names a deeper descendant flattens the ordered subsumption
+            // spine, so a consumer walking value identity would step over an
+            // occurrence whose ownership refinement (a timeout boundary, an
+            // await adoption) is load-bearing. Type congruence cannot catch
+            // this: every occurrence on the spine carries the same result
+            // type, so the relabel is only visible structurally.
+            if let Some(HirProducedValueRelation::Subsumes(structural_source)) =
+                self.synthetic_structural_relations.get(site)
+            {
+                if let HirProducedValueRelation::Identity(source)
+                | HirProducedValueRelation::Subsumes(source) = &fact.relation
+                {
+                    if source != structural_source {
+                        let name = if matches!(fact.relation, HirProducedValueRelation::Identity(_))
+                        {
+                            "produced value identity"
+                        } else {
+                            "produced value subsumption"
+                        };
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: name.to_string(),
+                                reason: format!(
+                                    "passthrough source {source} skips the subsuming occurrence's structural source {structural_source}"
+                                ),
+                            },
+                            self.site_spans
+                                .get(site)
+                                .map_or(0..0, |source| source.span.clone()),
+                            "a subsuming occurrence's carrier edge must name its own nested source, preserving the ordered subsumption spine",
+                        ));
+                    }
                 }
             }
             relation_edges.insert(*site, sources);
@@ -1936,12 +1998,13 @@ impl Verifier {
                 );
                 self.aggregate_transfer_payloads
                     .extend(payloads.iter().map(|payload| payload.site));
-                if matches!(
-                    &expr.ty,
-                    ResolvedTy::Named { name, .. }
-                        if self.resource_record_types.contains(&DefId::new(name))
-                ) {
-                    self.resource_record_constructors.insert(expr.site);
+                if let ResolvedTy::Named { name, .. } = &expr.ty {
+                    if self.resource_record_types.contains(&DefId::new(name)) {
+                        self.resource_record_constructors.insert(expr.site);
+                        if self.declared_release_types.contains(name.as_str()) {
+                            self.declared_release_constructors.insert(expr.site);
+                        }
+                    }
                 }
                 for (_, field) in fields {
                     self.expr(field);

@@ -946,8 +946,17 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("breakpoint set --file {src} --line 12"),
             "-o",
             "run",
+            // Older lldb releases (e.g. the Xcode 15.x toolchain on GitHub's
+            // macos-14 runner) default `target.max-children-depth` shallower
+            // than newer ones (Xcode 16.3's lldb-2100 defaults to 5): without
+            // an explicit --depth, the nested Payload record inside the
+            // active variant renders as an elided `{...}` instead of
+            // `(code = 7)`, and this assertion goes looking for text that was
+            // never printed. Forcing a depth deep enough for this fixture's
+            // nesting (Status -> $variants$ -> $variant$N -> value -> field)
+            // makes the rendering version-stable.
             "-o",
-            "frame variable status",
+            "frame variable status --depth 10",
             "-o",
             "quit",
             bin,
@@ -961,6 +970,14 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("break {src}:12"),
             "-ex",
             "run",
+            // gdb auto-detects the DWARF source language as Rust from the
+            // producer; in Rust mode `print` renders record fields as
+            // `Payload {code: 7}` instead of the C-style `code = 7` this
+            // assertion expects. Forcing C mode makes the rendering match
+            // the other gdb assertions in this suite (see `set language c`
+            // above).
+            "-ex",
+            "set language c",
             "-ex",
             "print status",
             bin,

@@ -469,6 +469,19 @@ jobs:
           target/release/hew-lsp.exe --version && echo "hew-lsp runs"
           target/release/hew-observe.exe --version && echo "hew-observe runs"
 
+      # The eval_wasm_* / wasi_run_e2e modules shell out to wasmtime; without
+      # it they fail at bootstrap ("wasmtime not found"). Every other release
+      # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
+      # — this lane did not, so its WASI coverage never actually ran.
+      - name: Install WASI prerequisites
+        shell: pwsh
+        run: |
+          winget install --id BytecodeAlliance.Wasmtime -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          $wasmtimeBin = Join-Path $env:USERPROFILE ".wasmtime\bin"
+          if (Test-Path $wasmtimeBin) { Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin }
+          $env:PATH = "$wasmtimeBin;$env:PATH"
+          wasmtime --version
+
       - name: Run Rust workspace tests
         run: >-
           cargo nextest run --workspace

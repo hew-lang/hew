@@ -5781,6 +5781,35 @@ impl Checker {
         None
     }
 
+    /// A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
+    /// thunk (`VecIter::next()` needs one to clone each element into an
+    /// independent owner) and no scalar-index or push-rewrite entry, so
+    /// `Vec<dyn Trait>` type-checks today and then fails three different ways
+    /// deep in codegen/HIR with internal-looking diagnostics (`VecIter<dyn T>
+    /// is not supported`, `MethodCallNoRewrite`, `VecIndexElementTypeUnsupported`)
+    /// instead of one clear rejection naming the supported alternative. `dyn
+    /// Trait` itself is fine (a function parameter monomorphises per call
+    /// site); only wrapping it in `Vec` is unsupported, so this check is
+    /// scoped to the `Vec` element position, not `Ty::TraitObject` generally.
+    ///
+    /// Returns `Some(reason)` for a `Ty::TraitObject` element, `None` otherwise.
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a &self method to match the sibling \
+                  indirect_enum_vec_element_reject_reason call convention at both call sites"
+    )]
+    pub(super) fn trait_object_vec_element_reject_reason(&self, elem_ty: &Ty) -> Option<String> {
+        if matches!(elem_ty, Ty::TraitObject { .. }) {
+            return Some(
+                "trait-object elements are not supported in `Vec` (no clone/drop, index, or \
+                 push path exists for an opaque `dyn Trait` pointer); wrap each variant in an \
+                 enum and store `Vec<YourEnum>` instead"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
     /// Channel/stream element admission for the layout-witness queue path
     /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
     /// admissible when the codegen element witness can describe it:

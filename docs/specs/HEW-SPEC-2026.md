@@ -1784,6 +1784,13 @@ The current subset does not yet fully enforce object-safety rules or support
 associated-type bounds and higher-ranked trait bounds in `dyn` position. See
 [HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
 
+`dyn Trait` is supported as a function PARAMETER only. `Vec<dyn Trait>` is
+rejected at the checker boundary (`` `dyn Trait` cannot be a `Vec` element ``)
+— an opaque vtable pointer has no clone/drop, scalar-index, or push path, so
+collecting trait objects is not yet implemented. Store an enum of the concrete
+variants instead (`enum Shape { Circle(Circle); Square(Square); }`,
+`Vec<Shape>`) and dispatch on it with `match`.
+
 #### 3.8.3 Trait Bounds
 
 **Inline bounds:**

@@ -1,0 +1,42 @@
+// A machine value whose scope would end in a state holding a `#[resource]`
+// is rejected at declaration: the machine drop class has no wired release for
+// state-payload resources, so every exit path — held live, stepped back to a
+// payload-free state, early return — would leak the `close` silently.
+//
+// Expected diagnostic:
+//   machine `ConnSession` state `Active` holds `#[resource]`/`#[linear]` value `Handle`
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl Handle {
+    fn close(self) {
+        println(f"CLOSE fd={self.fd}");
+    }
+}
+
+machine ConnSession {
+    events {
+        Connect { fd: i64; }
+        Disconnect;
+    }
+
+    state Idle;
+    state Active { h: Handle; }
+
+    on Connect(fd): Idle => Active {
+        Active { h: Handle { fd: fd } }
+    }
+    on Disconnect: Active => Idle {
+        Idle
+    }
+
+    default { state }
+}
+
+fn main() {
+    var s = ConnSession::Idle;
+    s.step(ConnSessionEvent::Connect { fd: 1 });
+    s.step(ConnSessionEvent::Disconnect);
+}

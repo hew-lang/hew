@@ -1204,19 +1204,36 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
 
-# A `#[resource]` carried through a machine `reenter` is MOVED into the state
-# the body builds, so the re-entry closes nothing and the handle closes once
-# when the machine value's scope ends. A regression that releases the source
-# state's moved-out field prints a CLOSE between the `reentered` lines and then
-# re-closes a zeroed handle on the next step.
-run_accept_expect_stdout "machine_reenter_resource_closes_once"
+# Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
+# `#[linear]` value in a machine state payload has no wired release on
+# transition or scope exit, so the declaration is rejected rather than leaking
+# its `close` silently. Three shapes pin the fail-closed floor: a reenter that
+# carries the handle through, a scope exit holding the handle live, and a
+# resource beside a heap-owning sibling (one diagnostic per offending state).
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_reenter.hew" \
+  'machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_reenter"
+echo "PASS machine_state_resource_payload_reenter (reject)"
 
-# A machine value that ends its scope holding a `#[resource]` closes it exactly
-# once, tag-aware: held-live closes at the exit, stepped-back-to-Idle closes at
-# the transition and not again, early return closes on that path. A regression
-# that drops the machine class prints no CLOSE at all (the silent leak); one
-# that releases tag-blind prints a second CLOSE after `release`.
-run_accept_expect_stdout "machine_scope_exit_resource_closes"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_scope_exit.hew" \
+  'machine `ConnSession` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_scope_exit"
+echo "PASS machine_state_resource_payload_scope_exit (reject)"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
+  2 \
+  "machine_state_resource_payload_heap_sibling"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
+  'machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_heap_sibling"
+echo "PASS machine_state_resource_payload_heap_sibling (reject)"
 
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited

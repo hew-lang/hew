@@ -3043,6 +3043,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -3296,6 +3297,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -3412,7 +3414,7 @@ mod runtime_callee_ownership_contract_parity {
 
     #[test]
     fn callee_ownership_contract_matches_literal_projection_sets() {
-        assert_eq!(CLASSIFIER_SYMBOLS.len(), 169);
+        assert_eq!(CLASSIFIER_SYMBOLS.len(), 170);
         let vec_receiver = expected_set(VEC_RECEIVER_SYMBOLS);
         let collection_receiver = expected_set(COLLECTION_RECEIVER_SYMBOLS);
         let copy_in = expected_set(COPY_IN_SYMBOLS);
@@ -3425,7 +3427,7 @@ mod runtime_callee_ownership_contract_parity {
         let fresh_bytes = expected_set(FRESH_BYTES_SYMBOLS);
 
         assert_eq!(vec_receiver.len(), 92);
-        assert_eq!(collection_receiver.len(), 19);
+        assert_eq!(collection_receiver.len(), 20);
         assert_eq!(bytes_receiver.len(), 11);
         assert_eq!(string_use.len(), 28);
         assert_eq!(fresh_string.len(), 30);

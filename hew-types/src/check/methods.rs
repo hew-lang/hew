@@ -145,6 +145,8 @@ pub(super) enum RetTemplate {
     VecOfKey,
     /// `Vec<V>` (`HashMap` `values`).
     VecOfVal,
+    /// `Vec<(K, V)>` (`HashMap` `entries`).
+    VecOfPair,
     /// The receiver collection type itself (`clone`).
     SelfTy,
 }
@@ -185,7 +187,7 @@ const fn desc(
 )]
 fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
     use ArgTemplate::{Elem, Key, Value};
-    use RetTemplate::{Bool, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64};
+    use RetTemplate::{Bool, SelfTy, Unit, VecOfKey, VecOfPair, VecOfVal, I64 as RetI64};
     Some(match kind {
         CollectionKind::HashMap => match method {
             "insert" => desc(Some(2), &[Key, Value], Unit),
@@ -204,6 +206,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "contains_key" => desc(Some(1), &[Key], Bool),
             "keys" => desc(Some(0), &[], VecOfKey),
             "values" => desc(Some(0), &[], VecOfVal),
+            "entries" => desc(Some(0), &[], VecOfPair),
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
@@ -4295,6 +4298,9 @@ impl Checker {
             RetTemplate::I64 => Ty::I64,
             RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
             RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
+            RetTemplate::VecOfPair => {
+                self.make_vec_type(Ty::Tuple(vec![cx.key.clone(), cx.val.clone()]), span)
+            }
             RetTemplate::SelfTy => match kind {
                 CollectionKind::HashMap => Ty::Named {
                     builtin: Some(BuiltinType::HashMap),
@@ -4334,7 +4340,7 @@ impl Checker {
                     "insert" | "get" | "remove" => {
                         self.validate_hashmap_owned_element_types(&cx.key, &cx.val, span)
                     }
-                    "keys" | "values" => self
+                    "keys" | "values" | "entries" => self
                         .validate_hashmap_projection_element_types(&cx.key, &cx.val, method, span),
                     _ => self.validate_hashmap_key_value_types(&cx.key, &cx.val, span),
                 };
@@ -4350,6 +4356,7 @@ impl Checker {
                         | "len"
                         | "keys"
                         | "values"
+                        | "entries"
                         | "clone"
                         | "clear"
                 ) {
@@ -8905,6 +8912,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 },
             ),
             (
+                "entries".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_entries_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Entries),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
                 "clone".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_clone_layout".to_string(),
@@ -9505,6 +9522,7 @@ mod tests {
         // `check_hashmap_method` arm, not the collection driver (mirrors Vec).
         assert!(collection_method_desc(CollectionKind::HashMap, "get").is_none());
         assert_eq!(arity_of(CollectionKind::HashMap, "keys"), Some(0));
+        assert_eq!(arity_of(CollectionKind::HashMap, "entries"), Some(0));
         assert_eq!(arity_of(CollectionKind::HashSet, "insert"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "contains"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "clone"), Some(0));
@@ -9528,6 +9546,8 @@ mod tests {
         assert_eq!(hm_keys.ret, RetTemplate::VecOfKey);
         let hm_values = collection_method_desc(CollectionKind::HashMap, "values").unwrap();
         assert_eq!(hm_values.ret, RetTemplate::VecOfVal);
+        let hm_entries = collection_method_desc(CollectionKind::HashMap, "entries").unwrap();
+        assert_eq!(hm_entries.ret, RetTemplate::VecOfPair);
 
         let set_insert = collection_method_desc(CollectionKind::HashSet, "insert").unwrap();
         assert_eq!(set_insert.arg_templates, &[ArgTemplate::Elem]);

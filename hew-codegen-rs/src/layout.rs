@@ -2348,6 +2348,7 @@ fn finalize_layout_facts_against_pipeline(
                 | F::HashMapRemoveLayout
                 | F::HashMapLenLayout
                 | F::HashMapKeysLayout
+                | F::HashMapEntriesLayout
                 | F::HashMapValuesLayout
                 | F::HashMapGetLayout
                 | F::HashSetInsertLayout
@@ -2719,6 +2720,10 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_keys_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_values_layout(map)`
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewVec hew_hashmap_entries_layout(map, pair_layout, v_offset)`
+        "hew_hashmap_entries_layout" => {
+            Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false))
+        }
         // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
         "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `void hew_hashmap_clear_layout(map)`
@@ -4001,6 +4006,8 @@ pub(crate) fn lower_layout_vec_direct_call(
 /// - `hew_hashmap_len_layout`:          1 arg  (handle)
 /// - `hew_hashmap_keys_layout`:         1 arg  (handle) → *mut HewVec
 /// - `hew_hashmap_values_layout`:       1 arg  (handle) → *mut HewVec
+/// - `hew_hashmap_entries_layout`:      1 arg  (handle) → *mut HewVec;
+///   codegen adds the tuple descriptor and V-field offset
 /// - `hew_hashset_insert_layout`:       2 args (handle, elem)
 /// - `hew_hashset_contains_layout`:     2 args (handle, elem)
 /// - `hew_hashset_remove_layout`:       2 args (handle, elem)
@@ -4170,6 +4177,7 @@ pub(crate) fn lower_hashmap_layout_direct_call(
         "hew_hashmap_contains_key_layout" | "hew_hashmap_remove_layout" => 2,
         "hew_hashmap_len_layout"
         | "hew_hashmap_keys_layout"
+        | "hew_hashmap_entries_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_clear_layout" => 1,
@@ -4359,6 +4367,79 @@ pub(crate) fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashmap_values_layout store")?;
+        }
+        "hew_hashmap_entries_layout" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashmap_entries_layout returns *mut HewVec; call must supply a dest"
+                        .into(),
+                )
+            })?;
+            let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+            let ResolvedTy::Named {
+                name,
+                args: vec_args,
+                ..
+            } = dest_ty
+            else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {dest_ty:?}"
+                )));
+            };
+            let [pair_ty] = vec_args.as_slice() else {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must have one Vec element, got {vec_args:?}"
+                )));
+            };
+            if name != "Vec" || !matches!(pair_ty, ResolvedTy::Tuple(elems) if elems.len() == 2) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_hashmap_entries_layout dest must be Vec<(K, V)>, got {pair_ty:?}"
+                )));
+            }
+            let pair_llvm_ty = resolve_ty(
+                fn_ctx.ctx,
+                fn_ctx.target_data,
+                pair_ty,
+                fn_ctx.record_layouts,
+            )?;
+            let pair_struct = pair_llvm_ty.into_struct_type();
+            let v_offset = fn_ctx
+                .target_data
+                .offset_of_element(&pair_struct, 1)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "hew_hashmap_entries_layout could not derive tuple V offset".into(),
+                    )
+                })?;
+            let pair_layout = owned_elem_layout_descriptor_ptr(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                fn_ctx.target_data,
+                fn_ctx.owned_elem_registries(),
+                pair_ty,
+                pair_llvm_ty,
+                "hashmap entries",
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[
+                        map_ptr.into(),
+                        pair_layout.into(),
+                        fn_ctx.ctx.i64_type().const_int(v_offset, false).into(),
+                    ],
+                    "hew_hashmap_entries_layout_call",
+                )
+                .llvm_ctx("hew_hashmap_entries_layout call")?;
+            let vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashmap_entries_layout returned void".into())
+            })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, vec_ptr)
+                .llvm_ctx("hew_hashmap_entries_layout store")?;
         }
         "hew_hashmap_clone_layout" => {
             // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)` — returns a

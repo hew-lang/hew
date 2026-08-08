@@ -382,6 +382,7 @@ ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state
 # COPY-IN the per-iteration `set` temp leaked its inner Vec; macOS `leaks` slope
 # proves it there, LSan proves it here. Exits 0, clean.
 VEC_ELEM_STORE_TEMP_SRC="${ROOT}/tests/vertical-slice/accept/vec_elem_store_owned_temp_no_leak.hew"
+HASHMAP_ENTRIES_SRC="${ROOT}/tests/vertical-slice/accept/hashmap_entries_asan.hew"
 # Retain-backed string parameter embeds stay on the owned-Vec COPY-IN ABI, but
 # the anonymous source temp's explicit retained share must receive one ordinary
 # drop. Includes direct push/set caller-after-store reads and a generic Arena
@@ -451,7 +452,9 @@ ENUM_RESOURCE_STATE_BIN="${WORK_DIR}/enum_resource_state_overwrite_asan"
 compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_SRC}" "${ENUM_RESOURCE_STATE_BIN}"
 
 VEC_ELEM_STORE_TEMP_BIN="${WORK_DIR}/vec_elem_store_owned_temp_no_leak"
+HASHMAP_ENTRIES_BIN="${WORK_DIR}/hashmap_entries"
 compile_asan_fixture "owned-Vec element-store temp (push/set move-in)" "${VEC_ELEM_STORE_TEMP_SRC}" "${VEC_ELEM_STORE_TEMP_BIN}"
+compile_asan_fixture "HashMap entries owned-pair snapshot" "${HASHMAP_ENTRIES_SRC}" "${HASHMAP_ENTRIES_BIN}"
 
 VEC_PARAM_EMBED_TEMP_BIN="${WORK_DIR}/vec_param_embed_copy_in_temp_no_leak"
 compile_asan_fixture "owned-Vec retained param-embed temp (push/set/Arena)" "${VEC_PARAM_EMBED_TEMP_SRC}" "${VEC_PARAM_EMBED_TEMP_BIN}"
@@ -601,6 +604,12 @@ else
 fi
 
 if run_asan_fixture "owned-Vec element-store temp (push/set move-in)" "${VEC_ELEM_STORE_TEMP_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "HashMap entries owned-pair snapshot" "${HASHMAP_ENTRIES_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

@@ -232,6 +232,7 @@ pub enum HashMapMethod {
     Len,
     Keys,
     Values,
+    Entries,
     Clone,
     Clear,
 }

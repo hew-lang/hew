@@ -1197,6 +1197,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout

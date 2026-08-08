@@ -17,7 +17,7 @@ use core::ffi::{c_char, c_void};
 use core::ptr;
 
 use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeLayout, HewTypeOwnershipKind, HewVec};
+use hew_cabi::vec::{HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout};
 
 /// Entry states.
 const EMPTY: u8 = 0;
@@ -1775,6 +1775,96 @@ pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> 
             vec
         }
     }
+}
+
+/// Collect every occupied `(K, V)` pair into an independently owned Vec.
+///
+/// `pair_layout` is the codegen-synthesised tuple element descriptor, including
+/// its composite clone/drop thunks. `v_offset` is the target ABI offset of the
+/// tuple's V field; the runtime deliberately does not reproduce tuple layout.
+/// Each map element is cloned once into aligned scratch storage, then moved
+/// into the Vec so the tuple descriptor owns exactly one copy.
+///
+/// # Safety
+///
+/// `m` and `pair_layout` must be valid descriptors produced by Hew codegen,
+/// and `v_offset` must identify the V field within `pair_layout.size`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_entries_layout(
+    m: *const HewLayoutHashMap,
+    pair_layout: *const HewVecElemLayout,
+    v_offset: u64,
+) -> *mut HewVec {
+    if m.is_null() || pair_layout.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: m is non-null (checked above) and, per this fn's contract, a
+    // valid codegen-produced map descriptor.
+    unsafe { validate_op_map(m) };
+    // SAFETY: m is non-null and was validated by the gate above.
+    let map = unsafe { &*m };
+    // SAFETY: pair_layout is non-null (checked above) and, per this fn's
+    // contract, a valid codegen-produced element descriptor.
+    let pair = unsafe { &*pair_layout };
+    let v_offset = usize::try_from(v_offset)
+        .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: V offset too large"));
+    let Some(v_end) = v_offset.checked_add(map.val_layout.size) else {
+        abort_layout_clone("hew_hashmap_entries_layout: V field offset overflow");
+    };
+    if v_offset < map.key_layout.size || v_end > pair.size {
+        abort_layout_clone("hew_hashmap_entries_layout: invalid pair field layout");
+    }
+
+    // SAFETY: pair_layout is non-null and a valid element descriptor, which is
+    // exactly this constructor's precondition.
+    let vec = unsafe { crate::vec::hew_vec_new_with_elem_layout(pair_layout) };
+    if vec.is_null() {
+        return core::ptr::null_mut();
+    }
+    let scratch_layout = std::alloc::Layout::from_size_align(pair.size, pair.align)
+        .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: invalid pair layout"));
+
+    for idx in 0..map.cap {
+        // SAFETY: idx < map.cap, so this addresses a slot inside the live
+        // entries allocation at the map's own stride.
+        let state = unsafe { *slot_state(map.entries, idx, map.stride) };
+        if state != OCCUPIED {
+            continue;
+        }
+        // SAFETY: scratch_layout was built by Layout::from_size_align above and
+        // pair.size is non-zero for any pair carrying a key and a value.
+        let scratch = unsafe { std::alloc::alloc_zeroed(scratch_layout) };
+        if scratch.is_null() {
+            std::alloc::handle_alloc_error(scratch_layout);
+        }
+        // SAFETY: idx addresses an OCCUPIED slot, so its key field is live and
+        // initialised at the map's recorded key offset.
+        let key = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
+        // SAFETY: as above for the value field at the recorded value offset.
+        let val = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        // SAFETY: key/val point at live initialised blobs; scratch is a fresh
+        // zeroed allocation of pair.size with v_offset..v_end validated to lie
+        // inside it, so both clones write within bounds. The push then moves
+        // that single owned copy into the Vec, after which the scratch storage
+        // holds no owning references and is deallocated with its own layout.
+        unsafe {
+            clone_layout_key_blob(
+                map.key_layout.ownership_kind,
+                key,
+                scratch,
+                map.key_layout.size,
+            );
+            clone_layout_value_blob(
+                map.val_layout,
+                val,
+                scratch.add(v_offset),
+                "hew_hashmap_entries_layout value",
+            );
+            crate::vec::hew_vec_push_owned_move(vec, scratch.cast::<c_void>());
+            std::alloc::dealloc(scratch, scratch_layout);
+        }
+    }
+    vec
 }
 
 /// Collect all values of a layout-backed map into a new `HewVec`.

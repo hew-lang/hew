@@ -374,6 +374,7 @@ impl Builder {
                             &self.subst_ty(&target.ty),
                             &self.record_field_orders,
                             &self.enum_layouts,
+                            self.type_classes.lifecycle_registry(),
                         ) {
                             // The reassignment constructs a fresh live enum
                             // generation. Restore its scope-exit obligation;

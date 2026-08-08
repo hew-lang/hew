@@ -2303,7 +2303,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // `LayoutManaged` (2) so the runtime's drop discipline fires; a Copy record
     // (no heap leaf) keeps Plain (0) and a null drop_fn.
     let key_drop_fn = if resolved_ty
-        .is_some_and(|rty| resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()))
+        .is_some_and(|rty| crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty))
     {
         let rty = resolved_ty.expect("heap-leaf check requires a resolved type");
         match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
@@ -2417,7 +2417,7 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
         if let Some(name) = primitive_value_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
-        if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) {
+        if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) {
             return hashmap_owned_value_layout_descriptor_ptr(fn_ctx, rty, val_ty);
         }
     }
@@ -4368,7 +4368,7 @@ fn emit_insert_overwrite_key_release(
     }
     let release = match key_ty {
         ResolvedTy::String => Some(KeyRelease::StringPtr),
-        rty if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) => {
+        rty if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) => {
             match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
                 Some((OwnedElemThunkKind::Record, record_key)) => Some(KeyRelease::RecordInPlace(
                     get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),

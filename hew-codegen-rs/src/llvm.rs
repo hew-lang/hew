@@ -24489,13 +24489,18 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
-        // A tuple element is owned when any field owns heap.
+        // A tuple element is owned when any field carries a drop obligation
+        // (heap OR a closeable `#[resource]`).
         ResolvedTy::Tuple(fields) => fields
             .iter()
-            .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, &mut HashSet::new())),
-        // A user record/enum nominal is owned when it transitively owns heap.
+            .any(|f| resolved_ty_carries_drop_obligation(fn_ctx, f)),
+        // A user record/enum nominal is owned when it transitively carries a
+        // drop obligation — the same axis the MIR harvest
+        // (`named_elem_carries_drop_obligation`) consults, so a scalar-field
+        // `#[resource]` element reaches the owned ABI whose per-element drop
+        // thunk runs its `close`.
         ResolvedTy::Named { builtin: None, .. } => {
-            resolved_ty_contains_heap_leaf(fn_ctx, elem, &mut HashSet::new())
+            resolved_ty_carries_drop_obligation(fn_ctx, elem)
         }
         // Nested collection elements (Vec<E> / HashMap / HashSet) are owned
         // heap handles — route the outer Vec through the W5.016 owned descriptor
@@ -24620,6 +24625,24 @@ pub(crate) fn resolved_ty_contains_heap_leaf(
             enum_layouts: fn_ctx.enum_layouts,
             machine_layouts: fn_ctx.machine_layouts,
         },
+    )
+}
+
+/// Structural drop-OBLIGATION check — the admission axis: heap ownership OR a
+/// registered closeable `#[resource]` (the `hew_mir::ty_carries_drop_obligation`
+/// authority over the same [`CgHeapLayouts`] adapter plus the pipeline lifecycle
+/// registry). Element/value descriptor and composite-drop admission consult
+/// THIS, not the literal-heap check: a scalar-field `#[resource]` record owns no
+/// heap yet its element drop must run `close` exactly once.
+pub(crate) fn resolved_ty_carries_drop_obligation(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> bool {
+    hew_mir::ty_carries_drop_obligation(
+        ty,
+        &CgHeapLayouts {
+            record_field_resolved_tys: fn_ctx.record_field_resolved_tys,
+            enum_layouts: fn_ctx.enum_layouts,
+            machine_layouts: fn_ctx.machine_layouts,
+        },
+        fn_ctx.lifecycle_registry,
     )
 }
 

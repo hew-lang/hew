@@ -460,9 +460,9 @@ impl Builder {
     /// (`hew_vec_free_owned` running a per-element `drop_fn`) has no
     /// indirect-aware node free wired — admitting it here would route
     /// construction and release through mismatched ABIs. A scalar-payload
-    /// indirect enum also has `named_elem_owns_heap == false` (the
+    /// indirect enum also has `named_elem_carries_drop_obligation == false` (the
     /// heap-ownership authority is indirection-blind), but a HEAP-payload one
-    /// (`A(string)`) has `named_elem_owns_heap == true` and would otherwise fall
+    /// (`A(string)`) has `named_elem_carries_drop_obligation == true` and would otherwise fall
     /// through the heap-owning-enum path below; the explicit `ty_is_indirect_enum`
     /// guard is what keeps that case on the fail-closed
     /// `Unsupported(NoReleaseProtocol)` reject rather than the owned-ABI path.
@@ -475,7 +475,7 @@ impl Builder {
         // indirect-aware release phase), so it must stay on the fail-closed
         // `Unsupported(NoReleaseProtocol)` reject — not be excluded from it as if
         // the owned ABI claimed it. The scalar-payload case would already return
-        // `false` at the `named_elem_owns_heap` check below; this guard also
+        // `false` at the `named_elem_carries_drop_obligation` check below; this guard also
         // catches the HEAP-payload case (`indirect enum Foo { A(string); B }`),
         // whose payload owns heap and would otherwise reach `true` and suppress
         // the reject, leaving a construct/release ABI mismatch to reach codegen.
@@ -503,7 +503,7 @@ impl Builder {
             return false;
         }
         // ONLY a genuinely heap-owning element is an owned-Vec element, decided
-        // by the `named_elem_owns_heap` authority (NOT by `ValueClass::BitCopy`,
+        // by the `named_elem_carries_drop_obligation` authority (NOT by `ValueClass::BitCopy`,
         // which finalises records only). A heap-free record (e.g.
         // `type Point { x: i64; y: i64 }`, which is `BitCopy`) OR a heap-free
         // direct enum (e.g. `enum Colour { Red; Green; Blue }`, which is NOT
@@ -512,7 +512,7 @@ impl Builder {
         // element loads through the owned getter (which reads an owned
         // descriptor the plain Vec never carries). Check field/variant
         // heap-ownership via the record/enum registries.
-        if !self.named_elem_owns_heap(elem) {
+        if !self.named_elem_carries_drop_obligation(elem) {
             return false;
         }
         // A closure-bearing record/enum element is NOT owned-ABI releasable: the
@@ -575,17 +575,25 @@ impl Builder {
         }
     }
 
-    /// True when a `ResolvedTy` transitively owns heap. Thin adapter over the
-    /// single `crate::model::ty_owns_heap` authority (record fields via
-    /// `record_field_orders`, enum/machine variant payloads via `enum_layouts`,
-    /// one builtin leaf set). The owned-Vec element harvest consults this so an
-    /// all-BitCopy record/enum (which is `Copy` and uses the `BitCopy` `_layout`
-    /// path) is NOT treated as an owned-Vec element, while a
-    /// `CancellationToken`/`Generator`-bearing element correctly is — the same
-    /// verdict the codegen owned-Vec walker now reaches, so getter, constructor,
-    /// and release agree (`dedup-semantic-boundary`).
-    fn named_elem_owns_heap(&self, ty: &ResolvedTy) -> bool {
-        crate::model::ty_owns_heap_mir(ty, &self.record_field_orders, &self.enum_layouts)
+    /// True when a `ResolvedTy` carries a drop obligation — transitively owns
+    /// heap OR contains a registered closeable `#[resource]`. Thin adapter over
+    /// the single `crate::model::ty_carries_drop_obligation` authority (record
+    /// fields via `record_field_orders`, enum/machine variant payloads via
+    /// `enum_layouts`, one builtin leaf set, close contracts via the lifecycle
+    /// registry). The owned-Vec element harvest consults this so an all-BitCopy
+    /// record/enum (which is `Copy` and uses the `BitCopy` `_layout` path) is
+    /// NOT treated as an owned-Vec element, while a `CancellationToken`/
+    /// `Generator`-bearing element — or a scalar-field `#[resource]` record,
+    /// whose element drop must run `close` — correctly is. Same verdict the
+    /// codegen owned-Vec walker reaches, so getter, constructor, and release
+    /// agree (`dedup-semantic-boundary`).
+    fn named_elem_carries_drop_obligation(&self, ty: &ResolvedTy) -> bool {
+        crate::model::ty_carries_drop_obligation_mir(
+            ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+            self.type_classes.lifecycle_registry(),
+        )
     }
 
     pub(crate) fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
@@ -703,7 +711,7 @@ impl Builder {
         }
         match elem_ty {
             // A tuple element is owned when any field transitively owns heap.
-            // Use `named_elem_owns_heap` (which consults
+            // Use `named_elem_carries_drop_obligation` (which consults
             // `record_field_resolved_tys` for record fields) — NOT
             // `ty_contains_heap_owning`, which is record-layout BLIND and would
             // mis-classify a `(Rec, i64)` where `Rec` has a `string` field as
@@ -716,7 +724,9 @@ impl Builder {
             // SAME record-aware authority codegen's `resolved_ty_contains_heap_leaf`
             // uses, so the getter, constructor, and free all agree
             // (`dedup-semantic-boundary`).
-            ResolvedTy::Tuple(elems) => elems.iter().any(|e| self.named_elem_owns_heap(e)),
+            ResolvedTy::Tuple(elems) => elems
+                .iter()
+                .any(|e| self.named_elem_carries_drop_obligation(e)),
             // Nested collection elements (Vec<T> / HashMap / HashSet) are owned
             // heap handles constructed through the owned descriptor ABI: their
             // element loads route to `hew_vec_get_owned`, their pushes upgrade
@@ -892,7 +902,9 @@ impl Builder {
     /// non-owning, so without this probe its `Vec` would mis-label as the
     /// sentinel instead of the actionable "release protocol unwired".
     fn vec_element_unsupported_reason(&self, elem: &ResolvedTy) -> FailClosedReason {
-        if self.named_elem_owns_heap(elem) || ty_is_indirect_enum(elem, &self.enum_layouts) {
+        if self.named_elem_carries_drop_obligation(elem)
+            || ty_is_indirect_enum(elem, &self.enum_layouts)
+        {
             FailClosedReason::NoReleaseProtocol
         } else {
             FailClosedReason::UnenumeratedShape
@@ -1092,7 +1104,7 @@ impl Builder {
     /// `ValueClass::of_ty == BitCopy` (the pre-fix form) classified such an enum
     /// NEITHER plain nor owned, leaving its `Vec` with no scope-exit release — a
     /// whole-buffer+handle leak. The arm therefore also admits a direct enum via
-    /// `ty_is_direct_enum_element(elem) && !named_elem_owns_heap(elem)`: a
+    /// `ty_is_direct_enum_element(elem) && !named_elem_carries_drop_obligation(elem)`: a
     /// heap-free direct enum is plain, a heap-owning one still routes owned. The
     /// `BitCopy` disjunct is retained for the shapes `ValueClass` classifies
     /// correctly (records, `Instant`), where a pure heap-authority gate would
@@ -1139,14 +1151,15 @@ impl Builder {
         // fieldless / scalar-payload user enum is NEVER `BitCopy` and would
         // otherwise be classified NEITHER plain nor owned — leaving its Vec with
         // no scope-exit release (a buffer+handle leak). Heap-ness is read from
-        // the `named_elem_owns_heap` authority, never re-derived from BitCopy, so
+        // the `named_elem_carries_drop_obligation` authority, never re-derived from BitCopy, so
         // a heap-owning enum still routes owned. `ty_is_direct_enum_element` is
         // the layout-Vec constructor's own membership, so release matches
         // construction; it is congruent with the vec-index getter's non-indirect
         // enum `hew_vec_get_layout` arm (`dedup-semantic-boundary`).
         (matches!(elem, ResolvedTy::Named { .. })
             && (ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy
-                || (self.ty_is_direct_enum_element(elem) && !self.named_elem_owns_heap(elem))))
+                || (self.ty_is_direct_enum_element(elem)
+                    && !self.named_elem_carries_drop_obligation(elem))))
             || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
     }
 
@@ -1197,7 +1210,7 @@ impl Builder {
     /// For named records the `ValueClass::of_ty(Named{..}) == BitCopy` check is
     /// the discriminant. For direct user ENUMS it is NOT — `ValueClass` finalises
     /// records only, so a fieldless / scalar-payload enum is never `BitCopy`;
-    /// `is_plain_vec_element` admits those via the `named_elem_owns_heap`
+    /// `is_plain_vec_element` admits those via the `named_elem_carries_drop_obligation`
     /// authority instead (see its doc). For tuples `ValueClass` cannot be used:
     /// `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
     /// field types, so the tuple path delegates to `tuple_is_all_bitcopy`, which
@@ -1219,7 +1232,7 @@ impl Builder {
         // Element-level plain check factored into `is_plain_vec_element` so the
         // typed `classify_vec_element_release` partition shares the exact same
         // authority (no second copy to drift). The doc above this function
-        // records why the `Named` arm reads the `named_elem_owns_heap` authority
+        // records why the `Named` arm reads the `named_elem_carries_drop_obligation` authority
         // (not `ValueClass` alone) and the `Tuple` arm uses `tuple_is_all_bitcopy`.
         args.first()
             .is_some_and(|elem| self.is_plain_vec_element(elem))
@@ -1237,7 +1250,7 @@ impl Builder {
     ///   DIRECT user enum that owns no heap. The enum disjunct is load-bearing:
     ///   `ValueClass` finalises records only, so a fieldless / scalar-payload
     ///   enum is never `BitCopy` and must be admitted through the
-    ///   `named_elem_owns_heap` authority, exactly as `is_plain_vec_element`
+    ///   `named_elem_carries_drop_obligation` authority, exactly as `is_plain_vec_element`
     ///   does — or a `(Colour, i64)` tuple element would leak, or
     /// - a nested `Tuple` that also satisfies this predicate recursively.
     ///
@@ -1277,9 +1290,10 @@ impl Builder {
                 // heap. The enum disjunct mirrors `is_plain_vec_element`: user
                 // enums are never `ValueClass::BitCopy`, so without it a
                 // `(Colour, i64)` tuple element would leak. Heap-ness comes from
-                // the `named_elem_owns_heap` authority.
+                // the `named_elem_carries_drop_obligation` authority.
                 ValueClass::of_ty(e, &self.type_classes) == ValueClass::BitCopy
-                    || (self.ty_is_direct_enum_element(e) && !self.named_elem_owns_heap(e))
+                    || (self.ty_is_direct_enum_element(e)
+                        && !self.named_elem_carries_drop_obligation(e))
             }
             ResolvedTy::Tuple(_) => self.tuple_is_all_bitcopy(e),
             // Exhaustive (no `_ => false` fall-through): a new `ResolvedTy`
@@ -1342,7 +1356,7 @@ impl Builder {
     /// predicate. It is load-bearing for release routing because a payload-free
     /// or scalar-payload direct enum owns no heap yet is NEVER marked `BitCopy`
     /// in the HIR value-class table (`finalize_user_record_value_classes`
-    /// covers records only). Callers pair it with the `named_elem_owns_heap`
+    /// covers records only). Callers pair it with the `named_elem_carries_drop_obligation`
     /// authority so a heap-owning direct enum still routes owned.
     fn ty_is_direct_enum_element(&self, elem_ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named { name, args, .. } = elem_ty else {
@@ -1690,7 +1704,7 @@ impl Builder {
         // `is_owned` above (owned family) and never reaches the copy-layout arm.
         let is_copy_layout = abi == Some(hew_types::VecElementToken::Layout)
             && !is_owned
-            && !self.named_elem_owns_heap(elem);
+            && !self.named_elem_carries_drop_obligation(elem);
         let profile = hew_types::vec_authority::VecElementProfile {
             abi,
             is_owned,

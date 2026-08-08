@@ -179,6 +179,7 @@ use self::temp_drop::{
     apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
     bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
     bytes_share_sink_places, classify_actor_state_load_modes,
+    close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
@@ -5529,6 +5530,7 @@ pub(crate) fn lower_function(
             &builder.locals,
             &builder.record_field_orders,
             &builder.enum_layouts,
+            builder.type_classes.lifecycle_registry(),
             &alias_chain,
             &aggregate_clone_sites,
             &is_owned_record,
@@ -5889,6 +5891,7 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
     );
     // Owned handle-leaf bindings moved into an actor initial-state record
     // consumed by `SpawnActor`: the actor's `state_drop_fn` is the single free
@@ -5910,6 +5913,7 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -5957,6 +5961,7 @@ pub(crate) fn lower_function(
         &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -6736,6 +6741,7 @@ impl Builder {
                     &owned_ty,
                     &self.record_field_orders,
                     &self.enum_layouts,
+                    self.type_classes.lifecycle_registry(),
                 )
             {
                 self.register_owned_param(param, owned_ty.clone(), func.body.scope);

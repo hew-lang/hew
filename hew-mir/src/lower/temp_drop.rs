@@ -3530,6 +3530,204 @@ mod aggregate_projection_transfer_dest_tests {
 /// excluding it here changes nothing — the string exclusion belongs only to the
 /// string provers (`derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`),
 /// which pass the real `locals`.
+/// Locals whose value came from a BORROWING element getter — a runtime callee
+/// whose ownership contract `returns_receiver_interior_alias` (`hew_vec_get_owned`
+/// / `hew_vec_get_ptr`), propagated through whole-value `Move`s to a fixpoint.
+///
+/// Deliberately NARROWER than [`compute_collection_interior_alias_taint`]: no
+/// field-load / projection seeds, ONLY getter dests — so it can gate the LIFO
+/// drop of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
+/// a borrow; the collection remains the sole close authority and this binding
+/// must not fire a second one) without touching match-binder drop semantics.
+#[must_use]
+pub(super) fn collection_borrow_getter_alias_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut tainted: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .returns_receiver_interior_alias()
+                {
+                    if let Some(local) = call.dest().and_then(base_local) {
+                        tainted.insert(local);
+                    }
+                }
+            }
+        }
+        if let Terminator::Call { callee, dest, .. } = &block.terminator {
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .returns_receiver_interior_alias()
+            {
+                if let Some(local) = dest.and_then(base_local) {
+                    tainted.insert(local);
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if tainted.contains(&sl) && tainted.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
+/// Fail-closed use validation for close-obligated collection borrows: the
+/// LIFO-drop suppression of a borrowed `xs[i]` element binding is sound ONLY
+/// when every use of the alias is a proven-safe read. This validator is the
+/// proof: any use that could carry the alias out of the frame, mint a second
+/// close authority, or redefine the binding returns a violation, and the
+/// function is REJECTED instead of compiled unsound.
+///
+/// Safe uses (everything else violates):
+///   - `Move { src: alias, dest: Place::Local }` — the binding hand-off from
+///     the getter temp to the user `let`; the dest joins the alias set;
+///   - `RecordFieldLoad` / `TupleFieldLoad` reading THROUGH the alias — the
+///     loaded scalar/field value is an independent (retained or bit-copy)
+///     read, not the alias itself.
+///
+/// Violations, each the double-release/UAF the review demonstrated:
+///   - a `Move` to any non-local place (`ReturnSlot`, aggregate/variant slot) —
+///     escape by return or by storage;
+///   - the alias as ANY call argument (`e.close()`, `w.push(e)`, `f(e)`) —
+///     consume or transfer; by-value borrows are over-rejected deliberately
+///     (fail-closed: over-rejection cannot double-free);
+///   - MORE THAN ONE defining write to an alias local (`var e = v[0];
+///     e = ...`) — a rebind; the flow-insensitive alias fact cannot represent
+///     the generation boundary, so redefinition is refused outright;
+///   - any other instruction/terminator reading the alias as a source.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive instruction/terminator classification IS the proof; \
+              splitting it scatters the safe-use whitelist the suppression relies on"
+)]
+pub(super) fn close_obligated_borrow_alias_violations(
+    blocks: &[BasicBlock],
+    aliases: &HashSet<u32>,
+    local_names: &std::collections::BTreeMap<u32, String>,
+) -> Vec<String> {
+    if aliases.is_empty() {
+        return Vec::new();
+    }
+    let name_of = |local: u32| -> String {
+        local_names
+            .get(&local)
+            .cloned()
+            .unwrap_or_else(|| format!("local{local}"))
+    };
+    let mut violations: Vec<String> = Vec::new();
+    let mut write_counts: HashMap<u32, u32> = HashMap::new();
+    let count_write = |place: &Place, counts: &mut HashMap<u32, u32>| {
+        if let Some(local) = base_local(*place) {
+            if aliases.contains(&local) {
+                *counts.entry(local).or_insert(0) += 1;
+            }
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::Move { src, dest } => {
+                    count_write(dest, &mut write_counts);
+                    let src_alias = base_local(*src).is_some_and(|l| aliases.contains(&l));
+                    if src_alias && !matches!(dest, Place::Local(_)) {
+                        let local = base_local(*src).unwrap_or_default();
+                        violations.push(format!(
+                            "`{}` is a borrowed element of a live collection and cannot leave this function: the collection releases the element exactly once at scope exit, so returning or storing the borrowed value would release it twice",
+                            name_of(local)
+                        ));
+                    }
+                }
+                Instr::RecordFieldLoad { .. } | Instr::TupleFieldLoad { .. } => {
+                    // Reading THROUGH the alias is the safe (and intended) use.
+                }
+                Instr::CallRuntimeAbi(call) => {
+                    count_write(&call.dest().unwrap_or(Place::ReturnSlot), &mut write_counts);
+                    for arg in call.args() {
+                        if let Some(local) = base_local(*arg) {
+                            if aliases.contains(&local) {
+                                violations.push(format!(
+                                    "`{}` is a borrowed element of a live collection and cannot be consumed or transferred: the collection releases the element exactly once at scope exit, so closing it, pushing it into another collection, or passing it on would release it twice",
+                                    name_of(local)
+                                ));
+                            }
+                        }
+                    }
+                }
+                other => {
+                    for place in instr_source_places(other) {
+                        if let Some(local) = base_local(place) {
+                            if aliases.contains(&local) {
+                                violations.push(format!(
+                                    "`{}` is a borrowed element of a live collection; this use could carry it out of the collection's sole ownership, which would release it twice",
+                                    name_of(local)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        match &block.terminator {
+            Terminator::Call {
+                callee: _,
+                args,
+                dest,
+                ..
+            } => {
+                if let Some(dest) = dest {
+                    count_write(dest, &mut write_counts);
+                }
+                for arg in args {
+                    if let Some(local) = base_local(*arg) {
+                        if aliases.contains(&local) {
+                            violations.push(format!(
+                                "`{}` is a borrowed element of a live collection and cannot be consumed or transferred: the collection releases the element exactly once at scope exit, so closing it, pushing it into another collection, or passing it on would release it twice",
+                                name_of(local)
+                            ));
+                        }
+                    }
+                }
+            }
+            other => {
+                for place in terminator_source_places(other, None) {
+                    if let Some(local) = base_local(place) {
+                        if aliases.contains(&local) {
+                            violations.push(format!(
+                                "`{}` is a borrowed element of a live collection; this use could carry it out of the collection's sole ownership, which would release it twice",
+                                name_of(local)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (local, count) in write_counts {
+        if count > 1 {
+            violations.push(format!(
+                "`{}` is a borrowed element of a live collection and cannot be reassigned: the borrow has no independent generation, so overwriting it would release the collection's element and lose the new value's release",
+                name_of(local)
+            ));
+        }
+    }
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
 #[must_use]
 pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
     let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), &[]);

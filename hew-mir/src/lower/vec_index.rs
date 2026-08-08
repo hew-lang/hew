@@ -239,9 +239,28 @@ impl Builder {
         // HANDLES keep the established borrow contract: chained reads rely on
         // the outer Vec remaining the sole owner. Iterator reads bypass this
         // choice through the dedicated descriptor-backed clone-out call.
+        //
+        // A CLOSE-OBLIGATED element (contains a `#[resource]`) must NOT take the
+        // clone choke: a resource has an affine close contract and no semantic
+        // clone, so a cloned-out owner would mint a second close authority over
+        // one context (double-close). It stays on the `hew_vec_get_owned`
+        // BORROW — the Vec remains the sole owner and its scope-exit free runs
+        // each element's close exactly once (the value-context lattice's
+        // `CollectionIndexOut` rule, `drop_obligation.rs`).
         let owned_elem = self.is_owned_vec_element(elem_ty);
-        let clone_owned_value =
-            owned_elem && !ty_is_vec(elem_ty) && !ty_is_local_collection_handle(elem_ty);
+        let elem_needs_close = crate::model::ty_drop_obligation(
+            elem_ty,
+            &crate::model::MirHeapLayouts {
+                record_field_orders: &self.record_field_orders,
+                enum_layouts: &self.enum_layouts,
+            },
+            self.type_classes.lifecycle_registry(),
+        )
+        .needs_close;
+        let clone_owned_value = owned_elem
+            && !ty_is_vec(elem_ty)
+            && !ty_is_local_collection_handle(elem_ty)
+            && !elem_needs_close;
         let elem = match elem_ty {
             ResolvedTy::Bool => VecGetElem::Bool,
             ResolvedTy::I8 => VecGetElem::I8,

@@ -1665,14 +1665,15 @@ pub(crate) fn cbor_vec_elem_kind(
             builtin: Some(BuiltinType::Option),
             ..
         } => {
-            let ownership = hew_mir::ty_heap_ownership(
+            let obligation = hew_mir::ty_drop_obligation(
                 elem,
                 &CborHeapLayouts {
                     pipeline_records,
                     enum_layouts,
                 },
+                lifecycle_registry,
             );
-            if ownership.owns_heap || ownership.via_indirection {
+            if obligation.carries_obligation() || obligation.heap.via_indirection {
                 CborVecElemKind::Defer
             } else {
                 CborVecElemKind::LayoutBitCopy
@@ -1688,16 +1689,21 @@ pub(crate) fn cbor_vec_elem_kind(
         // (and every indirect enum, whose pointer ABI is a separate store family)
         // stays fail-closed.
         ResolvedTy::Named { .. } => {
-            let ownership = hew_mir::ty_heap_ownership(
+            // The drop-OBLIGATION axis, congruent with `Vec::new`'s owned
+            // constructor admission: a scalar-field `#[resource]` element is an
+            // owned element (its drop runs `close`), never a bitwise layout
+            // copy — bit-copying it would duplicate the close obligation.
+            let obligation = hew_mir::ty_drop_obligation(
                 elem,
                 &CborHeapLayouts {
                     pipeline_records,
                     enum_layouts,
                 },
+                lifecycle_registry,
             );
-            if ownership.via_indirection {
+            if obligation.heap.via_indirection {
                 CborVecElemKind::Defer
-            } else if ownership.owns_heap {
+            } else if obligation.carries_obligation() {
                 if crate::thunks::owned_elem_thunk_key(regs, elem).is_some() {
                     CborVecElemKind::Owned
                 } else {

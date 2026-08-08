@@ -131,8 +131,16 @@ fn affine_vec_index_remains_borrow_only() {
         ",
     );
     let calls = call_symbols(&pipeline, "main");
+    // The borrow contract is the invariant; the getter SYMBOL follows the
+    // construction ABI. A close-obligated element now builds through the owned
+    // descriptor (so the Vec's scope-exit free runs each element's `close`
+    // exactly once — under the previous plain-Vec classification this Vec
+    // leaked its elements), and the congruent slot borrow under that ABI is
+    // `hew_vec_get_owned` (full-stride load, dest never drop-scheduled).
+    // `hew_vec_get_clone` staying absent is the load-bearing half: a cloned-out
+    // owner would mint a second close authority over one context.
     assert!(
-        calls.contains(&"hew_vec_get_ptr"),
+        calls.contains(&"hew_vec_get_owned"),
         "resource-containing Vec indexing must remain a borrow: {calls:?}"
     );
     assert!(

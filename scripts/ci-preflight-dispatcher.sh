@@ -42,6 +42,7 @@ command_timeout_floor() {
         "make test-o2-differential") echo 1200 ;;
         "make o2-differential-selftest") echo 30 ;;
         "make doc-ratchet-selftest") echo 45 ;;
+        "make ll-identity-selftest") echo 15 ;;
         "make test-release-workflow-contract") echo 30 ;;
         "make test-stdlib-ratchet") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
@@ -117,6 +118,7 @@ CI_REQUIRED_CHECKS=(
     "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"
     "Runtime tests without QUIC/TLS/profiler (ci.yml: make test-runtime-unit)	make test-runtime-unit"
     "Fuzz-oracle gate self-test (ci.yml: make fuzz-oracle-selftest)	make fuzz-oracle-selftest"
+    "ll-byte-identity normaliser self-test (ci.yml: make ll-identity-selftest)	make ll-identity-selftest"
     "libhew link-race gate (ci.yml: make libhew-link-race-test)	make libhew-link-race-test"
 )
 
@@ -865,6 +867,7 @@ case "$LANE" in
         add_command "make test-package-install"
         add_command "make test-runtime-unit"
         add_command "make fuzz-oracle-selftest"
+        add_command "make ll-identity-selftest"
         add_command "make libhew-link-race-test"
         ;;
     *)

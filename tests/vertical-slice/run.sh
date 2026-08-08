@@ -4950,6 +4950,18 @@ run_check_run_expect_stdout file_import_trait_impl
 # default and a Self-dispatching one.
 run_check_run_expect_stdout file_import_trait_default_method
 
+# Regression: the same guarantee across a DIRECTORY MODULE. The trait and its
+# defaults are declared in the module's entry file; the implementing type and
+# its `impl` live in a peer file. Two gaps compounded: the checker published a
+# materialised default only onto the BARE `Dog` type entry, never onto the
+# declaring module's `greeting.Dog` entry a qualified receiver resolves
+# through ("no method `greet` on `greeting.Dog`"); and HIR's pre-lowering body
+# plan covered only an impl's EXPLICIT methods, so a root call to a default
+# was lowered before the module's body emission and failed closed with
+# `CallableUnsupportedInMir`. Calls from both the root and inside the module
+# are exercised.
+run_check_run_expect_stdout dir_module_trait_default/main
+
 # Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
 # declarations (constructs a type and calls a free function declared beside
 # the trait) must resolve them even though the default is materialised at an

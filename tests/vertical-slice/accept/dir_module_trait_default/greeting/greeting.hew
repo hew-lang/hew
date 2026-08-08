@@ -1,0 +1,17 @@
+// Entry file of the `greeting` directory module.
+//
+// `Greeter` declares one required method and two defaults: a leaf default
+// (`shout`) and one that dispatches back through the required method
+// (`greet`). Both defaults are declared HERE and implemented nowhere — a peer
+// file's `impl` must inherit them.
+pub trait Greeter {
+    fn name(self) -> string;
+
+    fn shout(self) -> string {
+        "HEY"
+    }
+
+    fn greet(self) -> string {
+        f"Hello, {self.name()}!"
+    }
+}

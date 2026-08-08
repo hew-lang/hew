@@ -1034,6 +1034,7 @@ fn plan_impl_block_symbols(
     } else {
         crate::monomorph::mangle(base_symbol_self_name, &concrete_args)
     };
+    let mut planned: Vec<(hew_types::DefId, String)> = Vec::new();
     for method in &impl_decl.methods {
         if skip_methods.contains(&method.name) {
             continue;
@@ -1042,6 +1043,23 @@ fn plan_impl_block_symbols(
         let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).cloned() else {
             continue;
         };
+        planned.push((declaration, symbol));
+    }
+    // A trait default the impl does NOT override is materialised as its own
+    // body by `lower_impl_block`, under a declaration id minted at that
+    // synthesis boundary (`synthetic_default_impl_body_declaration`) — the
+    // checker never saw a method declaration to publish into
+    // `impl_method_declaration_ids`, so the explicit-method loop above cannot
+    // reach it. Plan those ids on the same authority: an imported module's
+    // bodies are emitted in the fourth pass, so a ROOT call to a materialised
+    // default (`d.greet()` on a type from `import gm;`) is lowered before its
+    // body exists and otherwise fails closed with `CallableUnsupportedInMir`.
+    planned.extend(materialized_default_body_plan(
+        ctx,
+        impl_decl,
+        &symbol_self_name,
+    ));
+    for (declaration, symbol) in planned {
         if let Some(existing) = ctx
             .impl_body_plan
             .symbols
@@ -1062,6 +1080,53 @@ fn plan_impl_block_symbols(
             }
         }
     }
+}
+
+/// The `(declaration, emitted symbol)` pairs for every trait default an impl
+/// block materialises rather than overrides.
+///
+/// Mirrors the synthesis in `lower_impl_block` exactly — same owner key, same
+/// non-overridden filter, same `synthetic_default_impl_body_declaration` mint,
+/// same `method_symbol` — so the plan and the later emission cannot disagree.
+fn materialized_default_body_plan(
+    ctx: &mut LowerCtx,
+    impl_decl: &hew_parser::ast::ImplDecl,
+    symbol_self_name: &str,
+) -> Vec<(hew_types::DefId, String)> {
+    let Some(trait_bound) = &impl_decl.trait_bound else {
+        return Vec::new();
+    };
+    let Some(owner_key) = ctx.trait_default_owner_key(&trait_bound.name) else {
+        return Vec::new();
+    };
+    let Some(defaults) = ctx.trait_default_methods.get(&owner_key).cloned() else {
+        return Vec::new();
+    };
+    let overridden: HashSet<&str> = impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
+    let self_ty = ctx.lower_type(&impl_decl.target_type);
+    let mut out = Vec::new();
+    for default_method in &defaults {
+        if overridden.contains(default_method.name.as_str()) {
+            continue;
+        }
+        let Some((declaring_trait, _)) =
+            ctx.trait_method_identity(&trait_bound.name, &default_method.name)
+        else {
+            continue;
+        };
+        let Some(declaration) = LowerCtx::synthetic_default_impl_body_declaration(
+            &declaring_trait,
+            Some(&self_ty),
+            &default_method.name,
+        ) else {
+            continue;
+        };
+        out.push((
+            declaration,
+            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.name),
+        ));
+    }
+    out
 }
 
 fn plan_imported_impl_bodies(

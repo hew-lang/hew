@@ -357,6 +357,11 @@ jobs:
         run: cargo install cargo-about --locked --version 0.9.0 --features cli
 
       - name: Verify THIRD-PARTY-LICENSES is current
+        # Deliberately outside CI-PARITY-STEPS and absent from CI_REQUIRED_CHECKS:
+        # this target needs cargo-about, installed by the step above at a pinned
+        # version.  Requiring every local preflight run to install a pinned cargo
+        # subcommand is not worth the parity coverage, so the exemption is recorded
+        # here rather than left for the next parity audit to re-derive.
         run: make licenses-check
 
   # ─────────────────────────────────────────────────────────────────────────

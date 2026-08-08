@@ -10197,6 +10197,30 @@ impl Checker {
                              or `.try_to_<W>()` for exact fallible conversion",
                             resolved.user_facing()
                         )
+                    } else if method == "clone" && args.is_empty() {
+                        // A trait object is a two-word fat pointer whose
+                        // concrete type is erased. Its vtable carries only
+                        // `drop_in_place`/`size_of`/`align_of` plus the trait's
+                        // own methods (see `hew-runtime/src/trait_object.rs`),
+                        // so no slot can reproduce the concrete value. Naming
+                        // the limit and the supported ordering keeps this a
+                        // user-facing rejection instead of a reinterpretation
+                        // of the fat pointer as the concrete layout.
+                        //
+                        // WHY (shim): duplicating a `dyn Trait` needs a clone
+                        // slot in the vtable prefix, which renumbers every
+                        // method slot across the runtime, MIR, and codegen.
+                        // WHEN-OBSOLETE: when the trait-object ABI grows that
+                        // slot and every coercion site emits a clone thunk.
+                        // WHAT (real solution): a `clone_in_place` vtable entry
+                        // emitted alongside `drop_in_place`.
+                        format!(
+                            "`clone` is not supported on `{ty}`: a trait object erases its \
+                             concrete type and its vtable carries no clone slot; clone the \
+                             concrete value before erasing it \
+                             (`let copy: {ty} = clone original;`)",
+                            ty = resolved.user_facing(),
+                        )
                     } else {
                         format!("no method `{method}` on `{}`", resolved.user_facing())
                     };

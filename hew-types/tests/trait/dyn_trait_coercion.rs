@@ -519,3 +519,147 @@ fn structural_impl_populates_method_table_for_dyn_named() {
         "structural-match method_table should map `name` to `Widget::name`"
     );
 }
+
+// ─── `dyn Trait`-annotated local bindings ────────────────────────────────────
+//
+// A `let`/`var` annotated `dyn Trait` stores a two-word fat pointer, exactly
+// as a `dyn Trait` parameter does. The checker must carry the trait-object
+// type on the binding: recording the initialiser's concrete type instead made
+// every later checker-derived fact (method resolution, assignment, `clone`)
+// describe the concrete layout while the storage held a fat pointer, which put
+// raw memory into a value channel.
+
+/// `let d: dyn Named = Widget { .. }` binds `d` at the annotated trait-object
+/// type, not at `Widget`. Probed through a deliberate mismatch so the reported
+/// `found` type is the binding's own type.
+#[test]
+fn dyn_annotated_let_binds_the_trait_object_type() {
+    let output = typecheck(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+        type Widget { label: string; }
+        impl Named for Widget {
+            fn name(w: Widget) -> string { w.label }
+        }
+
+        fn main() {
+            let d: dyn Named = Widget { label: "x" };
+            let n: i64 = d;
+        }
+        "#,
+    );
+    let mismatch = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. }))
+        .unwrap_or_else(|| panic!("expected a mismatch error, got: {:#?}", output.errors));
+    assert!(
+        mismatch.message.contains("found `dyn Named`"),
+        "binding must carry the annotated trait-object type; got: {}",
+        mismatch.message
+    );
+}
+
+/// A `var` annotated `dyn Named` accepts a second, DIFFERENT concrete type.
+/// Binding the initialiser's concrete type rejected `d = Other { .. }` as a
+/// `Widget`/`Other` mismatch, silently narrowing the declared type.
+#[test]
+fn dyn_annotated_var_accepts_a_second_concrete_impl() {
+    let output = typecheck(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+        type Widget { label: string; }
+        impl Named for Widget {
+            fn name(w: Widget) -> string { w.label }
+        }
+        type Gadget { label: string; }
+        impl Named for Gadget {
+            fn name(g: Gadget) -> string { g.label }
+        }
+
+        fn show(v: dyn Named) { println(v.name()); }
+
+        fn main() {
+            var d: dyn Named = Widget { label: "a" };
+            d = Gadget { label: "b" };
+            show(d);
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "reassigning a `dyn Named` var to another impl must check cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// A method declared by the bound is dispatched through the vtable on a
+/// `dyn`-annotated local, exactly as on a `dyn` parameter — the checker must
+/// record a `dyn_trait_method_calls` entry rather than resolving the concrete
+/// impl function directly (which has no coherent direct-call ABI against
+/// fat-pointer storage).
+#[test]
+fn dyn_annotated_let_dispatches_through_the_vtable() {
+    let output = typecheck(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+        type Widget { label: string; }
+        impl Named for Widget {
+            fn name(w: Widget) -> string { w.label }
+        }
+
+        fn main() {
+            let d: dyn Named = Widget { label: "x" };
+            println(d.name());
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean check, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.dyn_trait_method_calls.len(),
+        1,
+        "`d.name()` on a dyn-annotated local must resolve to vtable dispatch, got: {:#?}",
+        output.dyn_trait_method_calls
+    );
+}
+
+/// `clone` on a trait object is rejected with a message naming the limit and
+/// the supported ordering. The vtable carries no clone slot, so the concrete
+/// value cannot be reproduced; the previous behaviour reinterpreted the fat
+/// pointer as the concrete layout and printed raw memory.
+#[test]
+fn clone_on_a_trait_object_is_rejected_with_a_named_limit() {
+    let output = typecheck(
+        r#"
+        trait Named { fn name(val: Self) -> string; }
+        type Widget { label: string; }
+        impl Named for Widget {
+            fn name(w: Widget) -> string { w.label }
+        }
+
+        fn main() {
+            let d: dyn Named = Widget { label: "x" };
+            let copy = clone d;
+        }
+        "#,
+    );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod))
+        .unwrap_or_else(|| panic!("expected a rejection, got: {:#?}", output.errors));
+    assert!(
+        err.message
+            .contains("`clone` is not supported on `dyn Named`")
+            && err.message.contains("no clone slot")
+            && err
+                .message
+                .contains("clone the concrete value before erasing it"),
+        "rejection must name the limit and the supported alternative; got: {}",
+        err.message
+    );
+}

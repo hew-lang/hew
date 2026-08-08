@@ -4971,6 +4971,32 @@ run_check_run_expect_stdout dir_module_trait_default/main
 # with `Move type mismatch: src=%zoo.Dog dest=%zoo.Cat`. The fixture's peer
 # files are byte-for-byte parallel on purpose; it covers a string leaf and a
 # scalar leaf.
+#
+# The parallelism IS the test: if the peers stop sharing byte offsets, the
+# fixture still compiles and still prints the expected output even with the
+# fix reverted, because the old per-module key no longer collides. A comment
+# asking future editors to preserve the alignment is not enough, so assert it.
+# Equal per-line byte lengths imply equal declaration offsets, and any edit
+# that shifts a span in one peer without the other fails here with a message
+# saying why the alignment matters.
+assert_peer_files_offset_aligned() {
+  local a="$1" b="$2"
+  local la lb
+  la=$(awk '{ print length($0) }' "$a")
+  lb=$(awk '{ print length($0) }' "$b")
+  if [[ "$la" != "$lb" ]]; then
+    echo "FAIL peer-offset-alignment: $a and $b no longer line up byte-for-byte." >&2
+    echo "  These peers must keep identical per-line lengths so their declarations" >&2
+    echo "  sit at identical byte offsets. That collision is what the fixture" >&2
+    echo "  exercises; without it the test passes even with the fix reverted." >&2
+    diff <(printf '%s\n' "$la") <(printf '%s\n' "$lb") >&2 || true
+    exit 1
+  fi
+}
+_peer_dir="${ROOT}/tests/vertical-slice/accept/dir_module_peer_span_identity/zoo"
+assert_peer_files_offset_aligned "$_peer_dir/dog.hew" "$_peer_dir/cat.hew"
+assert_peer_files_offset_aligned "$_peer_dir/num.hew" "$_peer_dir/cnt.hew"
+unset _peer_dir
 run_check_run_expect_stdout dir_module_peer_span_identity/main
 
 # Regression probe: a materialised default body that names TRAIT-FILE-LOCAL

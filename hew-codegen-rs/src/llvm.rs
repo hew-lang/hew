@@ -23857,7 +23857,7 @@ fn emit_enum_inplace_drop_call(
     place: Place,
     ty: &ResolvedTy,
 ) -> CodegenResult<()> {
-    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    let enum_name = crate::layout::inplace_drop_layout_key_for_ty(fn_ctx, ty)?;
     let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
     if helper.count_basic_blocks() == 0 {
         return Err(CodegenError::FailClosed(format!(

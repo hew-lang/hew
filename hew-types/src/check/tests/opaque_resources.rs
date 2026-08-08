@@ -1217,3 +1217,77 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
         OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle { .. }
     )));
 }
+
+// ── machine-state resource payload gate (value-context lattice: the
+// `MachineStatePayload` position fails closed until the machine's
+// transition/scope drop elaboration lands) ─────────────────────────────
+
+#[test]
+fn machine_state_resource_payload_rejects() {
+    let (errors, _) = parse_and_check(concat!(
+        "#[resource]\n",
+        "type Tok { id: i64 }\n",
+        "impl Tok { fn close(self) { } }\n",
+        "machine Gate {\n",
+        "    events { Open; Shut; }\n",
+        "    state Closed;\n",
+        "    state Opened { tok: Tok; }\n",
+        "    on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }\n",
+        "    on Shut: Opened => Closed { Closed }\n",
+        "    default { state }\n",
+        "}\n",
+        "fn main() { var h = Closed; h.step(Open); }\n",
+    ));
+    assert!(
+        errors.iter().any(|e| {
+            e.message.contains("machine `Gate` state `Opened`")
+                && e.message.contains("`Tok`")
+                && e.message.contains("rejected rather than leaking")
+        }),
+        "a resource in a machine state payload must be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn machine_state_resource_payload_rejects_transitively() {
+    // The veto descends inline structure: a record field wrapping the
+    // resource is the same leak.
+    let (errors, _) = parse_and_check(concat!(
+        "#[resource]\n",
+        "type Tok { id: i64 }\n",
+        "impl Tok { fn close(self) { } }\n",
+        "type Wrap { t: Tok }\n",
+        "machine Gate {\n",
+        "    events { Open; }\n",
+        "    state Closed;\n",
+        "    state Opened { w: Wrap; }\n",
+        "    on Open: Closed => Opened { Opened { w: Wrap { t: Tok { id: 1 } } } }\n",
+        "    default { state }\n",
+        "}\n",
+        "fn main() { var h = Closed; h.step(Open); }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("machine `Gate` state `Opened`")),
+        "a record-wrapped resource in a machine state must be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn machine_state_without_resource_payload_is_admitted() {
+    let (errors, _) = parse_and_check(concat!(
+        "machine Counter {\n",
+        "    events { Inc; }\n",
+        "    state Zero;\n",
+        "    state NonZero { value: i64; }\n",
+        "    on Inc: Zero => NonZero { NonZero { value: 1 } }\n",
+        "    default { state }\n",
+        "}\n",
+        "fn main() { var x = Zero; x.step(Inc); }\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "a scalar machine state payload must stay admitted: {errors:?}"
+    );
+}

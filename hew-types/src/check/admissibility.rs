@@ -1444,6 +1444,134 @@ impl Checker {
         }
     }
 
+    /// Fail-closed gate over the `MachineStatePayload` position of the value
+    /// -context lattice (`hew-mir/src/drop_obligation.rs`): a `#[resource]` /
+    /// `#[linear]` value carried in a machine state's payload has no wired
+    /// release on state transition or scope exit — the machine's tag-aware
+    /// drop elaboration is a later slice. Compiling it would leak the close
+    /// silently, so the declaration is rejected with a user-facing message
+    /// naming the state and the resource.
+    pub(super) fn check_machine_state_resource_payloads(
+        &mut self,
+        machine_name: &str,
+        span: &Span,
+    ) {
+        let Some(type_def) = self.lookup_type_def(machine_name) else {
+            return;
+        };
+        let mut findings: Vec<(String, String)> = Vec::new();
+        for (state_name, variant) in &type_def.variants {
+            let field_tys: Vec<Ty> = match variant {
+                VariantDef::Unit => continue,
+                VariantDef::Tuple(fields) => fields.clone(),
+                VariantDef::Struct(fields) => fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            };
+            for field_ty in field_tys {
+                let mut visiting = HashSet::new();
+                if let Some(blocker) = self.resource_marker_blocker(&field_ty, &mut visiting) {
+                    findings.push((state_name.clone(), blocker));
+                }
+            }
+        }
+        for (state_name, blocker) in findings {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "machine `{machine_name}` state `{state_name}` holds {blocker}: a \
+                     resource in a machine state payload is not released on transition \
+                     or scope exit, so the machine is rejected rather than leaking its \
+                     `close`"
+                ),
+            );
+        }
+    }
+
+    /// The first `#[resource]` / `#[linear]`-marked value reachable from `ty`
+    /// through inline structure (tuple members, record fields, enum/machine
+    /// variant payloads, container type arguments). Deliberately NARROWER than
+    /// [`Self::vec_iter_clone_blocker`]: only the user close-contract markers
+    /// veto — heap-owning payloads keep their existing (advisory) posture and
+    /// unresolved type parameters defer to per-monomorphisation gates.
+    fn resource_marker_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if let Ty::Named { name, .. } = &resolved {
+            if self.registry.is_resource(name) || self.registry.is_linear(name) {
+                return Some(format!("`#[resource]`/`#[linear]` value `{name}`"));
+            }
+        }
+        match &resolved {
+            Ty::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.resource_marker_blocker(item, visiting)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.resource_marker_blocker(elem, visiting),
+            Ty::Named { name, args, .. } => {
+                if self.is_type_param_in_scope(name) {
+                    return None;
+                }
+                if !args.is_empty()
+                    && self
+                        .resource_marker_blocker_in_args(args, visiting)
+                        .is_some()
+                {
+                    return self.resource_marker_blocker_in_args(args, visiting);
+                }
+                let type_def = self.lookup_type_def(name)?;
+                let visit_key = type_def.name.clone();
+                if !visiting.insert(visit_key) {
+                    return None;
+                }
+                let fields: Vec<Ty> = type_def
+                    .fields
+                    .values()
+                    .chain(
+                        type_def
+                            .variants
+                            .values()
+                            .flat_map(|variant| match variant {
+                                VariantDef::Tuple(fields) => fields.iter(),
+                                VariantDef::Unit | VariantDef::Struct(_) => [].iter(),
+                            }),
+                    )
+                    .map(|field_ty| {
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
+                    })
+                    .collect();
+                let struct_fields: Vec<Ty> = type_def
+                    .variants
+                    .values()
+                    .flat_map(|variant| match variant {
+                        VariantDef::Struct(fields) => fields
+                            .iter()
+                            .map(|(_, field_ty)| {
+                                Self::instantiate_type_def_member(
+                                    field_ty,
+                                    &type_def.type_params,
+                                    args,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => Vec::new(),
+                    })
+                    .collect();
+                fields
+                    .iter()
+                    .chain(struct_fields.iter())
+                    .find_map(|field_ty| self.resource_marker_blocker(field_ty, visiting))
+            }
+            _ => None,
+        }
+    }
+
+    fn resource_marker_blocker_in_args(
+        &self,
+        args: &[Ty],
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        args.iter()
+            .find_map(|arg| self.resource_marker_blocker(arg, visiting))
+    }
+
     /// Checker boundary for every operation that constructs or advances a
     /// `VecIter<T>`. The diagnostic text is intentionally shared by method-call
     /// and `for` syntax so the rejection remains stable across desugaring.

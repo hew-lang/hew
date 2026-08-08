@@ -1485,6 +1485,32 @@ impl Builder {
     /// leaks as before -- never a partial or wrong-ABI free.
     pub(crate) fn emit_local_overwrite_release(&mut self, dest: Place, target_ty: &ResolvedTy) {
         let ty = self.subst_ty(target_ty);
+        // A `var` reassignment is a GENERATION BOUNDARY: the slot's previous
+        // value is a distinct owner whose obligation must be discharged HERE,
+        // before the store — not inferred from the binding's entry-time
+        // classification (the value-context lattice's `AssignmentOverwrite`
+        // rule, `drop_obligation.rs`). For a registered closeable `#[resource]`
+        // (record or opaque lifecycle) the discharge is its exactly-once
+        // `close(self)`: `var t = Tok{1}; t = Tok{2};` must close 1 at the
+        // rebind and close 2 at scope exit. The inline drop's typed-zero
+        // null-after-close plus the immediately following `Move` store keeps a
+        // second release of generation 1 structurally unreachable.
+        if matches!(
+            super::named_type_marker(&ty, &self.type_classes),
+            Some(hew_hir::ResourceMarker::Resource)
+        ) {
+            if let Some(spec) = super::resource_drop_fn(&ty, &self.type_classes) {
+                self.push_instr(Instr::Drop {
+                    place: dest,
+                    ty,
+                    drop_fn: Some(spec),
+                });
+            }
+            // A resource with no resolvable close is rejected upstream
+            // (E_RESOURCE_MISSING_CLOSE); nothing further to release either
+            // way — `close(self)` consumes the whole value.
+            return;
+        }
         // Single-pointer / fat-triple COW leaf (string / Vec / HashMap /
         // HashSet / Generator / bytes): drop the whole slot in place. Only a
         // Wired verdict emits; an Unwired `Vec` (element release unwired)

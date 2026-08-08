@@ -3,10 +3,10 @@
 actor__across_suspend	PASS	
 actor__actor_send	PASS	
 actor__construct	PASS	
-actor__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/actor__format.hew:12:18: error: type `LocalPid<Echo>` does not implement `Display` (f-string interpolation requires `impl Display for LocalPi
+actor__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/actor__format.hew:12:18: error: type `LocalPid<Echo>` does not implement `Display` (f-string interpolation requires `impl Display for LocalP
 actor__index	PASS	
-actor__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/actor__iterate.hew:16:14: error: `VecIter<LocalPid<Echo>>` is not supported: `VecIter::next()` clones each element into an independent owner,
-actor__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/actor__map_key.hew:13:5: error: `LocalPid<Echo>` does not satisfy the required bounds for `Map::insert` (K: Hash, K: Eq)
+actor__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/actor__iterate.hew:16:14: error: `VecIter<LocalPid<Echo>>` is not supported: `VecIter::next()` clones each element into an independent owner
+actor__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/actor__map_key.hew:13:5: error: `LocalPid<Echo>` does not satisfy the required bounds for `Map::insert` (K: Hash, K: Eq)
 actor__move	PASS	
 actor__mutate	PASS	
 actor__pass_fn	PASS	
@@ -32,48 +32,48 @@ bool__store_map_value	PASS
 bool__store_vec	PASS	
 bytes__across_suspend	PASS	
 bytes__actor_send	PASS	
-bytes__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__clone.hew:5:13: error: no method `clone` on `bytes`
+bytes__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__clone.hew:5:13: error: no method `clone` on `bytes`
 bytes__construct	PASS	
-bytes__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__equality.hew:12:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Bytes, rhs=Bytes
-bytes__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__format.hew:5:18: error: type `bytes` does not implement `Display` (f-string interpolation requires `impl Display for bytes`)
+bytes__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__equality.hew:12:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Bytes, rhs=Bytes
+bytes__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__format.hew:5:18: error: type `bytes` does not implement `Display` (f-string interpolation requires `impl Display for bytes`)
 bytes__index	PASS	
 bytes__iterate	PASS	
-bytes__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__map_key.hew:7:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
+bytes__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__map_key.hew:7:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
 bytes__move	PASS	
 bytes__mutate	PASS	
 bytes__pass_fn	PASS	
-bytes__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__read_back.hew:6:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR lo
+bytes__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__read_back.hew:6:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR l
 bytes__return_fn	PASS	
 bytes__store_map_value	PASS	
-bytes__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/bytes__store_vec.hew:10:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR l
-closure__across_suspend	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__across_suspend.hew:16:5: error: fail-closed: function-typed values are not supported as actor messages yet (payload type `fn(i64) ->
-closure__actor_send	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__actor_send.hew:15:5: error: fail-closed: function-typed values are not supported as actor messages yet (payload type `fn(i64) -> i64
-closure__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__clone.hew:3:13: error: no method `clone` on `fn(i64) -> i64`
+bytes__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/bytes__store_vec.hew:10:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR 
+closure__across_suspend	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__across_suspend.hew:16:5: error: fail-closed: function-typed values are not supported as actor messages yet (payload type `fn(i64) -
+closure__actor_send	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__actor_send.hew:15:5: error: fail-closed: function-typed values are not supported as actor messages yet (payload type `fn(i64) -> i6
+closure__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__clone.hew:3:13: error: no method `clone` on `fn(i64) -> i64`
 closure__construct	PASS	
-closure__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__equality.hew:5:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Function { params: 
-closure__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__format.hew:3:18: error: type `fn(i64) -> i64` does not implement `Display` (f-string interpolation requires `impl Display for fn(i64
+closure__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__equality.hew:5:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Function { params:
+closure__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__format.hew:3:18: error: type `fn(i64) -> i64` does not implement `Display` (f-string interpolation requires `impl Display for fn(i6
 closure__index	PASS	
-closure__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__iterate.hew:7:14: error: `VecIter<fn(i64) -> i64>` is not supported: `VecIter::next()` clones each element into an independent owner
-closure__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__map_key.hew:3:12: error: `fn(i64) -> i64` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
+closure__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__iterate.hew:7:14: error: `VecIter<fn(i64) -> i64>` is not supported: `VecIter::next()` clones each element into an independent owne
+closure__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__map_key.hew:3:12: error: `fn(i64) -> i64` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
 closure__move	PASS	
 closure__mutate	PASS	
 closure__pass_fn	PASS	
-closure__read_back	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__read_back.hew:5:11: error: `Vec::get` on a function/closure element is not supported under the `Option<T>` accessor model: the eleme
+closure__read_back	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__read_back.hew:5:11: error: `Vec::get` on a function/closure element is not supported under the `Option<T>` accessor model: the elem
 closure__return_fn	PASS	
-closure__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/closure__store_map_value.hew:3:12: error: `HashMap<_, fn(i64) -> i64>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but v
+closure__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/closure__store_map_value.hew:3:12: error: `HashMap<_, fn(i64) -> i64>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but 
 closure__store_vec	PASS	
 enum_payload__across_suspend	PASS	
 enum_payload__actor_send	PASS	
 enum_payload__clone	PASS	
 enum_payload__construct	PASS	
-enum_payload__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-enum_payload__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-enum_payload__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
+enum_payload__drop_early_return	PASS	
+enum_payload__drop_panic	PASS	
+enum_payload__drop_scope	PASS	
 enum_payload__equality	PASS	
-enum_payload__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/enum_payload__format.hew:9:18: error: type `Shape` does not implement `Display` (f-string interpolation requires `impl Display for Shape`)
+enum_payload__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/enum_payload__format.hew:9:18: error: type `Shape` does not implement `Display` (f-string interpolation requires `impl Display for Shape`)
 enum_payload__index	PASS	
 enum_payload__iterate	PASS	
-enum_payload__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/enum_payload__map_key.hew:11:11: error: HashMap key type `Shape` must be a `record`-keyword type to use the layout key ABI; found an enum whi
+enum_payload__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/enum_payload__map_key.hew:9:12: error: HashMap key type `Shape` must be a `record`-keyword type to use the layout key ABI; found an enum whi
 enum_payload__move	PASS	
 enum_payload__mutate	PASS	
 enum_payload__pass_fn	PASS	
@@ -86,10 +86,10 @@ enum_unit__actor_send	PASS
 enum_unit__clone	PASS	
 enum_unit__construct	PASS	
 enum_unit__equality	PASS	
-enum_unit__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/enum_unit__format.hew:8:18: error: type `Colour` does not implement `Display` (f-string interpolation requires `impl Display for Colour`)
+enum_unit__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/enum_unit__format.hew:8:18: error: type `Colour` does not implement `Display` (f-string interpolation requires `impl Display for Colour`)
 enum_unit__index	PASS	
 enum_unit__iterate	PASS	
-enum_unit__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/enum_unit__map_key.hew:10:11: error: HashMap key type `Colour` must be a `record`-keyword type to use the layout key ABI; found an enum which
+enum_unit__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/enum_unit__map_key.hew:10:11: error: HashMap key type `Colour` must be a `record`-keyword type to use the layout key ABI; found an enum whic
 enum_unit__move	PASS	
 enum_unit__mutate	PASS	
 enum_unit__pass_fn	PASS	
@@ -113,33 +113,33 @@ f64__read_back	PASS
 f64__return_fn	PASS	
 f64__store_map_value	PASS	
 f64__store_vec	PASS	
-generator__across_suspend	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__across_suspend.hew:22:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
-generator__actor_send	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__actor_send.hew:21:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
-generator__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__clone.hew:6:13: error: no method `clone` on `Generator<i64, ()>`
+generator__across_suspend	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__across_suspend.hew:22:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
+generator__actor_send	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__actor_send.hew:21:24: error: cannot send `Generator<i64, ()>` to actor: type is not Send
+generator__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__clone.hew:6:13: error: no method `clone` on `Generator<i64, ()>`
 generator__construct	PASS	
-generator__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__equality.hew:14:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Nam
-generator__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__format.hew:6:18: error: type `Generator<i64, ()>` does not implement `Display` (f-string interpolation requires `impl Display for 
-generator__index	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__index.hew:11:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR l
+generator__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__equality.hew:14:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Na
+generator__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__format.hew:6:18: error: type `Generator<i64, ()>` does not implement `Display` (f-string interpolation requires `impl Display for
+generator__index	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__index.hew:11:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HIR 
 generator__iterate	PASS	
-generator__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__map_key.hew:7:5: error: `Generator<i64, ()>` does not satisfy the required bounds for `Map::insert` (K: Hash, K: Eq)
+generator__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__map_key.hew:7:5: error: `Generator<i64, ()>` does not satisfy the required bounds for `Map::insert` (K: Hash, K: Eq)
 generator__move	PASS	
 generator__pass_fn	NYI-INTERNAL	error: E_NOT_YET_IMPLEMENTED: extracting an owned handle (`x`: Generator<i64, ()>) out of an aggregate in this shape is not yet supported — iterate or consume the handle directly, or return it without re-aggregating
-generator__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__read_back.hew:7:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HI
+generator__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__read_back.hew:7:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before H
 generator__return_fn	PASS	
-generator__store_map_value	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__store_map_value.hew:8:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `HashMap<string, Generator<i64, ()>>` value clone is not 
-generator__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/generator__store_vec.hew:11:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before H
+generator__store_map_value	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__store_map_value.hew:8:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `HashMap<string, Generator<i64, ()>>` value clone is not
+generator__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/generator__store_vec.hew:11:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before 
 hashmap__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: named type `HashMap` (key `HashMap$$string$i64`) is not a registered record layout
 hashmap__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: named type `HashMap` (key `HashMap$$string$i64`) is not a registered record layout
 hashmap__clone	PASS	
 hashmap__construct	PASS	
-hashmap__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-hashmap__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-hashmap__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
-hashmap__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashmap__equality.hew:11:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Named
-hashmap__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashmap__format.hew:5:18: error: type `HashMap<string, i64>` does not implement `Display` (f-string interpolation requires `impl Display for 
+hashmap__drop_early_return	PASS	
+hashmap__drop_panic	PASS	
+hashmap__drop_scope	PASS	
+hashmap__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashmap__equality.hew:11:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Name
+hashmap__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashmap__format.hew:5:18: error: type `HashMap<string, i64>` does not implement `Display` (f-string interpolation requires `impl Display for
 hashmap__index	PASS	
 hashmap__iterate	PASS	
-hashmap__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashmap__map_key.hew:5:12: error: HashMap key type `HashMap` contains a field of type `HashMap<string, i64>` which is not a fixed-size Copy t
+hashmap__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashmap__map_key.hew:6:5: error: HashMap key type `HashMap` contains a field of type `HashMap<string, i64>` which is not a fixed-size Copy t
 hashmap__move	PASS	
 hashmap__mutate	PASS	
 hashmap__pass_fn	PASS	
@@ -151,11 +151,11 @@ hashset__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CB
 hashset__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: named type `HashSet` (key `HashSet$$i64`) is not a registered record layout
 hashset__clone	PASS	
 hashset__construct	PASS	
-hashset__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashset__equality.hew:11:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Named
-hashset__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashset__format.hew:5:18: error: type `HashSet<i64>` does not implement `Display` (f-string interpolation requires `impl Display for HashSet<
+hashset__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashset__equality.hew:11:5: error: fail-closed: IntCmp pointer operands must be string-typed or Vec-typed for content equality; got lhs=Name
+hashset__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashset__format.hew:5:18: error: type `HashSet<i64>` does not implement `Display` (f-string interpolation requires `impl Display for HashSet
 hashset__index	PASS	
-hashset__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashset__iterate.hew:4:13: error: no method `to_vec` on HashSet
-hashset__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/hashset__map_key.hew:7:11: error: HashMap key type `HashSet` contains a field of type `HashSet<i64>` which is not a fixed-size Copy type; lay
+hashset__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashset__iterate.hew:4:13: error: no method `to_vec` on HashSet
+hashset__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/hashset__map_key.hew:5:12: error: HashMap key type `HashSet` contains a field of type `HashSet<i64>` which is not a fixed-size Copy type; la
 hashset__move	PASS	
 hashset__mutate	PASS	
 hashset__pass_fn	PASS	
@@ -197,54 +197,54 @@ i64__store_map_value	PASS
 i64__store_vec	PASS	
 machine__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: actor `Holder` handler `hold` payload type `Named { name: "Counter", args: [], builtin: None, is_opaque: false }` is not drop-classifiable: actor-state classifier could not resolve `Re
 machine__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: actor `Sink` handler `take` payload type `Named { name: "Counter", args: [], builtin: None, is_opaque: false }` is not drop-classifiable: actor-state classifier could not resolve `Reco
-machine__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__clone.hew:14:13: error: no method `clone` on `Counter`
+machine__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__clone.hew:14:13: error: no method `clone` on `Counter`
 machine__construct	PASS	
-machine__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-machine__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-machine__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
+machine__drop_early_return	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__drop_early_return.hew:12:1: error: machine `Gate` state `Opened` holds `#[resource]`/`#[linear]` value `Tok`: a resource in a machi
+machine__drop_panic	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__drop_panic.hew:12:1: error: machine `Gate` state `Opened` holds `#[resource]`/`#[linear]` value `Tok`: a resource in a machine stat
+machine__drop_scope	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__drop_scope.hew:12:1: error: machine `Gate` state `Opened` holds `#[resource]`/`#[linear]` value `Tok`: a resource in a machine stat
 machine__equality	PASS	
-machine__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__format.hew:14:18: error: type `Counter` does not implement `Display` (f-string interpolation requires `impl Display for Counter`)
+machine__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__format.hew:14:18: error: type `Counter` does not implement `Display` (f-string interpolation requires `impl Display for Counter`)
 machine__index	PASS	
-machine__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__iterate.hew:20:14: error: `VecIter<Counter>` is not supported: `VecIter::next()` clones each element into an independent owner, but 
-machine__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__map_key.hew:16:11: error: HashMap key type `Counter` must be a `record`-keyword type to use the layout key ABI; found a machine whic
+machine__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__iterate.hew:20:14: error: `VecIter<Counter>` is not supported: `VecIter::next()` clones each element into an independent owner, but
+machine__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__map_key.hew:14:12: error: HashMap key type `Counter` must be a `record`-keyword type to use the layout key ABI; found a machine whi
 machine__move	PASS	
 machine__mutate	PASS	
 machine__pass_fn	PASS	
-machine__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__read_back.hew:14:5: error: fail-closed: Vec::new has no constructor lowering for element type Named { name: "Counter", args: [], bui
+machine__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__read_back.hew:14:5: error: fail-closed: Vec::new has no constructor lowering for element type Named { name: "Counter", args: [], bu
 machine__return_fn	PASS	
 machine__store_map_value	PASS	
-machine__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/machine__store_vec.hew:17:5: error: fail-closed: Vec::new has no constructor lowering for element type Named { name: "Counter", args: [], bui
-opaque__across_suspend	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__across_suspend.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-seri
-opaque__actor_send	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__actor_send.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializ
-opaque__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__clone.hew:26:13: error: type `Dq` is `#[resource]` and cannot be cloned: `Dq` has an affine close contract and no semantic clone
+machine__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/machine__store_vec.hew:17:5: error: fail-closed: Vec::new has no constructor lowering for element type Named { name: "Counter", args: [], bu
+opaque__across_suspend	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__across_suspend.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-ser
+opaque__actor_send	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__actor_send.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-seriali
+opaque__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__clone.hew:26:13: error: type `Dq` is `#[resource]` and cannot be cloned: `Dq` has an affine close contract and no semantic clone
 opaque__construct	PASS	
 opaque__drop_early_return	PASS	
 opaque__drop_panic	PASS	
 opaque__drop_scope	PASS	
-opaque__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__equality.hew:28:5: error: fail-closed: eq_thunk: type `Named { name: "DqH", args: [], builtin: None, is_opaque: true }` has no struct
-opaque__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__format.hew:26:18: error: type `Dq` does not implement `Display` (f-string interpolation requires `impl Display for Dq`)
-opaque__index	CRASH	PANIC: Vec owned descriptor is missing the clone thunk
-opaque__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__iterate.hew:30:14: error: `VecIter<Dq>` is not supported: `VecIter::next()` clones each element into an independent owner, but resour
-opaque__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__map_key.hew:28:11: error: HashMap key type `Dq` must be a `record`-keyword type to use the layout key ABI; found a type which is not 
+opaque__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__equality.hew:28:5: error: fail-closed: eq_thunk: type `Named { name: "DqH", args: [], builtin: None, is_opaque: true }` has no struc
+opaque__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__format.hew:26:18: error: type `Dq` does not implement `Display` (f-string interpolation requires `impl Display for Dq`)
+opaque__index	CRASH	PANIC: Vec owned element clone failed
+opaque__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__iterate.hew:30:14: error: `VecIter<Dq>` is not supported: `VecIter::next()` clones each element into an independent owner, but resou
+opaque__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__map_key.hew:27:5: error: HashMap key type `Dq` must be a `record`-keyword type to use the layout key ABI; found a type which is not 
 opaque__move	PASS	
-opaque__mutate	SILENT-UNSOUND	released ['close 2'], expected ['close 1', 'close 2']
+opaque__mutate	PASS	
 opaque__pass_fn	PASS	
-opaque__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__read_back.hew:28:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `VecIter<Dq>` clone-out is not implemented yet
+opaque__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__read_back.hew:28:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `VecIter<Dq>` clone-out is not implemented yet
 opaque__return_fn	PASS	
-opaque__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but value type `D
-opaque__store_vec	CRASH	PANIC: Vec owned descriptor is missing the clone thunk
+opaque__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/opaque__store_map_value.hew:26:12: error: `HashMap<_, Dq>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but value type `
+opaque__store_vec	CRASH	PANIC: Vec owned element clone failed
 option__across_suspend	PASS	
 option__actor_send	PASS	
-option__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/option__clone.hew:3:13: error: no method `clone` on `Option<i64>`
+option__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/option__clone.hew:3:13: error: no method `clone` on `Option<i64>`
 option__construct	PASS	
-option__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-option__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-option__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
+option__drop_early_return	PASS	
+option__drop_panic	PASS	
+option__drop_scope	PASS	
 option__equality	PASS	
-option__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/option__format.hew:3:18: error: type `Option<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Option<i64
+option__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/option__format.hew:3:18: error: type `Option<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Option<i6
 option__index	PASS	
 option__iterate	PASS	
-option__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/option__map_key.hew:3:12: error: HashMap key type `Option` contains a field of type `Option<i64>` which is not a fixed-size Copy type; layout
+option__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/option__map_key.hew:4:5: error: HashMap key type `Option` contains a field of type `Option<i64>` which is not a fixed-size Copy type; layout
 option__move	PASS	
 option__mutate	PASS	
 option__pass_fn	PASS	
@@ -260,10 +260,10 @@ record__drop_early_return	PASS
 record__drop_panic	PASS	
 record__drop_scope	PASS	
 record__equality	PASS	
-record__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/record__format.hew:8:18: error: type `Rec` does not implement `Display` (f-string interpolation requires `impl Display for Rec`)
+record__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/record__format.hew:8:18: error: type `Rec` does not implement `Display` (f-string interpolation requires `impl Display for Rec`)
 record__index	PASS	
 record__iterate	PASS	
-record__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/record__map_key.hew:10:11: error: HashMap key type `Rec` must be a `record`-keyword type to use the layout key ABI; found a type which is not
+record__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/record__map_key.hew:10:11: error: HashMap key type `Rec` must be a `record`-keyword type to use the layout key ABI; found a type which is no
 record__move	PASS	
 record__mutate	PASS	
 record__pass_fn	PASS	
@@ -273,42 +273,42 @@ record__store_map_value	PASS
 record__store_vec	PASS	
 resource__across_suspend	PASS	
 resource__actor_send	PASS	
-resource__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__clone.hew:14:13: error: type `Tok` is `#[resource]` and cannot be cloned: `Tok` has an affine close contract and no semantic clone
+resource__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__clone.hew:14:13: error: type `Tok` is `#[resource]` and cannot be cloned: `Tok` has an affine close contract and no semantic clone
 resource__construct	PASS	
 resource__drop_early_return	PASS	
 resource__drop_panic	PASS	
 resource__drop_scope	PASS	
 resource__equality	PASS	
-resource__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__format.hew:14:18: error: type `Tok` does not implement `Display` (f-string interpolation requires `impl Display for Tok`)
-resource__index	SILENT-UNSOUND	released ['close 1'], expected ['close 1', 'close 2']
-resource__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__iterate.hew:18:14: error: `VecIter<Tok>` is not supported: `VecIter::next()` clones each element into an independent owner, but res
-resource__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__map_key.hew:15:5: error: HashMap key type `Tok` must be a `record`-keyword type to use the layout key ABI; found a type which is no
+resource__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__format.hew:14:18: error: type `Tok` does not implement `Display` (f-string interpolation requires `impl Display for Tok`)
+resource__index	PASS	
+resource__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__iterate.hew:18:14: error: `VecIter<Tok>` is not supported: `VecIter::next()` clones each element into an independent owner, but re
+resource__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__map_key.hew:15:5: error: HashMap key type `Tok` must be a `record`-keyword type to use the layout key ABI; found a type which is n
 resource__move	PASS	
-resource__mutate	SILENT-UNSOUND	released ['close 2'], expected ['close 1', 'close 2']
+resource__mutate	PASS	
 resource__pass_fn	PASS	
-resource__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__read_back.hew:16:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `VecIter<Tok>` clone-out is not implemented yet
+resource__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__read_back.hew:16:11: error: E_NOT_YET_IMPLEMENTED: MIR lowering for `VecIter<Tok>` clone-out is not implemented yet
 resource__return_fn	PASS	
-resource__store_map_value	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/resource__store_map_value.hew:15:19: error: E_MIR_CHECK: binding `x` is used after it was consumed
-resource__store_vec	SILENT-UNSOUND	released [], expected ['close 1', 'close 2']
+resource__store_map_value	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/resource__store_map_value.hew:15:19: error: E_MIR_CHECK: binding `x` is used after it was consumed
+resource__store_vec	PASS	
 result__across_suspend	PASS	
 result__actor_send	PASS	
-result__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__clone.hew:3:13: error: no method `clone` on `Result<i64, string>`
+result__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__clone.hew:3:13: error: no method `clone` on `Result<i64, string>`
 result__construct	PASS	
 result__drop_early_return	PASS	
 result__drop_panic	PASS	
 result__drop_scope	PASS	
 result__equality	PASS	
-result__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__format.hew:3:18: error: type `Result<i64, string>` does not implement `Display` (f-string interpolation requires `impl Display for Re
-result__index	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__index.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec run
-result__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__iterate.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec r
-result__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__map_key.hew:5:11: error: HashMap key type `Result` contains a field of type `Result<i64, string>` which is not a fixed-size Copy type
+result__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__format.hew:3:18: error: type `Result<i64, string>` does not implement `Display` (f-string interpolation requires `impl Display for R
+result__index	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__index.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec ru
+result__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__iterate.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec 
+result__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__map_key.hew:5:11: error: HashMap key type `Result` contains a field of type `Result<i64, string>` which is not a fixed-size Copy typ
 result__move	PASS	
 result__mutate	PASS	
 result__pass_fn	PASS	
-result__read_back	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__read_back.hew:3:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec
+result__read_back	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__read_back.hew:3:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Ve
 result__return_fn	PASS	
 result__store_map_value	PASS	
-result__store_vec	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/result__store_vec.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Vec
+result__store_vec	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/result__store_vec.hew:4:39: error: `Result<i64, string>` cannot be a `Vec` element: it has no clone/drop thunk path for the owned-element Ve
 string__across_suspend	PASS	
 string__actor_send	PASS	
 string__clone	PASS	
@@ -317,7 +317,7 @@ string__equality	PASS
 string__format	PASS	
 string__index	PASS	
 string__iterate	PASS	
-string__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/string__map_key.hew:5:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
+string__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/string__map_key.hew:5:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
 string__move	PASS	
 string__mutate	PASS	
 string__pass_fn	PASS	
@@ -328,30 +328,30 @@ string__store_vec	PASS
 traitobj__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: actor `Holder` handler `hold` payload type `TraitObject { traits: [ResolvedTraitBound { trait_name: "Named", args: [], assoc_bindings: [] }] }` is not drop-classifiable: actor-state cl
 traitobj__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: actor `Sink` handler `take` payload type `TraitObject { traits: [ResolvedTraitBound { trait_name: "Named", args: [], assoc_bindings: [] }] }` is not drop-classifiable: actor-state clas
 traitobj__clone	WRONG-ANSWER	non-UTF-8 stdout: raw memory reached a value channel
-traitobj__construct	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__construct.hew:32:5: error: fail-closed: typed argument 0 of `P::name` has no coherent direct-call ABI: resolved type `dyn Named`, b
-traitobj__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__equality.hew:34:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=TraitObject { tra
-traitobj__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__format.hew:32:18: error: type `P` does not implement `Display` (f-string interpolation requires `impl Display for P`)
-traitobj__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__iterate.hew:36:14: error: `VecIter<dyn Named>` is not supported: `VecIter::next()` clones each element into an independent owner, b
-traitobj__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__map_key.hew:32:12: error: `dyn Named` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
+traitobj__construct	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__construct.hew:32:5: error: fail-closed: typed argument 0 of `P::name` has no coherent direct-call ABI: resolved type `dyn Named`, 
+traitobj__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__equality.hew:34:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=TraitObject { tr
+traitobj__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__format.hew:32:18: error: type `P` does not implement `Display` (f-string interpolation requires `impl Display for P`)
+traitobj__iterate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__iterate.hew:36:14: error: `VecIter<dyn Named>` is not supported: `VecIter::next()` clones each element into an independent owner, 
+traitobj__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__map_key.hew:32:12: error: `dyn Named` does not satisfy the required bounds for `Map` (K: Hash, K: Eq)
 traitobj__move	PASS	
-traitobj__mutate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__mutate.hew:32:9: error: type mismatch: expected `P`, found `Q`
+traitobj__mutate	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__mutate.hew:32:9: error: type mismatch: expected `P`, found `Q`
 traitobj__pass_fn	PASS	
-traitobj__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__read_back.hew:33:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HI
-traitobj__return_fn	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__return_fn.hew:30:14: error: returning `dyn Trait` is not yet supported: the concrete value must be heap-promoted before its fat poi
-traitobj__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__store_map_value.hew:32:12: error: `HashMap<_, dyn Named>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but valu
-traitobj__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/traitobj__store_vec.hew:34:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before HI
+traitobj__read_back	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__read_back.hew:33:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before H
+traitobj__return_fn	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__return_fn.hew:30:14: error: returning `dyn Trait` is not yet supported: the concrete value must be heap-promoted before its fat po
+traitobj__store_map_value	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__store_map_value.hew:32:12: error: `HashMap<_, dyn Named>` is not supported: `HashMap::get()` returns an owned `Option<V>`, but val
+traitobj__store_vec	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/traitobj__store_vec.hew:34:5: error: E_HIR: no checker-produced rewrite entry for this method call; typecheck must record a rewrite before H
 tuple__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: unsupported value type Tuple([I64, String]) (outside the supported wire-body floor)
 tuple__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: unsupported value type Tuple([I64, String]) (outside the supported wire-body floor)
-tuple__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/tuple__clone.hew:3:13: error: no method `clone` on `(i64, string)`
+tuple__clone	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/tuple__clone.hew:3:13: error: no method `clone` on `(i64, string)`
 tuple__construct	PASS	
-tuple__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-tuple__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-tuple__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
-tuple__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/tuple__equality.hew:5:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Tuple([I64, String]),
-tuple__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/tuple__format.hew:3:18: error: type `(i64, string)` does not implement `Display` (f-string interpolation requires `impl Display for (i64, str
+tuple__drop_early_return	PASS	
+tuple__drop_panic	PASS	
+tuple__drop_scope	PASS	
+tuple__equality	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/tuple__equality.hew:5:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Tuple([I64, String])
+tuple__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/tuple__format.hew:3:18: error: type `(i64, string)` does not implement `Display` (f-string interpolation requires `impl Display for (i64, st
 tuple__index	PASS	
 tuple__iterate	PASS	
-tuple__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/tuple__map_key.hew:5:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
+tuple__map_key	NYI-INTERNAL	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/tuple__map_key.hew:5:17: error: E_MIR_CHECK: binding `k` is used after it was consumed
 tuple__move	PASS	
 tuple__mutate	PASS	
 tuple__pass_fn	PASS	
@@ -363,14 +363,14 @@ vec__across_suspend	PASS
 vec__actor_send	PASS	
 vec__clone	PASS	
 vec__construct	PASS	
-vec__drop_early_return	SILENT-UNSOUND	released [], expected ['close 1']
-vec__drop_panic	SILENT-UNSOUND	released [], expected ['close 1']
-vec__drop_scope	SILENT-UNSOUND	released [], expected ['close 1']
+vec__drop_early_return	PASS	
+vec__drop_panic	PASS	
+vec__drop_scope	PASS	
 vec__equality	PASS	
-vec__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/vec__format.hew:5:18: error: type `Vec<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Vec<i64>`)
+vec__format	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/vec__format.hew:5:18: error: type `Vec<i64>` does not implement `Display` (f-string interpolation requires `impl Display for Vec<i64>`)
 vec__index	PASS	
 vec__iterate	PASS	
-vec__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-core-matrix/tests/core-matrix/cells/vec__map_key.hew:7:11: error: HashMap key type `Vec` contains a field of type `Vec<i64>` which is not a fixed-size Copy type; layout keys req
+vec__map_key	NYI-CLEAN	/Volumes/Extreme SSD/src/hew-worktrees/hew-drop-lattice/tests/core-matrix/cells/vec__map_key.hew:5:12: error: HashMap key type `Vec` contains a field of type `Vec<i64>` which is not a fixed-size Copy type; layout keys re
 vec__move	PASS	
 vec__mutate	PASS	
 vec__pass_fn	PASS	

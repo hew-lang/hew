@@ -1798,8 +1798,13 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
     if m.is_null() || pair_layout.is_null() {
         return core::ptr::null_mut();
     }
+    // SAFETY: m is non-null (checked above) and, per this fn's contract, a
+    // valid codegen-produced map descriptor.
     unsafe { validate_op_map(m) };
+    // SAFETY: m is non-null and was validated by the gate above.
     let map = unsafe { &*m };
+    // SAFETY: pair_layout is non-null (checked above) and, per this fn's
+    // contract, a valid codegen-produced element descriptor.
     let pair = unsafe { &*pair_layout };
     let v_offset = usize::try_from(v_offset)
         .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: V offset too large"));
@@ -1810,6 +1815,8 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
         abort_layout_clone("hew_hashmap_entries_layout: invalid pair field layout");
     }
 
+    // SAFETY: pair_layout is non-null and a valid element descriptor, which is
+    // exactly this constructor's precondition.
     let vec = unsafe { crate::vec::hew_vec_new_with_elem_layout(pair_layout) };
     if vec.is_null() {
         return core::ptr::null_mut();
@@ -1818,16 +1825,28 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout(
         .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: invalid pair layout"));
 
     for idx in 0..map.cap {
+        // SAFETY: idx < map.cap, so this addresses a slot inside the live
+        // entries allocation at the map's own stride.
         let state = unsafe { *slot_state(map.entries, idx, map.stride) };
         if state != OCCUPIED {
             continue;
         }
+        // SAFETY: scratch_layout was built by Layout::from_size_align above and
+        // pair.size is non-zero for any pair carrying a key and a value.
         let scratch = unsafe { std::alloc::alloc_zeroed(scratch_layout) };
         if scratch.is_null() {
             std::alloc::handle_alloc_error(scratch_layout);
         }
+        // SAFETY: idx addresses an OCCUPIED slot, so its key field is live and
+        // initialised at the map's recorded key offset.
         let key = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
+        // SAFETY: as above for the value field at the recorded value offset.
         let val = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        // SAFETY: key/val point at live initialised blobs; scratch is a fresh
+        // zeroed allocation of pair.size with v_offset..v_end validated to lie
+        // inside it, so both clones write within bounds. The push then moves
+        // that single owned copy into the Vec, after which the scratch storage
+        // holds no owning references and is deallocated with its own layout.
         unsafe {
             clone_layout_key_blob(
                 map.key_layout.ownership_kind,

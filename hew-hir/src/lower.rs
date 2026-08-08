@@ -1103,7 +1103,12 @@ fn materialized_default_body_plan(
         return Vec::new();
     };
     let overridden: HashSet<&str> = impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
+    // Planning is a read-only projection: `lower_impl_block` lowers this exact
+    // target type again and owns every diagnostic that resolution produces.
+    // Discard anything emitted here so the plan cannot duplicate one.
+    let diagnostics_before = ctx.diagnostics.len();
     let self_ty = ctx.lower_type(&impl_decl.target_type);
+    ctx.diagnostics.truncate(diagnostics_before);
     let mut out = Vec::new();
     for default_method in &defaults {
         if overridden.contains(default_method.name.as_str()) {

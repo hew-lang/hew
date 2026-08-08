@@ -4171,19 +4171,20 @@ impl Builder {
                 .declared_release_types(),
         )
     }
-    /// Retain a `string` operand entering a `HashMap`/`HashSet` MOVE ingress
-    /// when this function does not own it. Returns `true` when the retain was
-    /// emitted and the caller must NOT record a consume.
+    /// Retain a `CoW`-carrier (`string`/`bytes`) operand entering a
+    /// `HashMap`/`HashSet` MOVE ingress when this frame does not own it.
+    /// Returns `true` when the retain was emitted and the caller must NOT
+    /// record a consume.
     ///
-    /// WHY: `string` is on the `CoW` borrow spine, so a by-value `string`
-    /// parameter is BORROWED — `lower_params` registers it in
-    /// `borrowed_string_param_locals` and mints no callee-side owner, and the
-    /// CALLER keeps the count and drops it at its own scope exit. The map's
-    /// ingress is a MOVE, so the slot becomes a second owner of that same
-    /// count: the map's teardown and the caller's scope exit both release it.
-    /// The local static consume cannot suppress the caller's drop — it is in
-    /// another frame — so the consume alone is not a sound pairing for a
-    /// borrowed operand.
+    /// WHY: `string` and `bytes` ride the `CoW` borrow spine, so a by-value
+    /// parameter of either type is BORROWED — `lower_params` excludes both
+    /// from `param_summary_owned`, mints no callee-side owner, and the CALLER
+    /// keeps the count and drops it at its own scope exit. The map's ingress
+    /// is a MOVE, so the slot becomes a second owner of that same count: the
+    /// map's teardown and the caller's scope exit both release it. The local
+    /// static consume cannot suppress the caller's drop — it is in another
+    /// frame — so the consume alone is not a sound pairing for a borrowed
+    /// operand.
     ///
     /// A retain makes the ingress balanced: `+1` before the move, so the map
     /// owns the new count and the caller still owns its own. It mirrors what
@@ -4192,29 +4193,73 @@ impl Builder {
     /// `hew_vec_push_str` does at the `Vec<string>` seam, where the caller
     /// likewise keeps its drop obligation.
     ///
+    /// The gate is the STRUCTURAL caller-borrowed verdict, not a per-carrier
+    /// taught list: `borrowed_value_param_locals` is seeded from the final
+    /// `callee_owns_param` answer in `lower_params`, so a consume-classified /
+    /// owned-carrier / actor-handler parameter keeps its consume. The gate is
+    /// also GENERATION-sensitive: reassigning the parameter binds a fresh
+    /// frame-owned value into the slot, and `assign` deregisters the local
+    /// from the borrowed registries at that boundary
+    /// (`deregister_reassigned_borrowed_param`), so the new generation is
+    /// consumed (transferred into the collection) rather than
+    /// retained-and-leaked.
+    ///
     /// The codegen overwrite-path release (`emit_insert_overwrite_key_release`)
     /// stays correct under this pairing: on the vacant path the map owns the
     /// retained count, on the overwrite path the release consumes it. Exactly
     /// one release either way, and the caller's own count is untouched.
-    pub(crate) fn retain_borrowed_string_collection_ingress(
+    pub(crate) fn retain_caller_borrowed_cow_collection_ingress(
         &mut self,
         operand: &HirExpr,
         place: Place,
     ) -> bool {
-        if !matches!(self.subst_ty(&operand.ty), ResolvedTy::String) {
+        let ty = self.subst_ty(&operand.ty);
+        if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
             return false;
         }
         let Some(local) = base_local(place) else {
             return false;
         };
-        if !self.borrowed_string_param_locals.contains(&local) {
+        if !self.borrowed_value_param_locals.contains(&local) {
             return false;
         }
-        self.push_instr(Instr::StringRetain {
-            value: place,
-            condition: crate::model::StringRetainCondition::Always,
-        });
+        match ty {
+            ResolvedTy::String => self.push_instr(Instr::StringRetain {
+                value: place,
+                condition: crate::model::StringRetainCondition::Always,
+            }),
+            ResolvedTy::Bytes => self.push_instr(Instr::BytesRetain { value: place }),
+            _ => unreachable!("gated on String | Bytes above"),
+        }
         true
+    }
+
+    /// Reassignment is a generation boundary for a caller-borrowed parameter
+    /// slot: after `key = <rhs>` the local holds a fresh value this FRAME
+    /// owns, so every "this slot holds the caller's value" registry must stop
+    /// answering for it. Leaving the registration in place is a
+    /// generation-insensitivity leak: the ingress retain would mint a `+1` on
+    /// a frame-owned value whose last count nothing ever releases.
+    ///
+    /// Called only for an assignment lowered in the function's TOP-LEVEL body
+    /// scope — a straight-line reassignment that dominates every later-lowered
+    /// use. A conditional reassignment (inside an `if` arm / loop body) keeps
+    /// the borrowed registration: on the not-reassigned path the slot still
+    /// holds the caller's value, and consuming that would double-free. The
+    /// fail-closed direction is retain-and-leak on the reassigned path, never
+    /// a double release.
+    pub(crate) fn deregister_reassigned_borrowed_param(&mut self, binding: BindingId) {
+        let Some(local) = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .and_then(base_local)
+        else {
+            return;
+        };
+        self.borrowed_value_param_locals.remove(&local);
+        self.borrowed_string_param_locals.remove(&local);
+        self.borrowed_bytes_param_locals.remove(&local);
     }
 
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {

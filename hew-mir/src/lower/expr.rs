@@ -2851,6 +2851,18 @@ impl Builder {
                     self.retire_provisional_owner_after_assignment_move(
                         *binding, dest, &target.ty, src, &value.ty,
                     );
+                    // Generation boundary: a straight-line (top-level-scope)
+                    // reassignment of a caller-borrowed parameter slot replaces
+                    // the caller's value with a frame-owned one; the borrowed
+                    // registries must stop answering for the slot so later
+                    // ownership decisions (the collection-ingress retain, the
+                    // outbound no-transfer guard, return-share derivation) see
+                    // the frame-owned generation. Conditional reassignment
+                    // keeps the registration — fail-closed toward
+                    // retain-and-leak, never a double release.
+                    if self.active_scopes.len() == 1 {
+                        self.deregister_reassigned_borrowed_param(*binding);
+                    }
                 } else if let Some(source) = self.capture_env_sources.get(binding).cloned() {
                     // #1′ BorrowMut write-back: the assignment target is a
                     // captured `var` reassigned inside the closure body
@@ -6196,7 +6208,7 @@ impl Builder {
                         self.lower_method_arg_value(arg, is_vec_element_store || move_ingress)?;
                     arg_places.push(arg_place);
                     if move_ingress
-                        && !self.retain_borrowed_string_collection_ingress(arg, arg_place)
+                        && !self.retain_caller_borrowed_cow_collection_ingress(arg, arg_place)
                     {
                         self.consume_moved_builtin_method_arg(arg);
                     }

@@ -1,0 +1,18 @@
+//! ASan/LSan oracle for HashMap.entries() tuple clone/drop ownership.
+
+fn snapshot() -> Vec<(string, string)> {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("one", "first");
+    m.insert("two", "second");
+    m.entries()
+}
+
+fn main() -> i64 {
+    let entries = snapshot();
+    var seen: i64 = 0;
+    for pair in entries {
+        if pair.0 == "one" && pair.1 == "first" { seen = seen | 1; }
+        if pair.0 == "two" && pair.1 == "second" { seen = seen | 2; }
+    }
+    if seen == 3 { 0 } else { 93 }
+}

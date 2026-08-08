@@ -542,6 +542,7 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_hashmap_clone_layout"
         | "hew_hashmap_insert_layout"
         | "hew_hashmap_keys_layout"
+        | "hew_hashmap_entries_layout"
         | "hew_hashmap_len_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashset_clear_layout"
@@ -839,6 +840,7 @@ mod tests {
         "hew_hashmap_get_layout",
         "hew_hashmap_insert_layout",
         "hew_hashmap_keys_layout",
+        "hew_hashmap_entries_layout",
         "hew_hashmap_len_layout",
         "hew_hashmap_remove_layout",
         "hew_hashmap_remove_take_layout",
@@ -1051,7 +1053,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 175);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 176);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),

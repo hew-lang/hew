@@ -17,7 +17,7 @@ use core::ffi::{c_char, c_void};
 use core::ptr;
 
 use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeLayout, HewTypeOwnershipKind, HewVec};
+use hew_cabi::vec::{HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout};
 
 /// Entry states.
 const EMPTY: u8 = 0;
@@ -1775,6 +1775,77 @@ pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> 
             vec
         }
     }
+}
+
+/// Collect every occupied `(K, V)` pair into an independently owned Vec.
+///
+/// `pair_layout` is the codegen-synthesised tuple element descriptor, including
+/// its composite clone/drop thunks. `v_offset` is the target ABI offset of the
+/// tuple's V field; the runtime deliberately does not reproduce tuple layout.
+/// Each map element is cloned once into aligned scratch storage, then moved
+/// into the Vec so the tuple descriptor owns exactly one copy.
+///
+/// # Safety
+///
+/// `m` and `pair_layout` must be valid descriptors produced by Hew codegen,
+/// and `v_offset` must identify the V field within `pair_layout.size`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_entries_layout(
+    m: *const HewLayoutHashMap,
+    pair_layout: *const HewVecElemLayout,
+    v_offset: u64,
+) -> *mut HewVec {
+    if m.is_null() || pair_layout.is_null() {
+        return core::ptr::null_mut();
+    }
+    unsafe { validate_op_map(m) };
+    let map = unsafe { &*m };
+    let pair = unsafe { &*pair_layout };
+    let v_offset = usize::try_from(v_offset)
+        .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: V offset too large"));
+    let Some(v_end) = v_offset.checked_add(map.val_layout.size) else {
+        abort_layout_clone("hew_hashmap_entries_layout: V field offset overflow");
+    };
+    if v_offset < map.key_layout.size || v_end > pair.size {
+        abort_layout_clone("hew_hashmap_entries_layout: invalid pair field layout");
+    }
+
+    let vec = unsafe { crate::vec::hew_vec_new_with_elem_layout(pair_layout) };
+    if vec.is_null() {
+        return core::ptr::null_mut();
+    }
+    let scratch_layout = std::alloc::Layout::from_size_align(pair.size, pair.align)
+        .unwrap_or_else(|_| abort_layout_clone("hew_hashmap_entries_layout: invalid pair layout"));
+
+    for idx in 0..map.cap {
+        let state = unsafe { *slot_state(map.entries, idx, map.stride) };
+        if state != OCCUPIED {
+            continue;
+        }
+        let scratch = unsafe { std::alloc::alloc_zeroed(scratch_layout) };
+        if scratch.is_null() {
+            std::alloc::handle_alloc_error(scratch_layout);
+        }
+        let key = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
+        let val = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        unsafe {
+            clone_layout_key_blob(
+                map.key_layout.ownership_kind,
+                key,
+                scratch,
+                map.key_layout.size,
+            );
+            clone_layout_value_blob(
+                map.val_layout,
+                val,
+                scratch.add(v_offset),
+                "hew_hashmap_entries_layout value",
+            );
+            crate::vec::hew_vec_push_owned_move(vec, scratch.cast::<c_void>());
+            std::alloc::dealloc(scratch, scratch_layout);
+        }
+    }
+    vec
 }
 
 /// Collect all values of a layout-backed map into a new `HewVec`.

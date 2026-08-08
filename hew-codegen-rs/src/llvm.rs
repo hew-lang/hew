@@ -1302,6 +1302,7 @@ fn wasm_excluded_call_family(
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout

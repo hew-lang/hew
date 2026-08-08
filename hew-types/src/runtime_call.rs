@@ -453,6 +453,7 @@ pub enum RuntimeCallFamily {
     HashMapContainsKeyLayout,
     HashMapClearLayout,
     HashMapCloneLayout,
+    HashMapEntriesLayout,
     HashMapFreeLayout,
     HashMapGetLayout,
     HashMapInsertLayout,
@@ -1119,6 +1120,7 @@ impl RuntimeCallFamily {
             Self::HashMapContainsKeyLayout => "hew_hashmap_contains_key_layout",
             Self::HashMapClearLayout => "hew_hashmap_clear_layout",
             Self::HashMapCloneLayout => "hew_hashmap_clone_layout",
+            Self::HashMapEntriesLayout => "hew_hashmap_entries_layout",
             Self::HashMapFreeLayout => "hew_hashmap_free_layout",
             Self::HashMapGetLayout => "hew_hashmap_get_layout",
             Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
@@ -1440,6 +1442,7 @@ impl RuntimeCallFamily {
             "hew_hashmap_contains_key_layout" => Self::HashMapContainsKeyLayout,
             "hew_hashmap_clear_layout" => Self::HashMapClearLayout,
             "hew_hashmap_clone_layout" => Self::HashMapCloneLayout,
+            "hew_hashmap_entries_layout" => Self::HashMapEntriesLayout,
             "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
             "hew_hashmap_get_layout" => Self::HashMapGetLayout,
             "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
@@ -1765,6 +1768,7 @@ impl RuntimeCallFamily {
             Self::HashMapContainsKeyLayout
                 | Self::HashMapClearLayout
                 | Self::HashMapCloneLayout
+                | Self::HashMapEntriesLayout
                 | Self::HashMapFreeLayout
                 | Self::HashMapGetLayout
                 | Self::HashMapInsertLayout
@@ -1924,6 +1928,7 @@ impl RuntimeCallFamily {
             | Self::HashMapKeysLayout
             | Self::HashMapValuesLayout
             | Self::HashMapCloneLayout
+            | Self::HashMapEntriesLayout
             | Self::HashMapClearLayout
             | Self::HashSetInsertLayout
             | Self::HashSetContainsLayout
@@ -2172,6 +2177,7 @@ impl RuntimeCallFamily {
             | F::HashMapContainsKeyLayout
             | F::HashMapClearLayout
             | F::HashMapCloneLayout
+            | F::HashMapEntriesLayout
             | F::HashMapFreeLayout
             | F::HashMapGetLayout
             | F::HashMapInsertLayout
@@ -2862,6 +2868,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::HashMapKeysLayout
+            | F::HashMapEntriesLayout
             | F::HashMapNew
             | F::HashMapValuesLayout
             | F::HashSetNew

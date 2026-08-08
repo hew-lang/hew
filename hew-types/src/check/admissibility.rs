@@ -1813,12 +1813,14 @@ impl Checker {
             return false;
         }
 
-        if method == "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_key) {
+        if matches!(method, "keys" | "entries")
+            && !self.is_supported_hashmap_projection_element_type(&resolved_key)
+        {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`HashMap<{}, {}>.keys()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
+                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
                     resolved_key.user_facing(),
                     resolved_val.user_facing(),
                     resolved_key.user_facing()

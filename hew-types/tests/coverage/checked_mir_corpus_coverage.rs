@@ -230,10 +230,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    families rendered by the current checked-MIR corpus.
     "hew_hashmap_clear_layout",
     "hew_hashmap_clone_layout",
-    // `entries` is exercised by the compiled Hew and ASan/LSan fixtures; the
-    // checked-MIR golden corpus does not yet materialise its hidden tuple
-    // descriptor and V-offset operands.
-    "hew_hashmap_entries_layout",
     "hew_hashset_clear_layout",
     "hew_hashset_clone_layout",
     "hew_hashset_to_vec_layout",

@@ -88,7 +88,7 @@ unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
 fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     let _guard = TEST_MUTEX
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     HEAP_ALLOCS.store(0, Ordering::SeqCst);
     HEAP_FREES.store(0, Ordering::SeqCst);
 

@@ -187,6 +187,13 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
+      # test-compiler-pipeline and the lifecycle matrix below shell out to the
+      # pinned ast-grep to derive their fact set. Provision it here alongside
+      # LLVM and wasmtime, so the cost is one cached job-level toolchain step
+      # instead of a cargo install nested inside a test target.
+      - name: Provision pinned ast-grep toolchain
+        uses: ./.github/actions/setup-ast-grep
+
       - name: Run foundational compiled-Hew and lifecycle gates
         run: |
           make check-gate-reachability

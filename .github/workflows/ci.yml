@@ -541,6 +541,14 @@ jobs:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
 
+      # The opaque-resource lifecycle gates below shell out to the pinned
+      # ast-grep to derive their fact set. Provision it here alongside LLVM
+      # and wasmtime, so the cost is one cached job-level toolchain step
+      # instead of a cargo install nested inside a test target.
+      - name: Provision pinned ast-grep toolchain
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-ast-grep
+
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag.
       # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.

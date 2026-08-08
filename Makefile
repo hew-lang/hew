@@ -800,11 +800,19 @@ test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-pkg
 	$(MAKE) test-opaque-resource-lifecycle-matrix
 
-test-opaque-resource-lifecycle-matrix: structural-lint-bootstrap-install wasm-runtime hew-native
+# Both lifecycle targets read the pinned ast-grep at
+# .ast-grep/tool/bin/ast-grep and abort when it is absent. The toolchain is
+# provisioned at the job level (.github/actions/setup-ast-grep, the same
+# cache-then-verify shape as setup-llvm and the wasmtime install), not as a
+# make prerequisite: `structural-lint-bootstrap-install` cargo-installs
+# tree-sitter-cli and ast-grep and then runs a full authority scan, which is
+# minutes of work that has no place inside a test target invoked from three
+# other targets. Locally, any `make lint` provisions the same tree.
+test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
-test-opaque-resource-lifecycle-matrix-external: structural-lint-bootstrap-install wasm-runtime hew-native
+test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
@@ -1175,10 +1183,13 @@ lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
 # structural-lint entry point, not a separate manual step. The install path
-# (scripts/ast-grep-lint.sh --bootstrap, via build-ast-grep-lang.sh) is
-# idempotent and checks the pinned lock/version before touching the network
-# or recompiling, so a warm cache makes this a fast no-op — local `make lint`
-# and CI both provision through the same target instead of drifting.
+# (scripts/ast-grep-lint.sh --bootstrap --install-only, via
+# build-ast-grep-lang.sh) is idempotent and checks the pinned lock/version
+# before touching the network or recompiling, so a warm cache makes this a
+# fast no-op — local `make lint` and CI both provision through the same
+# target instead of drifting. --install-only stops after the verified
+# install: the audit and the scan belong to the structural-lint recipe
+# below, so provisioning a consumer never re-runs the lint gate.
 .NOTPARALLEL: structural-lint structural-lint-bootstrap
 structural-lint: structural-lint-bootstrap-install test-structural-authority-audit
 	scripts/ast-grep-lint.sh
@@ -1186,7 +1197,7 @@ structural-lint: structural-lint-bootstrap-install test-structural-authority-aud
 structural-lint-bootstrap: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap
 
 structural-lint-bootstrap-install:
-	scripts/ast-grep-lint.sh --bootstrap
+	scripts/ast-grep-lint.sh --bootstrap --install-only
 
 test-structural-authority-audit:
 	python3 scripts/tests/test_structural_authority_audit.py

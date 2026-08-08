@@ -241,6 +241,28 @@ pub(super) fn elaborate(
             .copied(),
     );
 
+    // Machine-typed owned locals. A machine value is `ValueClass::Unknown`, so
+    // before this derivation its binding fell through every drop class and the
+    // resource held in its LAST state leaked with no diagnostic. Machines are
+    // enums at the value-classification layer, so an admitted binding rides the
+    // same tag-aware `DropKind::EnumInPlace` helper family; the derivation is
+    // separate because the step round-trip (`m = step(m, e)`) reads as an
+    // escape to the generic enum prover. Fail-closed: anything the machine
+    // prover cannot clear keeps the pre-existing leak posture.
+    let machine_composite_drop_allowed = super::machine_own::derive_machine_composite_drop_allowed(
+        &checked.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.machine_layout_names,
+        &builder.enum_layouts,
+        &builder.record_field_orders,
+        &builder.type_classes,
+        &outbound_records,
+        &builder.opaque_handle_names,
+        &builder.lifecycle_registry,
+    );
+
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
     // earns its `hew_vec_free_owned` release UNLESS the fail-closed escape-scan
     // proves it leaves this scope's sole ownership — most importantly a handle
@@ -800,6 +822,7 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &enum_composite_drop_allowed,
+        &machine_composite_drop_allowed,
         &owned_vec_drop_allowed,
         &local_collection_drop_allowed,
         &local_bytes_drop_allowed,
@@ -5387,6 +5410,7 @@ fn build_lifo_drops(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     enum_composite_drop_allowed: &HashSet<BindingId>,
+    machine_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
     local_collection_drop_allowed: &HashSet<BindingId>,
     local_bytes_drop_allowed: &HashSet<BindingId>,
@@ -5660,6 +5684,38 @@ fn build_lifo_drops(
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
                 guard: overwrite_guard_flags.get(binding).copied(),
+            });
+            continue;
+        }
+        // Machine-typed local whose active state payload carries a release
+        // obligation. A machine is `ValueClass::Unknown`, so without this arm
+        // the binding falls through to the no-drop arm below and the
+        // `#[resource]` handle held in the state the machine ends its scope in
+        // is never closed — the same handle in a bare local closes correctly.
+        // Machines are enums at the value-classification layer
+        // (`machine_enum_views`), so the release is the same tag-aware
+        // `DropKind::EnumInPlace` helper family a user enum uses: it walks only
+        // the ACTIVE variant's owned fields and frees no wrapper. Gated on the
+        // fail-closed `derive_machine_composite_drop_allowed` prover, which
+        // admits only a binding whose every read is a step round-trip, a
+        // state-name read, or a tag test — a machine whose payload was matched
+        // out, returned, stored, or sent keeps the pre-existing leak posture and
+        // is never double-closed. Intercept BEFORE the value-class match,
+        // mirroring the enum-composite arm.
+        if machine_composite_drop_allowed.contains(binding) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: machine composite binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before drop elaboration observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::EnumInPlace,
+                guard: None,
             });
             continue;
         }

@@ -66,6 +66,7 @@ mod drop_plan;
 mod expr;
 mod facts;
 mod for_await_drop_plan;
+mod machine_own;
 mod machine_synth;
 mod move_value;
 mod owner_mint;

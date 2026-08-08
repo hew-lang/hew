@@ -823,6 +823,19 @@ pub(crate) fn enum_layout_key_for_ty(
     fn_ctx: &FnCtx<'_, '_>,
     ty: &ResolvedTy,
 ) -> CodegenResult<String> {
+    // A machine value is an enum at the value-classification layer, so a
+    // machine local admitted for a scope-exit release carries the same
+    // `DropKind::EnumInPlace`. Machines are registered in `machine_layouts`
+    // under the machine-class key, not in `enum_layouts`, so probe that
+    // registry first — the key it yields is the same one MIR's seed scan
+    // resolves through the machine enum view, so the emitted call and the
+    // synthesised `__hew_enum_drop_inplace_<key>` body cannot drift.
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if fn_ctx.machine_layouts.contains_key(&machine_key) {
+            return Ok(machine_key);
+        }
+    }
     enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
 }
 

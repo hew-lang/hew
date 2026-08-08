@@ -1,0 +1,7 @@
+hold
+CLOSE fd=1
+release
+CLOSE fd=2
+bail
+CLOSE fd=3
+done

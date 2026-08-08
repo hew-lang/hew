@@ -229,7 +229,7 @@ pub(super) fn note_declared_release_neutralize_exclusions(
               set, the lifecycle registry); bundling them into a struct would \
               only relocate the same fields"
 )]
-pub(super) fn enum_payloads_are_shell_drop_safe(
+pub(in crate::lower) fn enum_payloads_are_shell_drop_safe(
     ty: &ResolvedTy,
     enum_layouts: &[crate::model::EnumLayout],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,

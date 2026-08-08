@@ -1,0 +1,94 @@
+// Leak-oracle shape for the machine payload release.
+//
+// `Mixed` holds a `#[resource]` handle BESIDE a heap-owning string in the same
+// state and is driven through a reenter that carries both leaves through and a
+// scope exit that holds both live. The scope-exit release must free ALL of the
+// active state's leaves and each exactly once: releasing the resource leaf and
+// skipping the string leaks the buffer (LSan), while releasing a leaf the
+// reenter body already moved out underflows the string refcount and
+// double-closes the handle (ASan sees the heap-use-after-free; a plain run only
+// prints a garbage fd).
+//
+// `Plain` covers the other release path — a transition that leaves the state
+// carrying nothing forward — with a resource-only payload. The heap-leaf
+// sibling is deliberately absent there: the transition-out release enumerates
+// only `#[resource]` payload fields, so a heap leaf on THAT path is a separate,
+// tracked leak and does not belong in a clean fixture.
+//
+// Exits 0, must stay ASan/LSan-clean.
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl Handle {
+    fn close(self) {
+        println(f"CLOSE fd={self.fd}");
+    }
+}
+
+machine Mixed {
+    events {
+        Open { fd: i64; }
+        Touch;
+    }
+
+    state Idle;
+    state Active { h: Handle; label: string; }
+
+    on Open(fd): Idle => Active {
+        Active { h: Handle { fd: fd }, label: "conn".to_upper() }
+    }
+    on Touch: Active => Active reenter {
+        // Carries BOTH leaves through: neither may be released here.
+        Active { h: self.h, label: self.label }
+    }
+
+    default { state }
+}
+
+machine Plain {
+    events {
+        Open { fd: i64; }
+        Shut;
+    }
+
+    state Idle;
+    state Live { h: Handle; }
+
+    on Open(fd): Idle => Live {
+        Live { h: Handle { fd: fd } }
+    }
+    on Shut: Live => Idle {
+        // Carries nothing forward: the handle releases here, and the scope exit
+        // must not release it a second time.
+        Idle
+    }
+
+    default { state }
+}
+
+// Ends its scope in `Active`: the scope-exit release owns both leaves.
+fn hold_mixed(fd: i64) {
+    var s = Mixed::Idle;
+    s.step(MixedEvent::Open { fd: fd });
+    for i in 0 .. 4 {
+        s.step(MixedEvent::Touch);
+    }
+    println(s.state_name());
+}
+
+// Steps back to `Idle`: the transition-out release owns the handle.
+fn shut_plain(fd: i64) {
+    var s = Plain::Idle;
+    s.step(PlainEvent::Open { fd: fd });
+    s.step(PlainEvent::Shut);
+    println(s.state_name());
+}
+
+fn main() {
+    for i in 0 .. 3 {
+        hold_mixed(7);
+        shut_plain(8);
+    }
+}

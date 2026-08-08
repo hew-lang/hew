@@ -826,6 +826,34 @@ pub(crate) fn enum_layout_key_for_ty(
     enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
 }
 
+/// The in-place drop-helper key for a tagged-union value, machines included.
+///
+/// A machine is an enum at the value-classification layer, so a machine local
+/// admitted for a scope-exit release carries the same `DropKind::EnumInPlace`
+/// as a user enum. Machines are registered in `machine_layouts` under the
+/// machine-class key rather than in `enum_layouts`, so probe that registry
+/// first — the key it yields is the same one MIR's seed scan resolves through
+/// the machine enum view, so the emitted call and the synthesised
+/// `__hew_enum_drop_inplace_<key>` body cannot drift.
+///
+/// Scoped to the in-place drop caller on purpose. The other
+/// `enum_layout_key_for_ty` consumers are indirect-enum paths gated on
+/// `is_indirect_enum`, which a machine never satisfies; keeping the machine
+/// probe here rather than in the shared resolver means those paths cannot
+/// acquire a machine key by future accident.
+pub(crate) fn inplace_drop_layout_key_for_ty(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> CodegenResult<String> {
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if fn_ctx.machine_layouts.contains_key(&machine_key) {
+            return Ok(machine_key);
+        }
+    }
+    enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
+}
+
 /// `enum_layout_key_for_ty` with the enum-layout slice supplied directly, for
 /// synthesis paths that resolve the key without a live `FnCtx` (e.g. the
 /// state-clone/drop synthesis pass routing an indirect-enum child field through

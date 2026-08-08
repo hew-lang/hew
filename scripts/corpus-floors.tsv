@@ -29,7 +29,7 @@
 # drifts without somebody saying so out loud.
 #
 # key	mode	floor	slack	description
-asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
+asan-fixture-gates	exact	22	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	58	-	golden-MIR fixtures under examples/v05/checked-mir
 ci-parity-marked-steps	exact	35	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
 ci-required-checks	exact	40	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
@@ -45,8 +45,8 @@ hew-fmt-check-files	min	648	150	std/ and examples/ .hew sources checked by make 
 hew-fmt-property-files	min	1484	200	compilable tracked corpus files formatted, rechecked, and checked for idempotence
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
-macos-leak-oracle-binaries	exact	111	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
-macos-leak-oracle-tests	exact	743	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-binaries	exact	112	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-tests	exact	745	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 opaque-resource-lifecycle-facts	exact	17	-	AST-derived shipped empty opaque resource declarations with one close/release/producer lifecycle
 runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus

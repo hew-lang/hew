@@ -89,8 +89,12 @@ impl IrPipeline {
             .chain(machine_enum_views(&self.machine_layouts))
             .collect();
 
+        // A machine local admitted for a scope-exit release rides the same
+        // `DropKind::EnumInPlace` helper family, so this seed scan resolves its
+        // key against the machine-augmented view — otherwise
+        // `__hew_enum_drop_inplace_mc$$M$$` would be called with no body.
         let mut enum_seeds =
-            collect_enum_inplace_drop_seeds(&self.elaborated_mir, &self.enum_layouts);
+            collect_enum_inplace_drop_seeds(&self.elaborated_mir, &synthesis_enum_layouts);
         let (mut record_seeds, vec_owned_enum_seeds) = collect_vec_owned_element_seeds(
             &self.raw_mir,
             &self.record_layouts,

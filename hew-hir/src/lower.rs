@@ -13620,8 +13620,8 @@ impl LowerCtx {
                     hir_tr.span.clone(),
                     format!(
                         "self-transition `on {event}` in state `{state}` has a non-empty body \
-                         but is not annotated `@reenter`; annotate with `@reenter` to opt in to \
-                         Mealy re-entry semantics, or remove the body",
+                         but is not marked `reenter`; write `=> {state} reenter {{ … }}` to opt \
+                         in to Mealy re-entry semantics, or remove the body",
                         event = hir_tr.event_name,
                         state = hir_tr.source_state,
                     ),

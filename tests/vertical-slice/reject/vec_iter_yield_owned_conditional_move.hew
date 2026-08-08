@@ -1,0 +1,27 @@
+// Reject fixture (negative cell for the yield-share lowering): a NON-CoW
+// yield binder (`Vec<i64>` element of a `Vec<Vec<i64>>`) conditionally moved
+// into a collection before an abandonment point has no retain-backed share —
+// there is no cheap `+1` for an owned composite — so the static consume
+// stands, the dataflow joins `MaybeConsumed`, and the
+// `vec_iter_yield_abandonment` authority must still reject the shape. This
+// cell distinguishes the string-share fix from simply disabling the check.
+
+fn keep_big(rows: Vec<i64>, keep: HashMap<string, Vec<i64>>) {
+    var all: Vec<Vec<i64>> = [];
+    all.push(rows);
+    for row in all {
+        if row.len() > 2 {
+            keep.insert("big", row);
+        }
+        let probe = keep.get("big");
+        match probe {
+            Some(found) => { println(f"n={found.len()}"); }
+            None => {}
+        }
+    }
+}
+
+fn main() {
+    let keep: HashMap<string, Vec<i64>> = HashMap::new();
+    keep_big([1, 2, 3], keep);
+}

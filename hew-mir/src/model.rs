@@ -5889,6 +5889,19 @@ pub struct FieldOffset(pub u32);
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
+    /// Inline retain-backed SHARE of a body-end-released yield binder,
+    /// emitted at lowering time immediately before the share's `Move`.
+    ///
+    /// Runtime behaviour is identical to [`Self::Always`] (one unconditional
+    /// `+1`); the distinct condition is a STRUCTURAL marker the post-pass
+    /// string-ownership derivation recognizes: the adjacent
+    /// `FreshShare`-retain + `Move` pair is a retained co-owner mint even on
+    /// a CFG cycle (the retain re-executes inline for every dynamic
+    /// generation, and each destination generation's release is owned by the
+    /// var-overwrite / scope-exit machinery), so the derivation must neither
+    /// mint a second retain nor classify the move as a hand-off — the source
+    /// binder keeps its own count and its body-end release authority.
+    FreshShare,
     /// Recursively mint owners for every string leaf in a borrowed inline
     /// aggregate before that aggregate is copied into a new owner.
     ///

@@ -4171,6 +4171,170 @@ impl Builder {
                 .declared_release_types(),
         )
     }
+    /// Retain a `CoW`-carrier (`string`/`bytes`) operand entering a
+    /// `HashMap`/`HashSet` MOVE ingress when this frame does not own it.
+    /// Returns `true` when the retain was emitted and the caller must NOT
+    /// record a consume.
+    ///
+    /// WHY: `string` and `bytes` ride the `CoW` borrow spine, so a by-value
+    /// parameter of either type is BORROWED — `lower_params` excludes both
+    /// from `param_summary_owned`, mints no callee-side owner, and the CALLER
+    /// keeps the count and drops it at its own scope exit. The map's ingress
+    /// is a MOVE, so the slot becomes a second owner of that same count: the
+    /// map's teardown and the caller's scope exit both release it. The local
+    /// static consume cannot suppress the caller's drop — it is in another
+    /// frame — so the consume alone is not a sound pairing for a borrowed
+    /// operand.
+    ///
+    /// A retain makes the ingress balanced: `+1` before the move, so the map
+    /// owns the new count and the caller still owns its own. It mirrors what
+    /// `let k2 = k; m.insert(k2, ..)` already emits for the same value
+    /// (the `mir_share` retain on a borrowed-param share) and what
+    /// `hew_vec_push_str` does at the `Vec<string>` seam, where the caller
+    /// likewise keeps its drop obligation.
+    ///
+    /// The gate is the STRUCTURAL caller-borrowed verdict, not a per-carrier
+    /// taught list: `borrowed_value_param_locals` is seeded from the final
+    /// `callee_owns_param` answer in `lower_params`, so a consume-classified /
+    /// owned-carrier / actor-handler parameter keeps its consume. The gate is
+    /// also GENERATION-sensitive: reassigning the parameter binds a fresh
+    /// frame-owned value into the slot, and `assign` deregisters the local
+    /// from the borrowed registries at that boundary
+    /// (`deregister_reassigned_borrowed_param`), so the new generation is
+    /// consumed (transferred into the collection) rather than
+    /// retained-and-leaked.
+    ///
+    /// The codegen overwrite-path release (`emit_insert_overwrite_key_release`)
+    /// stays correct under this pairing: on the vacant path the map owns the
+    /// retained count, on the overwrite path the release consumes it. Exactly
+    /// one release either way, and the caller's own count is untouched.
+    pub(crate) fn retain_caller_borrowed_cow_collection_ingress(
+        &mut self,
+        operand: &HirExpr,
+        place: Place,
+    ) -> bool {
+        let ty = self.subst_ty(&operand.ty);
+        if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            return false;
+        }
+        let Some(local) = base_local(place) else {
+            return false;
+        };
+        if !self.borrowed_value_param_locals.contains(&local) {
+            return false;
+        }
+        match ty {
+            ResolvedTy::String => self.push_instr(Instr::StringRetain {
+                value: place,
+                condition: crate::model::StringRetainCondition::Always,
+            }),
+            ResolvedTy::Bytes => self.push_instr(Instr::BytesRetain { value: place }),
+            _ => unreachable!("gated on String | Bytes above"),
+        }
+        true
+    }
+
+    /// The union of every binder-dest local class that receives a FRESH,
+    /// independently-owned value out of a variant slot: the moved-out
+    /// call-carrier payload binders (`fresh_variant_payload_binder_locals`)
+    /// and the yield/recv payload binders (`yield_binder_locals`). Both
+    /// classes answer the projection-alias question the same way — the dest
+    /// is a genuine owner, not an interior alias of a still-live aggregate —
+    /// so the `CoW` sole-owner derivation exempts both from its taint seed.
+    pub(crate) fn fresh_owner_dest_locals(&self) -> HashSet<u32> {
+        self.fresh_variant_payload_binder_locals
+            .union(&self.yield_binder_locals)
+            .copied()
+            .collect()
+    }
+
+    /// True when `place` is the slot of a yield/recv payload binder whose
+    /// consuming body is currently being lowered (`active_generator_yield_values`
+    /// holds an entry between binder registration and body end).
+    pub(crate) fn active_yield_binder_place(&self, place: Place) -> bool {
+        self.active_generator_yield_values
+            .iter()
+            .any(|(_, entry_place, ..)| *entry_place == place)
+    }
+
+    /// Retain a `CoW`-carrier (`string`/`bytes`) ACTIVE yield-binder operand
+    /// entering a `HashMap`/`HashSet` MOVE ingress. Returns `true` when the
+    /// retain was emitted and the caller must NOT record a consume; the
+    /// retained local is pushed so the ingress `Call` terminator can be
+    /// registered in `yield_share_term_exempt`.
+    ///
+    /// The binder class answers "which frame owns this binding" differently
+    /// from both an owned local and a borrowed parameter: the VALUE is
+    /// frame-owned (a fresh per-iteration count from the clone-out / recv),
+    /// but its release authority is the per-iteration BODY-END drop, not the
+    /// function-scope LIFO. A static `Consume` here suppresses no local
+    /// scope-exit drop; what it does instead is poison the dataflow —
+    /// `MaybeConsumed` at any abandonment exit inside the body region walls
+    /// the program off behind the `vec_iter_yield_abandonment` NYI, and the
+    /// body-end drop is separately suppressed by the escape scan, leaking the
+    /// binder's count on the not-taken path.
+    ///
+    /// The retain pairing keeps every count balanced with no dataflow
+    /// ambiguity: clone `+1` (binder), retain `+1` (collection's own count),
+    /// body-end drop `-1`, collection teardown `-1`. The binder stays `Live`
+    /// on every path, so the abandonment analysis has nothing conditional to
+    /// reject and the cancel/panic exit drops keep firing.
+    pub(crate) fn retain_yield_binder_cow_collection_ingress(
+        &mut self,
+        operand: &HirExpr,
+        place: Place,
+        retained_locals: &mut Vec<u32>,
+    ) -> bool {
+        let ty = self.subst_ty(&operand.ty);
+        if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            return false;
+        }
+        let Some(local) = base_local(place) else {
+            return false;
+        };
+        if !self.active_yield_binder_place(place) {
+            return false;
+        }
+        match ty {
+            ResolvedTy::String => self.push_instr(Instr::StringRetain {
+                value: place,
+                condition: crate::model::StringRetainCondition::Always,
+            }),
+            ResolvedTy::Bytes => self.push_instr(Instr::BytesRetain { value: place }),
+            _ => unreachable!("gated on String | Bytes above"),
+        }
+        retained_locals.push(local);
+        true
+    }
+
+    /// Reassignment is a generation boundary for a caller-borrowed parameter
+    /// slot: after `key = <rhs>` the local holds a fresh value this FRAME
+    /// owns, so every "this slot holds the caller's value" registry must stop
+    /// answering for it. Leaving the registration in place is a
+    /// generation-insensitivity leak: the ingress retain would mint a `+1` on
+    /// a frame-owned value whose last count nothing ever releases.
+    ///
+    /// Called only for an assignment lowered in the function's TOP-LEVEL body
+    /// scope — a straight-line reassignment that dominates every later-lowered
+    /// use. A conditional reassignment (inside an `if` arm / loop body) keeps
+    /// the borrowed registration: on the not-reassigned path the slot still
+    /// holds the caller's value, and consuming that would double-free. The
+    /// fail-closed direction is retain-and-leak on the reassigned path, never
+    /// a double release.
+    pub(crate) fn deregister_reassigned_borrowed_param(&mut self, binding: BindingId) {
+        let Some(local) = self
+            .binding_locals
+            .get(&binding)
+            .copied()
+            .and_then(base_local)
+        else {
+            return;
+        };
+        self.borrowed_value_param_locals.remove(&local);
+        self.borrowed_string_param_locals.remove(&local);
+        self.borrowed_bytes_param_locals.remove(&local);
+    }
+
     pub(crate) fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,

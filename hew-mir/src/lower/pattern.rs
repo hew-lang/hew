@@ -781,7 +781,12 @@ impl Builder {
             };
             return self.instructions[start..]
                 .iter()
-                .all(|instr| !generator_yield_instr_escapes(instr, local));
+                .enumerate()
+                .all(|(offset, instr)| {
+                    self.yield_share_instr_exempt
+                        .contains(&(block_id, start + offset))
+                        || !generator_yield_instr_escapes(instr, local)
+                });
         }
         if !visiting.insert(block_id) {
             // A block already on the `visiting` stack is a loop back-edge: the
@@ -840,14 +845,26 @@ impl Builder {
             // An escape in this block's instructions OR its terminator makes the
             // body-end drop unsound (the value left the body) — return false
             // immediately. Otherwise recurse into the successor(s).
-            let escapes_here = block.instructions[start..]
-                .iter()
-                .any(|instr| generator_yield_instr_escapes(instr, local))
-                || generator_yield_terminator_escapes(
-                    &block.terminator,
-                    self.suspend_kinds.get(&block.id),
-                    local,
-                );
+            // Retain-backed share sites (`yield_share_instr_exempt` /
+            // `yield_share_term_exempt`) are borrows of the binder's count —
+            // the `+1` retain mints the destination's own owner — so they do
+            // not suppress the body-end drop.
+            let escapes_here =
+                block.instructions[start..]
+                    .iter()
+                    .enumerate()
+                    .any(|(offset, instr)| {
+                        !self
+                            .yield_share_instr_exempt
+                            .contains(&(block_id, start + offset))
+                            && generator_yield_instr_escapes(instr, local)
+                    })
+                    || (!self.yield_share_term_exempt.contains(&(block_id, local))
+                        && generator_yield_terminator_escapes(
+                            &block.terminator,
+                            self.suspend_kinds.get(&block.id),
+                            local,
+                        ));
             if escapes_here {
                 false
             } else {
@@ -4560,6 +4577,13 @@ impl Builder {
                                     binding.binding,
                                     Disposition::BodyEndReleased,
                                 );
+                            }
+                            // The binder class registry: frame-owned value,
+                            // body-end release authority. Consulted by the
+                            // projection-alias taint seed and the
+                            // retained-share lowering of consuming uses.
+                            if let Some(local) = base_local(dest) {
+                                self.yield_binder_locals.insert(local);
                             }
                             generator_yield_drop_bindings.push((
                                 binding.binding,

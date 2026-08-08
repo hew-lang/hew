@@ -4216,6 +4216,18 @@ mod runtime_callee_ownership_contract_parity {
     const BYTES_ALL_ARGS_SYMBOLS: &[&str] = &["hew_bytes_append"];
 
     const STRING_USE_SYMBOLS: &[&str] = &[
+        // The `_layout` lookup/remove family borrows its lookup key per the
+        // hew-cabi map ownership table (hew-cabi/src/map.rs): `_get_layout` /
+        // `_get_clone_layout` / `_contains*` borrow K, and the `_remove*`
+        // kernels never touch the caller's lookup K. Only `_insert_layout`
+        // consumes its key/value operands.
+        "hew_hashmap_contains_key_layout",
+        "hew_hashmap_get_clone_layout",
+        "hew_hashmap_get_layout",
+        "hew_hashmap_remove_layout",
+        "hew_hashmap_remove_take_layout",
+        "hew_hashset_contains_layout",
+        "hew_hashset_remove_layout",
         "hew_string_char_at",
         "hew_string_char_at_utf8",
         "hew_string_char_count",
@@ -4321,7 +4333,7 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(vec_receiver.len(), 92);
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 31);
+        assert_eq!(string_use.len(), 38);
         assert_eq!(fresh_string.len(), 34);
 
         for symbol in parity_symbols() {

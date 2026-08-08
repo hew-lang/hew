@@ -639,6 +639,17 @@ impl Builder {
                 if matches!(builder.subst_ty(&param.ty), ResolvedTy::String) {
                     builder.borrowed_string_param_locals.insert(local);
                 }
+                // Closure-invoke `string`/`bytes` arguments are caller-borrowed
+                // exactly like ordinary Hew by-value parameters (closures have
+                // no consume/owned-carrier classification), so mirror the
+                // structural registry the collection-ingress retain and the
+                // outbound no-transfer guard consult.
+                if matches!(
+                    builder.subst_ty(&param.ty),
+                    ResolvedTy::String | ResolvedTy::Bytes
+                ) {
+                    builder.borrowed_value_param_locals.insert(local);
+                }
             }
             builder.binding_locals.insert(param.id, place);
             builder.seed_fn_param_provenance(param);

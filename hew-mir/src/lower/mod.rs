@@ -56,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod assign;
 mod borrowed_argument_owner;
 mod cfg_util;
 mod closure_gen;
@@ -947,6 +948,28 @@ struct Builder {
     /// inline; this bounded ledger restores authority only for abandoning
     /// exits reached while the consuming body still owns the payload.
     pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
+    /// MIR locals of every fresh per-frame yield/recv payload binder
+    /// (`for x in vec`, generator drive, receiver read — the `Some(x)` arms
+    /// that schedule a body-end release and retract the binding to
+    /// `Disposition::BodyEndReleased`). This is the binder class whose value
+    /// IS frame-owned but whose release authority is the per-iteration
+    /// body-end drop, not the function-scope LIFO. The projection-alias taint
+    /// seed exempts these dests: their `Move` out of the synthetic `Option`'s
+    /// variant slot takes a fresh clone/frame the shell no longer releases,
+    /// so a downstream retained share is a genuine co-owner, not an interior
+    /// alias of a still-live aggregate.
+    pub(crate) yield_binder_locals: HashSet<u32>,
+    /// Escape-scan exemptions for RETAIN-BACKED shares of an active yield
+    /// binder, recorded at lowering time as `(block, instr index)` of the
+    /// share `Move`. The body-shape drop-safety scan treats such a Move as a
+    /// borrow (the `+1` retain mints the destination's count), so the
+    /// binder's per-iteration body-end drop is still emitted — suppressing it
+    /// would leak the binder's own count on every path.
+    pub(crate) yield_share_instr_exempt: HashSet<(u32, usize)>,
+    /// Terminator analogue of `yield_share_instr_exempt`: `(block, local)`
+    /// pairs whose consuming collection-ingress `Call` operand was
+    /// pre-retained, making the call a borrow of the binder's count.
+    pub(crate) yield_share_term_exempt: HashSet<(u32, u32)>,
     /// Header-defined while-let scrutinee owners active while their body is
     /// lowered. Break/continue edges consume these owners and record an
     /// explicit edge drop; returns/panic/cancellation leave them Live so the

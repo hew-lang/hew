@@ -74,7 +74,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-core-matrix test-core-matrix-generator test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-core-matrix test-core-matrix-generator test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1296,6 +1296,11 @@ hew-fmt-check: hew
 	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
+
+# Derive the compilable corpus from the tracked source roots, format a private
+# path-preserving mirror, then require the result to check and reach a fixed point.
+hew-fmt-property: hew
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/hew-fmt-property.sh
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional
 # reject fixtures).  Ratchets against scripts/hew-corpus-expected-failures.txt.

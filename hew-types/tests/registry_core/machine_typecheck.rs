@@ -94,6 +94,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         composite_prelude_len: 0,
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
+        body_form: MachineTransitionBodyForm::Block,
         reenter: false,
     }
 }
@@ -107,6 +108,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         composite_prelude_len: 0,
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
+        body_form: MachineTransitionBodyForm::Block,
         reenter: false,
     }
 }

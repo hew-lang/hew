@@ -253,6 +253,9 @@ jobs:
       - name: Check .hew formatting
         run: make hew-fmt-check
 
+      - name: Prove .hew formatter behaviour preservation
+        run: make hew-fmt-property
+
       - name: Install SARIF tools
         run: |
           gh release download clippy-sarif-latest --repo psastras/sarif-rs \

@@ -21,15 +21,10 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![])
 }
 
 /// Build a pipeline whose close calls arrive exclusively via
@@ -134,8 +129,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -317,8 +311,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let dir = out_dir("elab-drop-unknown-fail-closed");
     let options = EmitOptions {

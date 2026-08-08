@@ -173,6 +173,11 @@ pub(crate) fn is_supervisor_registered_for_test(
     with_supervisor_roots(|sups| sups.iter().any(|candidate| candidate.0 == sup))
 }
 
+#[cfg(test)]
+pub(crate) fn registered_supervisor_count_for_test() -> usize {
+    with_supervisor_roots(|sups| sups.len())
+}
+
 /// Free all registered top-level supervisors without waiting for actors.
 ///
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker
@@ -180,14 +185,21 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// happen, so we simply drop the supervisor structs to release child
 /// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
-pub(crate) unsafe fn free_registered_supervisors() {
+///
+/// Returns `false` if a delayed-restart timer still borrows a supervisor. The
+/// caller must leave the runtime and actors installed. There is no automatic
+/// retry; an embedder may explicitly invoke cleanup again after the borrower
+/// drains, while one-shot process teardown leaks the retained state fail-closed.
+pub(crate) unsafe fn free_registered_supervisors() -> bool {
     let to_free = with_supervisor_roots(std::mem::take);
+    let mut complete = true;
     for s in to_free {
         if !s.0.is_null() {
             // SAFETY: supervisor was registered and pointer is valid.
-            unsafe { crate::supervisor::free_supervisor_resources(s.0) };
+            complete &= unsafe { crate::supervisor::free_supervisor_resources(s.0) };
         }
     }
+    complete
 }
 
 #[cfg(feature = "profiler")]
@@ -275,9 +287,14 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
         Err(_) => {
             // Spawn failed — run shutdown synchronously on current thread.
             // This ensures shutdown completes even if thread spawning fails.
-            let _ = run_shutdown_with_panic_handling(|| {
+            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
                 shutdown_orchestrate_mode(timeout, cancel_parked_waits);
-            });
+            }) {
+                // The synchronous fallback is reached from an extern "C"
+                // entry point, so unlike the worker-thread path it cannot
+                // deliberately resume the unwind across its caller.
+                crate::util::quarantine_panic_payload(panic_payload);
+            }
         }
     }
 }

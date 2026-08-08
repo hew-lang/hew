@@ -10,11 +10,10 @@ libraries that `llvm-sys` builds against.
 
 The release build produces two binary artifacts per platform:
 
-- `hew` — compiler driver (Rust), linking LLVM 22 statically through
-  `hew-codegen-rs` (inkwell)
-- `adze` — package manager (Rust)
+- `hew` — compiler driver and package manager (Rust), linking LLVM 22
+  statically through `hew-codegen-rs` (inkwell)
 
-Both Rust binaries build with `cargo build --release` once LLVM 22
+The Rust binaries build with `cargo build --release` once LLVM 22
 libraries and headers are available; set `LLVM_PREFIX` (or
 `LLVM_SYS_221_PREFIX`) to point at the install.
 
@@ -174,8 +173,9 @@ through a full release cycle.
 
 ### Prerequisites
 
-Install the prebuilt LLVM 22.1.6 Windows MSVC toolchain and put its `bin`
-directory on `PATH`. Hew uses:
+Install Visual Studio C++ Build Tools with a current Windows SDK, then install
+the prebuilt LLVM 22.1.6 Windows MSVC toolchain and put its `bin` directory on
+`PATH`. Hew uses:
 
 - `llvm-config.exe` / LLVM libraries for `llvm-sys`
 - `clang.exe` as the `hew build` link driver
@@ -188,20 +188,28 @@ https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm
 ```
 
 Set `LLVM_PREFIX` or `LLVM_SYS_221_PREFIX` to the extracted LLVM root and make
-sure `where clang` and `where lld-link` both resolve before building. NASM is
-also required by `hew-lib` through `aws-lc-sys`:
+sure `where clang` and `where lld-link` both resolve before building. Run the
+build from a Visual Studio Developer PowerShell/Command Prompt, or initialise
+the environment with `VsDevCmd.bat` first, so `WindowsSdkDir`, `INCLUDE`, and
+`LIB` are populated. Manual source builds of `hew-lib` also require NASM:
 
 ```powershell
 winget install --id NASM.NASM
 ```
 
-Do not run Hew Cargo builds from a `vcvars64.bat` / Developer Command Prompt
-environment unless you are debugging that path specifically. The provisioned
-LLVM `lld-link.exe` auto-detects the MSVC and Windows SDK libraries without
-vcvars, while vcvars has interfered with `llvm-sys` version detection on the
-Windows validation host.
+The pre-release validator locates the installed C++ Build Tools with
+`vswhere.exe`, imports `VsDevCmd.bat`, then restores the selected LLVM toolchain
+to the front of `PATH` and sets `LLVM_PREFIX`. This ordering supplies the SDK
+headers and libraries required by native dependencies without allowing the
+developer environment to redirect `llvm-sys` to a different LLVM installation.
+Like the hosted release workflow, the validator enables aws-lc's pregenerated
+Windows assembly and bounds Cargo build parallelism for predictable memory use.
 
 If you need to build LLVM locally instead of using the release archive:
+
+Use the MSVC/UCRT allocator: LLVM's integrated rpmalloc object exports
+`malloc`/`free`/`calloc`/`realloc`, which conflicts when `llvm-sys` links LLVM
+statically with `lld-link`.
 
 ```powershell
 choco install ninja cmake -y
@@ -230,6 +238,7 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DLLVM_ENABLE_BINDINGS=OFF `
   -DLLVM_ENABLE_ZLIB=OFF `
   -DLLVM_ENABLE_ZSTD=OFF `
+  -DLLVM_INTEGRATED_CRT_ALLOC=OFF `
   -DLLVM_ENABLE_DIA_SDK=OFF `
   -DLLVM_ENABLE_ASSERTIONS=OFF `
   -DLLVM_BUILD_LLVM_DYLIB=OFF `
@@ -243,8 +252,10 @@ Test-Path 'C:\llvm-22\bin\clang.exe'
 ```
 
 If the host cannot use MSVC, override the validator/compiler environment with
-`HEW_WINDOWS_CC` / `HEW_WINDOWS_CXX` (for example `clang-cl`) and point
-`HEW_WINDOWS_LLVM_PREFIX` at the matching install root.
+`HEW_WINDOWS_CC` / `HEW_WINDOWS_CXX` and point `HEW_WINDOWS_LLVM_PREFIX` at the
+matching install root. Such an override must still pass the complete release
+and external-consumer proof; `clang-cl` is not assumed to be interchangeable
+with `cl` for every native dependency.
 
 ### Build
 

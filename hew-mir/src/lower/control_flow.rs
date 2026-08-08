@@ -2,12 +2,61 @@ use super::{
     base_local, binding_reassignment_values_in_block, integer_bit_width, integer_signedness,
     ty_is_heap_owning_enum_composite, ActiveIterationOwner, Builder, CmpPred, HashSet, HirExpr,
     HirExprKind, HirStmtKind, Instr, IntArithOp, IntSignedness, LoopFrame, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
-    ResolvedRef, ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    MirDiagnosticKind, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ResolvedRef,
+    ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
 impl Builder {
+    /// Normalize one checker-admitted range operand to the range element type.
+    ///
+    /// The checker records the common integer type on `Range<T>`, while HIR
+    /// deliberately preserves each bound's source type.  Range CFG operations
+    /// must all use `T`; a plain `Move` cannot express whether a widening is
+    /// signed or unsigned.  Carry that authority explicitly in `NumericCast`
+    /// before the value reaches any comparison or checked arithmetic.
+    fn normalize_range_integer_operand(
+        &mut self,
+        expr: &HirExpr,
+        src: Place,
+        target_ty: &ResolvedTy,
+        role: &str,
+    ) -> Option<Place> {
+        let source_ty = self.subst_ty(&expr.ty);
+        if source_ty == *target_ty {
+            return Some(src);
+        }
+
+        let source_width = integer_bit_width(&source_ty, self.pointer_width);
+        let target_width = integer_bit_width(target_ty, self.pointer_width);
+        let source_sign = integer_signedness(&source_ty);
+        let target_sign = integer_signedness(target_ty);
+        let fixed_width_pair = !matches!(source_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+            && !matches!(target_ty, ResolvedTy::Isize | ResolvedTy::Usize);
+        let admitted_widening = fixed_width_pair
+            && source_sign.is_some()
+            && source_sign == target_sign
+            && source_width.is_some()
+            && source_width < target_width;
+
+        if !admitted_widening {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "for-range {role} type `{}` cannot normalize to checker-selected element type `{}`",
+                        source_ty.user_facing(),
+                        target_ty.user_facing()
+                    ),
+                },
+                note: "range operands must be fixed-width integers of matching signedness, and implicit normalization may only widen"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        self.normalize_checker_numeric_value(src, &source_ty, target_ty, role, expr.site)
+    }
+
     /// Lower `let PAT = scrutinee else { <divergent block> };`.
     ///
     /// Mirrors `lower_if_let`'s tag-test CFG, with two deliberate differences:
@@ -32,16 +81,12 @@ impl Builder {
         payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         else_body: &hew_hir::HirBlock,
     ) {
-        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
-        // reject pushes one diagnostic and returns with no partial MIR; the
-        // admission token also gates the #2429 from-call owner mint below.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "let-else scrutinee has unresolved ownership",
+        ) {
+            return;
+        }
         // Entry: evaluate scrutinee, load tag, branch.
         let Some(scrutinee_place) = self.lower_value(scrutinee) else {
             return;
@@ -74,7 +119,7 @@ impl Builder {
         // elaboration frees it on whichever edge leaves the enclosing scope,
         // including the divergent-else edges. No-op for the non-Call / carrier
         // shapes per `register_from_call_scrutinee_owner`.
-        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -134,12 +179,12 @@ impl Builder {
 
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -184,12 +229,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -408,15 +453,12 @@ impl Builder {
                       the algorithm is one coherent unit and factoring it would obscure \
                       the loop CFG"
         )]
-        // #2648 preflight — run BEFORE any block allocation or scrutinee lowering.
-        // A reject leaves no half-built loop CFG.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "while-let scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         let binding_iteration_owner_ty =
             match self.classify_while_let_binding_iteration_owner(label, scrutinee, body) {
                 Ok(owner_ty) => owner_ty,
@@ -490,11 +532,7 @@ impl Builder {
                 return None;
             }
         };
-        let scrutinee_owner = self.register_from_call_scrutinee_owner(
-            scrutinee_admission,
-            scrutinee,
-            scrutinee_local,
-        );
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
         let binding_iteration_owner = binding_iteration_owner_ty.map(|ty| {
             let snapshot_place = self.alloc_local(ty.clone());
             let Place::Local(snapshot_local) = snapshot_place else {
@@ -573,12 +611,12 @@ impl Builder {
         let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -626,12 +664,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -689,6 +727,16 @@ impl Builder {
             body_scope: body.scope,
         });
         let active_iteration_owner_mark = self.active_iteration_owners.len();
+        let active_snapshot_parent_mark = self.active_while_let_snapshot_parents.len();
+        if binding_iteration_owner.is_some() {
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &scrutinee.kind
+            {
+                self.active_while_let_snapshot_parents.push(*binding);
+            }
+        }
         if let Some((binding, ty)) = &scrutinee_owner {
             self.active_iteration_owners.push(ActiveIterationOwner {
                 scope_depth: self.active_scopes.len(),
@@ -737,6 +785,8 @@ impl Builder {
             .insert(self.current_block_id, body.scope);
         self.active_iteration_owners
             .truncate(active_iteration_owner_mark);
+        self.active_while_let_snapshot_parents
+            .truncate(active_snapshot_parent_mark);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope
@@ -865,11 +915,13 @@ impl Builder {
     fn while_let_reassignment_provably_fresh(&self, value: &HirExpr) -> bool {
         if matches!(value.kind, HirExprKind::Call { .. }) {
             return self
-                .classify_call_scrutinee_admission(value)
-                .is_ok_and(|admission| {
-                    !matches!(
-                        admission,
-                        crate::return_provenance::CallScrutineeAdmission::NotApplicable
+                .param_ownership
+                .produced_value_facts
+                .get(&value.site)
+                .is_some_and(|fact| {
+                    matches!(
+                        fact.ownership,
+                        hew_types::ProducedValueOwnership::Owned { .. }
                     )
                 });
         }
@@ -1313,18 +1365,12 @@ impl Builder {
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
-        // reject short-circuits with no partial MIR; the admission token also
-        // gates the #2429 from-call owner mint below (symmetric with
-        // `lower_match_enum_tag`/`lower_while_let`), so it is threaded through
-        // rather than discarded.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "if-let scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         let result_place = self.alloc_local(self.subst_ty(result_ty));
 
         // Entry: evaluate scrutinee, load tag, branch.
@@ -1361,7 +1407,7 @@ impl Builder {
         // the scope-exit machinery handles every edge, so no explicit
         // per-iteration owner-drop plumbing is needed (that is `lower_while_let`'s
         // loop-only concern).
-        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -1424,12 +1470,12 @@ impl Builder {
         let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -1474,12 +1520,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -1528,11 +1574,19 @@ impl Builder {
             self.stmt(stmt);
         }
         let then_value = if let Some(tail) = &body.tail {
-            self.lower_value_for_move(tail)
+            self.lower_composite_result_value(tail)
         } else {
             None
         };
         if let Some(src) = then_value {
+            let source_ty = body.tail.as_ref().map_or(result_ty, |tail| &tail.ty);
+            let src = self.normalize_checker_numeric_value(
+                src,
+                source_ty,
+                result_ty,
+                "if-let then branch",
+                body.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
+            )?;
             self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
@@ -1566,11 +1620,19 @@ impl Builder {
                 self.stmt(stmt);
             }
             let else_value = if let Some(tail) = &eb.tail {
-                self.lower_value_for_move(tail)
+                self.lower_composite_result_value(tail)
             } else {
                 None
             };
             if let Some(src) = else_value {
+                let source_ty = eb.tail.as_ref().map_or(result_ty, |tail| &tail.ty);
+                let src = self.normalize_checker_numeric_value(
+                    src,
+                    source_ty,
+                    result_ty,
+                    "if-let else branch",
+                    eb.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
+                )?;
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -1723,11 +1785,8 @@ impl Builder {
         // setup Move carries the for-loop statement span — gdb steps onto the
         // for line, not the prior statement.
         let step_place = self.lower_value(step)?;
-        let step_val = self.alloc_local(counter_ty.clone());
-        self.push_instr(Instr::Move {
-            dest: step_val,
-            src: step_place,
-        });
+        let step_val =
+            self.normalize_range_integer_operand(step, step_place, &counter_ty, "step")?;
         // Runtime fail-closed guard: a zero step would never advance the
         // counter and spin forever.  The checker rejects a statically-zero
         // literal step; this covers a dynamic `step_by(n)` with `n == 0`.
@@ -1776,6 +1835,10 @@ impl Builder {
 
         let raw_start = self.lower_value(start)?;
         let raw_end = self.lower_value(end)?;
+        let raw_start =
+            self.normalize_range_integer_operand(start, raw_start, &counter_ty, "start bound")?;
+        let raw_end =
+            self.normalize_range_integer_operand(end, raw_end, &counter_ty, "end bound")?;
 
         if descending {
             // Descending: counter starts at the high element and the header
@@ -1966,12 +2029,12 @@ impl Builder {
         // bookkeeping; it carries a sentinel SiteId(0) because the loop
         // variable has no checker-recorded call site.
         self.binding_locals.insert(binding.id, counter);
-        self.statements.push(MirStatement::Bind {
-            binding: binding.id,
-            name: binding.name.clone(),
-            site: hew_hir::SiteId(0),
-            ty: counter_ty.clone(),
-        });
+        self.push_bind_statement(
+            binding.id,
+            binding.name.clone(),
+            hew_hir::SiteId(0),
+            counter_ty.clone(),
+        );
         self.record_binding_scope(binding.id);
 
         self.active_scopes.push(body.scope);

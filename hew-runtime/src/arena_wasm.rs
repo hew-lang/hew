@@ -363,12 +363,9 @@ fn get_current_arena() -> *mut ActorArena {
 ///
 /// When an arena with a non-zero cap is active and this allocation would
 /// exceed that cap, stamps `HEW_TRAP_HEAP_EXCEEDED` (code 200) onto the
-/// currently-dispatching actor's `error_code` and panics. The WASM scheduler's
-/// `catch_unwind` boundary at the activation frame catches the panic,
-/// observes the non-zero `error_code`, and transitions the actor to
-/// `Crashed` — mirroring the native longjmp/supervisor seam so that
-/// `ExitReason::from_error_code` surfaces `HeapExceeded` identically on
-/// both targets.
+/// currently-dispatching actor's `error_code` and panics. On the production
+/// wasm32-wasip1 `panic=abort` artifact this is deliberately module-fatal;
+/// actor-local crash containment remains an unsupported Tier 2 capability.
 ///
 /// # Safety
 ///
@@ -377,7 +374,7 @@ fn get_current_arena() -> *mut ActorArena {
 /// with the system allocator is undefined behaviour.
 #[must_use]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
-pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
+pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
     if arena_ptr.is_null() {
         // No arena active: fail closed. Callers outside dispatch must use
@@ -397,10 +394,9 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
         //
         // - Native: longjmp seam unwinds to the sigsetjmp frame in the
         //   scheduler without returning here.
-        // - WASM: longjmp is unavailable; instead, stamp the trap code on
-        //   the current actor and panic. The WASM activation's
-        //   catch_unwind boundary observes the non-zero error_code and
-        //   transitions the actor to Crashed.
+        // - WASM: longjmp is unavailable; stamp the trap code and panic. The
+        //   production panic=abort artifact terminates the module rather than
+        //   pretending it can contain and restart this actor.
         #[cfg(not(target_arch = "wasm32"))]
         if ptr.is_null() && arena.cap > 0 {
             // SAFETY: must be called from an actor dispatch context on a
@@ -416,8 +412,8 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
         if ptr.is_null() && arena.cap > 0 {
             // SAFETY: WASM activate_actor_wasm installs the canonical ctx
             // before dispatch; hew_trap_with_code stamps the current actor's
-            // error_code and panics so the catch_unwind activation boundary
-            // observes HeapExceeded instead of a generic null/abort.
+            // error_code before the production panic=abort boundary terminates
+            // the module with a named failure rather than returning null.
             unsafe {
                 crate::trap_code::hew_trap_with_code(
                     crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,

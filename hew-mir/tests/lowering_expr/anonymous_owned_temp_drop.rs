@@ -48,6 +48,28 @@ fn enum_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -
         .collect()
 }
 
+fn inline_enum_drops(p: &IrPipeline, fn_name: &str) -> usize {
+    p.raw_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    drop_fn: Some(hew_mir::DropFnSpec::InPlace(
+                        hew_mir::InPlaceReleaseKind::Enum
+                    )),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 fn record_drops(p: &IrPipeline, fn_name: &str, pred: impl Fn(&ExitPath) -> bool) -> Vec<ElabDrop> {
     p.elaborated_mir
         .iter()
@@ -278,10 +300,11 @@ fn scalar_control() {
             1,
             "{fn_name} must expose exactly one synthetic owner in raw MIR"
         );
-        assert_eq!(
-            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).len(),
-            1,
-            "{fn_name} must release the discarded owned Option exactly once"
+        assert_eq!(inline_enum_drops(&p, fn_name), 1);
+        assert!(
+            enum_drops(&p, fn_name, |exit| matches!(exit, ExitPath::Return { .. })).is_empty(),
+            "{fn_name} transfers its publication owner into the immediate discard, so no \
+             second scope-exit release may remain"
         );
     }
 
@@ -363,7 +386,7 @@ fn run() -> i64 {
 }
 
 #[test]
-fn escaping_while_let_payload_keeps_composite_fail_closed() {
+fn escaping_while_let_payload_transfers_owner_and_drops_composite_shells() {
     let p = pipeline_with_tc(
         r#"
 fn next() -> Result<string, string> {
@@ -380,12 +403,34 @@ fn run() -> i64 {
 }
 "#,
     );
-
     let drops = enum_drops(&p, "run", |_| true);
+    assert_eq!(
+        drops.len(),
+        3,
+        "the live scrutinee must release on each reachable exit: {drops:?}"
+    );
     assert!(
-        drops.is_empty(),
-        "a payload moved into a surviving outer binding must keep the composite excluded; \
-         got {drops:?}"
+        drops.iter().all(|drop| drop.place == drops[0].place),
+        "every exit must discharge the same composite owner: {drops:?}"
+    );
+    let run = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("raw fn run");
+    assert_eq!(
+        run.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+            .count(),
+        1,
+        "the escaping payload must transfer out of its composite slot exactly once"
+    );
+    assert_eq!(
+        string_retain_count(&p, "run"),
+        0,
+        "the exact payload transfer must not mint a competing share"
     );
 }
 
@@ -443,6 +488,217 @@ fn main() { println(drive(Door::Shut)); }
             carrier_instrs.is_empty(),
             "{fn_name} must not run machine values through the carrier \
              protocol; got {carrier_instrs:?}"
+        );
+    }
+}
+
+/// Sibling `if` arms start from the same owned-carrier authority. Lowering the
+/// first arm must not consume that compiler fact before the second arm is
+/// visited, otherwise the second returned Vec aliases a parameter that the
+/// terminal carrier drop has already freed.
+#[test]
+fn carrier_param_if_arms_each_neutralize_whole_slot() {
+    let p = pipeline_with_tc(
+        r"
+enum Slot { Filled(i64); Empty; }
+
+fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {
+    if i < 1 {
+        (items, Filled(i))
+    } else {
+        (items, Empty)
+    }
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    step(items, 1).0.len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let step = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "step")
+        .expect("raw fn step");
+    let neutralized_param_slots: Vec<_> = step
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place: hew_mir::Place::Local(0),
+                transferee: Some(_),
+                ..
+            } => Some(()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        neutralized_param_slots.len(),
+        2,
+        "both mutually-exclusive return arms must transfer the Vec parameter"
+    );
+    assert_eq!(
+        step.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    value: hew_mir::Place::Local(0),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "one terminal drop remains and observes a null slot on either returned arm"
+    );
+}
+
+/// A divergent arm does not reach the `if` join. Its transfer must not consume
+/// the authority used by the reachable sibling and the function's later tail.
+#[test]
+fn divergent_if_arm_preserves_reachable_carrier_authority() {
+    let p = pipeline_with_tc(
+        r"
+fn choose(items: Vec<string>, early: bool) -> Vec<string> {
+    if early {
+        return items;
+    }
+    items
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    choose(items, false).len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let choose = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "choose")
+        .expect("raw fn choose");
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::Local(0),
+                    transferee: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "the early return and reachable tail each need their own path-local transfer"
+    );
+}
+
+/// The same path fact applies to ordered match arms. A transfer in one body
+/// cannot suppress the mutually-exclusive body selected by the next predicate.
+#[test]
+fn carrier_param_match_arms_each_neutralize_whole_slot() {
+    let p = pipeline_with_tc(
+        r"
+fn choose(items: Vec<string>, tag: i64) -> Vec<string> {
+    match tag {
+        0 => items,
+        _ => items,
+    }
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    choose(items, 1).len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let choose = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "choose")
+        .expect("raw fn choose");
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::Local(0),
+                    transferee: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "both ordered match bodies start with the parameter's transfer authority"
+    );
+}
+
+/// An alias-returning composite callee's result must stay `Borrowed` — never
+/// minted as a caller-side `__hew_temp_arg` owner — on EVERY compile.
+///
+/// `getself(w)` hands back `w.h`, an interior alias of the still-live `w`;
+/// `w`'s own scope-exit drop is the exactly-once release. The removed
+/// `Borrowed → Owned { Retained }` user-call upgrade minted a SECOND owner
+/// over the same storage (no runtime retain behind it — a double-free), and
+/// whether it fired depended on `HashMap` fixpoint pass order, so the mint
+/// flipped per compiler process. Eight pipelines make the pre-fix flip
+/// reliably observable; the invariant is zero mints on all of them.
+#[test]
+fn getfield_alias_return_result_never_mints_temp_arg_owner() {
+    const SOURCE: &str = "
+type Holder { s: string }
+type Wrap { h: Holder }
+fn borrowLen(h: Holder) -> i64 { h.s.len() }
+fn getself(w: Wrap) -> Holder { w.h }
+fn main() -> i64 {
+    let w: Wrap = Wrap { h: Holder { s: \"a\" + \"b\" } };
+    borrowLen(getself(w))
+}
+";
+    for run in 0..8 {
+        let p = pipeline_with_tc(SOURCE);
+        assert!(
+            p.diagnostics.is_empty(),
+            "run {run}: MIR diagnostics: {:#?}",
+            p.diagnostics
+        );
+        assert_eq!(
+            synthetic_binds(&p, "main", "__hew_temp_arg"),
+            0,
+            "run {run}: the borrowed-alias call result aliases `w.h`; a minted \
+             owner would double-free against `w`'s own scope-exit drop"
+        );
+        let record_drops = record_drops(&p, "main", |_| true);
+        assert!(
+            record_drops
+                .iter()
+                .all(|drop| matches!(drop.ty, hew_types::ResolvedTy::Named { ref name, .. } if name == "Wrap")),
+            "run {run}: only `w: Wrap` may carry a record drop; a Holder drop \
+             is the minted alias double-discharge: {record_drops:#?}"
         );
     }
 }

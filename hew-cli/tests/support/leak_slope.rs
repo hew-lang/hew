@@ -267,38 +267,54 @@ pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> usize {
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1");
-    let output = match try_run_bounded_command(
-        command,
-        format!("inspect {} with leaks(1)", bin.display()),
-        LEAKS_TIMEOUT,
-    ) {
-        Ok(output) => output,
-        Err(error) => panic!(
-            "leaks(1) could not inspect {} within {LEAKS_TIMEOUT:?}: {error}. A leak oracle \
+    try_measure_leaks_command(command, &bin.display().to_string(), LEAKS_TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .0
+}
+
+/// Drive one already-configured `leaks(1)` command and return its parsed
+/// `(node_count, byte_count)` verdict.
+///
+/// This is public only so the fail-closed harness selftest can inject commands
+/// that model a missing inspector, a declined attach, malformed output, and a
+/// timeout. Production callers construct the real Darwin `leaks --atExit`
+/// command above. Keeping the verdict logic here means those counterfactuals
+/// exercise the same spawn, deadline, attach, and parser path as the live
+/// oracle rather than a test-only imitation.
+#[doc(hidden)]
+pub fn try_measure_leaks_command(
+    command: Command,
+    subject: &str,
+    timeout: Duration,
+) -> Result<(usize, usize), String> {
+    let output =
+        try_run_bounded_command(command, format!("inspect {subject} with leaks(1)"), timeout)
+            .map_err(|error| {
+                format!(
+            "leaks(1) could not inspect {subject} within {timeout:?}: {error}. A leak oracle \
              that cannot measure must not report success — fix the host (a restricted, \
              non-debuggable CI process cannot be inspected) or the probe (one that never \
-             exits will always exhaust the deadline).",
-            bin.display()
-        ),
-    };
-    assert!(
-        output.status.success() || !output.stdout.is_empty(),
-        "leaks(1) declined to attach to {}: {}. A leak oracle that cannot measure must not \
-         report success — the inspected process is not debuggable on this host.",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report = String::from_utf8_lossy(&output.stdout);
-    if let Some((line, leaks, _)) = parse_leaks_summary_line(&report) {
-        eprintln!("  parsed leak count from line: {line}");
-        return leaks;
+             exits will always exhaust the deadline)."
+        )
+            })?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err(format!(
+            "leaks(1) declined to attach to {subject}: {}. A leak oracle that cannot measure \
+             must not report success — the inspected process is not debuggable on this host.",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
-    panic!(
-        "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
-         for {}: stderr=\n{}\nA leak oracle that cannot measure must not report success.",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    )
+    let report = String::from_utf8_lossy(&output.stdout);
+    let Some((line, leaks, bytes)) = parse_leaks_summary_line(&report) else {
+        return Err(format!(
+            "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
+             for {subject}: stderr=\n{}\nA leak oracle that cannot measure must not report \
+             success.",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    };
+    eprintln!("  parsed leak count from line: {line}");
+    Ok((leaks, bytes))
 }
 
 /// Fail closed unless `leaks(1)` can actually be invoked on this host.
@@ -462,33 +478,17 @@ fn assert_frame_slope_below_tolerance_witnessed(
          high_frames={high_frames} high_leaks={} high_lines={} tolerance={tolerance}",
         low.leak_nodes, low.program_lines, high.leak_nodes, high.program_lines
     );
-    assert!(
-        high.program_lines >= low.program_lines,
-        "{shape_name}: WORK WITNESS — the HIGH probe ({high_frames} frames) printed {} lines, \
-         FEWER than the LOW probe ({low_frames} frames) at {} lines. The HIGH probe did not \
-         run the loop under test to completion, so its leak count is not a slope sample and \
-         the slope assertion below would be measuring nothing. Common cause: the probe shape \
-         saturates a bounded channel/pipe at the higher frame count and parks forever on \
-         backpressure with no consumer to drain it. Run `{}` directly to see how far it got.",
-        high.program_lines,
-        low.program_lines,
-        bin_high.display()
-    );
-    if let Some(expected) = expected_program_lines {
-        for (frames, probe, bin) in [(low_frames, low, &bin_low), (high_frames, high, &bin_high)] {
-            assert_eq!(
-                probe.program_lines,
-                expected(frames),
-                "{shape_name}: WORK WITNESS — the {frames}-frame probe printed \
-                 {} lines, not the {} its shape prescribes. The probe did not perform the \
-                 work under measurement, so its leak count is not a slope sample. Run `{}` \
-                 directly to see how far it got.",
-                probe.program_lines,
-                expected(frames),
-                bin.display()
-            );
-        }
-    }
+    validate_work_witness(
+        shape_name,
+        low_frames,
+        high_frames,
+        low,
+        high,
+        expected_program_lines.map(|expected| (expected(low_frames), expected(high_frames))),
+        &bin_low,
+        &bin_high,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert!(
         high.leak_nodes <= low.leak_nodes + tolerance,
         "{shape_name}: per-iteration leak SLOPE — low_frames={low_frames} low_leaks={}, \
@@ -501,6 +501,60 @@ fn assert_frame_slope_below_tolerance_witnessed(
         high.leak_nodes.saturating_sub(low.leak_nodes + tolerance),
         bin_high.display()
     );
+}
+
+/// Validate the observable-work half of a slope verdict.
+///
+/// Exposed for the fail-closed harness selftest so a missing HIGH witness can
+/// be proved red without compiling a deliberately deadlocking Hew program.
+/// Live slope oracles call this with the measurements and binaries produced
+/// above.
+#[doc(hidden)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the two slope observations and their frame/bin identities form one verdict"
+)]
+pub fn validate_work_witness(
+    shape_name: &str,
+    low_frames: usize,
+    high_frames: usize,
+    low: LeakProbe,
+    high: LeakProbe,
+    expected_program_lines: Option<(usize, usize)>,
+    bin_low: &Path,
+    bin_high: &Path,
+) -> Result<(), String> {
+    if high.program_lines < low.program_lines {
+        return Err(format!(
+            "{shape_name}: WORK WITNESS — the HIGH probe ({high_frames} frames) printed {} lines, \
+             FEWER than the LOW probe ({low_frames} frames) at {} lines. The HIGH probe did not \
+             run the loop under test to completion, so its leak count is not a slope sample and \
+             the slope assertion below would be measuring nothing. Common cause: the probe shape \
+             saturates a bounded channel/pipe at the higher frame count and parks forever on \
+             backpressure with no consumer to drain it. Run `{}` directly to see how far it got.",
+            high.program_lines,
+            low.program_lines,
+            bin_high.display()
+        ));
+    }
+    if let Some((expected_low, expected_high)) = expected_program_lines {
+        for (frames, probe, expected, bin) in [
+            (low_frames, low, expected_low, bin_low),
+            (high_frames, high, expected_high, bin_high),
+        ] {
+            if probe.program_lines != expected {
+                return Err(format!(
+                    "{shape_name}: WORK WITNESS — the {frames}-frame probe printed {} lines, \
+                     not the {expected} its shape prescribes. The probe did not perform the \
+                     work under measurement, so its leak count is not a slope sample. Run `{}` \
+                     directly to see how far it got.",
+                    probe.program_lines,
+                    bin.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
@@ -520,35 +574,8 @@ pub fn measure_leaks_exact(bin: &Path) -> (usize, usize) {
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1");
-    let output = match try_run_bounded_command(
-        command,
-        format!("inspect {} with leaks(1)", bin.display()),
-        LEAKS_TIMEOUT,
-    ) {
-        Ok(output) => output,
-        Err(error) => panic!(
-            "leaks(1) could not inspect {} within {LEAKS_TIMEOUT:?}: {error}. A leak oracle \
-             that cannot measure must not report success.",
-            bin.display()
-        ),
-    };
-    assert!(
-        output.status.success() || !output.stdout.is_empty(),
-        "leaks(1) declined to attach to {}: {}. A leak oracle that cannot measure must not \
-         report success — the inspected process is not debuggable on this host.",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report = String::from_utf8_lossy(&output.stdout);
-    if let Some(summary) = parse_leaks_summary(&report) {
-        return summary;
-    }
-    panic!(
-        "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
-         for {}: stderr=\n{}\nA leak oracle that cannot measure must not report success.",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    )
+    try_measure_leaks_command(command, &bin.display().to_string(), LEAKS_TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Fail closed unless the macOS poisoned allocator is available.

@@ -4,6 +4,110 @@
 )]
 pub(super) use super::*;
 
+#[test]
+fn same_leaf_qualified_unit_variant_cannot_cover_foreign_enum() {
+    let (errors, _) = parse_and_check(
+        r"
+enum Left { Same; Other }
+enum Right { Same; Other }
+fn inspect(value: Left) -> i64 {
+    match value {
+        Right::Same => 1,
+        Left::Other => 0,
+    }
+}
+",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "the foreign same-leaf unit variant must not cover Left::Same: {errors:#?}"
+    );
+    assert!(
+        errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error.message.contains("Right::Same")
+        }),
+        "the foreign unit variant must be rejected by exact owner: {errors:#?}"
+    );
+}
+
+#[test]
+fn same_leaf_qualified_tuple_variant_cannot_cover_foreign_enum() {
+    let (errors, _) = parse_and_check(
+        r"
+enum Left { Same(i64); Other }
+enum Right { Same(i64); Other }
+fn inspect(value: Left) -> i64 {
+    match value {
+        Right::Same(v) => v,
+        Left::Other => 0,
+    }
+}
+",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "the foreign same-leaf tuple variant must not cover Left::Same: {errors:#?}"
+    );
+    assert!(
+        errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error.message.contains("Right::Same")
+        }),
+        "the foreign tuple variant must be rejected by exact owner: {errors:#?}"
+    );
+}
+
+#[test]
+fn same_leaf_qualified_struct_variant_cannot_cover_or_construct_foreign_enum() {
+    let (pattern_errors, _) = parse_and_check(
+        r"
+enum Left { Same { value: i64 }; Other }
+enum Right { Same { value: i64 }; Other }
+fn inspect(value: Left) -> i64 {
+    match value {
+        Right::Same { value } => value,
+        Left::Other => 0,
+    }
+}
+",
+    );
+    assert!(
+        pattern_errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "the foreign same-leaf struct variant must not cover Left::Same: {pattern_errors:#?}"
+    );
+    assert!(
+        pattern_errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error.message.contains("Right::Same")
+        }),
+        "the foreign struct pattern must be rejected by exact owner: {pattern_errors:#?}"
+    );
+
+    let (init_errors, _) = parse_and_check(
+        r"
+enum Left { Same { value: i64 }; Other }
+enum Right { Same { value: i64 }; Other }
+fn make() -> Left {
+    Right::Same { value: 1 }
+}
+",
+    );
+    assert!(
+        init_errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                || matches!(error.kind, TypeErrorKind::UndefinedType)
+        }),
+        "the foreign same-leaf struct initializer must not synthesize Left: {init_errors:#?}"
+    );
+}
+
 mod pattern_resolution {
     use super::*;
 

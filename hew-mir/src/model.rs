@@ -5,7 +5,7 @@ use std::{
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{
-    short_name, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
+    BuiltinType, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
     WireLayoutTable,
 };
 
@@ -116,13 +116,11 @@ pub struct IrPipeline {
     /// `ResolvedTy::Named { name, .. }` of record-typed locals to the
     /// corresponding struct layout for alloca / GEP emission.
     ///
-    /// Tuple-form records (`record Pair(i64, i64)`) are NOT included here:
-    /// their `HirRecordDecl.fields` is empty (the parser keeps positional
-    /// fields on the `RecordKind::Tuple` discriminator, which the HIR lowerer
-    /// does not promote into `HirField`s). Tuple records construct via
-    /// `Expr::Call`, not `StructInit`, so they never produce `RecordInit`
-    /// or `RecordFieldLoad` instructions and need no codegen layout entry
-    /// in this slice.
+    /// Tuple-form records (`record Pair(i64, i64)`) carry synthetic numeric
+    /// field names with their authoritative positional payload types. They
+    /// still construct via `Expr::Call`, not `StructInit`, and the checker
+    /// does not expose named/indexed field access; the descriptor exists so
+    /// structural clone/drop classification sees their stored values.
     pub record_layouts: Vec<RecordLayout>,
     /// Layout descriptors for every actor declaration in the module. Populated
     /// by `lower_hir_module` from `HirItem::Actor` declarations in source
@@ -299,38 +297,10 @@ pub struct IrPipeline {
     /// `<Type>::close` symbol the user `impl` declares.
     ///
     /// Codegen's record-drop thunk synthesis consumes this so a `#[resource]`
-    /// record's user `close(self)` runs as the FIRST step of its scope-exit /
-    /// nested-field drop (spec §3.7.3 / §10(d)): the resource's own close fires
-    /// before the field-wise teardown, and a nested `#[resource]` field's close
-    /// fires through the same recursive thunk. Without this seed the field-wise
-    /// `RecordInPlace` drop would free heap leaves but silently skip the RAII
-    /// `close()` contract.
-    ///
-    /// Populated by `lower_hir_module` from `HirModule::type_classes` for every
-    /// `#[resource]`-marked type that ALSO has a record layout. A single-handle
-    /// `#[resource]` (no owned/aggregate field) is NOT listed: it routes to the
-    /// `AffineResource` close path and never reaches the record-drop thunk.
-    ///
-    /// WHY here and not in codegen directly: `IrPipeline` is the checker→codegen
-    /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
-    /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
-    pub resource_record_close: Vec<(String, String)>,
-    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
-    /// for every single-slot `#[resource] #[opaque]` handle (see
-    /// `resource_opaque_close_registry`). The COMPLEMENT of
-    /// `resource_record_close`: a single-handle opaque `#[resource]` has no
-    /// record layout, so it is excluded from `resource_record_close` — that
-    /// exclusion is exactly the W3.029 leak this closes.
-    ///
-    /// Codegen's record-drop thunk synthesis (`collect_reachable_clone_targets`
-    /// and the on-demand `emit_aggregate_recursive_drop` named-leaf) consumes
-    /// this so a resource handle embedded in an owned record classifies as
-    /// `StateFieldCloneKind::Resource` and the owning record's drop spine runs
-    /// the handle's `close(self)` exactly once on every exit path. It MUST match
-    /// the registry the MIR admission gate used (both built by
-    /// `resource_opaque_close_registry` from the same inputs) or admission and
-    /// drop-body synthesis would disagree.
-    pub resource_opaque_close: Vec<(String, String)>,
+    /// Canonical, declaration-identity resource lifecycle authority.
+    /// Every ownership/drop classifier receives this structured registry;
+    /// generated containment paths may not reconstruct teardown from names.
+    pub lifecycle_registry: hew_hir::LifecycleRegistry,
 }
 
 /// Compact set of module-level runtime authorities reached during MIR lowering.
@@ -371,19 +341,26 @@ impl ModuleCapabilities {
                     }
                 }
                 if let Terminator::Call {
-                    callee, builtin, ..
+                    callee, authority, ..
                 } = &block.terminator
                 {
-                    if let Some(family) = builtin {
-                        capabilities.insert_family(*family);
+                    if let Some(family) = authority.runtime_family() {
+                        capabilities.insert_family(family);
                     }
-                    if extern_decls.iter().any(|decl| {
-                        decl.name == *callee
-                            && decl.runtime_capability
-                                == Some(hew_types::ExternRuntimeCapability::BlockingOffload)
-                    }) {
-                        capabilities
-                            .insert(hew_types::runtime_call::RuntimeCapability::BlockingOffload);
+                    if let Some(capability) = extern_decls
+                        .iter()
+                        .find(|decl| decl.name == *callee)
+                        .and_then(|decl| decl.runtime_capability)
+                    {
+                        let capability = match capability {
+                            hew_types::ExternRuntimeCapability::BlockingOffload => {
+                                hew_types::runtime_call::RuntimeCapability::BlockingOffload
+                            }
+                            hew_types::ExternRuntimeCapability::Metrics => {
+                                hew_types::runtime_call::RuntimeCapability::Metrics
+                            }
+                        };
+                        capabilities.insert(capability);
                     }
                 }
             }
@@ -1349,7 +1326,7 @@ pub struct MachineVariantLayout {
 
 /// Layout descriptor for a `machine` declaration.
 ///
-/// Pairs the machine's name and tag-bit-width with its per-state variant
+/// Pairs the canonical concrete machine-layout key and tag-bit-width with its per-state variant
 /// list so codegen (Slice 5) can emit the tagged-union LLVM type and the
 /// `Place::MachineTag` / `Place::MachineVariant` addressing primitives can
 /// be validated without re-reading HIR.
@@ -1366,8 +1343,15 @@ pub struct MachineVariantLayout {
 /// correctly size the switch and dominance checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MachineLayout {
-    /// Machine type name (e.g. `"TrafficLight"`). Matches `HirMachineDecl.name`.
+    /// Canonical machine layout key (e.g. `"TrafficLight"` or
+    /// `"control.Lifecycle$$i64"`).  This is the exact key derived from a
+    /// `MachineMonoEntry`, never a leaf-name fallback.
     pub name: String,
+    /// Canonical layout key for this machine's event companion (e.g.
+    /// `"TrafficLightEvent"` or `"control.LifecycleEvent$$i64"`).  Kept
+    /// explicit because `MachineEvent<T>` is mangled from its own nominal
+    /// origin, not by appending `Event` after the machine instance key.
+    pub event_name: String,
     /// Bit width of the discriminant tag field. Computed as
     /// `u32::max(1, (state_count as f64).log2().ceil() as u32)` —
     /// the minimum number of bits needed to enumerate all states.
@@ -1464,11 +1448,9 @@ pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> 
 /// heap pointer rather than an inline tagged-union struct.
 #[must_use]
 pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
-    // Look up by exact name first, then by short (unqualified) name so
-    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
     enum_layouts
         .iter()
-        .find(|el| el.name == name || el.name == hew_types::short_name(name))
+        .find(|el| el.name == name)
         .is_some_and(|el| el.is_indirect)
 }
 
@@ -1487,7 +1469,8 @@ pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
 /// structurally impossible: the function shortens `args` internally before
 /// mangling, so a caller CANNOT pass a raw qualified spine into the key. Nested
 /// qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at every
-/// depth. The empty-args arm keeps the existing bare-or-short-name match.
+/// depth. The outer declaration owner remains exact in both arms; no leaf-name
+/// retry may select a neighbouring module's layout.
 ///
 /// No call site in this module may build a generic enum-layout key with a raw
 /// `mangle(.., args)`; the `mangle_feeding_layout_lookup_is_centralised` guard
@@ -1497,22 +1480,14 @@ pub(crate) fn find_enum_layout<'a>(
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],
 ) -> Option<&'a EnumLayout> {
-    let short = short_name(name);
-    if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == name || short_name(&el.name) == short)
+    let key = if args.is_empty() {
+        name.to_string()
     } else {
-        let short_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(hew_hir::shorten_named_arg_qualifiers)
-            .collect();
-        let mangled = hew_hir::mangle(short, &short_args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == name)
-    }
+        hew_hir::mangle_layout_key(name, args)
+    };
+    enum_layouts
+        .iter()
+        .find(|el| el.name == key || el.name == hew_hir::machine_layout_key(name, args))
 }
 
 /// THE single record-registry key authority for this module.
@@ -1526,52 +1501,40 @@ pub(crate) fn find_enum_layout<'a>(
 /// `Slot$$Box`). Shortening the args internally means a caller CANNOT pass a raw
 /// module-qualified spine into the key (the C1 qualified-spine miss class).
 ///
-/// Both record-side lookups — [`find_record_layout`] over `&[RecordLayout]` and
-/// the [`MirHeapLayouts`] adapter over `record_field_orders` — route through
+/// Both record-side lookups — [`find_record_layout_for_ty`] over
+/// `&[RecordLayout]` and the [`MirHeapLayouts`] adapter over
+/// `record_field_orders` — route through
 /// here so the record-key scheme is written once. The
 /// `mangle_feeding_layout_lookup_is_centralised` guard fails if a bare
 /// `mangle(.., args)` feeding a layout lookup reappears outside this and
 /// [`find_enum_layout`].
-fn record_lookup_keys(name: &str, args: &[ResolvedTy]) -> Vec<String> {
-    let short = short_name(name);
-    if args.is_empty() {
-        let mut keys = vec![name.to_string()];
-        if short != name {
-            keys.push(short.to_string());
-        }
-        keys
-    } else {
-        let short_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(hew_hir::shorten_named_arg_qualifiers)
-            .collect();
-        vec![
-            hew_hir::mangle(name, &short_args),
-            hew_hir::mangle(short, &short_args),
-            // Bare/short-name fallbacks for any registry that did not key the
-            // instantiation by its mangle (defensive; the generic arm above is
-            // the hot path).
-            name.to_string(),
-            short.to_string(),
-        ]
-    }
-}
-
-/// Mangle-aware record layout lookup — the companion of [`find_enum_layout`]
-/// for the record side. Resolves both monomorphic records (bare-name or
-/// short-name) and generic instantiations (`LocalPid<Socket>` →
-/// `LocalPid$$Socket`) using the same mangling scheme as the HIR mono pass.
-///
-/// Mirrors `state_clone::lookup_record_layout` in authority; kept local to
-/// `model.rs` so `ty_contains_unclonable_opaque_inner` can use it without
-/// depending on the `state_clone` module.
-pub(crate) fn find_record_layout<'a>(
+fn record_lookup_keys(
     name: &str,
     args: &[ResolvedTy],
+    builtin: Option<BuiltinType>,
+) -> Vec<String> {
+    hew_hir::layout_key_for_named(name, args, builtin)
+        .into_iter()
+        .collect()
+}
+
+/// Mangle-aware record layout lookup. Synthetic compiler cursors use their
+/// reserved symbol class; user records with the same presentation name remain
+/// in the ordinary record class and cannot select the cursor layout.
+pub(crate) fn find_record_layout_for_ty<'a>(
+    ty: &ResolvedTy,
     record_layouts: &'a [RecordLayout],
 ) -> Option<&'a RecordLayout> {
-    let keys = record_lookup_keys(name, args);
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let keys = record_lookup_keys(name, args, *builtin);
     record_layouts.iter().find(|r| keys.contains(&r.name))
 }
 
@@ -1609,9 +1572,14 @@ pub struct MirHeapLayouts<'a, S = std::collections::hash_map::RandomState> {
 }
 
 impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         // Route the record-field lookup through the single `record_lookup_keys`
-        // authority — the same key scheme `find_record_layout` uses and the same
+        // authority — the same key scheme `find_record_layout_for_ty` uses and the same
         // `$$`-mangled key `record_field_orders` is registered under (`lower.rs`
         // ← `mangle(name, type_args)`), matching codegen's `CgHeapLayouts` and
         // the deleted `named_elem_owns_heap`.
@@ -1625,7 +1593,7 @@ impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
         // (`Holder<i64>{ payload: Vec<i64> }`) as non-owning — while codegen
         // (correctly keyed) classified it owning, re-creating the MIR↔codegen
         // adapter divergence DIV-1 exists to eliminate.
-        record_lookup_keys(name, args)
+        record_lookup_keys(name, args, builtin)
             .iter()
             .find_map(|key| self.record_field_orders.get(key))
             .map(|fields| fields.iter().map(|(_, ty)| ty.clone()).collect())
@@ -1692,7 +1660,12 @@ pub trait HeapOwnershipLayouts {
     /// Field types of a registered user record, resolved from a
     /// `Named { name, args }` (substituted concrete types in declaration order).
     /// `None` when `name`/`args` resolve to no user record layout in scope.
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>>;
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>>;
 
     /// Variant payload field-type lists of a registered enum (or machine, whose
     /// state payloads the consumer surfaces here too). `None` when `name`/`args`
@@ -1800,7 +1773,12 @@ pub fn ty_heap_ownership(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -
 struct EnumLayoutsOnly<'a>(&'a [EnumLayout]);
 
 impl HeapOwnershipLayouts for EnumLayoutsOnly<'_> {
-    fn record_field_tys(&self, _name: &str, _args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        _name: &str,
+        _args: &[ResolvedTy],
+        _builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         None
     }
 
@@ -1879,7 +1857,12 @@ fn ty_heap_ownership_inner(
                     ownership.union(ty_heap_ownership_inner(capture, layouts, visited))
                 })
         }
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
             let mut ownership = HeapOwnership {
                 owns_heap: false,
                 via_indirection: layouts.enum_is_indirect(name, args),
@@ -1892,7 +1875,7 @@ fn ty_heap_ownership_inner(
             //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
             //    walker answered `false` for because it never looked up record
             //    layouts). The consumer's adapter substitutes the field types.
-            if let Some(fields) = layouts.record_field_tys(name, args) {
+            if let Some(fields) = layouts.record_field_tys(name, args, *builtin) {
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
                     // Recursive value type: the checker rejects these; force the
@@ -1971,10 +1954,10 @@ fn ty_heap_ownership_inner(
 /// fail-closed `true`.
 fn record_or_enum_visit_key(name: &str, args: &[ResolvedTy]) -> String {
     if args.is_empty() {
-        short_name(name).to_string()
+        name.to_string()
     } else {
         let arg_keys: Vec<String> = args.iter().map(hew_hir::mangle_resolved_ty).collect();
-        format!("{}<{}>", short_name(name), arg_keys.join(","))
+        format!("{name}<{}>", arg_keys.join(","))
     }
 }
 
@@ -2084,28 +2067,14 @@ fn ty_contains_unclonable_opaque_inner(
             if *is_opaque {
                 return true;
             }
-            let short = short_name(name);
             // 2. User record layout lookup — mangle-aware so a generic
             //    instantiation (`mymod.LocalPid<Socket>` registered as
             //    `LocalPid$$Socket`) is found before the handle-skip below.
             //    Field types in the layout are already substituted by the
             //    HIR mono pass, so we recurse concrete types directly.
             //
-            //    QUALIFIED-NAME GUARD: a short-name-only match does NOT prove
-            //    the type IS this user layout if the incoming name is qualified
-            //    (`json.Value` matching the short `Value`). Only an EXACT
-            //    (qualified) layout-name match or an unqualified-name ANY-match
-            //    constitutes a genuine resolution that suppresses the opaque
-            //    name-fallback (step 6). See also the old step-5 qualified guard.
-            let record_match = find_record_layout(name, args, record_layouts);
-            let name_is_qualified = name.contains('.');
-            let record_resolved = record_match.is_some_and(|r| {
-                if name_is_qualified {
-                    r.name == *name
-                } else {
-                    true
-                }
-            });
+            let record_match = find_record_layout_for_ty(ty, record_layouts);
+            let record_resolved = record_match.is_some();
             if let Some(record) = record_match {
                 if record_resolved && visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
@@ -2124,22 +2093,8 @@ fn ty_contains_unclonable_opaque_inner(
                 }
             }
             // 3. User enum layout lookup — recurse into variant payloads.
-            //    `find_enum_layout` shortens the spine so a qualified payload
-            //    resolves to its registered bare-arg key.
-            //
-            //    Same qualified-name guard as step 2: `find_enum_layout` uses
-            //    short-name mangling and can match `a.Wrapper<i64>` against the
-            //    `Wrapper$$i64` layout by short-outer-name. An exact match on
-            //    the layout key (== full-mangled key, not the bare or short
-            //    key) proves genuine resolution for a qualified name.
             let enum_found = find_enum_layout(name, args, enum_layouts);
-            let enum_resolved = enum_found.is_some_and(|el| {
-                if name_is_qualified {
-                    el.name == *name
-                } else {
-                    true
-                }
-            });
+            let enum_resolved = enum_found.is_some();
             if let Some(layout) = enum_found {
                 if enum_resolved && visited.insert(layout.name.clone()) {
                     let found = layout.variants.iter().any(|v| {
@@ -2209,11 +2164,7 @@ fn ty_contains_unclonable_opaque_inner(
             //    fallback, so the qualified opaque handle still fails closed
             //    even when a clean same-short user record/enum exists.
             let resolved_to_user_layout = record_resolved || enum_resolved;
-            if !resolved_to_user_layout
-                && opaque_handle_names
-                    .iter()
-                    .any(|n| n == name || short_name(n) == short)
-            {
+            if !resolved_to_user_layout && opaque_handle_names.iter().any(|n| n == name) {
                 return true;
             }
             false
@@ -2274,11 +2225,7 @@ fn ty_contains_closure_value_inner(
             }) {
                 return true;
             }
-            let short = short_name(name);
-            if let Some(record) = record_layouts
-                .iter()
-                .find(|r| r.name == *name || short_name(&r.name) == short)
-            {
+            if let Some(record) = find_record_layout_for_ty(ty, record_layouts) {
                 if visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
                         ty_contains_closure_value_inner(ft, record_layouts, enum_layouts, visited)
@@ -2315,6 +2262,116 @@ fn ty_contains_closure_value_inner(
             .any(|e| ty_contains_closure_value_inner(e, record_layouts, enum_layouts, visited)),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
             ty_contains_closure_value_inner(inner, record_layouts, enum_layouts, visited)
+        }
+        _ => false,
+    }
+}
+
+/// True when `ty` is, or transitively stores, a callable value whose result can
+/// itself reach a `string`-returning callable.
+///
+/// This is the foreign-ingress ownership boundary for callable pairs. An
+/// ownership-opaque extern may return a function pair directly or hide it
+/// inside a tuple, record, enum, or generic container. Once such a pair enters
+/// Hew, invoking its string-returning leaf through the uniform `ClosureInvoke` ABI
+/// would otherwise manufacture a caller drop obligation that the foreign
+/// implementation never promised. The walk mirrors [`ty_contains_closure_value`]
+/// for layout lookup and cycle handling, but it asks the narrower semantic
+/// question: only a callable whose return is `string` (or another type
+/// containing such a callable) qualifies. Callable parameter types are
+/// signatures, not values stored in the pair, so they do not contribute.
+#[must_use]
+pub fn ty_contains_string_returning_callable(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    ty_contains_string_returning_callable_inner(
+        ty,
+        record_layouts,
+        enum_layouts,
+        &mut HashSet::new(),
+    )
+}
+
+fn ty_contains_string_returning_callable_inner(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Function { ret, .. } | ResolvedTy::Closure { ret, .. } => {
+            matches!(ret.as_ref(), ResolvedTy::String)
+                || ty_contains_string_returning_callable_inner(
+                    ret,
+                    record_layouts,
+                    enum_layouts,
+                    visited,
+                )
+        }
+        ResolvedTy::Named { name, args, .. } => {
+            if args.iter().any(|arg| {
+                ty_contains_string_returning_callable_inner(
+                    arg,
+                    record_layouts,
+                    enum_layouts,
+                    visited,
+                )
+            }) {
+                return true;
+            }
+            if let Some(record) = find_record_layout_for_ty(ty, record_layouts) {
+                if visited.insert(record.name.clone()) {
+                    let found = record.field_tys.iter().any(|field_ty| {
+                        ty_contains_string_returning_callable_inner(
+                            field_ty,
+                            record_layouts,
+                            enum_layouts,
+                            visited,
+                        )
+                    });
+                    visited.remove(&record.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            if let Some(layout) = find_enum_layout(name, args, enum_layouts) {
+                if visited.insert(layout.name.clone()) {
+                    let found = layout.variants.iter().any(|variant| {
+                        variant.field_tys.iter().any(|field_ty| {
+                            ty_contains_string_returning_callable_inner(
+                                field_ty,
+                                record_layouts,
+                                enum_layouts,
+                                visited,
+                            )
+                        })
+                    });
+                    visited.remove(&layout.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        ResolvedTy::Tuple(elements) => elements.iter().any(|element| {
+            ty_contains_string_returning_callable_inner(
+                element,
+                record_layouts,
+                enum_layouts,
+                visited,
+            )
+        }),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_string_returning_callable_inner(
+                inner,
+                record_layouts,
+                enum_layouts,
+                visited,
+            )
         }
         _ => false,
     }
@@ -3396,6 +3453,160 @@ pub enum GeneratorEnvFieldPlan {
     TrivialCopy,
     /// The shallow seed must be replaced by a semantic structural clone.
     Owned(crate::state_clone::ValueSnapshotPlan),
+    /// The shallow seed is the sole owner transferred into the environment.
+    ///
+    /// This differs from [`Self::Owned`]: codegen must preserve the seed
+    /// instead of cloning it, but the environment's drop thunk must still
+    /// release it. A `receive gen fn` uses this for mailbox-delivered
+    /// parameters because its shell has no caller-side owner to preserve.
+    OwnedMove(crate::state_clone::ValueSnapshotPlan),
+}
+
+/// The closed semantic authority that permits a direct-call terminator to use
+/// one of codegen's non-generic lowering paths.
+///
+/// `callee` remains the linker-facing spelling only.  Codegen must select an
+/// ABI shape from this carrier and then verify that the spelling agrees with
+/// the selected authority; it must never grant a special ABI merely because a
+/// user extern happens to reuse a familiar symbol name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CallAuthority {
+    /// An ordinary function or extern call.  This is deliberately the default
+    /// so hand-authored MIR test fixtures and new producers fail closed into
+    /// the generic linkage path until they explicitly carry an authority.
+    #[default]
+    Direct,
+    /// A checker-proven compiler-embedded standard-library extern. This is
+    /// still emitted through the ordinary linkage ABI, but it carries the
+    /// capability to consult its generated parameter-ownership contract.
+    /// User externs deliberately remain [`Self::Direct`] even when their
+    /// linker spelling collides with an audited runtime endpoint.
+    Extern,
+    /// A catalogued runtime ABI call selected by the checker/HIR.
+    Runtime(hew_types::runtime_call::RuntimeCallFamily),
+    /// A compiler-owned structural operation with no public runtime catalog
+    /// entry.  These are closed so a user extern cannot acquire one by name.
+    Compiler(CompilerCallKind),
+}
+
+impl CallAuthority {
+    /// Return the runtime family when this authority uses a catalogued C ABI.
+    #[must_use]
+    pub const fn runtime_family(self) -> Option<hew_types::runtime_call::RuntimeCallFamily> {
+        match self {
+            Self::Runtime(family) => Some(family),
+            Self::Direct | Self::Extern | Self::Compiler(_) => None,
+        }
+    }
+}
+
+/// Compiler structural call shapes that intentionally do not have a public
+/// runtime-call catalog entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompilerCallKind {
+    HashMapGetCloneLayoutOption,
+    HashMapGetCloneLayoutIndex,
+    HashMapRemoveTakeLayout,
+    SupervisorPoolGetOption,
+    LayoutProbe(CollectionLayoutProbeKind),
+    IdentityAggregate(IdentityAggregateKind),
+    ClosurePairVec(ClosurePairVecKind),
+}
+
+impl CompilerCallKind {
+    /// The unique linker spelling owned by this structural lowering.
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::HashMapGetCloneLayoutOption | Self::HashMapGetCloneLayoutIndex => {
+                "hew_hashmap_get_clone_layout"
+            }
+            Self::HashMapRemoveTakeLayout => "hew_hashmap_remove_take_layout",
+            Self::SupervisorPoolGetOption => "hew_supervisor_pool_get_option",
+            Self::LayoutProbe(kind) => kind.expected_callee(),
+            Self::IdentityAggregate(kind) => kind.expected_callee(),
+            Self::ClosurePairVec(kind) => kind.expected_callee(),
+        }
+    }
+}
+
+/// Exact compiler-generated layout-probe identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectionLayoutProbeKind {
+    HashMap,
+    HashSet,
+    Vec,
+}
+
+impl CollectionLayoutProbeKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::HashMap => "__hew_codegen_emit_hashmap_layout_probe",
+            Self::HashSet => "__hew_codegen_emit_hashset_layout_probe",
+            Self::Vec => "__hew_codegen_emit_vec_layout_probe",
+        }
+    }
+}
+
+/// Exact aggregate-identity helper identities.  These helpers materialise
+/// language values in codegen and are therefore compiler-owned despite their
+/// public-looking linker spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdentityAggregateKind {
+    NodeId,
+    NodeIdDisplay,
+    LocationNodeId,
+    LocationSlot,
+    LocationIncarnation,
+    LocationDisplay,
+    RemotePidLocation,
+    RemotePidNodeId,
+    RemotePidSlot,
+    RemotePidIncarnation,
+    RemotePidDisplay,
+}
+
+/// Exact closure-pair Vec marshalling operations.  These are compiler-owned:
+/// their ABI boxes/unboxes a two-pointer closure pair, unlike an ordinary
+/// pointer-element Vec call with the same runtime spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosurePairVecKind {
+    Push,
+    Set,
+    Get,
+    Pop,
+}
+
+impl ClosurePairVecKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::Push => "hew_vec_push_ptr",
+            Self::Set => "hew_vec_set_ptr",
+            Self::Get => "hew_vec_get_ptr",
+            Self::Pop => "hew_vec_pop_ptr",
+        }
+    }
+}
+
+impl IdentityAggregateKind {
+    #[must_use]
+    pub const fn expected_callee(self) -> &'static str {
+        match self {
+            Self::NodeId => "Node::id",
+            Self::NodeIdDisplay => "hew_node_id_display",
+            Self::LocationNodeId => "hew_location_node_id",
+            Self::LocationSlot => "hew_location_slot",
+            Self::LocationIncarnation => "hew_location_incarnation",
+            Self::LocationDisplay => "hew_location_display",
+            Self::RemotePidLocation => "hew_remote_pid_location",
+            Self::RemotePidNodeId => "hew_remote_pid_node_id",
+            Self::RemotePidSlot => "hew_remote_pid_slot",
+            Self::RemotePidIncarnation => "hew_remote_pid_incarnation",
+            Self::RemotePidDisplay => "hew_remote_pid_display",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3414,7 +3625,7 @@ pub enum Terminator {
     /// Call into a sibling function by name, optionally store its return value,
     /// then branch to `next`.
     ///
-    /// `builtin` carries the checker/HIR-resolved [`RuntimeCallFamily`]
+    /// `authority` carries the checker/HIR-resolved closed call class.
     /// when the callee is a compiler-known runtime builtin that rides the
     /// `Terminator::Call` route (codegen callee intercepts, the
     /// layout-fact walker, and the double-free escape gate all dispatch
@@ -3429,7 +3640,8 @@ pub enum Terminator {
     /// family.
     Call {
         callee: String,
-        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+        /// The semantic permission for a specialised ABI lowering.
+        authority: CallAuthority,
         args: Vec<Place>,
         dest: Option<Place>,
         next: u32,
@@ -3836,8 +4048,10 @@ pub enum SelectArmKind {
 /// issued concurrently with its siblings. Mirrors
 /// [`SelectArmKind::ActorAsk`] (codegen reuses the same packed-payload
 /// channel-alloc + ask-issue preamble) and additionally carries the
-/// per-branch reply slot the wait-ALL loop writes into and the reply
-/// value's resolved type. The branch's position in the
+/// per-branch reply slot whose local type supplies reply ABI authority and the
+/// reply value's resolved type. Codegen stages detached reply buffers directly
+/// until all branches succeed; `reply_dest` is not published as a MIR
+/// definition. The branch's position in the
 /// [`Terminator::Join`] `branches` vector is the element index of the
 /// `result` tuple that this reply materialises.
 #[derive(Debug, Clone, PartialEq)]
@@ -3856,8 +4070,9 @@ pub struct JoinBranch {
     /// Earlier successfully submitted branches already belong to their
     /// mailboxes and are deliberately excluded from this plan.
     pub cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
-    /// Reply slot — codegen writes `hew_reply_wait`'s result here, then
-    /// composes it into the `result` tuple at this branch's index.
+    /// Reply ABI slot — its local type is the fail-closed authority for the
+    /// value returned by `hew_reply_wait`. The wait-all emitter stages the raw
+    /// buffer until every branch succeeds, then publishes the final `result`.
     pub reply_dest: Place,
     /// The reply value's resolved type — sizes the reply slot and the
     /// tuple element it feeds.
@@ -4102,9 +4317,29 @@ impl RuntimeCall {
             return Err(UnknownRuntimeSymbol(symbol));
         }
         match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol) {
-            Some(family) => Ok(RuntimeCall { family, args, dest }),
+            Some(family) => Self::from_family(family, args, dest),
             None => Err(UnknownRuntimeSymbol(symbol)),
         }
+    }
+
+    /// Construct a validated runtime-ABI call from an already checker-carried
+    /// runtime family. The C symbol is derived solely for the allowlist gate;
+    /// it never becomes the cross-layer identity again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRuntimeSymbol`] when the family maps to a symbol not
+    /// admitted by the runtime allowlist.
+    pub fn from_family(
+        family: hew_types::runtime_call::RuntimeCallFamily,
+        args: Vec<Place>,
+        dest: Option<Place>,
+    ) -> Result<Self, UnknownRuntimeSymbol> {
+        let symbol = family.c_symbol();
+        if !crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+            return Err(UnknownRuntimeSymbol(symbol.to_string()));
+        }
+        Ok(RuntimeCall { family, args, dest })
     }
 
     /// The validated C-ABI symbol name, derived from the typed family at
@@ -4207,6 +4442,11 @@ pub enum NeutralizeAuthority {
     /// fresh owner `dest` and its source slot nulled
     /// (`hew-mir/src/lower/move_value.rs`). `transferee` is the `dest` owner.
     WholeCarrierConsume,
+    /// A scalar owned handle moved into a tuple or record that flows to the
+    /// return slot. The constructor has already copied the handle into its
+    /// aggregate `dest`; nulling the source leaves the returned aggregate as
+    /// the sole close authority. `transferee` is that constructor destination.
+    ReturnedAggregateMemberConsume,
 }
 
 impl NeutralizeAuthority {
@@ -4219,9 +4459,9 @@ impl NeutralizeAuthority {
     #[must_use]
     pub fn requires_transferee(self) -> bool {
         match self {
-            NeutralizeAuthority::SendTransferLastUse | NeutralizeAuthority::WholeCarrierConsume => {
-                true
-            }
+            NeutralizeAuthority::SendTransferLastUse
+            | NeutralizeAuthority::WholeCarrierConsume
+            | NeutralizeAuthority::ReturnedAggregateMemberConsume => true,
             NeutralizeAuthority::MoveOutArmConsume | NeutralizeAuthority::EphemeralTempConsume => {
                 false
             }
@@ -4492,7 +4732,6 @@ pub enum Instr {
     /// `record_name` is the canonical unqualified record name (sans module
     /// prefix), used to build the thunk symbol and index the clone descriptor.
     ///
-    /// WASM-TODO(#2050): not yet lowered in sandbox emitter.
     RecordCloneInplace {
         dest: Place,
         src: Place,
@@ -4519,7 +4758,6 @@ pub enum Instr {
     /// clone helper (clone/drop seeded together per key), so the scope-exit drop
     /// of `dest` stays symmetric with the clone — no leak, no double-free.
     ///
-    /// WASM-TODO(#2050): not yet lowered in sandbox emitter (as `RecordCloneInplace`).
     EnumCloneInplace {
         dest: Place,
         src: Place,
@@ -4541,6 +4779,16 @@ pub enum Instr {
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
         boundary: PreparedCarrierBoundary,
+        /// Optional exactly-once gate for a prepared carrier drop.
+        ///
+        /// A user `#[resource]` record has no inert all-zero value: clearing
+        /// its fields after a whole-value transfer leaves its generated drop
+        /// thunk able to call `close(self)`. The flag is zero while this
+        /// carrier owns the value and one after transfer. Every local-call
+        /// carrier carries the structural gate; actor snapshots, whose
+        /// ownership protocol is separate, leave it absent. Codegen skips the
+        /// snapshot drop on the transferred path, including cancellation.
+        guard: Option<Place>,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
@@ -4591,6 +4839,10 @@ pub enum Instr {
         /// the root-relative path, while ownership passes corroborate that the
         /// recorded destination is the actual end of that projection chain.
         transferee: Place,
+        /// Source identity for transfers seeded from an ordinary scope-exit
+        /// tuple. The post-lowering verifier rejects later whole-tuple or
+        /// moved-field reads; unmoved sibling projections remain valid.
+        scope_exit_owner: Option<(BindingId, String, SiteId)>,
     },
     /// Increment the refcount of a `bytes` value before a genuine co-owner is
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
@@ -4605,10 +4857,13 @@ pub enum Instr {
         /// ingress carrying the destination leaf path.
         condition: StringRetainCondition,
     },
-    /// Explicit checker-admitted numeric `as` cast.
+    /// Typed checker-admitted numeric conversion.
     ///
-    /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the
-    /// correct truncation, extension, signed/unsigned int-float conversion, or
+    /// This represents both an explicit source `as` cast and a
+    /// compiler-inserted normalization to a checker-selected common numeric
+    /// type (for example, an `i32` range bound normalized to `Range<i64>`).
+    /// `from_ty` and `to_ty` are carried so codegen can choose the correct
+    /// truncation, extension, signed/unsigned int-float conversion, or
     /// bool/integer canonicalization without re-deriving semantics from LLVM
     /// storage widths alone.
     NumericCast {
@@ -4787,6 +5042,8 @@ pub enum Instr {
     ActorStateFieldStore {
         field_offset: FieldOffset,
         src: Place,
+        /// Explicit MIR ownership authority for publication into state.
+        handoff: ActorStateStoreHandoff,
     },
     SpawnActor {
         actor_name: String,
@@ -5632,6 +5889,17 @@ pub struct FieldOffset(pub u32);
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
+    /// Recursively mint owners for every string leaf in a borrowed inline
+    /// aggregate before that aggregate is copied into a new owner.
+    ///
+    /// Non-string `RecordFieldLoad` / `TupleFieldLoad` / enum-payload
+    /// projections are byte-copy aliases: the aggregate local has no owner of
+    /// its nested strings even though a later record/enum overwrite drop
+    /// reaches and releases them recursively. MIR emits this condition only
+    /// when projection-alias taint reaches an owning aggregate sink. Codegen
+    /// follows the concrete record/tuple/array/active-enum layout and retains
+    /// each string occurrence once.
+    AggregateBorrowedIngress,
     /// Mint an owner for a borrowed string entering an actor-state record.
     ///
     /// This is the count-balanced loop-carried `RecordInit` →
@@ -5687,6 +5955,16 @@ pub enum ActorStateLoadMode {
     /// receiver borrow, and `dest` never escapes as a whole value. Codegen
     /// emits the bare load/store byte-copy alias — no retain, no clone.
     Borrowed,
+}
+
+/// Ownership handoff performed by [`Instr::ActorStateFieldStore`].
+///
+/// Actor-state stores are consuming MIR sinks. In copy mode the source owner
+/// transfers into state; borrowed ingress first clones an independent owner,
+/// and its source cleanup token is consequently never armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateStoreHandoff {
+    ConsumeSource,
 }
 
 /// Field-address selector for [`Instr::FieldDropInPlace`]: one op covers both
@@ -5907,18 +6185,15 @@ pub enum MirCheck {
     /// anchoring; `ty` is the rejected operand rendered for display.
     WitnessOperandUnresolved { ty: String, reason: String },
     /// S1 obligation-balance: a heap-owning owned local reaches a `Return`
-    /// exit with ZERO discharges on every modelling of that path — no terminal
-    /// drop in the exit's plan, no ownership transfer (move-out / neutralize /
-    /// send / consuming runtime call), no inline release. The mint's release
-    /// obligation is never met on this path: a leak. The discharge set is
-    /// re-derived independently from the primitive `Instr` stream + CFG
+    /// exit with fewer discharges than owner mints on every modelling of that
+    /// path. A mint's release obligation is never met: a leak. The discharge
+    /// set is re-derived independently from the primitive `Instr` stream + CFG
     /// reachability (never from the elaborator's `Disposition` ledger — the
-    /// ledger is the component under test). Under-release is ADVISORY: the
-    /// gate surfaces it as a compile-time warning that does not fail the build
-    /// (see [`MirDiagnosticKind::is_advisory`]). No allowlist suppresses it —
-    /// the lite MIR tier cannot soundly gate leaks without un-forgeable module
-    /// provenance, so it warns on every under-release (tracked stdlib holes
-    /// included) rather than hard-gate behind a forgeable per-function key.
+    /// ledger is the component under test). Legacy single-mint under-release
+    /// remains advisory because this lite tier cannot soundly distinguish
+    /// tracked stdlib holes without unforgeable module provenance. A missing
+    /// release for a MIR-explicit retain is blocking: the retain itself is a
+    /// direct, unforgeable proof that an additional owner was minted.
     ObligationUnderReleased {
         /// Function symbol (`ElaboratedMirFunction::name`).
         function: String,
@@ -5930,6 +6205,9 @@ pub enum MirCheck {
         /// the diagnostic. Empty when the type could not be recovered
         /// (hand-built test MIR).
         local_ty: String,
+        /// Explicit retain-backed owner leaks are compiler invariant failures
+        /// and therefore blocking; legacy unretained holes remain advisory.
+        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance: a heap-owning owned local accumulates TWO OR
@@ -6118,6 +6396,11 @@ pub enum LambdaEnvFieldDrop {
     /// Owned `string` field cloned into the env at spawn; dropped via
     /// `hew_string_drop`.
     String,
+    /// Owned strong `LambdaPid<Msg, Reply>` capture. Codegen replaces the
+    /// frame alias with an independent `hew_lambda_actor_clone` in the boxed
+    /// environment; teardown releases that clone with
+    /// `hew_lambda_actor_release`.
+    StrongLambdaActorHandle,
     /// Weak self-handle (`CaptureKind::Weak`): nulled at box time,
     /// back-filled with `hew_lambda_actor_downgrade(handle)` after
     /// construction, dropped via `hew_lambda_actor_weak_drop`.
@@ -6255,15 +6538,13 @@ pub enum ExitPath {
 ///   value's type in codegen before any call is emitted — the string is
 ///   a C-ABI name consumed at the declare edge, never a dispatch key.
 /// - [`DropFnSpec::InPlace`] — a whole-value in-place composite release
-///   for a registered heap-owning record/enum, routed to the synthesised
-///   `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>`
-///   thunk. No symbol travels in MIR: codegen derives the helper from
-///   the drop's carried type (the same resolution the
-///   `DropKind::RecordInPlace` / `DropKind::EnumInPlace` plan arms use),
-///   so type↔helper congruence holds by construction. Emitted only by
-///   the yield/recv release seam (`generator_yield_drop_symbol`'s
-///   `WiredInPlace` verdict) for the per-yield producer/consumer copies
-///   of a composite stream element.
+///   for a registered heap-owning record/enum or a structural tuple/array.
+///   Named composites route to their synthesised drop thunk; structural
+///   aggregates use the recursive field walk. No symbol travels in MIR:
+///   codegen derives the ritual from the drop's carried type, so type↔helper
+///   congruence holds by construction. Emitted only by the yield/recv release
+///   seam (`generator_yield_drop_symbol`'s `WiredInPlace` verdict) for the
+///   per-yield producer/consumer copies of a composite stream element.
 /// - [`DropFnSpec::UserClose`] — a user `#[resource]` `close` method,
 ///   addressed by its generated `<Type>::<method>` symbol. Open set by
 ///   nature (the generated-object symbol IS the linker-edge name);
@@ -6278,8 +6559,8 @@ pub enum DropFnSpec {
     /// Cow-heap / fresh-value release C symbol (closed MIR-side
     /// selection; codegen validates type↔symbol congruence).
     Release(&'static str),
-    /// In-place composite release through the synthesised record/enum
-    /// drop thunk (helper derived from the drop's `ty` at codegen).
+    /// In-place composite release through a synthesised named-composite thunk
+    /// or the structural aggregate walker (derived from `ty` at codegen).
     InPlace(crate::ownership::InPlaceReleaseKind),
     /// User `#[resource]` close method (`<Type>::<method>` generated
     /// symbol — the open-set linker-edge arm).
@@ -6317,26 +6598,32 @@ pub struct ElabDrop {
     /// Path-sensitive exactly-once gate for a conditional ownership transfer.
     ///
     /// `None` for every idempotent / null-tolerant drop that needs no
-    /// path-sensitive transfer guard (Duplex, lambda, half-handle, `CowHeap`,
-    /// ordinary enum/tuple in-place, dyn-trait, and records that remain live
+    /// path-sensitive transfer guard (Duplex, lambda, half-handle, ordinary
+    /// `CowHeap`, enum/tuple in-place, dyn-trait, and records that remain live
     /// on every path).
     ///
     /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
     /// `DropFnSpec::UserClose`, for the `DropKind::RecordInPlace` helper of a
     /// field-bearing user resource record, or for an ordinary record whose
-    /// whole value is transferred on only some paths. Resource close rituals
-    /// are not runtime idempotent; ordinary conditional records need the same
-    /// edge distinction so recursive field teardown runs only where the record
-    /// remained live.
-    /// `flag` is an `i64` local initialised to 0 at the binding's
-    /// introduction and set to 1 at each `IntentKind::Consume` use site.
-    /// Codegen gates the drop on `flag == 0` so a binding reached at a
-    /// `MaybeConsumed` join — Live on one predecessor, Consumed on the
-    /// other — releases exactly once on the live path and is skipped on the
-    /// already-consumed path. The drop-plan validator re-derives only
-    /// `kind` (via the Place-driven `drop_kind_for` SSOT) and never
-    /// inspects `guard`, so this runtime-gating annotation is orthogonal to
-    /// the structural drop-kind contract.
+    /// whole value is transferred on only some paths; for an inline enum
+    /// consumed on one path and reassigned on another; or for a direct string
+    /// payload binder that becomes the delayed release authority when its
+    /// parent enum is overwritten while the binder is live, or when its owned
+    /// carrier shell is neutralized to forward the payload through a borrowing
+    /// call. Resource close rituals are not runtime idempotent; conditional
+    /// composites and delayed payload releases need the same edge distinction
+    /// so teardown runs only on the path/generation that still owns the value.
+    /// For ordinary conditional transfers, `flag` is an `i64` local
+    /// initialised to 0 at the binding's introduction and set to 1 at each
+    /// `IntentKind::Consume` use site. A delayed projected-payload flag uses
+    /// the inverse history: it starts at 1 while the parent owns the payload
+    /// and becomes 0 when an overwrite or borrowing forward transfers release
+    /// authority to the binder. In both protocols codegen gates the drop on
+    /// `flag == 0`, so it runs exactly on the path/generation represented by
+    /// this `ElabDrop`.
+    /// The drop-plan validator re-derives only `kind` (via the Place-driven
+    /// `drop_kind_for` SSOT) and never inspects `guard`, so this runtime-gating
+    /// annotation is orthogonal to the structural drop-kind contract.
     pub guard: Option<Place>,
 }
 
@@ -6394,11 +6681,11 @@ pub enum DropKind {
     /// The vtable static itself has program lifetime and is never freed.
     ///
     /// The `storage` discriminator is populated by the MIR producer at
-    /// each `dyn Trait` binding's introducing statement (W3.031 Stage 1):
-    /// — coercion sites (`HirExprKind::CoerceToDynTrait`) and direct
-    /// parameter bindings flow through `FrameOwned`; call results that
-    /// return `dyn Trait` (the heap-box ABI from W3.031 Stage 0) flow
-    /// through `HeapBoxed`. Reaching codegen with a `TraitObject` drop
+    /// each `dyn Trait` binding's introducing statement (W3.031 Stage 1).
+    /// Current production lowering uses `HeapBoxed` for coercion sites,
+    /// owned parameter bindings, and call results returning `dyn Trait`;
+    /// `FrameOwned` remains an explicit ABI/storage variant for validated
+    /// MIR inputs. Reaching codegen with a `TraitObject` drop
     /// whose storage was never set is a structural fail-closed event —
     /// the MIR builder emits a `TraitObjectStorageUndetermined` diagnostic
     /// instead, so codegen never sees a malformed drop kind.
@@ -6424,6 +6711,24 @@ pub enum DropKind {
     /// type-incongruent release symbol is unrepresentable, so the codegen
     /// congruence re-derivation the literal carrier required is gone.
     CowHeap {
+        release: crate::ownership::CowHeapRelease,
+    },
+    /// Abandon-edge release of the owned `vec` field inside a first-class
+    /// `VecIter<T>` cursor.
+    ///
+    /// `VecIter<T>` is an inline `{ Vec<T>, i64 }` record, not itself a
+    /// copy-on-write heap leaf. Its field-0 snapshot is nevertheless the sole
+    /// heap owner when the cursor's runtime ownership sidecar is zero. Normal
+    /// lexical/explicit exits release that field with `Instr::RecordFieldDrop`;
+    /// cancellation, panic, yield-destroy, and suspend-destroy paths carry this
+    /// kind in an [`ElabDrop`] guarded by the same sidecar.
+    ///
+    /// The typed `CowHeapRelease` payload preserves the Vec element refinement
+    /// (`plain`, owned-element, closure-pair). Codegen GEPs field 0, invokes the
+    /// selected Vec release, and null-stores the live field slot. The paired
+    /// [`ElabDrop::ty`] remains the enclosing `VecIter<T>` type and
+    /// [`ElabDrop::place`] remains its stack-local record.
+    VecIterCursor {
         release: crate::ownership::CowHeapRelease,
     },
     /// owned-string-record — function-scope in-place drop of a stack-local user record whose
@@ -6918,15 +7223,15 @@ pub enum MirDiagnosticKind {
     /// `cleanup-all-exits` / `boundary-fail-closed`).
     DropPlanUndetermined { block: u32, reason: String },
     /// S1 obligation-balance under-release (leak): surfaced from
-    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has
-    /// ZERO discharges on a CFG path to a `Return` exit. ADVISORY (see
-    /// [`MirDiagnosticKind::is_advisory`]): rendered as a compile-time warning
-    /// that does not fail the build, because the lite MIR tier cannot soundly
-    /// suppress a leak without un-forgeable module provenance (OWN-V1).
+    /// `MirCheck::ObligationUnderReleased`. A heap-owning owned local has fewer
+    /// discharges than owner mints on a CFG path to a `Return` exit. Legacy
+    /// single-mint holes are advisory; missing releases for MIR-explicit
+    /// retains are blocking compiler-invariant failures.
     ObligationUnderReleased {
         function: String,
         block: u32,
         name: String,
+        hard: bool,
         reason: String,
     },
     /// S1 obligation-balance over-release (double-free): surfaced from
@@ -7175,18 +7480,18 @@ impl MirDiagnosticKind {
     /// CLI consumer renders an advisory as a `warning` and never counts it
     /// toward build failure. All other diagnostics stay hard `E_MIR_*` errors.
     ///
-    /// Only [`MirDiagnosticKind::ObligationUnderReleased`] is advisory. An
-    /// under-release is a resource LEAK, not a memory-safety violation, and the
-    /// lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
+    /// Only a non-hard [`MirDiagnosticKind::ObligationUnderReleased`] is
+    /// advisory. A legacy under-release is a resource LEAK, not a memory-safety
+    /// violation, and the lite MIR-tier obligation-balance gate cannot SOUNDLY suppress a leak: it
     /// has no un-forgeable defining-module provenance signal, so a per-function
     /// allowlist keyed on the mangled symbol is forgeable (the compiler mangles
     /// a user module `base64`'s `decode` to the same `base64$decode` a stdlib
     /// entry used). Rather than hard-gate every leak behind a forgeable
     /// allowlist — silently swallowing a genuine user leak that collides with a
-    /// tracked stdlib triple — the gate WARNS on every under-release and leaves
-    /// the build green. The tracked stdlib holes (semver/base64/generic-Vec-iter)
-    /// warn honestly on their own builds. Promoting under-release back to a
-    /// sound hard gate is the OWN-V1 follow-up: it needs frontend module
+    /// tracked stdlib triple — the gate WARNS on legacy single-mint holes and
+    /// leaves the build green. Missing release for a MIR-explicit retain is an
+    /// unforgeable ownership-balance failure and remains hard. Promoting the
+    /// remaining under-release cases to a sound hard gate needs frontend module
     /// provenance threaded into this gate so a stdlib site is distinguishable
     /// from a same-named user site.
     ///
@@ -7196,7 +7501,10 @@ impl MirDiagnosticKind {
     /// advisory.
     #[must_use]
     pub fn is_advisory(&self) -> bool {
-        matches!(self, MirDiagnosticKind::ObligationUnderReleased { .. })
+        matches!(
+            self,
+            MirDiagnosticKind::ObligationUnderReleased { hard: false, .. }
+        )
     }
 }
 
@@ -7211,6 +7519,67 @@ pub struct DecisionFact {
     pub why: String,
 }
 
+/// Interprocedural representation effect of one function parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamRepresentationEffect {
+    /// No representation-replacing write reaches this parameter.
+    None,
+    /// A local write or a resolved callee may replace the parameter's backing
+    /// representation.
+    MayReplaceRepresentation,
+}
+
+/// Storage relationship available to a representation loan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamLoanStorage {
+    /// The MIR parameter local aliases caller-visible storage.
+    Aliasable,
+    /// The parameter is copied into callee-owned frame storage.
+    OwnedFrameSnapshot,
+}
+
+/// Typed cleanup ritual used only while a caller-visible representation is
+/// loaned across a potentially crashing call boundary.
+///
+/// This is intentionally not an ordinary ownership/drop disposition: normal
+/// return retires the loan without dropping.  The carried kind only tells the
+/// crash-cleanup registry how to dispose the current representation if the
+/// callee is abandoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamCrashCleanupKind {
+    /// Release the buffer owned by an inline `{ptr, len, cap}` bytes value.
+    Bytes,
+}
+
+/// Total ABI-boundary disposition for one function parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamBoundaryMode {
+    BorrowReadOnly,
+    BorrowRepresentationLoan {
+        storage: ParamLoanStorage,
+        effect: ParamRepresentationEffect,
+        crash_cleanup: ParamCrashCleanupKind,
+    },
+    TransferResource,
+    OwnedMessage,
+    OwnedCarrier,
+    /// A representation mutation reached a boundary whose alias/callee
+    /// authority is not proven. Checked MIR keeps this refusal explicit.
+    RejectUnprovenRepresentationMutation,
+}
+
+/// Typed parameter-boundary fact carried through raw, checked, and elaborated
+/// MIR in the decision stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamBoundaryFact {
+    pub param_index: u32,
+    pub param_count: u32,
+    /// Positive checker/HIR authority that this parameter exposes
+    /// caller-visible storage.
+    pub caller_visible_projection: bool,
+    pub mode: ParamBoundaryMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     BorrowRead,
@@ -7221,12 +7590,12 @@ pub enum Strategy {
     ConsumeCall,
     Freeze,
     UnknownBlocked,
+    ParamBoundary(ParamBoundaryFact),
 }
 
 #[cfg(test)]
 mod heap_owning_tests {
     use super::*;
-    use hew_types::BuiltinType;
 
     fn generator_ty() -> ResolvedTy {
         // `Generator<i64, ()>` — bit-copy generic args, but the handle itself
@@ -7564,6 +7933,49 @@ mod heap_owning_tests {
     }
 
     #[test]
+    fn string_returning_callable_ingress_walks_callable_and_aggregate_shapes() {
+        let string_callable = ResolvedTy::Function {
+            params: Vec::new(),
+            ret: Box::new(ResolvedTy::String),
+        };
+        let scalar_callable = ResolvedTy::Function {
+            params: vec![string_callable.clone()],
+            ret: Box::new(ResolvedTy::I64),
+        };
+        assert!(ty_contains_string_returning_callable(
+            &string_callable,
+            &[],
+            &[]
+        ));
+        assert!(
+            !ty_contains_string_returning_callable(&scalar_callable, &[], &[]),
+            "a callable parameter is signature metadata, not a callable value \
+             stored inside the pair"
+        );
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::Tuple(vec![ResolvedTy::I64, string_callable.clone()]),
+            &[],
+            &[]
+        ));
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::named_user("Option", vec![string_callable.clone()]),
+            &[],
+            &[]
+        ));
+
+        let records = vec![RecordLayout {
+            name: "FactoryBox".to_string(),
+            field_tys: vec![ResolvedTy::I64, string_callable],
+            field_names: vec!["tag".to_string(), "make".to_string()],
+        }];
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::named_user("FactoryBox", vec![]),
+            &records,
+            &[]
+        ));
+    }
+
+    #[test]
     fn enum_with_opaque_payload_is_unclonable() {
         let enums = vec![EnumLayout {
             name: "Wrap".to_string(),
@@ -7641,7 +8053,7 @@ mod heap_owning_tests {
     }
 
     #[test]
-    fn name_fallback_flags_qualified_opaque_shadowed_by_same_short_record() {
+    fn exact_opaque_identity_beats_same_leaf_record() {
         // Security regression (UAF / double-free): a QUALIFIED opaque handle
         // whose `is_opaque` discriminator was cleared on the way to MIR
         // (`json.Value`, `is_opaque: false`) must STILL fail closed even when a
@@ -7678,18 +8090,16 @@ mod heap_owning_tests {
              suppress the opaque name-fallback)"
         );
 
-        // ...and when the opaque decl-name set carries the SHORT (decl) form.
+        // A leaf-only opaque identity is no longer an authority: it must not
+        // capture a distinct qualified declaration merely because both end in
+        // `Value`.
         let short_names = vec!["Value".to_string()];
-        assert!(
-            ty_contains_unclonable_opaque_with_names(
-                &qualified_opaque,
-                &records,
-                &[],
-                &short_names
-            ),
-            "a qualified opaque handle must also fail closed when the opaque \
-             decl-name set carries the bare short name"
-        );
+        assert!(!ty_contains_unclonable_opaque_with_names(
+            &qualified_opaque,
+            &records,
+            &[],
+            &short_names
+        ));
 
         // Negative control preserved: the same-short value record itself,
         // referenced UNqualified, stays admissible — the exact-name record
@@ -7707,7 +8117,7 @@ mod heap_owning_tests {
     }
 
     #[test]
-    fn name_fallback_flags_qualified_opaque_generic_shadowed_by_same_short_enum() {
+    fn exact_opaque_identity_beats_same_leaf_generic_enum() {
         // Security regression, GENERIC-ENUM variant (UAF / double-free): a
         // QUALIFIED generic opaque handle whose `is_opaque` discriminator was
         // cleared on the way to MIR (`a.Wrapper<i64>`, `is_opaque: false`) must
@@ -7757,13 +8167,15 @@ mod heap_owning_tests {
              match must not suppress the opaque name-fallback)"
         );
 
-        // ...and when the opaque decl-name set carries the bare SHORT name.
+        // A bare leaf is not a valid opaque identity for a qualified source
+        // declaration, even when a same-leaf generic enum exists.
         let short_names = vec!["Wrapper".to_string()];
-        assert!(
-            ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &short_names),
-            "a qualified generic opaque handle must also fail closed when the \
-             opaque decl-name set carries the bare short name"
-        );
+        assert!(!ty_contains_unclonable_opaque_with_names(
+            &qualified_opaque,
+            &[],
+            &enums,
+            &short_names
+        ));
 
         // Negative control: the SAME generic-enum shape, but NOT in the opaque
         // set, still ADMITS. The fallback only flags names IN the opaque set, so
@@ -7796,26 +8208,21 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&pair, &records, &[]));
     }
 
-    // ── Qualified-payload layout-key symmetry (C1) ──────────────────────────
+    // ── Canonical full-owner generic-layout identity ────────────────────────
     //
     // The MIR ownership/drop authorities probe `enum_layouts` by mangling the
     // outer name + type-arg spine. A generic enum instantiated through an
     // import-use site carries a MODULE-QUALIFIED payload in its args
-    // (`Slot<lmonobox.Box>`), while the layout is REGISTERED under the bare
-    // spine (`Slot$$Box`). If a probe mangles the raw qualified spine
-    // (`Slot$$lmonobox.Box`) it diverges from the registered key, the lookup
-    // falls through, and the ownership/drop/clone decision silently wrong-answers
-    // (no member-drop synthesised → leak, or no opaque fail-closed → unsound
-    // clone). `find_enum_layout` shortens the spine so the probe matches.
+    // (`Slot<lmonobox.Box>`). The registration and every probe must preserve
+    // that full owner through the one shared `mangle_layout_key` authority.
 
-    /// A generic enum registered under its bare-arg key resolves when probed
-    /// with a QUALIFIED payload, so its opaque variant payload still fails
+    /// A generic enum registered under its full-owner key resolves when probed
+    /// with the same qualified payload, so its opaque variant payload still fails
     /// closed for the actor-state clone direction.
     #[test]
     fn qualified_payload_enum_resolves_for_opaque_fail_closed() {
-        // Registered as `Slot$$Box` (bare outer, bare arg) — exactly what
-        // `EnumLayoutRegistry::insert` / `layout_mono` emit.
-        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let payload = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -7827,14 +8234,10 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        // The PROBE type carries the qualified payload as the import-use MIR does:
-        // `Slot<lmonobox.Box>`. A raw `mangle("Slot", [lmonobox.Box])` would key
-        // `Slot$$lmonobox.Box` and MISS the registered `Slot$$Box`.
-        let qualified =
-            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(
             ty_contains_unclonable_opaque(&qualified, &[], &enums),
-            "qualified-payload enum must resolve to its bare-key layout and \
+            "qualified-payload enum must resolve to its full-owner layout and \
              fail closed on the opaque variant payload"
         );
     }
@@ -7844,7 +8247,8 @@ mod heap_owning_tests {
     /// heap-owning when probed with a qualified payload spine.
     #[test]
     fn qualified_payload_enum_resolves_for_heap_owning_drop() {
-        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let payload = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -7855,26 +8259,21 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        let qualified =
-            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(
             ty_contains_heap_owning(&qualified, &enums),
-            "qualified-payload enum must resolve to its bare-key layout and be \
+            "qualified-payload enum must resolve to its full-owner layout and be \
              classified heap-owning so its member-drop fires"
         );
     }
 
-    /// A NESTED qualified payload (`Slot<Vec<lmonobox.Box>>`) shortens at every
-    /// depth, so the inner qualifier cannot leak into the key.
+    /// A NESTED qualified payload (`Slot<Vec<lmonobox.Box>>`) retains its
+    /// owner at every depth, so unrelated same-leaf layouts cannot collide.
     #[test]
     fn nested_qualified_payload_enum_resolves() {
-        let registered_key = hew_hir::mangle(
-            "Slot",
-            &[ResolvedTy::named_user(
-                "Vec",
-                vec![ResolvedTy::named_user("Box", vec![])],
-            )],
-        );
+        let payload =
+            ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -7885,13 +8284,7 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        let qualified = ResolvedTy::named_user(
-            "Slot",
-            vec![ResolvedTy::named_user(
-                "Vec",
-                vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
-            )],
-        );
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
@@ -7918,43 +8311,35 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
-    /// Structural guard: every generic layout key built in this module must
-    /// route through either `find_enum_layout` (enum side) or `record_lookup_keys`
-    /// (record side — the key authority both `find_record_layout` and the
-    /// `MirHeapLayouts` adapter delegate to). A bare `mangle(.., args)` call
-    /// outside those functions re-opens the C1 qualified-spine miss class
-    /// (incorrect shortening of the type-arg spine → probe misses the registered
-    /// key). This self-scan of the source keeps the two-authority invariant from
-    /// silently eroding.
+    /// Structural guard: enum lookups call the mangle helper directly, while
+    /// record lookups route through the broader HIR named-layout authority
+    /// (which carries builtin and source-owner cases too).
     #[test]
-    fn mangle_feeding_layout_lookup_is_centralised() {
+    fn layout_keys_use_the_shared_full_owner_authority() {
         let src = include_str!("model.rs");
-        // The authorised `mangle(` calls in this module's non-test code live in
-        // `find_enum_layout` (1 call: the `mangled` key) and `record_lookup_keys`
-        // (2 calls: full + short mangle). Strip the test module (which
-        // legitimately mangles bare-arg fixture keys) before scanning.
         let prod = src
             .split("#[cfg(test)]")
             .next()
             .expect("model.rs has a non-test prefix");
-        // Count only real call sites: drop comment lines (`//` / `///`) so the
-        // doc-comment mentions of `mangle(` in this module's prose don't inflate
-        // the count. The 3 remaining calls live in `find_enum_layout` (1) and
-        // `record_lookup_keys` (2).
-        let mangle_calls = prod
+        let enum_authority_calls = prod
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
-            .map(|line| line.matches("mangle(").count())
+            .map(|line| line.matches("mangle_layout_key(").count())
             .sum::<usize>();
         assert_eq!(
-            mangle_calls, 3,
-            "exactly three `mangle(` calls are allowed in model.rs non-test code: \
-             one in `find_enum_layout` and two in `record_lookup_keys` (the two \
-             authorised layout-key functions; `find_record_layout` and the \
-             `MirHeapLayouts` adapter both delegate to `record_lookup_keys`). A \
-             new bare call outside those functions feeds the C1 qualified-spine \
-             miss class — route through one of the authority functions instead. \
-             Found {mangle_calls}."
+            enum_authority_calls, 1,
+            "find_enum_layout must be the only direct model-side consumer of the \
+             generic enum-layout helper; found {enum_authority_calls}."
+        );
+        let named_layout_authority_calls = prod
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("layout_key_for_named(").count())
+            .sum::<usize>();
+        assert_eq!(
+            named_layout_authority_calls, 1,
+            "record_lookup_keys must be the only model-side consumer of the \
+             shared named-layout authority; found {named_layout_authority_calls}."
         );
     }
 }
@@ -8096,9 +8481,9 @@ mod diagnostic_severity_tests {
     //! Severity classification of MIR diagnostics
     //! ([`MirDiagnosticKind::is_advisory`]) — the single source of truth every
     //! CLI consumer keys off. Pins the S1 obligation-balance severity split:
-    //! under-release (leak) is advisory (compile-time warning, build stays
-    //! green); over-release (double-free) and the fail-closed undecidability
-    //! verdict are blocking hard errors with no advisory escape.
+    //! legacy single-mint under-release is advisory (compile-time warning,
+    //! build stays green); explicit-retain under-release, over-release
+    //! (double-free), and the fail-closed undecidability verdict are blocking.
 
     use super::*;
 
@@ -8111,12 +8496,28 @@ mod diagnostic_severity_tests {
             function: "base64$decode".to_string(),
             block: 20,
             name: "out".to_string(),
+            hard: false,
             reason: "mint without discharge = leak".to_string(),
         };
         assert!(
             leak.is_advisory(),
             "under-release (leak) must be advisory — a compile-time warning that \
              does not fail the build"
+        );
+    }
+
+    #[test]
+    fn explicit_retain_leak_is_blocking() {
+        let leak = MirDiagnosticKind::ObligationUnderReleased {
+            function: "f".to_string(),
+            block: 1,
+            name: "shared".to_string(),
+            hard: true,
+            reason: "retained owner has no release".to_string(),
+        };
+        assert!(
+            !leak.is_advisory(),
+            "a MIR-explicit retain is an unforgeable mint and its missing release must fail hard"
         );
     }
 

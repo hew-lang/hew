@@ -1,3 +1,4 @@
+use super::branch_join::BranchArmExit;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -7,6 +8,82 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::BuiltinType;
 
 impl Checker {
+    fn method_chain_root_binding(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Identifier(name) => Some(name),
+            Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
+            _ => None,
+        }
+    }
+
+    /// A validated `#[returns_receiver]` call transfers the receiver owner to
+    /// its result. When that exact result is discarded in statement position,
+    /// the transfer is a no-op: the original binding remains the sole owner.
+    /// Record that fact per call site for HIR and restore the checker binding
+    /// only when it was live before this statement.
+    fn preserve_discarded_receiver_identity_chain(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+    ) -> Option<String> {
+        let Expr::MethodCall { receiver, .. } = expr else {
+            return None;
+        };
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let rewrite_identity = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )
+        );
+        let dyn_signature = self
+            .dyn_trait_method_calls
+            .get(&key)
+            .map(|call| &call.signature);
+        let is_identity = rewrite_identity
+            || dyn_signature.is_some_and(|signature| signature.returns_receiver_identity);
+        let consumes = self.method_call_consumes_receiver.contains(&key)
+            || dyn_signature.is_some_and(|signature| signature.consumes_receiver);
+        if consumes && !is_identity {
+            return None;
+        }
+
+        let (root, nested_identity) = match &receiver.0 {
+            Expr::Identifier(name) => (name.clone(), false),
+            Expr::MethodCall { .. } => {
+                let root =
+                    self.preserve_discarded_receiver_identity_chain(&receiver.0, &receiver.1)?;
+                (root, true)
+            }
+            _ => return None,
+        };
+        if is_identity {
+            self.method_call_preserves_receiver_identity.insert(key);
+        }
+        (is_identity || nested_identity).then_some(root)
+    }
+
+    fn synthesize_discarded_expression(&mut self, expr: &Expr, span: &Span) -> Ty {
+        let root = Self::method_chain_root_binding(expr).map(str::to_string);
+        let root_was_moved = root
+            .as_deref()
+            .and_then(|name| self.env.lookup(name))
+            .is_some_and(|binding| binding.is_moved);
+        let ty = self.synthesize(expr, span);
+        if !root_was_moved {
+            if let Some(root) = self.preserve_discarded_receiver_identity_chain(expr, span) {
+                self.env.unmark_moved(&root);
+            }
+        }
+        ty
+    }
+
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
         if let Ty::TraitObject { traits } = &resolved {
@@ -70,11 +147,24 @@ impl Checker {
     /// private `Holder` copy, even though the field being replaced happens to
     /// contain a handle. Recursing through the target also covers projections
     /// such as `holders[0].count`, whose write starts inside shared Vec storage.
+    /// A root `string`, `bytes`, or registered shared-handle binding is itself
+    /// the caller-visible storage boundary; admitting it uses the same exact
+    /// checker type facts as parameter classification.
     /// The builtin boundary test shares the declaration-time authority in
     /// `BuiltinType::is_caller_visible_shared_handle`, so nested actor, channel,
     /// stream, and reference handles cannot drift from aggregate admission.
     fn mutation_projection_reaches_caller_visible_storage(&self, target: &Expr) -> bool {
         match target {
+            Expr::Identifier(name) => self.env.lookup_ref(name).is_some_and(|binding| {
+                match self.subst.resolve(&binding.ty) {
+                    Ty::String | Ty::Bytes => true,
+                    Ty::Named {
+                        builtin: Some(builtin),
+                        ..
+                    } => builtin.is_caller_visible_shared_handle(),
+                    _ => false,
+                }
+            }),
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
                 let object_ty = self
                     .expr_types
@@ -178,7 +268,7 @@ impl Checker {
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
             Stmt::Expression((expr, es)) => {
-                let expr_ty = self.synthesize(expr, es);
+                let expr_ty = self.synthesize_discarded_expression(expr, es);
                 if matches!(expr_ty, Ty::Never) {
                     Ty::Never
                 } else {
@@ -304,6 +394,64 @@ impl Checker {
         ty
     }
 
+    /// Check a statement-position `if` chain whose value is discarded, keeping
+    /// each arm's ownership state separate and joining them at the end.
+    ///
+    /// Returns whether every path through the chain diverges, which is what the
+    /// recursion needs to classify an `else if` link as a non-reaching arm.
+    fn check_discarded_if_chain(
+        &mut self,
+        condition: &Spanned<Expr>,
+        then_block: &Block,
+        else_block: Option<&hew_parser::ast::ElseBlock>,
+    ) -> bool {
+        self.check_against(&condition.0, &condition.1, &Ty::Bool);
+        let entry = self.env.ownership_snapshot();
+        let then_ty = self.check_block(then_block, None);
+        let then_exit = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join_block(then_block, &then_ty),
+        };
+        let then_skips_join = then_exit.diverges;
+        let Some(eb) = else_block else {
+            self.join_fall_through(&entry, then_exit);
+            return false;
+        };
+        self.env.restore_ownership(&entry);
+        let else_skips_join = if let Some(if_stmt) = &eb.if_stmt {
+            if let Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } = &if_stmt.0
+            {
+                self.check_discarded_if_chain(condition, then_block, else_block.as_ref())
+            } else {
+                self.check_stmt(&if_stmt.0, &if_stmt.1);
+                false
+            }
+        } else if let Some(block) = &eb.block {
+            let else_ty = self.check_block(block, None);
+            Self::arm_skips_join_block(block, &else_ty)
+        } else {
+            // `else` with neither a block nor a chained `if`: nothing runs on
+            // that path, so it is the implicit fall-through.
+            self.join_fall_through(&entry, then_exit);
+            return false;
+        };
+        self.join_branch_ownership(
+            &entry,
+            &[
+                then_exit,
+                BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: else_skips_join,
+                },
+            ],
+        );
+        then_skips_join && else_skips_join
+    }
+
     /// Type-check the operand of a `return` against the enclosing function's
     /// declared return type.
     ///
@@ -377,18 +525,34 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_block(then_block, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_block(then_block, &then_ty),
+                };
+                // An `else if` link is itself a two-way branch, so recursing
+                // gives the chain its join for free: each link restores to its
+                // own entry, which is this arm's restored state.
                 if let Some(eb) = else_block {
                     if let Some(ref if_stmt) = eb.if_stmt {
+                        self.env.restore_ownership(&entry);
                         let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1, expected);
+                        let else_skips = Self::arm_skips_join_stmt(&if_stmt.0, &else_ty);
+                        self.join_two_way(&entry, then_exit, else_skips);
                         self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
                     } else if let Some(block) = &eb.block {
+                        self.env.restore_ownership(&entry);
                         let else_ty = self.check_block(block, expected);
+                        let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                        self.join_two_way(&entry, then_exit, else_skips);
                         self.unify_branches(&then_ty, &else_ty, span)
                     } else {
+                        self.join_fall_through(&entry, then_exit);
                         Ty::Unit
                     }
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -402,6 +566,7 @@ impl Checker {
                 if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
                     return Ty::Error;
                 }
+                let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 // Record the pattern resolution so HIR lowering can consume
@@ -409,11 +574,19 @@ impl Checker {
                 // `WhileLet` and `Match` lowering.
                 self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 let then_ty = self.check_block(body, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_block(body, &then_ty),
+                };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
+                    self.env.restore_ownership(&entry);
                     let else_ty = self.check_block(block, expected);
+                    let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                    self.join_two_way(&entry, then_exit, else_skips);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -421,7 +594,7 @@ impl Checker {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 self.check_match_expr(&scr_ty, arms, span, expected)
             }
-            Stmt::Expression((expr, es)) => self.synthesize(expr, es),
+            Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
             Stmt::Return(value) => {
                 self.check_return_operand(value.as_ref(), span);
                 Ty::Never
@@ -446,9 +619,25 @@ impl Checker {
             return val_ty;
         };
         if is_integer_literal(expr) && val_ty.is_integer_literal() {
-            let inferred = Ty::Var(TypeVar::fresh());
+            let var = TypeVar::fresh();
+            let inferred = Ty::Var(var);
             self.expect_type(&inferred, &val_ty, span);
             self.record_integer_literal_type(expr, span, &inferred);
+            // Remember where this var's literal was recorded so a later
+            // promotion (e.g. `apply_deferred_range_bound_types` narrowing a
+            // range-bound identifier's own var to a concrete width) can
+            // re-record the DECLARATION-site span too, not just the
+            // reference site that triggered the promotion. Without this, an
+            // unannotated `let n = 6;` later used as a range bound
+            // (`0 .. n`) that gets narrowed via loop-variable usage keeps
+            // its declaration-site span defaulted to `i64` in the exported
+            // `expr_types` snapshot (`check_program` takes that snapshot
+            // once, before defaulting/promotion runs) even though the
+            // reference site inside the range is correctly narrowed — HIR's
+            // identifier lowering reads the DECLARATION site, not the
+            // reference site, so the stale entry is the one that matters.
+            self.literal_binding_value_spans
+                .insert(var, (span.clone(), self.current_module_idx));
             inferred
         } else {
             val_ty
@@ -816,7 +1005,25 @@ impl Checker {
                             // `while let`. Without this the let-else lowering
                             // finds no resolution and fails closed.
                             self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
+                            // The else block is the failure arm of a two-way
+                            // branch whose success arm is the binding path that
+                            // continues below. It must diverge, so whatever it
+                            // consumes never reaches that path.
+                            let entry = self.env.ownership_snapshot();
                             let else_ty = self.check_block(else_blk, None);
+                            self.join_branch_ownership(
+                                &entry,
+                                &[
+                                    BranchArmExit {
+                                        ownership: entry.clone(),
+                                        diverges: false,
+                                    },
+                                    BranchArmExit {
+                                        ownership: self.env.ownership_snapshot(),
+                                        diverges: Self::arm_skips_join_block(else_blk, &else_ty),
+                                    },
+                                ],
+                            );
                             if !matches!(else_ty, Ty::Never)
                                 && !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error)
                             {
@@ -992,7 +1199,12 @@ impl Checker {
                 // roots that are known immutable so users see the value-type
                 // rule, not just a generic binding error.
                 if let Expr::FieldAccess { object, field } = &target.0 {
+                    // The object is the base of the target place, not a
+                    // whole-value use: writing `h.sock` after `h.other` moved
+                    // out is legal.
+                    self.place_base_depth += 1;
                     let obj_ty = self.synthesize(&object.0, &object.1);
+                    self.place_base_depth -= 1;
                     let resolved = self.subst.resolve(&obj_ty);
                     if let Ty::Named { name, .. } = &resolved {
                         let root_is_mutable = Self::assignment_root_binding_name(&target.0)
@@ -1027,6 +1239,10 @@ impl Checker {
                 // must match — for `HashMap<K, V>` this is the bare `V` (a read
                 // would instead yield `Option<V>`), and the checker records the
                 // `hew_hashmap_insert_layout` runtime call at the index span.
+                // Synthesising the target must not read it as a value: an
+                // assignment overwrites the place, so a moved-out place is
+                // exactly what a re-initialisation is allowed to name.
+                self.place_write_depth += 1;
                 let target_ty = match &target.0 {
                     Expr::Index { object, index } => {
                         let ty = self.synthesize_index(
@@ -1044,6 +1260,7 @@ impl Checker {
                     }
                     _ => self.synthesize(&target.0, &target.1),
                 };
+                self.place_write_depth -= 1;
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without
@@ -1131,9 +1348,9 @@ impl Checker {
                                     TypeErrorKind::MutabilityError,
                                     span,
                                     format!(
-                                        "`{name}` is a by-value parameter; this assignment \
-                                         mutates only its private copy and has no caller-visible \
-                                         effect"
+                                        "`var {name}` on a by-value parameter of type `{}` \
+                                         has no caller-visible effect",
+                                        binding_ty.user_facing()
                                     ),
                                     vec![
                                         "return the modified value to the caller".to_string(),
@@ -1153,6 +1370,19 @@ impl Checker {
                     self.env.mark_written(name);
                 }
                 self.check_against(&value.0, &value.1, &target_ty);
+                // A plain `=` gives the target place a fresh owner, discharging
+                // the consume obligation on it and on everything under it. This
+                // is the escape hatch for a consumed actor state field: the
+                // handler plugs the hole it made. Compound assignment reads the
+                // old value first, so it discharges nothing.
+                //
+                // Evaluated after the RHS so `sock = take_from(sock)` still
+                // reports the read.
+                if op.is_none() {
+                    if let Some((root, path)) = Checker::expr_place(&target.0) {
+                        self.env.reinit_place(&root, &path);
+                    }
+                }
             }
             Stmt::Expression((expr, es)) => {
                 if let Expr::MethodCall {
@@ -1167,22 +1397,14 @@ impl Checker {
                         }
                     }
                 }
-                self.synthesize(expr, es);
+                self.synthesize_discarded_expression(expr, es);
             }
             Stmt::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                self.check_against(&condition.0, &condition.1, &Ty::Bool);
-                self.check_block(then_block, None);
-                if let Some(eb) = else_block {
-                    if let Some(ref if_stmt) = eb.if_stmt {
-                        self.check_stmt(&if_stmt.0, &if_stmt.1);
-                    } else if let Some(block) = &eb.block {
-                        self.check_block(block, None);
-                    }
-                }
+                self.check_discarded_if_chain(condition, then_block, else_block.as_ref());
             }
             Stmt::IfLet {
                 pattern,
@@ -1194,6 +1416,7 @@ impl Checker {
                 if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
                     return;
                 }
+                let entry = self.env.ownership_snapshot();
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
                 // Record the pattern resolution so HIR lowering can consume
@@ -1202,10 +1425,19 @@ impl Checker {
                 // cannot resolve the constructor's `(type_name, variant_name)`
                 // identity or payload-binding field indices for `if-let`.
                 self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
-                self.check_block(body, None);
+                let then_ty = self.check_block(body, None);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_block(body, &then_ty),
+                };
                 self.env.pop_scope();
                 if let Some(block) = else_body {
-                    self.check_block(block, None);
+                    self.env.restore_ownership(&entry);
+                    let else_ty = self.check_block(block, None);
+                    let else_skips = Self::arm_skips_join_block(block, &else_ty);
+                    self.join_two_way(&entry, then_exit, else_skips);
+                } else {
+                    self.join_fall_through(&entry, then_exit);
                 }
             }
             Stmt::Return(value) => {
@@ -1321,7 +1553,7 @@ impl Checker {
                                         // Stream runtime is native-only in v0.5. Method-call
                                         // `.recv()` already rejects on wasm; `for await` must
                                         // mirror that checker gate before HIR desugars it.
-                                        // WASM-TODO(#1451): port stream suspend substrate.
+                                        // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
                                         self.reject_wasm_feature(
                                             &iterable.1,
                                             WasmUnsupportedFeature::Streams,
@@ -1375,13 +1607,38 @@ impl Checker {
                             );
                         }
                         if let Some(elem) = args.first().cloned() {
-                            elem
+                            if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                                elem
+                            } else {
+                                Ty::Error
+                            }
                         } else {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
                                 "`for` over a Vec requires a resolved element type".to_string(),
                             );
+                            Ty::Error
+                        }
+                    }
+                    Ty::Named {
+                        args,
+                        builtin: Some(BuiltinType::VecIter),
+                        ..
+                    } if !args.is_empty() => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a VecIter; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        let elem = args[0].clone();
+                        if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                            elem
+                        } else {
                             Ty::Error
                         }
                     }
@@ -1469,12 +1726,16 @@ impl Checker {
                         // a zero-length Vec).
                         let elem_ty = args[0].clone();
                         let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.validate_hashset_element_type(&elem_ty, &to_vec_span) {
+                        if self.validate_vec_iter_element_clone_type(&elem_ty, &iterable.1)
+                            && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
+                        {
                             let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);
                             self.record_type(&to_vec_span, &elem_vec);
                             self.record_resolved_hashset_call("to_vec", &elem_ty, &to_vec_span);
+                            elem_ty
+                        } else {
+                            Ty::Error
                         }
-                        elem_ty
                     }
                     Ty::Named {
                         builtin: Some(BuiltinType::Receiver),

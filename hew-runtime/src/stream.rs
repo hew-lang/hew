@@ -76,6 +76,12 @@ pub extern "C" fn hew_stream_is_valid(stream: *const HewStream) -> i32 {
     i32::from(!stream.is_null())
 }
 
+/// Nominally typed validity probe for the `std.fs.FileReadStream` adapter.
+#[no_mangle]
+pub extern "C" fn hew_file_read_stream_is_valid(stream: *const HewStream) -> i32 {
+    hew_stream_is_valid(stream)
+}
+
 /// Returns 1 if the sink pointer is non-null (valid), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hew_sink_is_valid(sink: *const HewSink) -> i32 {
@@ -970,7 +976,7 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 /// # Platform
 ///
 /// Not available on `wasm32` targets; TCP transport is unavailable there.
-/// See `WASM-TODO(#1451)`.  The `wasm32` stub returns `null` so the symbol
+/// See `WASM-TODO(tcp-networking):`. The `wasm32` stub returns `null` so the symbol
 /// resolves at link time, but every call returns `null` without side-effects.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
@@ -1082,7 +1088,7 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
 /// `net.Connection`, including `into_stream_sink`.  This stub is never
 /// reachable through valid Hew code compiled for wasm32.
 ///
-/// WASM-TODO(#1451): TCP transport gap.
+/// WASM-TODO(tcp-networking): add a WASM TCP-to-stream bridge.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_stream_from_conn(_conn: c_int) -> *mut HewStreamPair {
@@ -1198,6 +1204,20 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
             ptr::null_mut()
         }
     }
+}
+
+/// Nominally typed file-read handle constructor used by `std.fs`.
+///
+/// The generic stream API retains `hew_stream_from_file_read`; this distinct
+/// endpoint gives generated ownership contracts one unambiguous source type.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_from_file_read`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_open(path: *const c_char) -> *mut HewStream {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_from_file_read(path) }
 }
 
 /// Open a file for streaming writes.
@@ -1797,6 +1817,17 @@ pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     }
 }
 
+/// Nominally typed file-read handle release used by `std.fs`.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_close`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_close(stream: *mut HewStream) {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_close(stream) };
+}
+
 /// Write one item to a sink.
 ///
 /// Blocks with backpressure if the backing buffer is full.
@@ -2034,6 +2065,23 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     // SAFETY: ptr is len bytes allocated above; buffer.as_ptr() points to len bytes.
     unsafe { ptr::copy_nonoverlapping(buffer.as_ptr(), ptr.cast::<u8>(), len) };
     ptr.cast::<c_char>()
+}
+
+/// Drain and consume a nominal `std.fs.FileReadStream` into one string.
+///
+/// This distinct endpoint prevents the same C symbol from carrying both the
+/// generic `Stream<string>` and `FileReadStream` source signatures. The raw
+/// representation and consuming runtime operation are identical.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_collect_string`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_collect_string(
+    stream: *mut HewStream,
+) -> *mut c_char {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_collect_string(stream) }
 }
 
 /// Count remaining items in a stream.
@@ -3535,6 +3583,27 @@ mod tests {
             let all: Vec<u8> = items.into_iter().flatten().collect();
             assert_eq!(all, content);
             hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn nominal_file_read_resource_endpoints_share_one_live_handle() {
+        let path = temp_path("nominal_file_read_resource");
+        let content = b"one nominal owner";
+        std::fs::write(&path, content).unwrap();
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path names an existing file, and the returned handle is
+        // released exactly once through its nominal close endpoint.
+        unsafe {
+            let stream = hew_file_read_stream_open(c_path.as_ptr());
+            assert_eq!(hew_file_read_stream_is_valid(stream), 1);
+            assert_eq!(hew_file_read_stream_is_valid(ptr::null()), 0);
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, content);
+            hew_file_read_stream_close(stream);
         }
         let _ = std::fs::remove_file(&path);
     }

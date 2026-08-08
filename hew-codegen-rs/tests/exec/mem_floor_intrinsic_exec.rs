@@ -112,7 +112,9 @@ fn driver_main() -> RawMirFunction {
             ],
             terminator: Terminator::Call {
                 callee: "mem$alloc".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$alloc"),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$alloc"))
+                    .map(hew_mir::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                 args: vec![Place::Local(0), Place::Local(1)],
                 dest: Some(Place::Local(2)),
                 next: 1,
@@ -124,7 +126,9 @@ fn driver_main() -> RawMirFunction {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "mem$alloc".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$alloc"),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$alloc"))
+                    .map(hew_mir::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                 args: vec![Place::Local(0), Place::Local(1)],
                 dest: Some(Place::Local(3)),
                 next: 2,
@@ -136,7 +140,11 @@ fn driver_main() -> RawMirFunction {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "mem$ptr_copy".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$ptr_copy"),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "mem$ptr_copy",
+                ))
+                .map(hew_mir::CallAuthority::Runtime)
+                .unwrap_or_default(),
                 // dst=r, src=p, byte_count=32
                 args: vec![Place::Local(3), Place::Local(2), Place::Local(4)],
                 dest: None,
@@ -149,9 +157,11 @@ fn driver_main() -> RawMirFunction {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "mem$ptr_offset".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                     "mem$ptr_offset",
-                ),
+                ))
+                .map(hew_mir::CallAuthority::Runtime)
+                .unwrap_or_default(),
                 // p, byte_offset=16 -> q
                 args: vec![Place::Local(2), Place::Local(5)],
                 dest: Some(Place::Local(6)),
@@ -164,7 +174,11 @@ fn driver_main() -> RawMirFunction {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "mem$dealloc".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$dealloc"),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "mem$dealloc",
+                ))
+                .map(hew_mir::CallAuthority::Runtime)
+                .unwrap_or_default(),
                 args: vec![Place::Local(2), Place::Local(0), Place::Local(1)],
                 dest: None,
                 next: 5,
@@ -176,7 +190,11 @@ fn driver_main() -> RawMirFunction {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "mem$dealloc".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("mem$dealloc"),
+                authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "mem$dealloc",
+                ))
+                .map(hew_mir::CallAuthority::Runtime)
+                .unwrap_or_default(),
                 args: vec![Place::Local(3), Place::Local(0), Place::Local(1)],
                 dest: None,
                 next: 6,
@@ -283,8 +301,7 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

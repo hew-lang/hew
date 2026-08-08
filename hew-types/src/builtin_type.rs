@@ -13,6 +13,10 @@ pub enum BuiltinType {
     Vec,
     HashMap,
     HashSet,
+    /// Compiler-synthesised owned snapshot cursor for `Vec<T>` iteration.
+    VecIter,
+    /// Compiler-synthesised parallel snapshot cursor for `HashMap<K, V>`.
+    HashMapIter,
     Task,
     StreamPair,
     Generator,
@@ -69,6 +73,7 @@ pub enum BuiltinType {
     DownNotification,
     SendError,
     AskError,
+    LookupError,
     RecvError,
     LinkError,
     MonitorError,
@@ -165,6 +170,8 @@ builtin_types! {
     Vec => "Vec",
     HashMap => "HashMap",
     HashSet => "HashSet",
+    VecIter => "VecIter",
+    HashMapIter => "HashMapIter",
     Task => "Task",
     StreamPair => "StreamPair",
     Generator => "Generator",
@@ -203,6 +210,7 @@ builtin_types! {
     DownNotification => "DownNotification",
     SendError => "SendError",
     AskError => "AskError",
+    LookupError => "LookupError",
     RecvError => "RecvError",
     LinkError => "LinkError",
     MonitorError => "MonitorError",
@@ -218,6 +226,85 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    /// Whether cloning this builtin duplicates only its outer handle and treats
+    /// type arguments as protocol/identity tags rather than stored payloads.
+    ///
+    /// This is the shared checker/MIR authority for the affine-marker walk.
+    /// Actor references are bit-copied, `Rc`/`Weak` retain their shared
+    /// allocation, and `Sender` clones its refcounted endpoint handle; none
+    /// recursively clones a resource-bearing type argument. `Receiver` is
+    /// deliberately absent: the single-consumer endpoint has no clone helper.
+    #[must_use]
+    pub const fn is_affine_clone_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::LocalPid
+                | Self::RemotePid
+                | Self::LambdaPid
+                | Self::HewActor
+                | Self::Rc
+                | Self::Weak
+                | Self::Sender
+        )
+    }
+
+    /// Whether a value of this builtin type transfers SOLE ownership when it
+    /// crosses an actor message boundary (ask argument, tell argument, spawn
+    /// argument, `Duplex::send` payload).
+    ///
+    /// The mailbox hand-off moves the value out of the caller frame and mints
+    /// the delivered copy a scope-exit owner in the handler, so a transferring
+    /// argument consumes the caller's binding.
+    ///
+    /// The exclusions are exactly the NON-OWNING actor references: `LocalPid`
+    /// and its raw runtime word `HewActor` (the pointer `LocalPid<T>` lowers
+    /// to). A pid's drop frees nothing — it is a by-value reference snapshot —
+    /// so sending one must leave the sender's handle live, or every supervisor
+    /// that hands one child's pid to two peers stops compiling.
+    ///
+    /// Everything else with a release contract transfers, including handles
+    /// that merely LOOK like references:
+    ///
+    /// * `LambdaPid` / `LambdaActorHandle` — refcounted wrappers. The runtime
+    ///   exposes `hew_lambda_actor_clone`, which allocates a distinct owning
+    ///   wrapper precisely because a plain address copy is unsafe; two owners
+    ///   of one wrapper release it twice (observed: SIGSEGV).
+    /// * `MonitorRef` — a `#[resource]` standing for an ACTIVE registration
+    ///   whose `close` demonitors. Two owners means one cancels the other's
+    ///   registration.
+    /// * `BoxedActor` — carries its own release contract.
+    ///
+    /// Sharing a transferring handle is still expressible: through the
+    /// runtime's explicit clone, which mints a second owner, never through a
+    /// silent address copy.
+    ///
+    /// This is the SINGLE list; both the env checker
+    /// (`enforce_actor_boundary_send`) and HIR intent stamping read it, so the
+    /// two ownership authorities cannot drift apart.
+    #[must_use]
+    pub const fn transfers_ownership_across_actor_boundary(self) -> bool {
+        matches!(
+            self,
+            Self::Sender
+                | Self::Receiver
+                | Self::Stream
+                | Self::Sink
+                | Self::Duplex
+                | Self::SendHalf
+                | Self::RecvHalf
+                | Self::HewDuplex
+                | Self::HewSendHalf
+                | Self::HewRecvHalf
+                | Self::Generator
+                | Self::AsyncGenerator
+                | Self::CancellationToken
+                | Self::LambdaPid
+                | Self::LambdaActorHandle
+                | Self::BoxedActor
+                | Self::MonitorRef
+        )
+    }
+
     #[must_use]
     pub const fn marker(self) -> BuiltinTypeMarker {
         match self {
@@ -279,6 +366,29 @@ impl BuiltinType {
         }
     }
 
+    /// Whether this is a stdlib declaration whose ABI identity is known to the
+    /// compiler but whose lexical authority and field/variant layout remain
+    /// source-owned.  Such a type is never admitted by its bare catalog name:
+    /// a named/glob/aliased import must publish that spelling, or the program
+    /// must use the imported owner's qualified spelling.  The no-search-path
+    /// inline-test bootstrap is the sole prelude exception.
+    #[must_use]
+    pub const fn requires_source_import(self) -> bool {
+        matches!(
+            self,
+            Self::CrashInfo
+                | Self::CrashAction
+                | Self::CrashNotification
+                | Self::CrashKind
+                | Self::MonitorId
+                | Self::DownTarget
+                | Self::DownReason
+                | Self::DownNotification
+                | Self::MonitorError
+                | Self::MonitorRef
+        )
+    }
+
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
@@ -303,6 +413,7 @@ impl BuiltinType {
         match self {
             Self::Option
             | Self::Vec
+            | Self::VecIter
             | Self::HashSet
             | Self::Task
             | Self::Generator
@@ -322,6 +433,7 @@ impl BuiltinType {
             | Self::RecvHalf => 1,
             Self::Result
             | Self::HashMap
+            | Self::HashMapIter
             | Self::StreamPair
             | Self::Duplex
             | Self::SupervisorPool
@@ -344,6 +456,7 @@ impl BuiltinType {
             | Self::DownNotification
             | Self::SendError
             | Self::AskError
+            | Self::LookupError
             | Self::RecvError
             | Self::LinkError
             | Self::MonitorError
@@ -455,6 +568,37 @@ impl BuiltinType {
     pub const fn lowers_as_pointer_vec_element(self) -> bool {
         matches!(self, Self::LocalPid)
     }
+
+    /// True when the builtin's complete value ABI is one opaque pointer word.
+    ///
+    /// This is codegen representation authority, not an ownership or source-
+    /// level handle classification. In particular, `RemotePid<T>` is excluded
+    /// because its value is an inline location aggregate, while
+    /// `SupervisorPool<S, T>` is a two-field aggregate. Consumers must use this
+    /// discriminator instead of presentation names so renamed builtin spellings
+    /// retain their ABI and same-spelling user nominals cannot acquire it.
+    #[must_use]
+    pub const fn lowers_as_opaque_pointer_abi(self) -> bool {
+        matches!(
+            self,
+            Self::Vec
+                | Self::HashMap
+                | Self::HashSet
+                | Self::Rc
+                | Self::Weak
+                | Self::Sender
+                | Self::Receiver
+                | Self::Duplex
+                | Self::Stream
+                | Self::Sink
+                | Self::SendHalf
+                | Self::RecvHalf
+                | Self::LocalPid
+                | Self::LambdaPid
+                | Self::Generator
+                | Self::AsyncGenerator
+        )
+    }
 }
 
 #[must_use]
@@ -465,22 +609,172 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
-        "channel.Sender" => return Some(BuiltinType::Sender),
-        "channel.Receiver" => return Some(BuiltinType::Receiver),
-        "stream.Stream" => return Some(BuiltinType::Stream),
-        "stream.Sink" => return Some(BuiltinType::Sink),
+        "channel.Sender" | "std.channel.Sender" => {
+            return Some(BuiltinType::Sender);
+        }
+        "channel.Receiver" | "std.channel.Receiver" => {
+            return Some(BuiltinType::Receiver);
+        }
+        "stream.Stream" | "std.stream.Stream" => return Some(BuiltinType::Stream),
+        "stream.Sink" | "std.stream.Sink" => return Some(BuiltinType::Sink),
         "duplex.Duplex" => return Some(BuiltinType::Duplex),
+        "link_monitor.MonitorRef" | "std.link_monitor.MonitorRef" => {
+            return Some(BuiltinType::MonitorRef);
+        }
+        "link_monitor.MonitorError" | "std.link_monitor.MonitorError" => {
+            return Some(BuiltinType::MonitorError);
+        }
         _ => {}
     }
-    builtin_types()
+    if let Some(kind) = builtin_types()
         .iter()
         .find(|info| info.canonical_name == name)
         .map(|info| info.kind)
+    {
+        return Some(kind);
+    }
+    let generated = crate::builtin_enums::monomorphic_builtin_enum(name)?;
+    (name == generated.canonical_name)
+        .then(|| {
+            builtin_types()
+                .iter()
+                .find(|info| info.canonical_name == generated.name)
+                .map(|info| info.kind)
+        })
+        .flatten()
+}
+
+/// One stdlib module that declares source-imported lifecycle types.
+///
+/// `binding` is the module binding the owner is written as in Hew source
+/// (`import std::failure` binds `failure`), and is also the short owner
+/// spelling that survives in older internal facts.
+#[derive(Debug)]
+pub struct SourceOwnedLifecycleOwner {
+    /// The canonical declaration owner (`std.failure`).
+    pub canonical_path: &'static str,
+    /// The module binding the owner is written as (`failure`).
+    pub binding: &'static str,
+    /// The closed set of lifecycle builtins this module declares.
+    pub declares: &'static [BuiltinType],
+}
+
+/// The two lifecycle owners, and every declaration each one owns.
+///
+/// This is the SINGLE authority. The owner set was previously restated in the
+/// checker's identity ladder, in this module's membership match, and in MIR's
+/// synthetic-hook layout catalog; three copies of a closed set drift silently
+/// when a declaration moves. Every consumer reads this table, and
+/// `every_source_import_builtin_has_exactly_one_owner` proves the table stays
+/// total against the builtin catalog.
+pub const SOURCE_OWNED_LIFECYCLE_OWNERS: &[SourceOwnedLifecycleOwner] = &[
+    SourceOwnedLifecycleOwner {
+        canonical_path: "std.failure",
+        binding: "failure",
+        declares: &[
+            BuiltinType::CrashInfo,
+            BuiltinType::CrashAction,
+            BuiltinType::CrashNotification,
+            BuiltinType::CrashKind,
+        ],
+    },
+    SourceOwnedLifecycleOwner {
+        canonical_path: "std.link_monitor",
+        binding: "link_monitor",
+        declares: &[
+            BuiltinType::MonitorId,
+            BuiltinType::DownTarget,
+            BuiltinType::DownReason,
+            BuiltinType::DownNotification,
+            BuiltinType::MonitorError,
+            BuiltinType::MonitorRef,
+        ],
+    },
+];
+
+/// The lifecycle owner a qualified spelling names, plus the leaf it qualifies.
+///
+/// Both the canonical path (`std.failure.CrashKind`) and the short binding
+/// form (`failure.CrashKind` — retained only for reading older internal facts)
+/// resolve to the same owner. A deeper path or an unknown owner returns `None`.
+#[must_use]
+pub fn source_owned_lifecycle_owner(
+    name: &str,
+) -> Option<(&'static SourceOwnedLifecycleOwner, &str)> {
+    SOURCE_OWNED_LIFECYCLE_OWNERS.iter().find_map(|owner| {
+        [owner.canonical_path, owner.binding]
+            .into_iter()
+            .find_map(|prefix| name.strip_prefix(prefix)?.strip_prefix('.'))
+            .filter(|leaf| !leaf.contains('.'))
+            .map(|leaf| (owner, leaf))
+    })
+}
+
+/// Look up a source-owned lifecycle builtin by either its bare name or its
+/// canonical source identity (`std.failure.CrashNotification`, for example).
+///
+/// This is deliberately narrower than [`lookup_builtin_type`]: callers use it
+/// to enforce source import authority, not to make arbitrary catalog names
+/// globally visible.
+#[must_use]
+pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
+    let (owner, bare) = match source_owned_lifecycle_owner(name) {
+        Some((owner, bare)) => (Some(owner), bare),
+        None if name.contains('.') => return None,
+        None => (None, name),
+    };
+    let builtin = lookup_builtin_type(bare)?;
+    builtin
+        .requires_source_import()
+        .then_some(builtin)
+        .filter(|_| owner.is_none_or(|owner| owner.declares.contains(&builtin)))
+}
+
+/// Whether `name` and `builtin` jointly identify an exact source-owned
+/// lifecycle declaration. Bare or foreign same-leaf spellings never pass.
+#[must_use]
+pub fn has_exact_source_owned_lifecycle_identity(name: &str, builtin: Option<BuiltinType>) -> bool {
+    name.contains('.') && builtin.is_some() && lookup_source_owned_lifecycle_type(name) == builtin
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_source_import_builtin_has_exactly_one_owner() {
+        // The owner table and `requires_source_import` are two statements of
+        // one closed set. Adding a lifecycle builtin to the catalog without
+        // naming its declaring module leaves it owner-less: the qualified
+        // spelling then resolves through no owner and every downstream layout
+        // and scope gate reads a different answer than the checker.
+        for info in builtin_types()
+            .iter()
+            .filter(|i| i.kind.requires_source_import())
+        {
+            let owners: Vec<_> = SOURCE_OWNED_LIFECYCLE_OWNERS
+                .iter()
+                .filter(|owner| owner.declares.contains(&info.kind))
+                .map(|owner| owner.canonical_path)
+                .collect();
+            assert_eq!(
+                owners.len(),
+                1,
+                "`{}` requires a source import but is declared by {owners:?}",
+                info.canonical_name
+            );
+        }
+        for owner in SOURCE_OWNED_LIFECYCLE_OWNERS {
+            for declared in owner.declares {
+                assert!(
+                    declared.requires_source_import(),
+                    "`{}` is listed under `{}` but does not require a source import",
+                    declared.canonical_name(),
+                    owner.canonical_path
+                );
+            }
+        }
+    }
 
     #[test]
     fn lookup_covers_registered_builtins() {
@@ -499,6 +793,78 @@ mod tests {
     fn lookup_rejects_user_names() {
         assert_eq!(lookup_builtin_type("UserOption"), None);
         assert_eq!(lookup_builtin_type("user.Option"), None);
+        assert_eq!(lookup_builtin_type("user.MonitorError"), None);
+    }
+
+    #[test]
+    fn lookup_accepts_exact_renamed_monitor_carriers() {
+        assert_eq!(
+            lookup_builtin_type("link_monitor.MonitorError"),
+            Some(BuiltinType::MonitorError)
+        );
+        assert_eq!(
+            lookup_builtin_type("std.link_monitor.MonitorError"),
+            Some(BuiltinType::MonitorError)
+        );
+    }
+
+    #[test]
+    fn lookup_accepts_exact_generated_enum_owners_without_foreign_leaf_fallback() {
+        for fact in crate::builtin_enums::monomorphic_builtin_enums() {
+            assert_eq!(
+                lookup_builtin_type(fact.canonical_name),
+                lookup_builtin_type(fact.name),
+                "generated owner identity for {} must preserve its discriminator",
+                fact.name
+            );
+            assert_eq!(
+                lookup_builtin_type(&format!("foreign.{}", fact.name)),
+                None,
+                "a same-leaf foreign owner must not acquire the generated discriminator"
+            );
+        }
+    }
+
+    #[test]
+    fn source_lifecycle_identity_requires_exact_owner_and_discriminator() {
+        for (name, builtin) in [
+            ("std.failure.CrashInfo", BuiltinType::CrashInfo),
+            ("std.failure.CrashAction", BuiltinType::CrashAction),
+        ] {
+            assert!(has_exact_source_owned_lifecycle_identity(
+                name,
+                Some(builtin)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(name, None));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                name,
+                Some(BuiltinType::AskError)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                crate::short_name(name),
+                Some(builtin)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                &format!("foreign.{}", crate::short_name(name)),
+                Some(builtin)
+            ));
+        }
+    }
+
+    #[test]
+    fn lookup_accepts_exact_channel_owners_without_leaf_fallback() {
+        assert_eq!(
+            lookup_builtin_type("std.channel.Sender"),
+            Some(BuiltinType::Sender)
+        );
+        assert_eq!(
+            lookup_builtin_type("std.channel.Receiver"),
+            Some(BuiltinType::Receiver)
+        );
+        assert_eq!(lookup_builtin_type("std.channel.channel.Sender"), None);
+        assert_eq!(lookup_builtin_type("std.channel.channel.Receiver"), None);
+        assert_eq!(lookup_builtin_type("acme.channel.Sender"), None);
+        assert_eq!(lookup_builtin_type("acme.channel.Receiver"), None);
     }
 
     #[test]
@@ -528,6 +894,37 @@ mod tests {
                 info.kind.is_caller_visible_shared_handle(),
                 expected.contains(&info.kind),
                 "{:?} caller-visible shared-handle classification",
+                info.kind
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_pointer_abi_facts_are_exact() {
+        let expected = [
+            BuiltinType::Vec,
+            BuiltinType::HashMap,
+            BuiltinType::HashSet,
+            BuiltinType::Rc,
+            BuiltinType::Weak,
+            BuiltinType::Sender,
+            BuiltinType::Receiver,
+            BuiltinType::Duplex,
+            BuiltinType::Stream,
+            BuiltinType::Sink,
+            BuiltinType::SendHalf,
+            BuiltinType::RecvHalf,
+            BuiltinType::LocalPid,
+            BuiltinType::LambdaPid,
+            BuiltinType::Generator,
+            BuiltinType::AsyncGenerator,
+        ];
+
+        for info in builtin_types() {
+            assert_eq!(
+                info.kind.lowers_as_opaque_pointer_abi(),
+                expected.contains(&info.kind),
+                "{:?} opaque-pointer ABI classification",
                 info.kind
             );
         }

@@ -1,7 +1,7 @@
 //! 1:1 drift proof between the two ownership-contract carriers.
 //!
 //! `scripts/jit-symbol-classification.toml` `[[ownership.contracts]]` is the
-//! authority; `hew-mir/build.rs` projects it into the static
+//! authority; `hew-types/build.rs` projects it into the static
 //! `FFI_OWNERSHIP_CONTRACTS` table with a hand-rolled line parser. This test
 //! re-parses the TOML with the independent `toml` crate and asserts exact
 //! row-for-row equality, so neither a build-script parser bug nor a stale
@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use hew_mir::ffi_contracts::{
-    ExternParamOwnership, ExternResultOwnership, ReleaseDischargeDepth, FFI_OWNERSHIP_CONTRACTS,
+    ExternParamOwnership, ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    FFI_OWNERSHIP_CONTRACTS,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -32,10 +33,52 @@ struct Contract {
     symbol: String,
     result: String,
     params: Vec<String>,
+    #[serde(rename = "resource-param-types", default)]
+    resource_param_types: Vec<String>,
+    #[serde(rename = "resource-result-type", default)]
+    resource_result_type: Option<String>,
     #[serde(rename = "release-symbol")]
     release_symbol: String,
     #[serde(rename = "discharge-depth")]
     discharge_depth: String,
+    #[serde(rename = "result-retention", default)]
+    result_retention: String,
+    #[serde(rename = "result-retention-basis", default)]
+    result_retention_basis: String,
+}
+
+#[test]
+fn every_typed_resource_transfer_carries_runtime_body_evidence() {
+    let document = classification_toml();
+    let resource_rows = document
+        .ownership
+        .contracts
+        .iter()
+        .filter(|row| row.resource_result_type.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(resource_rows.len(), 55, "typed resource inventory drift");
+    for row in resource_rows {
+        assert_eq!(
+            row.result_retention, "resource-transfer",
+            "{} must use the resource-specific retention answer",
+            row.symbol
+        );
+        assert!(
+            !row.result_retention_basis.trim().is_empty(),
+            "{} must record the inspected runtime-body handoff",
+            row.symbol
+        );
+        let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+            .iter()
+            .find(|(symbol, _)| *symbol == row.symbol)
+            .unwrap_or_else(|| panic!("{} is absent from the compiled table", row.symbol));
+        assert_eq!(
+            compiled.result_retention,
+            ExternResultRetention::ResourceTransfer,
+            "{}",
+            row.symbol
+        );
+    }
 }
 
 fn classification_toml() -> Document {
@@ -70,6 +113,39 @@ fn depth_spelling(depth: ReleaseDischargeDepth) -> &'static str {
     }
 }
 
+fn retention_spelling(retention: ExternResultRetention) -> &'static str {
+    match retention {
+        ExternResultRetention::Transferred => "transferred",
+        ExternResultRetention::SharedRefcount => "shared-refcount",
+        ExternResultRetention::ResourceTransfer => "resource-transfer",
+        ExternResultRetention::Unspecified => "",
+    }
+}
+
+#[test]
+fn string_clone_records_an_independently_balanced_shared_owner() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_clone")
+        .expect("TOML string clone ownership row");
+    assert_eq!(source.result, "retained");
+    assert_eq!(source.result_retention, "shared-refcount");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_clone")
+        .expect("compiled string clone ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Retained);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::SharedRefcount
+    );
+    assert!(compiled.result_retention.authorizes_caller_release());
+}
+
 #[test]
 fn compiler_table_matches_toml_one_to_one() {
     let document = classification_toml();
@@ -99,6 +175,15 @@ fn compiler_table_matches_toml_one_to_one() {
             .collect();
         assert_eq!(compiled_params, expected.params, "{symbol}: params drift");
         assert_eq!(
+            compiled.resource_param_types, expected.resource_param_types,
+            "{symbol}: resource-param-types drift"
+        );
+        assert_eq!(
+            compiled.resource_result_type,
+            expected.resource_result_type.as_deref(),
+            "{symbol}: resource-result-type drift"
+        );
+        assert_eq!(
             result_spelling(compiled.result),
             expected.result,
             "{symbol}: result drift"
@@ -112,5 +197,39 @@ fn compiler_table_matches_toml_one_to_one() {
             expected.discharge_depth,
             "{symbol}: discharge-depth drift"
         );
+        assert_eq!(
+            retention_spelling(compiled.result_retention),
+            expected.result_retention,
+            "{symbol}: result-retention drift"
+        );
     }
+}
+
+#[test]
+fn string_to_bytes_transfer_row_does_not_drift() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_to_bytes")
+        .expect("TOML string-to-bytes ownership row");
+    assert_eq!(source.result, "fresh");
+    assert_eq!(source.params, ["borrow"]);
+    assert_eq!(source.release_symbol, "hew_bytes_drop");
+    assert_eq!(source.discharge_depth, "shallow");
+    assert_eq!(source.result_retention, "transferred");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_to_bytes")
+        .expect("compiled string-to-bytes ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Fresh);
+    assert_eq!(compiled.params, &[ExternParamOwnership::Borrow]);
+    assert_eq!(compiled.release_symbol, "hew_bytes_drop");
+    assert_eq!(compiled.discharge_depth, ReleaseDischargeDepth::Shallow);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::Transferred
+    );
 }

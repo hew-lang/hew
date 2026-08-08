@@ -553,7 +553,7 @@ pub(super) fn walk_body<V: NodeVisitor>(body: &Block, visitor: &mut V) {
     walk_block(body, visitor);
 }
 
-fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
+pub(super) fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
     visitor.visit_block(block);
     for (stmt, span) in &block.stmts {
         walk_stmt(stmt, span, visitor);

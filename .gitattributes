@@ -2,6 +2,26 @@
 # This prevents CRLF issues when comparing test output on Windows
 *.expected text eol=lf
 *.hew text eol=lf
-# MIR goldens preserve the compiler's byte-exact dump, including its final
-# separator line.
-*.mir -blank-at-eof
+*.md text eol=lf
+# MIR goldens (checked-in `--dump-mir` baselines, e.g.
+# tests/mir-baselines/**/*.mir) preserve the compiler's byte-exact dump,
+# including its final separator line; pin LF so a Windows checkout can't
+# introduce a false byte-compare failure.
+*.mir text eol=lf -blank-at-eof
+# ll-diff goldens (tests/ll-oracle/corpus/golden/{native,wasm32}/*.ll) are
+# compared byte-for-byte against a fresh `--emit-llvm` dump.
+*.ll text eol=lf
+# Manifests and release-count baselines compared/parsed byte-for-byte
+# (tests/mir-baselines/**/manifest.tsv,
+# hew-cli/tests/fixtures/release-count-baseline.tsv, scripts/*.tsv).
+*.tsv text eol=lf
+# Checked-MIR corpus manifest (examples/v05/checked-mir/golden/MANIFEST.sha256)
+# is diffed byte-for-byte against a freshly rendered manifest.
+*.sha256 text eol=lf
+# hew-capability-gen's authority file and its checked-in generated outputs
+# are compared byte-for-byte (normalized as defence in depth in the
+# comparison code itself); pin them to LF so a Windows checkout can't
+# introduce a false "stale" or a missed test mutation.
+/wasm-capability-manifest.toml text eol=lf
+/hew-types/src/wasm_capabilities_generated.rs text eol=lf
+/examples/playground/wasm-capabilities.json text eol=lf

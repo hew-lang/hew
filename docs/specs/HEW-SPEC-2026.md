@@ -955,7 +955,7 @@ list and uses the first matching module root. The search order is:
 configure module search paths.
 
 > **Scope note:** `HEWPATH` affects stdlib module resolution. User-module
-> file-import paths use `HEW_STD` and `.adze/packages` instead; they are not
+> file-import paths use `HEW_STD` and `.hew/packages` instead; they are not
 > governed by `HEWPATH`. Unification of `HEWPATH` across both stdlib and
 > user-module file imports is planned for a future edition.
 
@@ -1216,8 +1216,8 @@ impl Connection {
     fn close(c: Connection) {}
 }
 
-fn example(host: string) {
-    let conn = Connection::open(host);
+fn main() {
+    let conn = Connection { fd: 0 };
     // ... use conn ...
 }  // conn.close() runs here automatically (implicit #[resource] drop)
 ```
@@ -2071,6 +2071,16 @@ extern "C" {
 
 - `extern "C"` specifies the C calling convention (default)
 - Future: `extern "stdcall"`, `extern "fastcall"` for platform-specific conventions
+
+**Symbol uniqueness:** an `extern "C"` symbol name is one C symbol program-wide,
+across every module and file that declares it. The linker binds every call
+site to the one implementation behind that symbol, so a second declaration of
+the same symbol must repeat its established parameter types, return type,
+variadic shape, and ownership (`consume`) modes exactly — one C symbol means
+one ABI contract. This holds even if the conflicting declaration is never
+called: the compiler rejects the drift at declaration time, not at the call
+site. Identical re-declarations (for example, the same C header imported by
+two modules) are accepted and resolve to the one established contract.
 
 #### 3.9.2 C-Compatible Struct Layout
 

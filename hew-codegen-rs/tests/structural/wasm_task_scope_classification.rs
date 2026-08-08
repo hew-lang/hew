@@ -14,7 +14,7 @@
 //! codegen-level gate catches any direct-MIR path that bypasses the type
 //! checker (e.g. test pipelines built straight against the MIR APIs).
 //!
-//! WASM-TODO(#1451): task-scope WASM parity sub-task under the umbrella issue.
+//! WASM-TODO(scope): add the cooperative task-scope runtime.
 //!
 //! LESSONS: boundary-fail-closed (P0), parity-or-tracked-gap (P0),
 //! user-surface-correctness (P0).
@@ -28,12 +28,7 @@ use hew_mir::{
 use hew_types::ResolvedTy;
 
 fn task_scope_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "HewTaskScope".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_opaque("renamed.HewTaskScope", vec![])
 }
 
 /// Build a minimal pipeline that opens a `HewTaskScope` via `hew_task_scope_new`
@@ -114,8 +109,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -137,12 +131,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
             params: vec![],
-            locals: vec![ResolvedTy::Named {
-                name: "HewTask".to_string(),
-                args: vec![],
-                builtin: None,
-                is_opaque: false,
-            }],
+            locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
             local_names: Vec::new(),
             local_scopes: Vec::new(),
             local_decl_bytes: Vec::new(),
@@ -198,8 +187,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -369,7 +357,7 @@ fn task_await_select_arm_blocks_wasm_emission() {
 }
 
 /// The diagnostic message MUST name `scope {}` (the source-level construct)
-/// and reference the tracking marker (`WASM-TODO(#1451)`). Asserts the
+/// and reference the tracking marker (`WASM-TODO(scope):`). Asserts the
 /// Display string — users see this; brittle wording is intentional
 /// (regression guard).
 #[test]
@@ -393,11 +381,9 @@ fn task_scope_wasm_diagnostic_message_names_scope_construct() {
         msg.contains("scope {}"),
         "diagnostic must name the source-level `scope {{}}` construct; got: {msg}"
     );
-    // Use the parenthesised form here so the lint-wasm-todo-issue-ref.sh
-    // gate does not flag this test for a bare marker.
     assert!(
-        msg.contains("WASM-TODO(#1451)"),
-        "diagnostic must reference WASM-TODO(#1451); got: {msg}"
+        msg.contains("WASM-TODO(scope):"),
+        "diagnostic must reference WASM-TODO(scope):; got: {msg}"
     );
     assert!(
         msg.contains("hew_task_scope_new"),

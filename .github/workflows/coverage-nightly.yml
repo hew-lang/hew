@@ -22,14 +22,68 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 env:
   # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
   # llvm-sys-221) build script. Must match ci.yml / setup-llvm action pins.
   LLVM_VERSION: "22.1.5"
+  # Pinned wasmtime release tag for full-windows's WASI provisioning step,
+  # matching ci.yml's single pin (see ci.yml's WASMTIME_VERSION comment for
+  # why it is pinned rather than resolved as "latest").
+  WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Runtime FFI coverage is produced only by real compiled Hew programs. Keep
+  # it separate from cargo-llvm-cov: their covmaps are not merge-compatible,
+  # and fail if any curated program fails to build, run, or emit profile data.
+  runtime-e2e-coverage:
+    name: Runtime E2E coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          components: llvm-tools
+          cache-shared-key: runtime-e2e-coverage
+
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo rm -rf /usr/lib/jvm || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Compile, run, and measure the runtime corpus
+        env:
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: timeout 2400 bash scripts/coverage-runtime-e2e.sh
+
+      - name: Publish runtime coverage summary
+        if: always()
+        run: |
+          if [[ -f coverage-out/runtime-e2e/runtime-summary.txt ]]; then
+            cat coverage-out/runtime-e2e/runtime-summary.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload runtime coverage summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: runtime-e2e-coverage
+          path: coverage-out/runtime-e2e/runtime-summary.txt
+          if-no-files-found: ignore
+
   # ─────────────────────────────────────────────────────────────────────────
   # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
   # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,
@@ -221,6 +275,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Setup MSVC environment
+        # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
+        # the LLVM prefix is configured in the following setup-llvm step.
+        uses: ./.github/actions/setup-msvc
+
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         uses: ./.github/actions/setup-llvm
         with:
@@ -234,12 +293,67 @@ jobs:
       - name: Build Rust crates
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
+        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
+
+      - name: Install WASI runner prerequisites
+        # This job runs the full workspace nextest, including hew-cli's
+        # WASI-dependent tests (eval_wasm_*, sort_merge_authority_runs_under_
+        # wasmtime, etc.), which require_wasi_runner() panics on hard-failing
+        # if wasmtime is unreachable. Windows had no equivalent of the Linux
+        # tarball / macOS brew install here — same class of gap ci.yml's
+        # build-and-test-windows job carried before it was fixed, and the same
+        # class the FreeBSD nightly was missing. Provision from the same
+        # pinned WASMTIME_VERSION ci.yml uses and prove it runs inside this
+        # step, not inside a test.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rustup target add wasm32-wasip1
+          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
+
+          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
+
+          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
+          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
+          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
+            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
+
+          & $wasmtimeExe --version
+          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
+
+          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
+          # link step shells out to it, so an unreachable wasm-ld is the same
+          # class of silent gap as a missing runtime.
+          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
+          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
+          & $wasmLd.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
+
+      - name: Build hew-runtime for wasm32-wasip1 (debug)
+        # The full workspace nextest below runs debug test binaries, and
+        # bootstrap_wasi_runner() builds this archive on demand when it is
+        # absent. Without a pre-build, every parallel nextest process races to
+        # cargo-build the same non-atomically written staticlib and wasm-ld
+        # intermittently fails to open it. Mirrors ci.yml's Windows job.
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+
+      - name: Build hew-std for wasm32-wasip1 (debug)
+        # Same race, same medicine: bootstrap_wasi_runner() also builds
+        # libhew_std.a on demand when it is missing.
+        run: cargo build -p hew-std --target wasm32-wasip1
 
       - name: Run Rust workspace tests
-        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
-        # that conflict with hew-runtime when both are linked into a
-        # test binary (duplicate symbol errors).
+        # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
+        # when both are linked into a test binary (duplicate symbol errors).
+        # hew-wasm is excluded on every platform (profile.ci's default-filter
+        # does the same) — the browser/tooling WASM surface has its own
+        # playground-wasm-build job.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-
@@ -247,11 +361,19 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
 
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         run: make test-cabi
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Test Results (Windows, coverage-nightly)
 
   # ─────────────────────────────────────────────────────────────────────────
   # Full macOS arm64 workspace nextest — the cross-platform coverage that
@@ -312,9 +434,17 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
           -E 'not binary(~oracle)'
 
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         run: make test-cabi
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Test Results (macOS, coverage-nightly)

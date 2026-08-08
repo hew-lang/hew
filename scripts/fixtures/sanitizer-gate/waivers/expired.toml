@@ -1,13 +1,17 @@
 [[waiver]]
 axis = "tsan"
-reason = "upstream nightly build-std + TSan link failure"
+release = "0.6.0-rc1"
+behavior = "the executed probe reproduces a toolchain false positive"
+reason = "upstream build-std and TSan linking are incompatible"
 tracking = "https://github.com/hew-lang/hew/issues/0000"
-commit = "0123456789abcdef0123456789abcdef01234567"
+owner = "runtime maintainers"
 expires = "2000-01-01"
 
 [[waiver]]
 axis = "miri"
-reason = "recurring Miri release gate is tracked separately"
+release = "0.6.0-rc1"
+behavior = "the FFI-heavy runtime cannot execute under the curated model"
+reason = "a representative FFI model is tracked separately"
 tracking = "https://github.com/hew-lang/hew/issues/0001"
-commit = "0123456789abcdef0123456789abcdef01234567"
+owner = "runtime maintainers"
 expires = "2999-12-31"

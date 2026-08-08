@@ -7,6 +7,15 @@ use crate::builtin_names::{builtin_named_type, resolve_builtin_method_symbol, Bu
 #[cfg(test)]
 use crate::builtin_names::{RECEIVER, SENDER, SINK, STREAM};
 
+/// Canonical source identities for the TCP substrate handles.
+///
+/// `net` is only an import binding. Semantic tables must use the full owner
+/// so a user module ending in `net` cannot acquire TCP runtime behaviour.
+pub const STD_NET_LISTENER: &str = "std.net.Listener";
+pub const STD_NET_CONNECTION: &str = "std.net.Connection";
+pub const STD_NET_ERROR: &str = "std.net.NetError";
+pub const STD_NET_WRITE_ERROR: &str = "std.net.WriteError";
+
 /// Resolves a method call on a `Sender<T>` or `Receiver<T>` to its C symbol.
 ///
 /// String channels use the existing `hew_channel_*` functions.
@@ -52,7 +61,7 @@ pub fn resolve_stream_method(
 /// Returns the codegen representation for a handle type.
 ///
 /// Most handle types are opaque pointers (`"handle"`).
-/// File-descriptor types like `net.Listener` and `net.Connection` use `"i32"`.
+/// File-descriptor types like `std.net.Listener` and `std.net.Connection` use `"i32"`.
 ///
 // SHIM: This hardcoded mapping should eventually move to `hew.toml` metadata
 // in each module's package directory, so modules can declare their own
@@ -60,7 +69,7 @@ pub fn resolve_stream_method(
 #[must_use]
 pub fn handle_type_representation(name: &str) -> &'static str {
     match name {
-        "net.Listener" | "net.Connection" => "i32",
+        STD_NET_LISTENER | STD_NET_CONNECTION => "i32",
         _ => "handle",
     }
 }

@@ -33,6 +33,7 @@ import std::net;
 /// address cannot be bound. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
+#[resource]
 #[opaque]
 pub type Server {
 }
@@ -60,12 +61,6 @@ trait ServerMethods {
 
     /// Set the per-request body read deadline in milliseconds.
     fn set_request_timeout_ms(self, timeout_ms: i64) -> i64;
-
-    /// Canonical release path for `Server`.
-    ///
-    /// Callers MUST invoke `close()` before the value goes out of scope;
-    /// dropping without `close()` is a resource leak.
-    fn close(self);
 }
 
 impl ServerMethods for Server {
@@ -81,13 +76,13 @@ impl ServerMethods for Server {
             hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64) as i64
         } // INTERNAL-ABI: C ABI timeout is i64
     }
-    /// Canonical release path for `Server`.
-    ///
-    /// Callers MUST invoke `close()` before the value goes out of scope;
-    /// dropping without `close()` is a resource leak.
-    fn close(srv: Server) {
+}
+
+impl Server {
+    /// Release this server early. Scope exit performs the same release.
+    fn close(consuming self) {
         unsafe {
-            hew_http_server_close(srv)
+            hew_http_server_close(self)
         };
     }
 }
@@ -326,10 +321,10 @@ fn valid_response_status(status: i64) -> bool {
 }
 
 impl Request {
-    /// Release this request early.
-    fn close(req: Request) {
+    /// Release this request early. Scope exit performs the same release.
+    fn close(consuming self) {
         unsafe {
-            hew_http_request_free(req.handle)
+            hew_http_request_free(self.handle)
         };
     }
 }
@@ -425,8 +420,8 @@ extern "C" {
     fn hew_http_respond_text(req: RequestHandle, status: i32, body: string) -> i32;
     fn hew_http_respond_json(req: RequestHandle, status: i32, json: string) -> i32;
     fn hew_http_respond_stream(req: RequestHandle, status: i32, content_type: string) -> Sink<string>;
-    fn hew_http_server_close(server: Server);
-    fn hew_http_request_free(req: RequestHandle);
+    fn hew_http_server_close(consume server: Server);
+    fn hew_http_request_free(consume req: RequestHandle);
     fn hew_sink_is_valid(sink: Sink<string>) -> bool;
     fn hew_stream_last_error() -> string;
 }

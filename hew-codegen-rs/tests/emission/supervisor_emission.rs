@@ -24,22 +24,21 @@ use hew_mir::{
     ActorLayout, BasicBlock, ChildInitArg, FunctionCallConv, IrPipeline, RawMirFunction,
     RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 
 fn local_pid_of(actor: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
+    ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![ResolvedTy::Named {
             name: actor.to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         }],
-        builtin: None,
-        is_opaque: false,
-    }
+    )
 }
 
 /// Build a pipeline carrying `AppSupervisor` with one `Worker` child.
@@ -210,8 +209,7 @@ fn supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -524,8 +522,7 @@ fn on_crash_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -866,8 +863,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1074,8 +1070,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

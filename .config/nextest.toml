@@ -29,6 +29,14 @@ process-timing = { max-threads = 4 }
 # iteration.  This is a quarantine, not a parking lot: a timing test that CAN be made
 # deterministic is fixed at the root by the de-flake initiative, never parked here.
 real-timing = { max-threads = 1 }
+# supervision-lifecycle-accounting: each test process installs a native runtime
+# and worker pool, then relies on process exit to close nextest's capture pipes.
+# On Darwin, launching all cases at once can delay nextest's asynchronous EOF
+# observation past its leak timeout even though process-tree and lsof snapshots
+# show no surviving child and no inherited sibling pipe. Run these small tests
+# one-at-a-time so `leak-timeout = fail` below is a reliable ownership gate
+# instead of a concurrent output-drain false positive.
+supervision-lifecycle-accounting = { max-threads = 1 }
 
 [profile.default]
 # Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
@@ -57,7 +65,7 @@ default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet
 test-threads = "num-cpus"
 
 [[profile.default.overrides]]
-# eval_e2e and adze eval tests each spawn the full hew compiler binary (AOT
+# eval_e2e and package-manager eval tests each spawn the full hew compiler binary (AOT
 # compile + codegen + link + subprocess execute).  Route them into the
 # subprocess-intensive group so at most 8 run concurrently, preventing
 # compiler-process oversubscription that inflates compile times and causes
@@ -76,6 +84,14 @@ test-group = "subprocess-intensive"
 # free_cstring abort and value assertions and carries no retry.
 filter = "binary(run_e2e) and test(/^run_actor_sent_string_not_double_freed$/)"
 threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+# Serial process execution makes handle-leak detection deterministic for this
+# runtime-lifecycle binary. Any capture handle still open after nextest's normal
+# 200 ms grace period is therefore a hard failure.
+filter = "binary(supervision_lifecycle)"
+test-group = "supervision-lifecycle-accounting"
+leak-timeout = { period = "200ms", result = "fail" }
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
@@ -108,6 +124,13 @@ slow-timeout = { period = "100s", terminate-after = 3 }
 # oversubscribe a 4-core hosted runner.
 filter = "binary(test_runner_e2e)"
 test-group = "subprocess-intensive"
+
+[[profile.ci.overrides]]
+# Keep the local ownership gate intact in the CI profile as well: serialize
+# this binary and fail rather than merely annotate a genuine leaked handle.
+filter = "binary(supervision_lifecycle)"
+test-group = "supervision-lifecycle-accounting"
+leak-timeout = { period = "200ms", result = "fail" }
 
 [[profile.ci.overrides]]
 # Codegen exec/e2e integration binaries spawn full compile+link+run child
@@ -325,6 +348,37 @@ filter = "test(close_reaps_a_live_blocked_reader_without_hanging) | test(attach_
 test-group = "real-timing"
 
 [profile.ci.junit]
+path = "junit.xml"
+
+[profile.ci-cabi]
+# `make test-cabi` runs hew-cabi on its own (see that target's comment on why
+# it is excluded from every workspace-wide nextest invocation) after the
+# workspace run has already completed in the same job. Reusing `profile.ci`
+# here previously meant both runs wrote to the same
+# target/nextest/ci/junit.xml — the cabi run's ~80-test report silently
+# overwrote the workspace run's ~13,000-test report before the upload step
+# read it, so the PR checks UI showed only hew-cabi's results. Nextest scopes
+# JUnit output by profile name (target/nextest/<profile>/junit.xml), so a
+# distinct profile name is sufficient to give this run its own report; no
+# other ci behaviour needs duplicating for a single small crate.
+default-filter = "all()"
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[profile.ci-cabi.junit]
+path = "junit.xml"
+
+[profile.ci-focused]
+# For a narrow supplementary nextest invocation (a single crate/binary/test)
+# that a job runs AFTER its main `--profile ci` workspace pass, in the same
+# job. Reusing `profile.ci` for that follow-up run is the same
+# overwrite bug `profile.ci-cabi` exists to prevent: both invocations would
+# write target/nextest/ci/junit.xml, and the later one wins silently. First
+# use: freebsd.yml's/gate-freebsd's dedicated dwarf_debugger_locals_e2e run,
+# which follows the workspace and hew-cabi passes in the same FreeBSD job.
+default-filter = "all()"
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[profile.ci-focused.junit]
 path = "junit.xml"
 
 [profile.smoke]

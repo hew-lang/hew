@@ -20,7 +20,7 @@
 # as the permanent guard that the optimization did not change behaviour.
 #
 # Usage:
-#   scripts/o2-differential.sh            # uses target/debug/hew (or HEW_BIN)
+#   scripts/o2-differential.sh            # uses Cargo's resolved debug output (or HEW_BIN)
 #   HEW_BIN=/path/to/hew scripts/o2-differential.sh
 #   scripts/o2-differential.sh --tests-dir <dir>
 #   scripts/o2-differential.sh --o0-outcomes <path>
@@ -51,7 +51,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/corpus-floor.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 DEFAULT_TESTS_DIR="$REPO_ROOT/tests/hew"
 TESTS_DIR="$DEFAULT_TESTS_DIR"
 O0_OUTCOMES_FILE=""

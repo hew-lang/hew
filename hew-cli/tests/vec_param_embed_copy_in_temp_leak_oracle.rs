@@ -724,6 +724,63 @@ fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &ir[byte_start..byte_end.min(ir.len())]
 }
 
+fn llvm_basic_block<'a>(function: &'a str, label: &str) -> &'a str {
+    let start = function
+        .lines()
+        .position(|line| line.starts_with(&format!("{label}:")))
+        .unwrap_or_else(|| panic!("missing LLVM block `{label}`:\n{function}"));
+    let lines: Vec<&str> = function.lines().collect();
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.is_empty())
+        .map_or(lines.len(), |offset| start + offset + 1);
+    let byte_start: usize = lines[..start].iter().map(|line| line.len() + 1).sum();
+    let byte_end: usize = lines[..end].iter().map(|line| line.len() + 1).sum();
+    &function[byte_start..byte_end.min(function.len())]
+}
+
+/// Concatenated text of every basic block reachable from `start` (inclusive),
+/// following the `label %target` references in each block's terminator.
+///
+/// A function whose parameter earns an elaborated plan drop arms the typed
+/// helper crash-cleanup, and its return block then BRANCHES into
+/// `helper_crash_cleanup_retire*` continuation blocks that LLVM prints far
+/// from their predecessor — the plan drop the return path actually executes
+/// lands in the retire-merge continuation, not in the return block's own
+/// textual body (the same emission shape every admitted `EnumInPlace` local
+/// drop has, e.g. a matched `Result<i64, string>` call scrutinee). A textual
+/// `bb1:`..`bb2:` slice therefore misses the drop; the CFG walk follows the
+/// path the machine takes.
+fn llvm_reachable_path(function: &str, start: &str) -> String {
+    use std::collections::VecDeque;
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = VecDeque::from([start.to_string()]);
+    let mut path = String::new();
+    while let Some(label) = queue.pop_front() {
+        if !visited.insert(label.clone()) {
+            continue;
+        }
+        let block = llvm_basic_block(function, &label);
+        path.push_str(block);
+        for successor in block.split("label %").skip(1) {
+            let name: String = successor
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            queue.push_back(name);
+        }
+    }
+    path
+}
+
+fn projection_neutralize_destination<'a>(section: &'a str, fields: &str) -> &'a str {
+    let marker = format!("aggregate_projection_neutralize _0 fields={fields} -> ");
+    section
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&marker))
+        .unwrap_or_else(|| panic!("missing projection neutralization `{marker}`:\n{section}"))
+}
+
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -855,8 +912,9 @@ fn prepared_resource_projection_transfers_once_into_direct_consume() {
         0,
         "an already-prepared Token owner must transfer into the consuming callee without a second clone; removing prepared-owner propagation must fail this tooth:\n{maybe_consume}"
     );
+    let token = projection_neutralize_destination(maybe_consume, "[0]");
     assert!(
-        maybe_consume.contains("call consumeToken(_3)"),
+        maybe_consume.contains(&format!("call consumeToken({token})")),
         "the transferred projection local must be the consuming call argument:\n{maybe_consume}"
     );
     assert_eq!(
@@ -948,17 +1006,13 @@ fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
             target,
         );
         let inspect = llvm_function_body(&ir, "inspect");
-        let return_block = inspect
-            .split("bb1:")
-            .nth(1)
-            .and_then(|section| section.split("\nbb2:").next())
-            .expect("inspect return block");
+        let return_path = llvm_reachable_path(inspect, "bb1");
         assert_eq!(
-            return_block
+            return_path
                 .matches("call void @__hew_enum_drop_inplace_Mixed(")
                 .count(),
             1,
-            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_block}"
+            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_path}"
         );
         assert_eq!(
             inspect
@@ -1001,13 +1055,24 @@ fn nested_and_tuple_projection_moves_neutralize_the_original_carrier_slots() {
         .nth(1)
         .and_then(|section| section.split("fn i8::fmt").next())
         .expect("tuple MIR section");
+    let nested_leaf = projection_neutralize_destination(nested, "[0, 0]");
+    let nested_assignment = nested
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{nested_leaf} = ")))
+        .unwrap_or_else(|| panic!("missing terminal projection assignment:\n{nested}"));
+    let nested_parent = nested_assignment
+        .split_once(" = ")
+        .and_then(|(_, rhs)| rhs.strip_suffix(".field[0]"))
+        .expect("terminal nested projection must load field zero");
     assert!(
-        nested.contains("aggregate_projection_neutralize _0 fields=[0, 0] -> _8"),
-        "a two-hop record projection must name the actual terminal field-load destination; flattening the nested path or recording its intermediate `_7` alias must fail this tooth:\n{nested}"
+        nested.contains(&format!("{nested_parent} = _0.field[0]")),
+        "the neutralized destination must be the terminal load of the two-hop record projection:\n{nested}"
     );
+
+    let tuple_leaf = projection_neutralize_destination(tupled, "[0]");
     assert!(
-        tupled.contains("aggregate_projection_neutralize _0 fields=[0] -> _7"),
-        "a tuple projection must clear the original carrier leaf and name its field-load destination; removing TupleIndex propagation must fail this tooth:\n{tupled}"
+        tupled.contains(&format!("{tuple_leaf} = _0.0")),
+        "the tuple neutralization must name the direct field-load destination:\n{tupled}"
     );
     for section in [nested, tupled] {
         assert_eq!(
@@ -1141,17 +1206,20 @@ fn owned_carrier_cancel_exit_drops_once_on_native_and_wasm() {
             target,
         );
         let inspect = llvm_function_body(&ir, "inspect");
-        let cancel = inspect
-            .split("cancel_exit:")
-            .nth(1)
-            .and_then(|section| section.split("after_cooperate:").next())
-            .expect("inspect cancellation block");
+        let cancel = llvm_basic_block(inspect, "cancel_exit");
+        let guarded_drop_label = cancel
+            .lines()
+            .find(|line| line.contains("br i1 %carrier_drop_live"))
+            .and_then(|line| line.split("label %").nth(1))
+            .and_then(|targets| targets.split(',').next())
+            .expect("cancellation block must branch to the live-carrier cleanup");
+        let guarded_drop = llvm_basic_block(inspect, guarded_drop_label);
         assert_eq!(
-            cancel
+            guarded_drop
                 .matches("call void @__hew_enum_drop_inplace_Mixed(")
                 .count(),
             1,
-            "runtime cancellation code 2 must release the prepared enum carrier exactly once ({target_name}):\n{cancel}"
+            "runtime cancellation code 2 must release the live prepared enum carrier exactly once ({target_name}):\n{cancel}\n{guarded_drop}"
         );
         let normal_drop_count = inspect
             .split("bb1:")

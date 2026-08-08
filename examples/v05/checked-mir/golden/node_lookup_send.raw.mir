@@ -17,7 +17,7 @@ fn Worker__recv__ping(Ping) -> () [conv=actor_handler]
     trap(IntegerOverflow)
   bb2:
     stmt: eval site=SiteId(2) ty=()
-    actor_state_store field[0] = _3
+    actor_state_store field[0] = _3 handoff=ConsumeSource
     exit_context
     return
 
@@ -43,8 +43,8 @@ fn main() -> i64 [conv=default]
     _6: string
     _7: i32
     _8: string
-    _9: Result<RemotePid<Worker>, LookupError>
-    _10: Result<RemotePid<Worker>, LookupError>
+    _9: Result<RemotePid<Worker>, std.builtins.LookupError>
+    _10: Result<RemotePid<Worker>, std.builtins.LookupError>
     _11: i64
     _12: i64
     _13: i64
@@ -54,8 +54,8 @@ fn main() -> i64 [conv=default]
     _17: RemotePid<Worker>
     _18: i64
     _19: Ping
-    _20: Result<(), SendError>
-    _21: Result<(), SendError>
+    _20: Result<(), std.builtins.SendError>
+    _21: Result<(), std.builtins.SendError>
     _22: i64
     _23: i64
     _24: i64
@@ -69,8 +69,8 @@ fn main() -> i64 [conv=default]
     _32: i64
     _33: i64
     _34: string
-    _35: Result<RemotePid<Worker>, LookupError>
-    _36: Result<RemotePid<Worker>, LookupError>
+    _35: Result<RemotePid<Worker>, std.builtins.LookupError>
+    _36: Result<RemotePid<Worker>, std.builtins.LookupError>
     _37: i64
     _38: i64
     _39: i64
@@ -80,8 +80,8 @@ fn main() -> i64 [conv=default]
     _43: RemotePid<Worker>
     _44: i64
     _45: Ping
-    _46: Result<(), SendError>
-    _47: Result<(), SendError>
+    _46: Result<(), std.builtins.SendError>
+    _47: Result<(), std.builtins.SendError>
     _48: i64
     _49: i64
     _50: i64
@@ -96,16 +96,16 @@ fn main() -> i64 [conv=default]
     _59: bool
     _60: i64
     _61: ()
-    _62: Result<i64, AskError>
+    _62: Result<i64, std.builtins.AskError>
     _63: i64
-    _64: AskError
+    _64: std.builtins.AskError
     _65: i64
     _66: i64
     _67: bool
     _68: i64
     _69: bool
     _70: i64
-    _71: AskError
+    _71: std.builtins.AskError
     _72: i64
     _73: i64
     _74: i64
@@ -117,15 +117,15 @@ fn main() -> i64 [conv=default]
     _80: i64
   bb0:
     _0 = string_lit "tcp"
-    call Node::set_transport(_0) -> bb1
+    call Node::set_transport(_0) [authority=Runtime(NodeSetTransport)] -> bb1
   bb1:
     stmt: eval site=SiteId(7) ty=()
     _1 = string_lit "/tmp/hew-checked-mir-node-lookup-send.key"
-    call Node::load_keys(_1) -> bb2
+    call Node::load_keys(_1) [authority=Runtime(NodeLoadKeys)] -> bb2
   bb2:
     stmt: eval site=SiteId(10) ty=()
     _2 = string_lit "127.0.0.1:0"
-    call Node::start(_2) -> bb3
+    call Node::start(_2) [authority=Runtime(NodeStart)] -> bb3
   bb3:
     stmt: eval site=SiteId(13) ty=()
     stmt: bind BindingId(3) worker site=SiteId(16) ty=LocalPid<Worker>
@@ -134,14 +134,14 @@ fn main() -> i64 [conv=default]
     _3 = record_init Worker { .0=_4 }
     actor5 = spawn_actor Worker state=_3 cycle_capable=false
     _6 = string_lit "node-lookup-worker"
-    _7 = call Node::register(_6, actor5) -> bb4
+    _7 = call Node::register(_6, actor5) [authority=Runtime(NodeRegister)] -> bb4
   bb4:
     stmt: eval site=SiteId(18) ty=i32
     _8 = string_lit "node-lookup-missing"
-    _9 = call Node::lookup(_8) [builtin=NodeLookup] -> bb5
+    _9 = call Node::lookup(_8) [authority=Runtime(NodeLookup)] -> bb5
   bb5:
-    stmt: bind BindingId(4) missing site=SiteId(22) ty=Result<RemotePid<Worker>, LookupError>
-    stmt: use BindingId(4) missing site=SiteId(26) ty=Result<RemotePid<Worker>, LookupError> intent=Read
+    stmt: bind BindingId(4) missing site=SiteId(22) ty=Result<RemotePid<Worker>, std.builtins.LookupError>
+    stmt: use BindingId(4) missing site=SiteId(26) ty=Result<RemotePid<Worker>, std.builtins.LookupError> intent=Read
     _10 = move _9
     _12 = move etag10
     _13 = const.i64 0
@@ -152,14 +152,14 @@ fn main() -> i64 [conv=default]
     stmt: use BindingId(7) missing_code site=SiteId(39) ty=i64 intent=Read
     _32 = move _11
     _33 = const.i64 0
-    call assert_eq_i64(_32, _33) -> bb17
+    call hew_assert_eq_i64(_32, _33) -> bb17
   bb7:
     stmt: bind BindingId(5) pid site=SiteId(27) ty=RemotePid<Worker>
     stmt: use BindingId(5) pid site=SiteId(29) ty=RemotePid<Worker> intent=Read
     _17 = move mvar10.0.0
     _18 = const.i64 1
     _19 = record_init Ping { .0=_18 }
-    _20 = call hew_remote_pid_send(_17, _19) [builtin=RemotePidSend] -> bb11
+    _20 = call hew_remote_pid_send(_17, _19) [authority=Runtime(RemotePidSend)] -> bb11
   bb8:
     _31 = const.i64 0
     _11 = move _31
@@ -171,8 +171,8 @@ fn main() -> i64 [conv=default]
     _16 = icmp.eq _12 _15
     branch _16 ? bb8 : bb9
   bb11:
-    stmt: bind BindingId(6) unexpected site=SiteId(28) ty=Result<(), SendError>
-    stmt: use BindingId(6) unexpected site=SiteId(34) ty=Result<(), SendError> intent=Read
+    stmt: bind BindingId(6) unexpected site=SiteId(28) ty=Result<(), std.builtins.SendError>
+    stmt: use BindingId(6) unexpected site=SiteId(34) ty=Result<(), std.builtins.SendError> intent=Read
     _21 = move _20
     _23 = move etag21
     _24 = const.i64 0
@@ -199,10 +199,10 @@ fn main() -> i64 [conv=default]
   bb17:
     stmt: eval site=SiteId(38) ty=()
     _34 = string_lit "node-lookup-worker"
-    _35 = call Node::lookup(_34) [builtin=NodeLookup] -> bb18
+    _35 = call Node::lookup(_34) [authority=Runtime(NodeLookup)] -> bb18
   bb18:
-    stmt: bind BindingId(8) found site=SiteId(42) ty=Result<RemotePid<Worker>, LookupError>
-    stmt: use BindingId(8) found site=SiteId(46) ty=Result<RemotePid<Worker>, LookupError> intent=Read
+    stmt: bind BindingId(8) found site=SiteId(42) ty=Result<RemotePid<Worker>, std.builtins.LookupError>
+    stmt: use BindingId(8) found site=SiteId(46) ty=Result<RemotePid<Worker>, std.builtins.LookupError> intent=Read
     _36 = move _35
     _38 = move etag36
     _39 = const.i64 0
@@ -211,14 +211,14 @@ fn main() -> i64 [conv=default]
   bb19:
     stmt: bind BindingId(15) status site=SiteId(45) ty=i64
     _80 = move _37
-    call Node::shutdown() -> bb40
+    call Node::shutdown() [authority=Runtime(NodeShutdown)] -> bb40
   bb20:
     stmt: bind BindingId(9) pid site=SiteId(47) ty=RemotePid<Worker>
     stmt: use BindingId(9) pid site=SiteId(49) ty=RemotePid<Worker> intent=Read
     _43 = move mvar36.0.0
     _44 = const.i64 42
     _45 = record_init Ping { .0=_44 }
-    _46 = call hew_remote_pid_send(_43, _45) [builtin=RemotePidSend] -> bb24
+    _46 = call hew_remote_pid_send(_43, _45) [authority=Runtime(RemotePidSend)] -> bb24
   bb21:
     _79 = const.i64 30
     _37 = move _79
@@ -230,8 +230,8 @@ fn main() -> i64 [conv=default]
     _42 = icmp.eq _38 _41
     branch _42 ? bb21 : bb22
   bb24:
-    stmt: bind BindingId(10) delivered site=SiteId(48) ty=Result<(), SendError>
-    stmt: use BindingId(10) delivered site=SiteId(54) ty=Result<(), SendError> intent=Read
+    stmt: bind BindingId(10) delivered site=SiteId(48) ty=Result<(), std.builtins.SendError>
+    stmt: use BindingId(10) delivered site=SiteId(54) ty=Result<(), std.builtins.SendError> intent=Read
     _47 = move _46
     _49 = move etag47
     _50 = const.i64 0
@@ -280,7 +280,7 @@ fn main() -> i64 [conv=default]
     stmt: use BindingId(14) total site=SiteId(69) ty=i64 intent=Read
     _73 = move _60
     _74 = const.i64 42
-    call assert_eq_i64(_73, _74) -> bb39
+    call hew_assert_eq_i64(_73, _74) -> bb39
   bb35:
     stmt: bind BindingId(12) v site=SiteId(66) ty=i64
     stmt: use BindingId(12) v site=SiteId(66) ty=i64 intent=Read
@@ -288,7 +288,7 @@ fn main() -> i64 [conv=default]
     _60 = move _70
     goto bb34
   bb36:
-    stmt: bind BindingId(13) _e site=SiteId(67) ty=AskError
+    stmt: bind BindingId(13) _e site=SiteId(67) ty=std.builtins.AskError
     _71 = move mvar62.1.0
     _72 = const.i64 -1
     _60 = move _72
@@ -320,8 +320,9 @@ fn i8::fmt(i8) -> string [conv=default]
   bb0:
     stmt: use BindingId(24) val site=SiteId(149) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(147) ty=string
     stmt: return site=Some(SiteId(147)) ty=string
     ret = move _2
     return
@@ -334,8 +335,9 @@ fn i16::fmt(i16) -> string [conv=default]
   bb0:
     stmt: use BindingId(25) val site=SiteId(153) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(151) ty=string
     stmt: return site=Some(SiteId(151)) ty=string
     ret = move _2
     return
@@ -346,8 +348,9 @@ fn i32::fmt(i32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(26) val site=SiteId(156) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(155) ty=string
     stmt: return site=Some(SiteId(155)) ty=string
     ret = move _1
     return
@@ -358,8 +361,9 @@ fn i64::fmt(i64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(27) val site=SiteId(159) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(158) ty=string
     stmt: return site=Some(SiteId(158)) ty=string
     ret = move _1
     return
@@ -370,8 +374,9 @@ fn u8::fmt(u8) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(28) val site=SiteId(162) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(161) ty=string
     stmt: return site=Some(SiteId(161)) ty=string
     ret = move _1
     return
@@ -382,8 +387,9 @@ fn u16::fmt(u16) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(29) val site=SiteId(165) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(164) ty=string
     stmt: return site=Some(SiteId(164)) ty=string
     ret = move _1
     return
@@ -394,8 +400,9 @@ fn u32::fmt(u32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(30) val site=SiteId(168) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(167) ty=string
     stmt: return site=Some(SiteId(167)) ty=string
     ret = move _1
     return
@@ -406,8 +413,9 @@ fn u64::fmt(u64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(31) val site=SiteId(171) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(170) ty=string
     stmt: return site=Some(SiteId(170)) ty=string
     ret = move _1
     return
@@ -420,8 +428,9 @@ fn isize::fmt(isize) -> string [conv=default]
   bb0:
     stmt: use BindingId(32) val site=SiteId(175) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(173) ty=string
     stmt: return site=Some(SiteId(173)) ty=string
     ret = move _2
     return
@@ -434,8 +443,9 @@ fn usize::fmt(usize) -> string [conv=default]
   bb0:
     stmt: use BindingId(33) val site=SiteId(179) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(177) ty=string
     stmt: return site=Some(SiteId(177)) ty=string
     ret = move _2
     return
@@ -446,8 +456,9 @@ fn bool::fmt(bool) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(34) val site=SiteId(182) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(181) ty=string
     stmt: return site=Some(SiteId(181)) ty=string
     ret = move _1
     return
@@ -458,8 +469,9 @@ fn char::fmt(char) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(35) val site=SiteId(185) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(184) ty=string
     stmt: return site=Some(SiteId(184)) ty=string
     ret = move _1
     return
@@ -470,8 +482,9 @@ fn f64::fmt(f64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(36) val site=SiteId(188) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(187) ty=string
     stmt: return site=Some(SiteId(187)) ty=string
     ret = move _1
     return
@@ -484,8 +497,9 @@ fn f32::fmt(f32) -> string [conv=default]
   bb0:
     stmt: use BindingId(37) val site=SiteId(192) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(190) ty=string
     stmt: return site=Some(SiteId(190)) ty=string
     ret = move _2
     return
@@ -581,9 +595,12 @@ fn duration::fmt(duration) -> string [conv=default]
     _4: string
   bb0:
     stmt: use BindingId(43) val site=SiteId(210) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(208) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(207) ty=string
     stmt: return site=Some(SiteId(207)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

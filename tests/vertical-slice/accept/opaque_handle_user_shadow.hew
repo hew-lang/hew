@@ -1,0 +1,18 @@
+// A root actor is allowed to share the short spelling of the imported
+// `net.Listener` opaque handle.  Qualified stdlib identity must still win for
+// `net.listen`: the returned value is the runtime pointer handle, not the
+// actor's aggregate layout.  Closing it exercises the real ownership path.
+
+import std::net::{Connection};
+
+actor Listener {
+    receive fn register_client(cid: string) {
+        println(cid);
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    listener.close();
+    println("opaque-listener-ok");
+}

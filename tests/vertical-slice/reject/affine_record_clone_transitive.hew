@@ -1,0 +1,87 @@
+// An unmarked record cannot hide an affine field from structural clone.
+// Generic fields are inspected after concrete substitution.
+#[resource]
+type ResourceToken {
+    id: i64
+}
+
+impl ResourceToken {
+    fn close(self) {}
+}
+
+#[linear]
+type LinearTicket {
+    id: i64
+}
+
+impl LinearTicket {
+    fn redeem(consuming self) -> i64 {
+        self.id
+    }
+}
+
+type PlainWrapper {
+    token: ResourceToken
+}
+
+type GenericWrapper<T> {
+    value: T
+}
+
+enum ResourceEnvelope {
+    Full(ResourceToken);
+    Empty
+}
+
+type TupleWrapper {
+    value: (i64, ResourceEnvelope)
+}
+
+type ArrayWrapper {
+    values: [LinearTicket; 1]
+}
+
+fn main() {
+    let plain = PlainWrapper { token: ResourceToken { id: 1 } };
+    let _plain_copy = plain.clone();
+
+    let generic_resource: GenericWrapper<ResourceToken> =
+        GenericWrapper { value: ResourceToken { id: 2 } };
+    let _generic_resource_copy = clone generic_resource;
+
+    let generic_linear: GenericWrapper<LinearTicket> =
+        GenericWrapper { value: LinearTicket { id: 3 } };
+    let _generic_linear_copy = generic_linear.clone();
+
+    let envelope = ResourceEnvelope::Full(ResourceToken { id: 4 });
+    let _envelope_copy = envelope.clone();
+
+    let tuple_wrapper =
+        TupleWrapper { value: (5, ResourceEnvelope::Full(ResourceToken { id: 5 })) };
+    let _tuple_copy = clone tuple_wrapper;
+
+    let array_wrapper = ArrayWrapper { values: [LinearTicket { id: 6 }] };
+    let _array_copy = array_wrapper.clone();
+
+    var resources: Vec<ResourceToken> = Vec::new();
+    resources.push(ResourceToken { id: 7 });
+    let _resources_copy = resources.clone();
+
+    var tickets: HashMap<string, LinearTicket> = HashMap::new();
+    tickets.insert("one", LinearTicket { id: 8 });
+    let _tickets_copy = clone tickets;
+
+    // The checker visits the clone arm before the push arm, while execution
+    // populates the Vec on the first iteration and clones it on the second.
+    // Admission must use the post-inference element type, not source order.
+    var late_resources = Vec::new();
+    var i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_copy = late_resources.clone();
+        } else {
+            late_resources.push(ResourceToken { id: 9 });
+        }
+        i = i + 1;
+    }
+}

@@ -118,6 +118,37 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
     l
 }
 
+/// Release one queue envelope that never reached a consumer.
+///
+/// Plain, string, and bytes envelopes own only their `Vec<u8>` storage. A
+/// layout-managed envelope additionally owns the deep value cloned into its
+/// bytes, so its witness drop thunk must run exactly once before the bytes are
+/// discarded.
+#[allow(dead_code, reason = "used by the wasm32 channel backing")]
+pub(crate) fn drop_elem_envelope(
+    layout: Option<&HewVecElemLayout>,
+    mut envelope: Vec<u8>,
+    context: &str,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    if layout.ownership_kind != HewTypeOwnershipKind::LayoutManaged {
+        return;
+    }
+    if envelope.len() != layout.size {
+        abort_elem_witness(
+            context,
+            "owned envelope size does not match the stamped witness",
+        );
+    }
+    if let Some(drop_fn) = layout.drop_fn {
+        // SAFETY: a layout-managed envelope contains one live deep-cloned
+        // element. This path owns the envelope and is its only disposer.
+        unsafe { drop_fn(envelope.as_mut_ptr().cast()) };
+    }
+}
+
 /// Serialise one typed element into a queue envelope (the send side).
 ///
 /// `LayoutManaged` elements are deep-copied in (memcpy + `clone_fn`), so the

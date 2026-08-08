@@ -1,18 +1,35 @@
-//! Status: aspirational (Hew roadmap: v0.6+ stdlib module stabilization plus codegen-rs parity)
-//! Description: MQTT 3.1.1 broker — pure Hew actor implementation
+//! Status: runnable (native; MQTT 3.1.1 subset)
+//! Description: MQTT 3.1.1 broker — pure Hew split stream/sink actor implementation
 
 // MQTT 3.1.1 broker — pure Hew actor implementation
-// Listens on port 1883. Uses bytes type for all TCP I/O.
+// Listens on port 1883 by default (pass a port as argv[1]).
+// Uses bytes type for all TCP I/O. Each accepted connection is consumed into
+// independently-owned Stream<bytes> and Sink<bytes> halves: a reader actor owns
+// inbound suspension while ClientHandler owns outbound delivery.
 //
 // Architecture:
-//   Acceptor     — accept loop; spawns ClientHandler per connection
-//   ClientHandler — reads MQTT frames, calls router methods
-//   Router       — tracks clients and subscriptions, fans out publishes
+//   main          — constructs the actor graph and keeps the process alive
+//   Acceptor      — accept loop; spawns ClientHandler per connection
+//   ClientHandler — owns one connection, handles inbound and outbound messages
+//   Router        — tracks clients and subscriptions, fans out publishes
 //
 // Router state uses only clonable types (strings, i32, LocalPid handles) so the
-// actor is supervisor-restartable. Live Connection handles stay inside
-// ClientHandler, which is responsible for its own socket lifecycle.
-import std::net::{Connection};
+// actor is supervisor-restartable. Runtime stream/sink halves have one owner
+// each and close automatically with their actors.
+import std::net;
+
+import std::stream::{Sink, Stream};
+
+import std::os;
+
+extern "C" {
+    fn hew_actor_self_stop();
+}
+
+// Bound buffering for peers that advertise a very large Remaining Length and
+// then dribble bytes indefinitely. This example intentionally implements a
+// compact MQTT subset; one MiB is ample for its demonstrations.
+const MAX_PACKET_BYTES: i64 = 1048576;
 
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
 fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
@@ -23,7 +40,11 @@ fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
     result
 }
 
-// Read big-endian uint16 at offset.
+fn has_bytes(limit: i64, offset: i64, count: i64) -> bool {
+    offset >= 0 && count >= 0 && offset <= limit && count <= limit - offset
+}
+
+// Read big-endian uint16 at an offset already proven in range.
 fn read_u16(data: bytes, offset: i64) -> i32 {
     data[offset] as i32 * 256 + data[offset + 1] as i32
 }
@@ -65,14 +86,19 @@ fn read_varint_value(data: bytes, offset: i64) -> i32 {
 
 fn read_varint_len(data: bytes, offset: i64) -> i64 {
     var i: i64 = offset;
-    loop {
+    var count: i64 = 0;
+    while i < data.len() {
         let b = data[i];
         i = i + 1;
+        count = count + 1;
         if b < 128 {
-            break;
+            return count;
+        }
+        if count == 4 {
+            return -1;
         }
     }
-    i - offset
+    0
 }
 
 // Push length-prefixed MQTT string.
@@ -84,7 +110,20 @@ fn push_mqtt_str(buf: bytes, s: string) {
     }
 }
 
-// Read length-prefixed MQTT string at offset.
+// Return the complete wire width of a length-prefixed MQTT string, or -1 when
+// its prefix or payload would cross the current packet boundary.
+fn mqtt_str_wire_len(data: bytes, offset: i64, limit: i64) -> i64 {
+    if !has_bytes(limit, offset, 2) {
+        return -1;
+    }
+    let wire_len: i64 = 2 + read_u16(data, offset) as i64;
+    if !has_bytes(limit, offset, wire_len) {
+        return -1;
+    }
+    wire_len
+}
+
+// Read a length-prefixed MQTT string whose wire width was already validated.
 fn read_mqtt_str(data: bytes, offset: i64) -> string {
     let len: i64 = read_u16(data, offset) as i64;
     let s = bytes::new();
@@ -157,161 +196,361 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 
 // ── Actors ────────────────────────────────────────────────────────────────────
 
-// ClientHandler — one per TCP connection.
-// Holds the live Connection; all socket I/O stays here so Router can be
-// supervisor-restartable (Router state has no opaque handles).
+// ClientHandler owns only the write half. ClientReader owns the read half and
+// forwards frames as actor messages, so an idle subscriber never blocks
+// publication delivery to ClientHandler.
 actor ClientHandler {
-    let conn: Connection;
+    let sink: Sink<bytes>;
+    let session_id: string;
     var client_id: string;
     let router: LocalPid<Router>;
-    receive fn start() {
-        var buf = bytes::new();
+    var buf: bytes;
+    var registered: bool;
+    receive fn register(reader: LocalPid<ClientReader>) {
+        let accepted = match await router.register_client(session_id.clone(), this) {
+            Ok(value) => value,
+            Err(_) => false,
+        };
+        if accepted {
+            registered = true;
+            reader.start();
+        } else {
+            reader.stop();
+            unsafe {
+                hew_actor_self_stop()
+            };
+        }
+    }
+    receive fn deliver(packet: bytes) {
+        sink.send(packet);
+    }
+    receive fn on_data(chunk: bytes) -> bool {
         var connected = true;
+        let next_buf = bytes::new();
+        next_buf.append(buf);
+        next_buf.append(chunk);
+        buf = next_buf;
         loop {
-            let chunk = conn.read();
-            if chunk.is_empty() {
+            let buf_len = buf.len();
+            if buf_len < 2 {
                 break;
             }
-            buf.append(chunk);
-            loop {
-                let buf_len = buf.len();
-                if buf_len < 2 {
-                    break;
-                }
-                let vl: i64 = read_varint_len(buf, 1);
-                if 1 + vl > buf_len {
-                    break;
-                }
-                let remaining_len: i64 = read_varint_value(buf, 1) as i64;
-                let total: i64 = 1 + vl + remaining_len;
-                if buf_len < total {
-                    break;
-                }
-                let ptype = buf[0] as i64 / 16;
-                let pflags = buf[0] as i64 % 16;
-                let var_off: i64 = 1 + vl;
-                match ptype {
-                    1 => {
-                        // CONNECT
-                        let proto_name_len: i64 = read_u16(buf, var_off) as i64;
-                        let payload_off: i64 = var_off + proto_name_len + 6;
-                        client_id = read_mqtt_str(buf, payload_off);
-                        println(f"[mqtt] CONNECT client_id={client_id}");
-                        let _ = conn.write(build_connack(0, 0));
-                    },
-                    3 => {
-                        // PUBLISH
-                        let qos = pflags / 2 % 4;
-                        let topic_wire_len: i64 = 2 + read_u16(buf, var_off) as i64;
+            let vl: i64 = read_varint_len(buf, 1);
+            if vl < 0 {
+                connected = false;
+                println(f"[mqtt] malformed remaining length for {client_id}");
+                break;
+            }
+            if vl == 0 {
+                break;
+            }
+            let remaining_len: i64 = read_varint_value(buf, 1) as i64;
+            if remaining_len > MAX_PACKET_BYTES {
+                connected = false;
+                println(f"[mqtt] packet exceeds size limit for {client_id}");
+                break;
+            }
+            let total: i64 = 1 + vl + remaining_len;
+            if buf_len < total {
+                break;
+            }
+            let ptype = buf[0] as i64 / 16;
+            let pflags = buf[0] as i64 % 16;
+            let var_off: i64 = 1 + vl;
+            let packet_end: i64 = var_off + remaining_len;
+            match ptype {
+                1 => {
+                    // CONNECT
+                    var connect_rejected = false;
+                    let proto_wire_len = mqtt_str_wire_len(buf, var_off, packet_end);
+                    if pflags != 0 || proto_wire_len < 0 {
+                        connected = false;
+                    } else {
+                        let protocol_name = read_mqtt_str(buf, var_off);
+                        let header_off: i64 = var_off + proto_wire_len;
+                        if protocol_name != "MQTT" || !has_bytes(packet_end, header_off, 4) {
+                            connected = false;
+                        } else {
+                            let protocol_level = buf[header_off] as i32;
+                            let payload_off: i64 = header_off + 4;
+                            let client_id_wire_len = mqtt_str_wire_len(buf, payload_off, packet_end);
+                            if protocol_level != 4 || client_id_wire_len < 0 {
+                                connected = false;
+                            } else {
+                                let new_client_id = read_mqtt_str(buf, payload_off);
+                                let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
+                                    Ok(value) => {
+                                        if value {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    },
+                                    Err(_) => -1,
+                                };
+                                if claim_status == 1 {
+                                    if new_client_id != "" {
+                                        client_id = new_client_id;
+                                    }
+                                    println(f"[mqtt] CONNECT client_id={client_id}");
+                                    sink.send(build_connack(0, 0));
+                                } else {
+                                    connect_rejected = true;
+                                    connected = false;
+                                    if claim_status == 0 {
+                                        println(f"[mqtt] duplicate client_id={new_client_id} rejected session={session_id}");
+                                        sink.send(build_connack(0, 2));
+                                    } else {
+                                        println(f"[mqtt] ClientId claim unavailable session={session_id}");
+                                        sink.send(build_connack(0, 3));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !connected && !connect_rejected {
+                        println(f"[mqtt] malformed CONNECT for {client_id}");
+                    }
+                },
+                3 => {
+                    // PUBLISH
+                    let qos = pflags / 2 % 4;
+                    let topic_wire_len = mqtt_str_wire_len(buf, var_off, packet_end);
+                    if qos == 3 || topic_wire_len <= 2 {
+                        connected = false;
+                    } else {
                         let topic = read_mqtt_str(buf, var_off);
-                        var pid_off: i64 = var_off + topic_wire_len;
+                        var payload_off: i64 = var_off + topic_wire_len;
                         var packet_id: i32 = 0;
                         if qos > 0 {
-                            packet_id = read_u16(buf, pid_off);
-                            pid_off = pid_off + 2;
-                            let _ = conn.write(build_puback(packet_id));
+                            if has_bytes(packet_end, payload_off, 2) {
+                                packet_id = read_u16(buf, payload_off);
+                                payload_off = payload_off + 2;
+                                sink.send(build_puback(packet_id));
+                            } else {
+                                connected = false;
+                            }
                         }
-                        let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
-                        println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                        router.publish(topic, payload_bytes, qos as i32, packet_id);
-                    },
-                    8 => {
-                        // SUBSCRIBE
+                        if connected {
+                            let payload_bytes = bytes_slice(buf, payload_off, packet_end);
+                            println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
+                            router.publish(topic, payload_bytes, qos as i32, packet_id);
+                        }
+                    }
+                    if !connected {
+                        println(f"[mqtt] malformed PUBLISH for {client_id}");
+                    }
+                },
+                8 => {
+                    // SUBSCRIBE
+                    if pflags != 2 || !has_bytes(packet_end, var_off, 3) {
+                        connected = false;
+                    } else {
                         let sub_packet_id = read_u16(buf, var_off);
-                        let payload_end: i64 = var_off + remaining_len;
                         var topic_off: i64 = var_off + 2;
                         let return_codes: bytes = bytes::new();
-                        while topic_off < payload_end {
-                            let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
+                        while connected && topic_off < packet_end {
+                            let tw = mqtt_str_wire_len(buf, topic_off, packet_end);
+                            if tw <= 2 || !has_bytes(packet_end, topic_off + tw, 1) {
+                                connected = false;
+                                break;
+                            }
                             let stopic = read_mqtt_str(buf, topic_off);
                             let req_qos: i32 = buf[topic_off + tw] as i32;
-                            let granted: i32 = if req_qos > 1 {
-                                1
+                            if req_qos > 1 || stopic.contains("#") || stopic.contains("+") {
+                                // This compact broker implements exact-topic
+                                // matching only; reject filters it cannot honor.
+                                return_codes.push(0x80 as u8);
                             } else {
-                                req_qos
-                            };
-                            router.subscribe(stopic, client_id.clone(), granted);
-                            return_codes.push(granted as u8);
+                                router.subscribe(stopic, session_id.clone(), req_qos);
+                                return_codes.push(req_qos as u8);
+                            }
                             topic_off = topic_off + tw + 1;
                         }
-                        let _ = conn.write(build_suback(sub_packet_id, return_codes));
-                        println("[mqtt] SUBSCRIBE processed");
-                    },
-                    10 => {
-                        // UNSUBSCRIBE
+                        if connected {
+                            sink.send(build_suback(sub_packet_id, return_codes));
+                            println("[mqtt] SUBSCRIBE processed");
+                        }
+                    }
+                    if !connected {
+                        println(f"[mqtt] malformed SUBSCRIBE for {client_id}");
+                    }
+                },
+                10 => {
+                    // UNSUBSCRIBE
+                    if pflags != 2 || !has_bytes(packet_end, var_off, 3) {
+                        connected = false;
+                    } else {
                         let unsub_packet_id = read_u16(buf, var_off);
-                        let payload_end: i64 = var_off + remaining_len;
                         var topic_off: i64 = var_off + 2;
-                        while topic_off < payload_end {
-                            let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
+                        while connected && topic_off < packet_end {
+                            let tw = mqtt_str_wire_len(buf, topic_off, packet_end);
+                            if tw <= 2 {
+                                connected = false;
+                                break;
+                            }
                             let utopic = read_mqtt_str(buf, topic_off);
-                            router.unsubscribe(utopic, client_id.clone());
+                            router.unsubscribe(utopic, session_id.clone());
                             topic_off = topic_off + tw;
                         }
-                        let _ = conn.write(build_unsuback(unsub_packet_id));
-                        println(f"[mqtt] UNSUBSCRIBE {client_id}");
-                    },
-                    12 => {
-                        // PINGREQ
-                        let _ = conn.write(build_pingresp());
-                    },
-                    14 => {
-                        // DISCONNECT
+                        if connected {
+                            sink.send(build_unsuback(unsub_packet_id));
+                            println(f"[mqtt] UNSUBSCRIBE {client_id}");
+                        }
+                    }
+                    if !connected {
+                        println(f"[mqtt] malformed UNSUBSCRIBE for {client_id}");
+                    }
+                },
+                12 => {
+                    // PINGREQ
+                    if pflags == 0 && remaining_len == 0 {
+                        sink.send(build_pingresp());
+                    } else {
+                        connected = false;
+                        println(f"[mqtt] malformed PINGREQ for {client_id}");
+                    }
+                },
+                14 => {
+                    // DISCONNECT
+                    if pflags == 0 && remaining_len == 0 {
                         connected = false;
                         println(f"[mqtt] DISCONNECT {client_id}");
-                    },
-                    _ => {},
-                }
-                if connected {
-                    buf = bytes_slice(buf, total, buf_len);
-                } else {
-                    break;
-                }
+                    } else {
+                        connected = false;
+                        println(f"[mqtt] malformed DISCONNECT for {client_id}");
+                    }
+                },
+                _ => {
+                    connected = false;
+                    println(f"[mqtt] unsupported packet type {ptype} for {client_id}");
+                },
             }
-            if !connected {
+            if connected {
+                buf = bytes_slice(buf, total, buf_len);
+            } else {
                 break;
             }
         }
-        router.client_disconnect(client_id.clone());
-        conn.close();
-        println(f"[mqtt] connection closed for {client_id}");
+        if !connected {
+            if registered {
+                router.client_disconnect(session_id.clone());
+                registered = false;
+            }
+            println(f"[mqtt] connection closed for {client_id}");
+            unsafe {
+                hew_actor_self_stop()
+            };
+        }
+        connected
     }
-    receive fn deliver(packet: bytes) {
-        let _ = conn.write(packet);
+    receive fn on_close() {
+        if registered {
+            router.client_disconnect(session_id.clone());
+            registered = false;
+            println(f"[mqtt] connection closed for {client_id}");
+        }
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+}
+
+// ClientReader is the sole owner of the readable half. It awaits frames without
+// occupying a scheduler worker, then asks ClientHandler whether parsing should
+// continue. Dropping this actor closes the stream half exactly once.
+actor ClientReader {
+    let input: Stream<bytes>;
+    let client: LocalPid<ClientHandler>;
+    receive fn start() {
+        var reading = true;
+        while reading {
+            match await input.recv() {
+                Some(chunk) => {
+                    reading = match await client.on_data(chunk) {
+                        Ok(keep_reading) => keep_reading,
+                        Err(_) => false,
+                    };
+                },
+                None => {
+                    client.on_close();
+                    reading = false;
+                },
+            }
+        }
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+    receive fn stop() {
+        unsafe {
+            hew_actor_self_stop()
+        };
     }
 }
 
 // Router — tracks clients and subscriptions; fans out publishes directly.
 //
 // State uses only clonable types: strings, i32, and LocalPid actor handles.
-// Parallel arrays: client_ids[i] <-> client_actors[i]
-// Parallel arrays: sub_topics[i] <-> sub_client_ids[i] <-> sub_qos[i]
+// A generated session ID is the immutable registry and delivery authority;
+// the peer-selected ClientId is metadata claimed atomically during CONNECT.
+// Parallel arrays: session_ids[i] <-> client_ids[i] <-> clients[i]
+// Parallel arrays: sub_topics[i] <-> sub_session_ids[i] <-> sub_qos[i]
 actor Router {
+    var session_ids: Vec<string>;
     var client_ids: Vec<string>;
-    var client_actors: Vec<LocalPid<ClientHandler>>;
+    var clients: Vec<LocalPid<ClientHandler>>;
     var sub_topics: Vec<string>;
-    var sub_client_ids: Vec<string>;
+    var sub_session_ids: Vec<string>;
     var sub_qos: Vec<i32>;
-    receive fn register_client(client_id: string, handler: LocalPid<ClientHandler>) {
-        client_ids.push(client_id);
-        client_actors.push(handler);
-        println("[router] client registered");
+    receive fn register_client(session_id: string, client: LocalPid<ClientHandler>) -> bool {
+        for existing_session in session_ids {
+            if existing_session == session_id {
+                println(f"[router] duplicate session_id={session_id} rejected");
+                return false;
+            }
+        }
+        session_ids.push(session_id);
+        client_ids.push("");
+        clients.push(client);
+        println(f"[router] state event=register clients={session_ids.len()} subscriptions={sub_topics.len()}");
+        true
     }
-    receive fn subscribe(topic: string, client_id: string, qos: i32) {
+    receive fn claim_client_id(session_id: string, requested: string) -> bool {
+        if requested != "" {
+            for i in 0 .. client_ids.len() {
+                if client_ids[i] == requested && session_ids[i] != session_id {
+                    println(f"[router] duplicate client_id={requested} rejected session={session_id}");
+                    return false;
+                }
+            }
+        }
+        // Empty ClientIds are permitted for clean sessions in MQTT 3.1.1.
+        // Their generated session IDs remain the routing authority.
+        for i in 0 .. client_ids.len() {
+            if session_ids[i] == session_id {
+                client_ids[i] = requested;
+                return true;
+            }
+        }
+        println(f"[router] missing session_id={session_id} during CONNECT");
+        false
+    }
+    receive fn subscribe(topic: string, session_id: string, qos: i32) {
         sub_topics.push(topic);
-        sub_client_ids.push(client_id);
+        sub_session_ids.push(session_id);
         sub_qos.push(qos);
-        println(f"[router] subscribed qos={qos}");
+        println(f"[router] state event=subscribe clients={session_ids.len()} subscriptions={sub_topics.len()} qos={qos}");
     }
     receive fn publish(topic: string, payload: bytes, qos: i32, packet_id: i32) {
         // Fan out to all matching subscribers via actor handles.
         for i in 0 .. sub_topics.len() {
             if sub_topics[i] == topic {
-                let sub_cid = sub_client_ids[i];
+                let sub_session = sub_session_ids[i];
                 let sub_q = sub_qos[i];
-                for j in 0 .. client_ids.len() {
-                    if client_ids[j] == sub_cid {
-                        let target = client_actors[j];
+                for j in 0 .. session_ids.len() {
+                    if session_ids[j] == sub_session {
+                        let target = clients[j];
                         target.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
                     }
@@ -320,52 +559,61 @@ actor Router {
         }
         println(f"[router] publish topic={topic}");
     }
-    receive fn unsubscribe(topic: string, client_id: string) {
-        var new_topics: Vec<string> = Vec::new();
-        var new_ids: Vec<string> = Vec::new();
-        var new_qos: Vec<i32> = Vec::new();
+    receive fn unsubscribe(topic: string, session_id: string) {
+        let before = sub_topics.len();
+        let new_topics: Vec<string> = Vec::new();
+        let new_sessions: Vec<string> = Vec::new();
+        let new_qos: Vec<i32> = Vec::new();
         for i in 0 .. sub_topics.len() {
-            if sub_client_ids[i] == client_id {
+            if sub_session_ids[i] == session_id {
                 if sub_topics[i] == topic {
                     continue;
                 }
             }
             new_topics.push(sub_topics[i]);
-            new_ids.push(sub_client_ids[i]);
+            new_sessions.push(sub_session_ids[i]);
             new_qos.push(sub_qos[i]);
         }
         sub_topics = new_topics;
-        sub_client_ids = new_ids;
+        sub_session_ids = new_sessions;
         sub_qos = new_qos;
-        println(f"[router] unsubscribed topic={topic}");
+        let removed = before - sub_topics.len();
+        println(f"[router] state event=unsubscribe clients={session_ids.len()} subscriptions={sub_topics.len()} removed={removed} topic={topic}");
     }
-    receive fn client_disconnect(client_id: string) {
+    receive fn client_disconnect(session_id: string) {
         // Remove from client registry
-        var new_ids: Vec<string> = Vec::new();
-        var new_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
-        for i in 0 .. client_ids.len() {
-            if client_ids[i] != client_id {
-                new_ids.push(client_ids[i]);
-                new_actors.push(client_actors[i]);
+        let clients_before = session_ids.len();
+        let subscriptions_before = sub_topics.len();
+        let new_sessions: Vec<string> = Vec::new();
+        let new_client_ids: Vec<string> = Vec::new();
+        let new_clients: Vec<LocalPid<ClientHandler>> = Vec::new();
+        for i in 0 .. session_ids.len() {
+            if session_ids[i] != session_id {
+                new_sessions.push(session_ids[i]);
+                new_client_ids.push(client_ids[i]);
+                new_clients.push(clients[i]);
             }
         }
-        client_ids = new_ids;
-        client_actors = new_actors;
+        session_ids = new_sessions;
+        client_ids = new_client_ids;
+        clients = new_clients;
         // Remove subscriptions for this client
-        var new_sub_topics: Vec<string> = Vec::new();
-        var new_sub_ids: Vec<string> = Vec::new();
-        var new_sub_qos: Vec<i32> = Vec::new();
-        for j in 0 .. sub_client_ids.len() {
-            if sub_client_ids[j] != client_id {
+        let new_sub_topics: Vec<string> = Vec::new();
+        let new_sub_sessions: Vec<string> = Vec::new();
+        let new_sub_qos: Vec<i32> = Vec::new();
+        for j in 0 .. sub_session_ids.len() {
+            if sub_session_ids[j] != session_id {
                 new_sub_topics.push(sub_topics[j]);
-                new_sub_ids.push(sub_client_ids[j]);
+                new_sub_sessions.push(sub_session_ids[j]);
                 new_sub_qos.push(sub_qos[j]);
             }
         }
         sub_topics = new_sub_topics;
-        sub_client_ids = new_sub_ids;
+        sub_session_ids = new_sub_sessions;
         sub_qos = new_sub_qos;
-        println("[router] client disconnected");
+        let removed_clients = clients_before - session_ids.len();
+        let removed_subscriptions = subscriptions_before - sub_topics.len();
+        println(f"[router] state event=disconnect session={session_id} removed_clients={removed_clients} removed_subscriptions={removed_subscriptions} clients={session_ids.len()} subscriptions={sub_topics.len()}");
     }
 }
 
@@ -375,29 +623,37 @@ actor Router {
 // type (see https://github.com/hew-lang/hew/issues/2509).
 actor Acceptor {
     let router: LocalPid<Router>;
+    let addr: string;
     receive fn start() {
-        let lst = net.listen(":1883");
-        println("[listener] MQTT broker ready on :1883");
+        let lst = net.listen(addr);
+        println(f"[listener] MQTT broker ready on {addr}");
         var next_id: i32 = 1;
         loop {
             let conn = await lst.accept();
             let cid = f"client-{next_id}";
-            let handler = spawn ClientHandler(conn: conn, client_id: cid.clone(), router: router);
-            router.register_client(cid, handler);
-            handler.start();
+            let (input, sink) = conn.into_stream_sink();
+            let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes::new(), registered: false);
+            let reader = spawn ClientReader(input: input, client: handler);
+            handler.register(reader);
             next_id = next_id + 1;
         }
     }
 }
 
 fn main() {
+    var port = "1883";
+    if os.args_count() > 1 {
+        port = os.args(1);
+    }
+    let addr = f"127.0.0.1:{port}";
+    let empty_sessions: Vec<string> = Vec::new();
     let empty_ids: Vec<string> = Vec::new();
-    let empty_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
+    let empty_clients: Vec<LocalPid<ClientHandler>> = Vec::new();
     let empty_sub_topics: Vec<string> = Vec::new();
-    let empty_sub_ids: Vec<string> = Vec::new();
+    let empty_sub_sessions: Vec<string> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();
-    let router = spawn Router(client_ids: empty_ids, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_client_ids: empty_sub_ids, sub_qos: empty_sub_qos);
-    let listener = spawn Acceptor(router: router);
+    let router = spawn Router(session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos);
+    let listener = spawn Acceptor(router: router, addr: addr);
     listener.start();
     loop {
         sleep(1s);

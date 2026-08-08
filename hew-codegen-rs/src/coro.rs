@@ -22,7 +22,8 @@
 //!    [`emit_coro_frame_free`] — emit the canonical switched-resume skeleton
 //!    (entry / `coro.alloc`-gated frame allocation / `coro.begin` / suspend
 //!    points / `cleanup` / `coro.end`) around a caller-supplied body, routing
-//!    frame allocation to the runtime's `hew_cont_frame_alloc` /
+//!    coroutine-frame allocation to the runtime's
+//!    `hew_cont_frame_alloc_tracked` /
 //!    `hew_cont_frame_free` (NOT libc `malloc` — the wasip1 requirement). The
 //!    pointer `coro.begin` returns is the `HewCont` handle.
 //!
@@ -56,13 +57,18 @@ use inkwell::llvm_sys::prelude::{LLVMBuilderRef, LLVMValueRef};
 
 use crate::llvm::{CodegenError, CodegenResult, LlvmResultExt};
 
-/// The runtime symbol the coro frame allocator routes to. Size-only shape that
-/// `llvm.coro.alloc` → dynamic-allocation gating expects; see
-/// `hew-runtime/src/cont.rs`.
+/// The runtime symbol used for untracked continuation-adjacent allocations
+/// (generator companions and environments).
 pub const CONT_FRAME_ALLOC: &str = "hew_cont_frame_alloc";
+/// The coroutine-specific tracked frame allocator. CoroSplit ramps use this
+/// sibling so crash recovery can reclaim only positively identified running
+/// coroutine frames.
+pub const CONT_FRAME_ALLOC_TRACKED: &str = "hew_cont_frame_alloc_tracked";
 /// The runtime symbol the coro frame free routes to. Pointer-only shape that
 /// `llvm.coro.free` produces; see `hew-runtime/src/cont.rs`.
 pub const CONT_FRAME_FREE: &str = "hew_cont_frame_free";
+/// Transfer a normally-returned ramp frame out of the active TLS stack.
+pub const CONT_FRAME_HANDOFF: &str = "hew_cont_frame_handoff";
 
 /// Resolve a non-overloaded coro intrinsic declaration via inkwell's typed
 /// `Intrinsic::find`, the same path codegen uses for `llvm.trap`. Fails closed
@@ -130,24 +136,20 @@ pub unsafe fn emit_coro_intrinsic_token(
     }
 }
 
-/// Declare (or fetch) the `hew_cont_frame_alloc(size: u64) -> ptr` runtime symbol.
+/// Declare (or fetch) the tracked coroutine allocator
+/// `hew_cont_frame_alloc_tracked(size: u64) -> ptr`.
 ///
-/// `hew_cont_frame_alloc` takes `u64` (not `size_t`) on every target — including
-/// wasm32 — matching `hew_alloc`. The LLVM declaration therefore always uses
-/// `i64`, never `i32`, regardless of the target pointer or size width. Using
-/// `runtime_size_ty` (i32 on wasm32) would produce an `(i32)->ptr` import that
-/// the wasm-ld/instantiation validator rejects against the runtime's `(i64)->ptr`
-/// export (exact-signature matching). See `hew-runtime/src/cont.rs:134`.
-fn declare_frame_alloc<'ctx>(
+/// The allocator takes `u64` (not `size_t`) on every target — including wasm32.
+fn declare_tracked_frame_alloc<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
 ) -> FunctionValue<'ctx> {
-    if let Some(f) = llvm_mod.get_function(CONT_FRAME_ALLOC) {
+    if let Some(f) = llvm_mod.get_function(CONT_FRAME_ALLOC_TRACKED) {
         return f;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     llvm_mod.add_function(
-        CONT_FRAME_ALLOC,
+        CONT_FRAME_ALLOC_TRACKED,
         ptr_ty.fn_type(&[ctx.i64_type().into()], false),
         Some(Linkage::External),
     )
@@ -167,6 +169,36 @@ fn declare_frame_free<'ctx>(
         ctx.void_type().fn_type(&[ptr_ty.into()], false),
         Some(Linkage::External),
     )
+}
+
+fn declare_frame_handoff<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(f) = llvm_mod.get_function(CONT_FRAME_HANDOFF) {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        CONT_FRAME_HANDOFF,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
+
+/// Emit the normal ramp-return transfer that removes `handle` from the active
+/// coroutine-frame TLS stack.
+pub fn emit_coro_frame_handoff<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    handle: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let handoff = declare_frame_handoff(ctx, llvm_mod);
+    builder
+        .build_call(handoff, &[handle.into()], "")
+        .llvm_ctx("hew_cont_frame_handoff call")?;
+    Ok(())
 }
 
 /// Handles to the live state of a coroutine being emitted, passed to a body
@@ -264,7 +296,7 @@ impl<'a, 'ctx> CoroContext<'a, 'ctx> {
 ///   br %need, dyn.alloc, coro.begin
 /// dyn.alloc:
 ///   %size = coro.size.i64()
-///   %mem  = hew_cont_frame_alloc(%size)
+///   %mem  = hew_cont_frame_alloc_tracked(%size)
 ///   br coro.begin
 /// coro.begin:
 ///   %hdl  = coro.begin(%id, phi[null, %mem])   ; %hdl is the HewCont handle
@@ -335,11 +367,13 @@ pub fn emit_coro_prologue<'a, 'ctx>(
         .build_conditional_branch(need, dyn_alloc, begin)
         .llvm_ctx("coro.alloc conditional branch")?;
 
-    // dyn.alloc: size = coro.size.i64(); mem = hew_cont_frame_alloc(size).
+    // dyn.alloc: size = coro.size.i64(); mem =
+    // hew_cont_frame_alloc_tracked(size).
     // `coro.size` is overloaded on its result type — resolve the base name with
     // the i64 type arg so get_declaration mangles it to `llvm.coro.size.i64`.
-    // `hew_cont_frame_alloc` takes `u64` on all targets (NOT `size_t`), so the
-    // i64 result flows straight through — no truncation for wasm32.
+    // `hew_cont_frame_alloc_tracked` takes `u64` on all targets (NOT
+    // `size_t`), so the i64 result flows straight through — no truncation for
+    // wasm32.
     builder.position_at_end(dyn_alloc);
     let coro_size = coro_intrinsic_typed(llvm_mod, "llvm.coro.size", &[ctx.i64_type().into()])?;
     let size_i64 = builder
@@ -349,7 +383,7 @@ pub fn emit_coro_prologue<'a, 'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("coro.size returned no value".into()))?
         .into_int_value();
-    let frame_alloc = declare_frame_alloc(ctx, llvm_mod);
+    let frame_alloc = declare_tracked_frame_alloc(ctx, llvm_mod);
     let mem = builder
         .build_call(frame_alloc, &[size_i64.into()], "coro.frame")
         .llvm_ctx("hew_cont_frame_alloc call")?
@@ -469,6 +503,7 @@ pub fn emit_coro_end_ret<'ctx>(cc: &CoroContext<'_, 'ctx>) -> CodegenResult<()> 
         let name = std::ffi::CString::new("").unwrap();
         emit_coro_intrinsic_token(cc.builder.as_mut_ptr(), coro_end, &mut args, &name);
     }
+    emit_coro_frame_handoff(cc.ctx, cc.llvm_mod, cc.builder, cc.handle)?;
     cc.builder
         .build_return(Some(&cc.handle))
         .llvm_ctx("coro suspend-return coro.end + ret handle")?;
@@ -540,5 +575,8 @@ pub fn run_coro_passes(llvm_mod: &LlvmModule<'_>, machine: &TargetMachine) -> Co
             machine,
             options,
         )
-        .map_err(|e| CodegenError::Llvm(format!("coro pass pipeline failed: {e}")))
+        .map_err(|e| CodegenError::Llvm(format!("coro pass pipeline failed: {e}")))?;
+    llvm_mod.verify().map_err(|e| {
+        CodegenError::LlvmVerify(format!("module rejected after coroutine lowering: {e}"))
+    })
 }

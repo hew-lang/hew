@@ -22,6 +22,7 @@
 //! is wrong.
 
 use hew_hir::stdlib_catalog::{entries, BuiltinLinkage};
+use hew_types::{module_registry::ModuleRegistry, stdlib_catalog_identity, Checker, Ty};
 use std::collections::HashSet;
 
 /// Parse the `stable = [ ... ]` block from the TOML classification file using
@@ -186,4 +187,60 @@ fn catalog_contains_bytes_constructor_and_method_targets() {
     ] {
         assert!(names.contains(name), "missing bytes catalog row `{name}`");
     }
+}
+
+/// Keep the checker-side `CallTarget::Builtin` identity projection total for
+/// every catalog entry that it can accept as a concrete ordinary call.  The
+/// companion checker unit test invokes `call_target_for_signature` for every
+/// identity below and proves it publishes `CallTarget::Builtin` rather than
+/// `Unsupported`; this test owns the opposite direction because only HIR owns
+/// the complete catalog/linkage inventory.
+///
+/// Generic surfaces and compiler intrinsics are deliberately out of scope:
+/// they have dedicated type-driven or method-rewrite lowering paths, so an
+/// ordinary monomorphic `CallTarget::Builtin` would be the wrong executable
+/// carrier for them.
+#[test]
+fn checker_accepted_monomorphic_catalog_callables_have_target_identities() {
+    let parsed = hew_parser::parse("");
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "empty builtin inventory program must typecheck: {:#?}",
+        output.errors
+    );
+
+    let expected: HashSet<&str> = entries()
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.linkage,
+                BuiltinLinkage::CompilerIntrinsic { .. }
+                    | BuiltinLinkage::LayoutDescriptorSymbol { .. }
+            )
+        })
+        .filter_map(|entry| {
+            let signature = output.fn_sigs.get(entry.name)?;
+            let concrete = signature.type_params.is_empty()
+                && !signature.params.iter().any(Ty::has_inference_var)
+                && !signature.return_type.has_inference_var();
+            concrete.then_some(entry.name)
+        })
+        .collect();
+    let published: HashSet<&str> = stdlib_catalog_identity::MONOMORPHIC_CALLABLE_IDENTITIES
+        .iter()
+        .copied()
+        .collect();
+
+    assert_eq!(
+        published, expected,
+        "every concrete catalog callable accepted by the checker must have one exact \
+         checker CallTarget identity, and no generic/non-executable surface may claim one"
+    );
 }

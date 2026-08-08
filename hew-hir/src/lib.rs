@@ -3,6 +3,7 @@
 //! analysis attaches value-model decisions.
 
 pub mod builtin_type_classes;
+pub mod declared_release;
 pub mod diagnostic;
 pub mod dispatch;
 pub mod dump;
@@ -32,13 +33,15 @@ pub use lower::{
 };
 pub use machine_mono::run_machine_mono_pass;
 pub use mono::{
-    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
-    FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
+    machine_layout_key, mangle_instantiation, sanitize_for_symbol, ActorMonoKey,
+    ConstValue as MonoConstValue, FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind,
+    SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params, EnumLayout,
-    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
-    MONOMORPHISATION_REGISTRY_CAP,
+    compiler_record_layout_key, layout_key_for_named, mangle, mangle_layout_key,
+    mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params,
+    synthetic_cursor_layout_key, EnumLayout, EnumMonoKey, EnumVariantLayout, MonoKey,
+    MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
@@ -47,14 +50,17 @@ pub use node::{
     HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind, WhereOrigin,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirProducedValueFact,
+    HirProducedValueProducer, HirProducedValueRelation, HirProducedValueSourceAnchor,
+    HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,
-    named_type_names, NamedTypeComponent, ResourceMarker, TypeClassTable, ValueClass,
+    named_type_names, LifecycleRegistry, NamedTypeComponent, OpaqueResourceLifecycle,
+    ResourceMarker, ResourceRecordLifecycle, TypeClassTable, ValueClass,
 };
 pub use verify::{collect_site_spans, verify_hir, HirSiteSource};
 

@@ -76,6 +76,9 @@ pub enum SymbolClass {
     Function,
     /// Generic record / `pub type` monomorphisation.
     Record,
+    /// Compiler-synthesised record carrier. Kept disjoint from user records
+    /// even when a user declaration has the same leaf and type arguments.
+    SyntheticRecord,
     /// Generic enum monomorphisation.
     Enum,
     /// Generic machine monomorphisation.
@@ -98,6 +101,7 @@ impl SymbolClass {
         match self {
             Self::Function => "",
             Self::Record => "rc",
+            Self::SyntheticRecord => "sr",
             Self::Enum => "en",
             Self::Machine => "mc",
             Self::Actor => "ac",

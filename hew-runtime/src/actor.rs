@@ -71,6 +71,71 @@ fn run_crash_teardown_order_hook(event: c_int) {
     }
 }
 
+// ── Send post-enqueue / pre-wake rendezvous hook (test-only) ─────────────
+//
+// An actor send transfers node ownership into the mailbox BEFORE attempting
+// `Idle -> Runnable`. This hook pauses at that exact ownership boundary so a
+// test can let stop/close win `Idle -> Stopped`, then verify the terminal path
+// retires the exact node and its retained reply-sender reference even though
+// the sender's wake CAS necessarily loses.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+type SendPostEnqueueHook = (
+    u64,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static SEND_POST_ENQUEUE_PRE_WAKE_HOOK: Mutex<Option<SendPostEnqueueHook>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_send_post_enqueue_pre_wake_hook(a: &HewActor) {
+    let rendezvous = {
+        let guard = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.as_ref().and_then(|(actor_id, entered, release)| {
+            (*actor_id == a.id).then(|| (entered.clone(), release.clone()))
+        })
+    };
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct SendPostEnqueueHookGuard;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl SendPostEnqueueHookGuard {
+    pub(crate) fn install(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(hook.is_none(), "send ownership hook already installed");
+        *hook = Some((actor_id, entered.clone(), release.clone()));
+        (Self, entered, release)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for SendPostEnqueueHookGuard {
+    fn drop(&mut self) {
+        *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 // ── Free-path pre-detach rendezvous hook (test-only) ─────────────────────
 //
 // Lets a test deterministically force the reactor-detach UAF window: the hook
@@ -276,6 +341,48 @@ fn run_registration_retirement_hook(
         hook.entered.wait();
         hook.release.wait();
     }
+}
+
+// ── Drain target pin rendezvous hook (test-only) ─────────────────────────
+//
+// `drain_actors` resolves actor IDs under `LIVE_ACTORS`, then calls the raw
+// pointer `hew_actor_stop` entry point after the registry lock is released.
+// The allocation must remain pinned across that gap. This hook pauses after
+// the pin is acquired and immediately before stop dereferences the pointer so
+// a test can drive a concurrent free through untracking and prove that final
+// reclamation remains blocked on this exact pin.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DRAIN_POST_PIN_PRE_STOP_HOOK: Mutex<Option<RegistrationRetirementHook>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_drain_post_pin_pre_stop_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id, entered, release)
+}
+
+// The second drain lifetime boundary is the handoff from a quiescent state
+// observation to cleanup preparation and the LIVE_ACTORS retirement claim.
+// This hook pauses after the exact actor has been pinned and its state read,
+// but before cleanup first dereferences it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DRAIN_POST_STATE_PRE_CLEANUP_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+    Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_drain_post_state_pre_cleanup_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(
+        &DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
+        actor_id,
+        entered,
+        release,
+    )
 }
 
 // ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
@@ -1320,19 +1427,18 @@ pub struct HewActor {
     #[cfg(target_arch = "wasm32")]
     pub(crate) runtime: *const c_void,
 
-    /// Count of in-flight by-ID send/ask/stop operations currently pinning
-    /// this actor allocation.
+    /// Count of in-flight by-ID operations and scheduler queue entries
+    /// currently pinning this actor allocation.
     ///
     /// `with_actor_send_by_id` increments this field (atomically, under
     /// `LIVE_ACTORS`) before releasing the registry lock, then decrements it
-    /// via a RAII guard when the operation completes.  The free path in
-    /// `hew_actor_free_inner` calls `untrack_actor` first (removing the actor
-    /// from `LIVE_ACTORS` so no new pins can be taken), then spins until
-    /// `send_pin_count` reaches 0 (draining any in-flight pins taken before
-    /// the untrack) before calling `finalize`.  This untrack-first ordering
-    /// makes the pin-drain and the liveness check mutually exclusive: either
-    /// the sender pins before the freer untracks (freer waits), or the freer
-    /// untracks before the sender's map lookup (sender gets `None`, no pin).
+    /// via a RAII guard when the operation completes. Scheduler producers take
+    /// another reference before making an actor Runnable, and the queue
+    /// consumer transfers that ownership to `dispatch_active` before releasing
+    /// it. The free path in `hew_actor_free_inner` calls `untrack_actor` first
+    /// (removing the actor from `LIVE_ACTORS` so no new registry pins can be
+    /// taken), then waits for both this count and `dispatch_active` before
+    /// finalizing.
     ///
     /// **Why not `dispatch_active`**: `dispatch_active` serialises the
     /// scheduler worker's activation ownership; reusing it for external sends
@@ -1404,16 +1510,89 @@ pub struct HewActor {
     /// previously-mirrored offset moves. Registered post-spawn via
     /// [`hew_actor_set_sys_dispatch`], never through the spawn arg list.
     pub sys_dispatch: Option<HewSysDispatchFn>,
+
+    /// Explicit one-shot authority proving the dispatch crash escrow already
+    /// invoked (or quarantined after entering) the typed state finalizer.
+    /// Lifecycle state alone is insufficient: actors may become `Crashed`
+    /// before dispatch opens an escrow or while idle. Only the recovery path
+    /// that actually consumes a state snapshot sets this bit.
+    pub state_drop_consumed: AtomicBool,
+
+    /// Provenance bit for a state wrapper whose owned fields are borrowed from
+    /// a persistent supervisor byte-copy template. Such an incarnation never
+    /// owns typed-drop authority; fresh init-thunk and state-clone incarnations
+    /// leave this false. Kept separate from `state_drop_consumed` so a later
+    /// successful clone registration can transfer a borrowed initial actor to
+    /// owned without resurrecting authority already consumed by crash escrow.
+    pub state_drop_borrowed: AtomicBool,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
-// All mutable shared fields use atomic types. Raw pointers are managed by
-// the scheduler/actor lifecycle which ensures exclusive access during
-// activation (CAS `RUNNABLE` → `RUNNING`).
+// All mutable shared fields use atomic types. Raw pointers are managed by the
+// scheduler/actor lifecycle, which ensures exclusive activation access (CAS
+// `RUNNABLE` → `RUNNING`).
 unsafe impl Send for HewActor {}
 // SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
+
+/// Transfer the actor's one-shot typed state-drop authority to a completed
+/// dispatch crash escrow.
+///
+/// The descriptor remains installed for supervisor/restart metadata; this bit
+/// belongs to one actor incarnation and is initialized false for every spawn.
+/// A second transfer is an invariant violation (it would imply two escrows
+/// both believed they owned the same initialized state).
+pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording crash-escrow state authority");
+        std::process::abort();
+    }
+    // SAFETY: caller owns the actor activation or terminal recovery edge.
+    let already_consumed = unsafe { &*actor }
+        .state_drop_consumed
+        .swap(true, Ordering::AcqRel);
+    if already_consumed {
+        eprintln!("fatal: actor state-drop authority consumed by more than one crash escrow");
+        std::process::abort();
+    }
+}
+
+/// Mark a newly-created supervised incarnation as borrowing typed state from
+/// its persistent shallow-copy template.
+///
+/// # Safety
+///
+/// `actor` must be a live, newly spawned actor not yet visible to dispatch.
+pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording borrowed state provenance");
+        std::process::abort();
+    }
+    // SAFETY: caller owns the unpublished actor incarnation.
+    unsafe { &*actor }
+        .state_drop_borrowed
+        .store(true, Ordering::Release);
+}
+
+/// Transfer a shallow-template initial incarnation to independently-owned
+/// state after the supervisor successfully replaces its template with a deep
+/// clone. This changes provenance only; a concurrently consumed crash-escrow
+/// authority remains consumed in the separate atomic bit.
+///
+/// # Safety
+///
+/// `actor` must be the live child whose former template alias was just broken.
+pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording owned state provenance");
+        std::process::abort();
+    }
+    // SAFETY: caller guarantees the template no longer aliases actor state.
+    unsafe { &*actor }
+        .state_drop_borrowed
+        .store(false, Ordering::Release);
+}
 
 pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     let token = actor
@@ -1595,8 +1774,8 @@ fn record_terminate_wait_poll_tick() {}
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
 ///
-/// Delegates to [`live_actors::with_live_actor_by_id`].
-// live on not(wasm32) — monitor.rs + link.rs; dead on wasm32; callers monitor.rs:98, link.rs:201
+/// Test wrapper around [`live_actors::with_live_actor_by_id`].
+#[cfg(test)]
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
@@ -1822,7 +2001,7 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
 /// attempted concurrently. That leaves exactly one window during shutdown, and
 /// [`retire_parked_activations`] is called in it. The teardown routes that run
 /// OUTSIDE that window — `cleanup_all_actors` and
-/// `free_actor_resources_with_options`, both of which run after
+/// `free_actor_resources`, both of which run after
 /// `hew_periodic_shutdown` — must therefore never call this. They sweep the
 /// reply slot directly instead, which is a bare atomic swap and re-enters
 /// nothing.
@@ -1858,7 +2037,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // `hew_actor_free_inner`'s two-second quiescence wait — and makes it a
     // property of abandonment rather than something every route has to
     // remember. The swap inside `retire_suspended_reply_channel` keeps it
-    // exactly once even though `free_actor_resources_with_options` sweeps the
+    // exactly once even though `free_actor_resources` sweeps the
     // same slot on the way out.
     crate::scheduler::retire_suspended_reply_channel(a);
     // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
@@ -1875,7 +2054,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // whether or not this teardown won the destroy, so the routes that abandon a
     // producer publish it unconditionally themselves —
     // `hew_actor_free_inner` before this call, and
-    // `free_actor_resources_with_options` on the way out of every free,
+    // `free_actor_resources` on the way out of every free,
     // including the one `retire_parked_activations` hands to
     // `cleanup_all_actors`. The publish is a single atomic swap, so the
     // overlapping calls settle to exactly one release.
@@ -2005,33 +2184,13 @@ fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
 ///
 /// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
 unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
-    // SAFETY: caller guarantees `actor` is quiescent and not dispatching.
-    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, false) };
-}
-
-/// Same as [`finalize_quiescent_actor_cleanup`], but the caller may suppress
-/// the codegen-emitted `state_drop_fn` invocation.
-///
-/// `suppress_state_drop = true` is used by supervisor restart paths
-/// (`ONE_FOR_ALL` / `REST_FOR_ONE`) when freeing a non-crashed sibling whose
-/// state is about to be reused by the next spawn. See the rationale in
-/// [`free_actor_resources_with_options`].
-///
-/// # Safety
-///
-/// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
-unsafe fn finalize_quiescent_actor_cleanup_with_options(
-    actor: *mut HewActor,
-    state: i32,
-    suppress_state_drop: bool,
-) {
     if state != HewActorState::Crashed as i32 {
         // SAFETY: caller guarantees the actor is quiescent and not dispatching.
         unsafe { call_terminate_fn(actor) };
     }
 
     // SAFETY: caller guarantees the actor remains valid and is no longer dispatching.
-    unsafe { free_actor_resources_with_options(actor, suppress_state_drop) };
+    unsafe { free_actor_resources(actor) };
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown
@@ -2170,13 +2329,16 @@ pub(crate) unsafe fn cleanup_all_actors() {
             let pin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut pinned = false;
             loop {
-                if a.send_pin_count.load(Ordering::Acquire) == 0 {
+                if a.send_pin_count.load(Ordering::Acquire) == 0
+                    && !a.dispatch_active.load(Ordering::Acquire)
+                {
                     break;
                 }
                 if std::time::Instant::now() >= pin_deadline {
                     eprintln!(
-                        "hew: runtime error: actor {:#x} send pins did not drain \
-                         during shutdown cleanup; actor leaked to avoid UAF",
+                        "hew: runtime error: actor {:#x} lifetime pins or dispatch \
+                         ownership did not drain during shutdown cleanup; actor \
+                         leaked to avoid UAF",
                         a.id
                     );
                     pinned = true;
@@ -2220,39 +2382,22 @@ pub(crate) unsafe fn cleanup_all_actors() {
     crate::lifetime::local_handles::finish_current_shutdown();
 }
 
-/// Free an actor's resources without untracking, optionally suppressing the
-/// codegen-emitted `state_drop_fn` invocation.
+/// Free an actor's resources without untracking.
 ///
-/// `suppress_state_drop = true` is the supervisor-restart path. The runtime
-/// byte-copies `spec.init_state` into every spawned actor's `state` /
-/// `init_state` slots, which means owned-field pointers (Vec.ptr, String.ptr,
-/// IO handles) are aliased between the supervisor's `spec.init_state` and
-/// every actor instance ever spawned from that spec. Running `state_drop_fn`
-/// on a non-crashed sibling that is about to be replaced via
-/// `restart_child_from_spec` would free those field pointers, leaving the
-/// supervisor's `spec.init_state` byte-aliasing dangling pointers. The next
-/// restart byte-copies that dangling spec into a fresh actor and dereferences
-/// it on the next teardown — a use-after-free.
-///
-/// State-drop must not regress the existing leak-not-UAF invariant: prior to
-/// the state-drop slot landing, non-crashed teardowns leaked the field
-/// allocations rather than freeing them, so the supervisor's spec aliases
-/// stayed valid (just leaked) until final teardown. The supervisor still
-/// frees `spec.init_state` exactly once during `hew_supervisor_stop`, where
-/// no further restart can observe the dangling bytes.
-///
-/// This narrows the regression window to non-crashed restarts. The deeper
-/// latent issue — user mutation `self.x = newHeap` already leaves a dangling
-/// pointer in `spec.init_state` via drop-on-assign — predates state-drop and
-/// requires a semantic clone of `init_state` to fix; that is out of scope
-/// here.
+/// Typed state teardown is decided only by the incarnation's explicit
+/// provenance and one-shot `state_drop_consumed` authority. Supervisor restart
+/// context is not evidence that state was consumed: init thunks and clone
+/// callbacks produce fresh independently-owned state, ordinary stops never open
+/// crash escrow, and a crash can occur before escrow takes ownership. Every
+/// free route therefore converges here and atomically consumes whichever owned
+/// authority remains; shallow-template borrowers never acquire one.
 ///
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
+unsafe fn free_actor_resources(actor: *mut HewActor) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
     unsafe {
@@ -2339,14 +2484,11 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
     // their resources before the underlying allocation goes away.
     //
-    // Crashed actors are skipped: their state may be partially torn down
-    // by the panic that crashed them, so re-entering user Drop on it
-    // risks a second crash or a double-free of fields the crash already
-    // released. This mirrors the terminate-skip in
-    // `finalize_quiescent_actor_cleanup` and the comment in
-    // `cleanup_all_actors` ("Skip crashed actors — their state may be
-    // corrupted"). Structural cleanup (libc::free, arena, mailbox,
-    // Box::from_raw) below still runs unconditionally.
+    // Lifecycle state is deliberately not used as drop authority. An actor can
+    // be marked Crashed before dispatch begins (or externally while idle), in
+    // which case no escrow ever touched its initialized state. Conversely, an
+    // in-dispatch recovery sets `state_drop_consumed` only after taking the
+    // typed escrow. The atomic bit is the exact once-only authority.
     //
     // SAFETY rationale for NOT calling `state_drop_fn` on `a.init_state`:
     //
@@ -2374,8 +2516,8 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
     //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
     //    the caller's spec bytes at registration time.
-    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed && !suppress_state_drop {
+    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
+    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -2441,9 +2583,9 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(target_arch = "wasm32")]
-unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
+unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: target_arch = wasm32 shares the same invariants as the test helper.
-    unsafe { free_actor_resources_wasm_with_options(actor, suppress_state_drop) };
+    unsafe { free_actor_resources_wasm(actor) };
 }
 
 /// Free an actor's resources using the WASM cleanup path.  Always runs
@@ -2458,25 +2600,6 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
 #[cfg_attr(not(test), allow(dead_code))]
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
-    // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { free_actor_resources_wasm_with_options(actor, false) };
-}
-
-/// Free an actor's resources using the WASM cleanup path, with the option to
-/// suppress `state_drop_fn` (supervisor-restart paths).  See
-/// [`free_actor_resources_with_options`] (native) for the alias-chain
-/// rationale; the WASM and native `HewActor` layouts are byte-identical
-/// (offset assertions in `scheduler_wasm.rs`).
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer to a live `HewActor` that is not
-/// currently being dispatched.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn free_actor_resources_wasm_with_options(
-    actor: *mut HewActor,
-    suppress_state_drop: bool,
-) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -2510,7 +2633,7 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // away. If it was parked mid-`ask`, its suspend edge moved the caller's
     // reply-sender reference into `suspended_reply_channel` and no resume will
     // ever consume it. Parity with the native
-    // `free_actor_resources_with_options`: discharge the debt at the single
+    // `free_actor_resources`: discharge the debt at the single
     // choke point every free route funnels through, so "the box is never freed
     // with a live reply slot" is a property of this function rather than
     // something each caller has to remember.
@@ -2529,15 +2652,12 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // `scheduler_wasm.rs`) and the same `a.init_state` aliasing as the
     // native path, so state-drop runs on `a.state` only — running it on
     // `a.init_state` would double-free every owned field. See the SAFETY
-    // block in the native `free_actor_resources_with_options` for the full
-    // rationale, including why `suppress_state_drop` is required on
-    // supervisor-restart paths.
+    // block in the native `free_actor_resources` for the full rationale.
     //
-    // Crashed actors are skipped here too: same rationale as the native
-    // path. Structural cleanup below still runs unconditionally so the
-    // allocation, arena, mailbox, and HewActor box are always released.
-    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed && !suppress_state_drop {
+    // As on native, the explicit escrow-consumed bit—not lifecycle state—is
+    // the typed teardown authority.
+    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
+    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -2557,7 +2677,7 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     if !a.arena.is_null() {
         let arena_ptr = a.arena;
         // Null the slot BEFORE freeing — parity with the native
-        // `free_actor_resources_with_options` (`raii-native-wasm-parity`
+        // `free_actor_resources` (`raii-native-wasm-parity`
         // + `raii-null-after-move`).  WASM is single-threaded so the
         // arena UAF cannot fire here, but the source shape must mirror
         // native to keep both paths reviewable as one invariant.
@@ -2689,7 +2809,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
             // being dispatched.
             unsafe { terminate_fn(state) };
         }));
-        if result.is_err() {
+        if let Err(panic_payload) = result {
             // Release a lock the trampoline may have acquired before the panic.
             // This is a no-op when no terminate_fn was set or the lock was
             // already released normally.
@@ -2698,6 +2818,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
             unsafe {
                 let _ = hew_actor_state_lock_release_after_panic(actor);
             }
+            crate::util::quarantine_panic_payload(panic_payload);
         }
         if !jmp_buf_ptr.is_null() {
             crate::signal::clear_dispatch_recovery();
@@ -2752,12 +2873,13 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unsafe { terminate_fn(state) };
     }));
-    if result.is_err() {
+    if let Err(panic_payload) = result {
         // Release any lock the trampoline acquired before the panic.
         // SAFETY: actor is valid; the release helper tolerates an unheld lock.
         unsafe {
             let _ = hew_actor_state_lock_release_after_panic(actor);
         }
+        crate::util::quarantine_panic_payload(panic_payload);
     }
     a.terminate_finished.store(true, Ordering::Release);
 }
@@ -3030,6 +3152,8 @@ fn build_spawned_actor(
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: identity.serial,
         sys_dispatch: config.sys_dispatch,
+        state_drop_consumed: AtomicBool::new(false),
+        state_drop_borrowed: AtomicBool::new(false),
     })
 }
 
@@ -3202,7 +3326,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
-        unsafe { free_actor_resources_with_options(raw, false) };
+        unsafe { free_actor_resources(raw) };
         return ptr::null_mut();
     }
     raw
@@ -3271,7 +3395,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
-        unsafe { free_actor_resources_with_options(raw, false) };
+        unsafe { free_actor_resources(raw) };
         return ptr::null_mut();
     }
     raw
@@ -3730,7 +3854,7 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
 
 /// WASM stub for [`hew_actor_send_aliased`] — **fail-closed**.
 ///
-// WASM-TODO(#1451): alias-send WASM routing deferred to the WASM send gate (the gate covers it).
+// WASM-TODO(alias-messaging): wire alias-send routing through the WASM envelope path.
 /// The native entry above delivers aliased sends via the envelope-mode
 /// enqueue, but the WASM mailbox routing for the alias path is not yet
 /// wired. Until then this stub releases the caller-transferred envelope
@@ -3919,6 +4043,52 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     HewError::ErrActorStopped as i32
 }
 
+/// Cooperative-WASM implementation of by-ID local actor delivery.
+///
+/// The single-threaded runtime still publishes actors in `live_actors`; pin the
+/// exact ID for the complete mailbox copy, then wake the target on successful
+/// delivery. Distributed routing is checker-rejected on wasm32, so a missing
+/// local actor is always the explicit stopped-actor failure.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when `size`
+/// is zero. `dispatch` is an opaque type key and is not dereferenced.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_by_id(
+    actor_id: u64,
+    _dispatch: *const c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    // SAFETY: this wrapper has the same payload contract as the inner seam.
+    unsafe { actor_send_by_id_wasm_internal(actor_id, msg_type, data, size) }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+unsafe fn actor_send_by_id_wasm_internal(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox
+        // valid; the caller supplies the readable payload range.
+        let result = unsafe {
+            crate::mailbox_wasm::hew_mailbox_send((*actor).mailbox.cast(), msg_type, data, size)
+        };
+        if result == HewError::Ok as i32 {
+            // SAFETY: successful delivery targets the same pinned live actor.
+            unsafe { wake_wasm_actor(actor) };
+        }
+        result
+    })
+    .unwrap_or(HewError::ErrActorStopped as i32)
+}
+
 /// Resolve the exact actor incarnation behind a stable local handle.
 ///
 /// # Safety
@@ -4009,18 +4179,8 @@ pub unsafe extern "C" fn hew_actor_try_send(
         return result;
     }
 
-    // CAS IDLE → RUNNABLE; on success, schedule the actor.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Runnable as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        scheduler::sched_enqueue(actor);
-    }
+    // SAFETY: this producer fully linked a node and still owns actor lifetime.
+    unsafe { finish_mailbox_enqueue(actor, a) };
 
     0
 }
@@ -4079,24 +4239,62 @@ pub(crate) unsafe fn hew_actor_send_guaranteed(
         return result;
     }
 
-    // CAS IDLE → RUNNABLE; on success, schedule the actor so it drains the
-    // terminal event (and the buffered messages ahead of it).
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Runnable as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        scheduler::sched_enqueue(actor);
-    }
+    // SAFETY: this producer fully linked a node and still owns actor lifetime.
+    unsafe { finish_mailbox_enqueue(actor, a) };
 
     0
 }
 
 // ── Close / Stop / Free ─────────────────────────────────────────────────
+
+/// Try to terminalize an idle actor after its mailbox has been closed.
+///
+/// The winning `Idle -> Stopped` CAS is also the last point that still owns a
+/// live, non-dispatching actor and its mailbox. A sender can already have
+/// transferred an ask node into that mailbox while paused before its own
+/// `Idle -> Runnable` CAS. Once this CAS wins the sender's wake must fail, so
+/// this path must retire queued nodes before returning; no later activation can
+/// do it.
+///
+/// `reclaim_queued` exists solely to make the pre-fix omission executable in a
+/// unit counterfactual. Production callers always pass `true`; the false branch
+/// differs by exactly the missing reclaim edge.
+///
+/// # Safety
+///
+/// `actor`, `a`, and `mb` must name the same live actor/mailbox allocation, and
+/// the mailbox must already be closed.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn try_terminalize_idle_actor(
+    actor: *mut HewActor,
+    a: &HewActor,
+    mb: *mut HewMailbox,
+    reclaim_queued: bool,
+) -> bool {
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    if reclaim_queued {
+        // SAFETY: winning Idle -> Stopped proves no activation owns this
+        // mailbox's consumer side. The actor and mailbox remain live until this
+        // function returns, and the closed mailbox rejects later sends.
+        unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+    }
+
+    crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+    // SAFETY: actor just transitioned to Stopped; it is not being dispatched.
+    unsafe { call_terminate_fn(actor) };
+    true
+}
 
 /// Close an actor, rejecting new messages.
 ///
@@ -4119,20 +4317,9 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_close(mb) };
     }
 
-    // If actor is IDLE, transition directly to STOPPED.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
-    }
+    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
+    // closed immediately above.
+    let _ = unsafe { try_terminalize_idle_actor(actor, a, mb, true) };
 }
 
 /// Stop an actor.
@@ -4165,18 +4352,9 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_close(mb) };
     }
 
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
+    // SAFETY: actor/a/mb are the same live allocation and the mailbox was
+    // closed immediately above.
+    if unsafe { try_terminalize_idle_actor(actor, a, mb, true) } {
         return;
     }
 
@@ -4229,31 +4407,11 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { hew_actor_free_inner(actor, false) }
-}
-
-/// Free an actor and all associated resources, suppressing the codegen-emitted
-/// `state_drop_fn` invocation on the live state.
-///
-/// Used by supervisor restart paths (`ONE_FOR_ALL` / `REST_FOR_ONE`) for
-/// non-crashed siblings whose state is about to be reused by the next spawn.
-/// See [`free_actor_resources_with_options`] for the alias-chain rationale.
-///
-/// # Safety
-///
-/// - `actor` must have been returned by a spawn function.
-/// - The actor must not be used after this call.
-/// - Caller (the supervisor) guarantees the actor's `state` field allocations
-///   are still owned by the supervisor's `spec.init_state` byte-aliasing and
-///   will be freed exactly once during `hew_supervisor_stop`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn hew_actor_free_for_restart(actor: *mut HewActor) -> c_int {
-    // SAFETY: caller forwards the same invariants the inner requires.
-    unsafe { hew_actor_free_inner(actor, true) }
+    unsafe { hew_actor_free_inner(actor) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) -> c_int {
+unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
         crate::set_last_error("hew_actor_free: null actor pointer");
         return -1;
@@ -4315,7 +4473,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     //      (fail-closed; the caller leaks rather than frees a queued actor).
     //
     // `state` carried out of the loop is the post-latch terminal state passed to
-    // `finalize_quiescent_actor_cleanup_with_options`, which runs the terminate
+    // `finalize_quiescent_actor_cleanup`, which runs the terminate
     // callback exactly once for `Stopped` (== the old `Idle` behaviour) and skips
     // it for `Crashed`.
     //
@@ -4494,13 +4652,17 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // `deadline`; give the pin drain its own full budget.
     let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        if a.send_pin_count.load(Ordering::Acquire) == 0 {
+        if a.send_pin_count.load(Ordering::Acquire) == 0
+            && !a.dispatch_active.load(Ordering::Acquire)
+        {
             break;
         }
         if std::time::Instant::now() >= drain_deadline {
             // An outstanding pin may still insert a relationship, so no final
             // scrub is safe on this fail-closed allocation leak.
-            crate::set_last_error("hew_actor_free: send pins did not drain after timeout");
+            crate::set_last_error(
+                "hew_actor_free: lifetime pins or dispatch ownership did not drain after timeout",
+            );
             return -2;
         }
         std::thread::yield_now();
@@ -4514,7 +4676,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
 
     // SAFETY: actor is quiescent (re-verified after detach), no longer tracked,
     // all send pins drained, and not being dispatched.
-    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, suppress_state_drop) };
+    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     0
 }
 
@@ -4536,8 +4698,14 @@ fn drain_outcome_from_lists(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn collect_pending_actor(id: ActorId) -> Option<(ActorId, *mut HewActor)> {
-    live_actors::get_actor_ptr_by_id(id).map(|actor| (id, actor))
+fn collect_pending_actor(id: ActorId) -> Option<(ActorId, live_actors::ActorPin)> {
+    live_actors::pin_actor_by_id(id).map(|pin| (id, pin))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pin_pending_actor(actor_id: ActorId, expected: *mut HewActor) -> Option<live_actors::ActorPin> {
+    let pin = live_actors::pin_actor_by_id(actor_id)?;
+    (pin.as_ptr() == expected).then_some(pin)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4571,26 +4739,28 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
 ///
 /// # Safety
 ///
-/// `expected` must be a valid, quiescent actor pointer that is still tracked
-/// in `LIVE_ACTORS`.
+/// `pin` must name the exact actor tracked under `actor_id`, and the caller must
+/// have observed it in a quiescent state while holding this pin.
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn drain_quiesced_actor(
     actor_id: ActorId,
-    expected: *mut HewActor,
+    pin: live_actors::ActorPin,
     deadline: std::time::Instant,
 ) {
-    // SAFETY: caller guarantees `expected` is quiescent and still tracked in
-    // LIVE_ACTORS. prepare_quiescent_actor_for_cleanup must run before
-    // untracking so that any in-flight timer callback or signal propagation
-    // still observes the actor as live and bails out cooperatively.
+    let expected = pin.as_ptr();
+    // The caller pin bridges the state-observation -> first-dereference gap.
+    // A concurrent free may retire the actor now, but its post-untrack pin
+    // drain cannot reclaim the allocation until this preparation and the
+    // retirement claim below finish.
+    //
+    // SAFETY: caller guarantees `pin` owns this valid quiescent allocation.
     unsafe { prepare_quiescent_actor_for_cleanup(expected) };
 
     // Wake-proof + finalize decision by the CAS RESULT, BEFORE untracking
     // (mirrors `hew_actor_free_inner` / `cleanup_all_actors`). Under the
     // stop-first contract this is `Err(Stopped) ⇒ Finalize(Stopped)`; a
     // re-enqueued actor (contract drift) takes the fail-closed `Skip` leak.
-    // SAFETY: caller guarantees `expected` is valid.
-    let a = unsafe { &*expected };
+    let a = pin.actor();
     let finalize_state = match decide_finalize_by_latch(a) {
         FinalizeDecision::Finalize(state) => state,
         FinalizeDecision::Skip => {
@@ -4605,20 +4775,29 @@ unsafe fn drain_quiesced_actor(
     };
 
     if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+        // This function now owns the retired allocation. Release its caller pin
+        // before waiting for all remaining pins, otherwise it would wait on
+        // itself until the deadline. The allocation stays live by cleanup
+        // ownership after take_actor_by_id.
+        drop(pin);
+
         // After take_actor_by_id the map entry is removed: no new send pins
         // can be taken.  Drain any in-flight pins before finalizing.
         // LIVE_ACTORS is not held here; pinned senders can re-acquire it.
         // SAFETY: actor is a live pointer returned by take_actor_by_id.
         let a = unsafe { &*actor };
         loop {
-            if a.send_pin_count.load(Ordering::Acquire) == 0 {
+            if a.send_pin_count.load(Ordering::Acquire) == 0
+                && !a.dispatch_active.load(Ordering::Acquire)
+            {
                 break;
             }
             if std::time::Instant::now() >= deadline {
                 // An outstanding pin may still insert a relationship, so no
                 // final scrub is safe on this fail-closed allocation leak.
                 crate::set_last_error(
-                    "drain_quiesced_actor: send pins did not drain after timeout",
+                    "drain_quiesced_actor: lifetime pins or dispatch ownership did not drain \
+                     after timeout",
                 );
                 // Fail-closed: actor is untracked but not freed (leak).
                 return;
@@ -4632,26 +4811,37 @@ unsafe fn drain_quiesced_actor(
         // no longer tracked, and all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
+    // If another freer won retirement, `pin` drops here and releases that
+    // winner's final reclamation wait.
 }
 
 /// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
 #[cfg(not(target_arch = "wasm32"))]
+#[must_use]
 pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
     if ids.is_empty() {
         return DrainOutcome::Drained;
     }
 
     let mut seen = HashSet::with_capacity(ids.len());
-    let mut pending: Vec<(ActorId, *mut HewActor)> = ids
-        .iter()
-        .copied()
-        .filter(|id| seen.insert(*id))
-        .filter_map(collect_pending_actor)
-        .collect();
+    let mut pending = Vec::with_capacity(ids.len());
+    for actor_id in ids.iter().copied().filter(|id| seen.insert(*id)) {
+        let Some((actor_id, pin)) = collect_pending_actor(actor_id) else {
+            continue;
+        };
+        let actor = pin.as_ptr();
+        // Deterministic proof hook: a concurrent free may retire this actor
+        // now, but cannot reclaim it while `pin` is held across stop.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id);
 
-    for &(_, actor) in &pending {
-        // SAFETY: actor came from LIVE_ACTORS and remains owned by the runtime.
+        // SAFETY: `pin` was acquired while actor_id was tracked and keeps the
+        // allocation live across this raw-pointer stop operation.
         unsafe { hew_actor_stop(actor) };
+        pending.push((actor_id, actor));
+        // Release exactly after the last unvalidated raw-pointer dereference.
+        // Later state/cleanup work acquires a fresh exact-pointer pin.
+        drop(pin);
     }
 
     let mut crashed = Vec::new();
@@ -4661,23 +4851,30 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
         let mut index = 0;
         while index < pending.len() {
             let (actor_id, expected) = pending[index];
-            let state = with_live_actor_by_id(actor_id, expected, |actor| {
-                actor.actor_state.load(Ordering::Acquire)
-            });
+            let Some(pin) = pin_pending_actor(actor_id, expected) else {
+                pending.swap_remove(index);
+                continue;
+            };
+            let state = pin.actor().actor_state.load(Ordering::Acquire);
             match state {
-                None => {
-                    pending.swap_remove(index);
-                }
-                Some(state) if state == HewActorState::Crashed as i32 => {
+                state if state == HewActorState::Crashed as i32 => {
+                    drop(pin);
                     crashed.push(actor_id);
                     pending.swap_remove(index);
                 }
-                Some(state) if actor_free_state_is_quiescent(state) => {
-                    // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                    unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
+                state if actor_free_state_is_quiescent(state) => {
+                    // Deterministic proof hook: the exact allocation remains
+                    // pinned from this state observation into cleanup.
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    run_registration_retirement_hook(&DRAIN_POST_STATE_PRE_CLEANUP_HOOK, actor_id);
+
+                    // SAFETY: `pin` names expected under actor_id and held the
+                    // allocation across the quiescent state observation.
+                    unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
                     pending.swap_remove(index);
                 }
-                Some(_) => {
+                _ => {
+                    drop(pin);
                     index += 1;
                 }
             }
@@ -4701,25 +4898,33 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
 
     let mut still_live = Vec::with_capacity(pending.len());
     for (actor_id, expected) in pending {
-        let state = with_live_actor_by_id(actor_id, expected, |actor| {
-            actor.actor_state.load(Ordering::Acquire)
-        });
+        let Some(pin) = pin_pending_actor(actor_id, expected) else {
+            continue;
+        };
+        let state = pin.actor().actor_state.load(Ordering::Acquire);
         match state {
-            None => {}
-            Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
-            Some(state) if actor_free_state_is_quiescent(state) => {
-                // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
+            state if state == HewActorState::Crashed as i32 => {
+                drop(pin);
+                crashed.push(actor_id);
             }
-            Some(_) => still_live.push(actor_id),
+            state if actor_free_state_is_quiescent(state) => {
+                // SAFETY: `pin` names expected under actor_id and held the
+                // allocation across the quiescent state observation.
+                unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
+            }
+            _ => {
+                drop(pin);
+                still_live.push(actor_id);
+            }
         }
     }
 
     drain_outcome_from_lists(still_live, crashed)
 }
 
-/// WASM-TODO(#1451): drain_actors primitive pending WASM scheduler integration.
+/// WASM-TODO(actor-drain): integrate actor-set draining with the WASM scheduler.
 #[cfg(target_arch = "wasm32")]
+#[must_use]
 pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
     let mut still_live = ids.to_vec();
     still_live.sort_unstable();
@@ -5532,11 +5737,161 @@ unsafe fn actor_send_result_internal_reply(
     HewError::Ok as i32
 }
 
-/// Record the send in the trace log and, if the destination actor is
-/// idle, transition it `Idle → Runnable` and enqueue it on the
-/// scheduler. Shared by the copy-mode delivery path
-/// ([`actor_send_result_internal_reply`]) and the envelope-mode alias
-/// path ([`hew_actor_send_aliased`]) so both wake the actor identically.
+/// Retire an enqueue that completed after a terminal drain but before the
+/// producer attempted its wake CAS.
+///
+/// # Safety
+///
+/// `a` must remain live through the terminal-state and dispatch-owner probes.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn reclaim_terminal_enqueue_if_unowned(a: &HewActor) {
+    // SAFETY: production always closes the dispatch-owner handoff. The
+    // test-only false branch below is the exact pre-fix omission oracle.
+    unsafe { reclaim_terminal_enqueue_if_unowned_inner(a, true) };
+}
+
+/// Implementation seam for [`reclaim_terminal_enqueue_if_unowned`].
+///
+/// `close_dispatch_handoff = false` exists only to execute the precise
+/// pre-fix counterfactual in the delayed-link regression.
+///
+/// # Safety
+///
+/// Same contract as [`reclaim_terminal_enqueue_if_unowned`].
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn reclaim_terminal_enqueue_if_unowned_inner(a: &HewActor, close_dispatch_handoff: bool) {
+    // A terminal publisher may have drained before this producer, which had
+    // already passed the mailbox-open check, completed its enqueue. Once the
+    // wake CAS loses to terminal and no activation owns the consumer, this
+    // producer is the only remaining site guaranteed to run. Help with a
+    // serialised terminal drain so the late node cannot remain stranded.
+    if !actor_send_is_terminal(a) {
+        return;
+    }
+
+    if a.dispatch_active.load(Ordering::Acquire) && !close_dispatch_handoff {
+        return;
+    }
+
+    // Test dispatch ownership while holding the same terminal-reclaim lock as
+    // the activation's final drain and Release-clear. If this producer gets the
+    // lock first and sees an owner, that owner must drain after the fully-linked
+    // enqueue. If it gets the lock after the owner, the cleared flag authorizes
+    // this producer to drain. Self-sends remain non-deadlocking: they take the
+    // lock, observe their own active frame, and defer to its eventual final
+    // drain.
+    //
+    // SAFETY: terminal state prevents a new activation from winning. A false
+    // dispatch-active predicate proves no existing activation consumes the
+    // mailbox. The lock serialises other terminal helpers. By-ID callers hold a
+    // send pin through this point; held-pointer callers' public contract
+    // requires the actor allocation to remain live for the call.
+    unsafe {
+        mailbox::mailbox_reclaim_queued_terminal_if(a.mailbox.cast::<HewMailbox>(), || {
+            !a.dispatch_active.load(Ordering::Acquire)
+        });
+    }
+}
+
+/// Complete the one post-link handoff shared by every native mailbox producer.
+///
+/// A successful `Idle -> Runnable` transition publishes one scheduler entry.
+/// Every other outcome still passes through terminal handoff so a producer
+/// that completed a delayed MPSC predecessor link cannot strand its node after
+/// the last activation drain.
+///
+/// # Safety
+///
+/// `actor` must be live for the call and `a` must borrow the same allocation.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn finish_mailbox_enqueue(actor: *mut HewActor, a: &HewActor) {
+    // SAFETY: production always includes terminal handoff.
+    unsafe { finish_mailbox_enqueue_inner(actor, a, true) };
+}
+
+/// Test seam for the canonical post-link handoff.
+///
+/// `close_terminal_handoff = false` executes the exact omission: the producer
+/// still performs its wake CAS but does not help reclaim after terminal wins.
+///
+/// # Safety
+///
+/// Same contract as [`finish_mailbox_enqueue`].
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn finish_mailbox_enqueue_inner(
+    actor: *mut HewActor,
+    a: &HewActor,
+    close_terminal_handoff: bool,
+) {
+    let observed = a.actor_state.load(Ordering::Acquire);
+    if observed != HewActorState::Idle as i32 {
+        if close_terminal_handoff {
+            // SAFETY: this producer just completed an enqueue against `a`.
+            unsafe { reclaim_terminal_enqueue_if_unowned(a) };
+        }
+        return;
+    }
+
+    // Own the prospective queue entry before publishing Runnable. If the CAS
+    // loses, dropping the unused entry releases the reference; if it wins,
+    // ownership moves through the queue into `dispatch_active`.
+    // SAFETY: the function contract guarantees the actor is live.
+    let queue_entry = unsafe { scheduler::SchedulerQueueEntry::retain(actor) };
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        a.idle_count.store(0, Ordering::Relaxed);
+        a.hibernating.store(0, Ordering::Relaxed);
+        scheduler::sched_enqueue_owned(queue_entry);
+    } else {
+        drop(queue_entry);
+        if close_terminal_handoff {
+            // SAFETY: this producer just completed an enqueue against `a`.
+            unsafe { reclaim_terminal_enqueue_if_unowned(a) };
+        }
+    }
+}
+
+/// Enqueue one typed runtime system signal and perform the canonical post-link
+/// wake/terminal handoff.
+///
+/// # Safety
+///
+/// `actor` must be a non-null live actor pointer for the call. `data` must
+/// point to `size` readable bytes (or be null when `size == 0`).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn send_system_message(
+    actor: *mut HewActor,
+    kind: crate::mailbox_header::HewSysMsg,
+    data: *mut c_void,
+    size: usize,
+) -> bool {
+    if actor.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees a live actor.
+    let a = unsafe { &*actor };
+    let mailbox = a.mailbox.cast::<HewMailbox>();
+    if mailbox.is_null() {
+        return false;
+    }
+    // SAFETY: actor ownership keeps the mailbox live and caller supplies data.
+    if !unsafe { mailbox::mailbox_send_sys_checked(mailbox, kind, data, size) } {
+        return false;
+    }
+    // SAFETY: the system node is fully linked and actor remains live.
+    unsafe { finish_mailbox_enqueue(actor, a) };
+    true
+}
+
+/// Record the send and wake the actor, or retire a late enqueue if a terminal
+/// transition already won.
 ///
 /// # Safety
 ///
@@ -5552,21 +5907,14 @@ unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_t
     };
     crate::tracing::record_send(trace_actor_id, msg_type);
 
-    // CAS IDLE → RUNNABLE; on success, schedule the actor.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Runnable as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // Clear hibernation state — the actor has work to do.
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-        scheduler::sched_enqueue(actor);
-    }
+    // Deterministic ownership seam: the message (and an ask's retained sender
+    // reference) is already owned by the mailbox, but this sender has not yet
+    // attempted its wake CAS.
+    #[cfg(test)]
+    run_send_post_enqueue_pre_wake_hook(a);
+
+    // SAFETY: this producer fully linked a node and still owns actor lifetime.
+    unsafe { finish_mailbox_enqueue(actor, a) };
 }
 
 /// Send a message, returning `true` on success.
@@ -6161,7 +6509,7 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 ///   graceful-stop terminals, including the one the out-of-band stop cancel of
 ///   a parked activation funnels into. This publishes at the instant the
 ///   producer stops, ahead of any free.
-/// - `hew_actor_free_inner` and `free_actor_resources_with_options` — the
+/// - `hew_actor_free_inner` and `free_actor_resources` — the
 ///   backstop for the abandonment routes that never settle an activation at all
 ///   (shutdown sweep, quiesced drain, supervisor child teardown, leak).
 ///
@@ -6192,6 +6540,53 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
+    // SAFETY: forwarded public contract. An external trap may race a live
+    // activation, so it drains only when no scheduler frame owns the mailbox
+    // consumer. Otherwise that frame observes the terminal state and performs
+    // the deferred drain before releasing `dispatch_active`.
+    unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::IfQuiescent) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum TrapMailboxReclaim {
+    /// The caller is the scheduler frame that owns the mailbox consumer.
+    OwnedActivation,
+    /// Drain only if no scheduler frame owns the mailbox consumer.
+    IfQuiescent,
+    /// Exact pre-fix counterfactual used by the ownership witness.
+    #[cfg(test)]
+    OmitForTest,
+}
+
+/// Trap publication from the scheduler frame that owns this actor's active
+/// mailbox consumer.
+///
+/// # Safety
+///
+/// `actor` must be the live actor whose activation the calling scheduler frame
+/// owns.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_code: i32) {
+    // SAFETY: forwarded contract; the caller supplies the sole-consumer proof.
+    unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::OwnedActivation) };
+}
+
+/// Implementation seam for [`hew_actor_trap`].
+///
+/// Tests use `OmitForTest` to execute the precise pre-fix counterfactual: all
+/// crash publication remains intact, but the one queued-mailbox reclaim edge
+/// is omitted.
+///
+/// # Safety
+///
+/// Same contract as [`hew_actor_trap`].
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn hew_actor_trap_inner(
+    actor: *mut HewActor,
+    error_code: i32,
+    mailbox_reclaim: TrapMailboxReclaim,
+) {
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
@@ -6256,6 +6651,35 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     if !mb.is_null() {
         // SAFETY: mailbox is valid for actor's lifetime.
         unsafe { mailbox::mailbox_close(mb) };
+    }
+
+    // This is the last crash site that still owns a live actor and mailbox.
+    // Drain BEFORE exit propagation or supervisor notification: either can
+    // hand the terminal incarnation to another thread for replacement/free.
+    // Returning to `scheduler::activate_actor` to reclaim would therefore read
+    // through ownership that this function has already transferred.
+    match mailbox_reclaim {
+        TrapMailboxReclaim::OwnedActivation => {
+            // SAFETY: the calling activation owns the mailbox consumer.
+            unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+        }
+        TrapMailboxReclaim::IfQuiescent => {
+            // Test activation ownership under the same terminal-reclaim lock as
+            // ActivationOwnership's terminal-state test, final drain, and
+            // Release-clear. Therefore either this path sees quiescence and
+            // drains, or that activation must subsequently observe the terminal
+            // publication and drain before it clears ownership.
+            //
+            // SAFETY: a true predicate proves there is no active scheduler
+            // consumer. The actor remains live through the notification tail.
+            unsafe {
+                mailbox::mailbox_reclaim_queued_terminal_if(mb, || {
+                    !a.dispatch_active.load(Ordering::Acquire)
+                });
+            }
+        }
+        #[cfg(test)]
+        TrapMailboxReclaim::OmitForTest => {}
     }
 
     // Store error code only after winning the CAS race.
@@ -6376,7 +6800,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
 /// arrives at a scheduler-driven dispatch.
 #[no_mangle]
-pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
+pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled
     // EXIT always crashes the non-trapping linked actor (Crashed, not Stopped).
     let crash_code = if reason == 0 {
@@ -6429,15 +6853,16 @@ pub(crate) fn stamp_wasm_actor_panic() -> bool {
 
 /// Trigger a panic in the current execution context.
 ///
-/// Inside an actor: longjmps back to the scheduler on native, or stamps the
-/// panic sentinel and unwinds to the scheduler on WASM. The supervisor (if any)
-/// will restart the actor according to its restart strategy.
+/// Inside an actor: longjmps back to the scheduler on native. On the production
+/// wasm32-wasip1 panic=abort artifact it stamps the panic sentinel and then
+/// terminates the module; actor-local containment is not available there.
 ///
 /// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
 /// This function never returns.
 #[no_mangle]
-pub extern "C" fn hew_panic() {
+pub extern "C-unwind" fn hew_panic() {
+    crate::cont::abort_if_crash_cleanup_finalizer_trap("Hew panic");
     #[cfg(target_arch = "wasm32")]
     {
         if stamp_wasm_actor_panic() {
@@ -6445,9 +6870,7 @@ pub extern "C" fn hew_panic() {
         }
         // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
         // immediately with Rust's panic exit convention, so bypassing Rust Drop
-        // is deliberate and the WASI host reclaims process resources. Actor
-        // paths stamp `actor.error_code` and unwind above; they do not use this
-        // process-exit route.
+        // is deliberate and the WASI host reclaims process resources.
         std::process::exit(101);
     }
 
@@ -6476,7 +6899,7 @@ pub extern "C" fn hew_panic() {
 ///
 /// `msg` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_panic_msg(msg: *const std::ffi::c_char) {
+pub unsafe extern "C-unwind" fn hew_panic_msg(msg: *const std::ffi::c_char) {
     if !msg.is_null() {
         // SAFETY: msg is non-null (checked above) and caller guarantees valid C string.
         let s = unsafe { std::ffi::CStr::from_ptr(msg) };
@@ -7178,8 +7601,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     {
         // WASM-R37-S2: direct close of an idle actor mirrors native
         // `hew_actor_close` observability before invoking terminate_fn.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
-        // drain time until WASM codegen emits handler-name/type registration.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
@@ -7201,8 +7622,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
         // WASM-R37-S2: mirror native stop lifecycle observability.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
-        // WASM handler registration lands.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
@@ -7253,8 +7672,6 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
     {
         // WASM-R37-S2: direct stop of an idle actor mirrors native
         // `hew_actor_stop` observability before invoking terminate_fn.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
-        // drain time until WASM codegen emits handler-name/type registration.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
@@ -7274,8 +7691,6 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
         // WASM-R37-S2: mirror native stop lifecycle observability.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
-        // WASM handler registration lands.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
@@ -7326,7 +7741,7 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
 ///
 /// Split out of [`actor_free_wasm_impl`] so it is reachable from a native test
 /// build. The rest of that function is not: its tail goes through
-/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources`
 /// resolves to the NATIVE body under `cfg(test)` and would free a wasm mailbox
 /// with the native destructor. This branch is the part the wasm free path adds,
 /// and it is target-neutral.
@@ -7541,6 +7956,194 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // SAFETY: same preconditions as actor_free_wasm_impl.
     unsafe { actor_free_wasm_impl(actor) }
+}
+
+/// Worker-free actor teardown substrate for cross-crate composition tests.
+///
+/// This module is feature-gated because it constructs an idle actor without
+/// publishing it to the live registry or scheduler. That gives codegen tests a
+/// deterministic place to install an actual generated message destructor,
+/// queue an ask, and let `Idle -> Stopped` retire it before dispatch.
+#[cfg(all(feature = "composition-test", not(target_arch = "wasm32")))]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the feature-gated FFI composition seam mirrors the actor test harness and keeps its lifecycle operations together"
+)]
+pub mod composition_test_support {
+    use super::*;
+
+    const WAITER_TIMEOUT_MS: i32 = 5_000;
+
+    /// Observable results from one terminal ask teardown.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct TerminalAskPayloadReport {
+        /// Mailbox submission result (`HewError::Ok` on success).
+        pub send_result: i32,
+        /// Actor state after the stop request.
+        pub actor_state: i32,
+        /// Whether the bounded wait returned the null failure sentinel.
+        pub wait_returned_null: bool,
+        /// Reply failure classification observed while the creator ref is live.
+        pub failure_kind: i32,
+        /// Payload-drop observations after queueing and before terminalization.
+        pub payload_drops_before_stop: usize,
+        /// User-message count before terminalization.
+        pub queued_before_stop: usize,
+        /// User-message count after terminal reclaim.
+        pub queued_after_stop: usize,
+    }
+
+    unsafe extern "C-unwind" fn dispatch_must_not_run(
+        _ctx: *mut HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        panic!("composition oracle dispatched a message before terminalization");
+    }
+
+    fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
+        Box::into_raw(Box::new(HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: u64::MAX - 2_848,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(dispatch_must_not_run),
+            mailbox: mailbox.cast(),
+            actor_state: AtomicI32::new(HewActorState::Idle as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            state_drop_fn: None,
+            state_clone_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+            runtime: ptr::null(),
+            send_pin_count: AtomicU32::new(0),
+            gen_sink: AtomicPtr::new(ptr::null_mut()),
+            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            spawn_serial: u64::MAX - 2_848,
+            sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
+        }))
+    }
+
+    /// Queue one ask carrying `payload`, stop its actor before dispatch, and
+    /// report the waiter and terminal-reclaim observations.
+    ///
+    /// `message_drop_fn` is installed through the production actor API. On a
+    /// successful send, ownership of every heap owner embedded in `payload`
+    /// transfers to the queued message and is consumed by terminal reclaim.
+    ///
+    /// # Safety
+    ///
+    /// - `message_drop_fn` must match `msg_type` and the payload layout.
+    /// - `payload` must point to `payload_size` readable bytes, or be null when
+    ///   `payload_size == 0`.
+    /// - On successful submission the caller must not separately destroy any
+    ///   owners embedded in the payload bytes.
+    /// - `payload_drop_count` must report the callback's drop observations
+    ///   without mutating the actor, mailbox, payload, or reply channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test-only mailbox or reply-channel allocation fails.
+    pub unsafe fn terminalize_queued_ask(
+        message_drop_fn: mailbox::HewMessageDropFn,
+        msg_type: i32,
+        payload: *mut c_void,
+        payload_size: usize,
+        payload_drop_count: fn() -> usize,
+    ) -> TerminalAskPayloadReport {
+        // SAFETY: this feature-gated oracle creates and exclusively owns the
+        // mailbox through the matching free below.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null(), "composition oracle mailbox allocation");
+        let actor = idle_actor(mailbox);
+        let channel = reply_channel::hew_reply_channel_new();
+        assert!(
+            !channel.is_null(),
+            "composition oracle reply channel allocation"
+        );
+
+        // SAFETY: `actor` and `channel` are live and exclusively controlled by
+        // this oracle; the retained sender reference is transferred below.
+        unsafe {
+            hew_actor_set_message_drop(actor, message_drop_fn);
+            reply_channel::hew_reply_channel_retain(channel);
+        }
+        // SAFETY: the caller supplies a valid payload and matching destructor;
+        // `mailbox` is live and the retained channel reference becomes the ask
+        // node's sender reference on successful submission.
+        let send_result = unsafe {
+            mailbox::hew_mailbox_send_with_reply(
+                mailbox,
+                msg_type,
+                payload,
+                payload_size,
+                channel.cast(),
+            )
+        };
+        // SAFETY: `mailbox` remains exclusively owned and live here.
+        let queued_before_stop = unsafe { mailbox::hew_mailbox_len(mailbox) };
+        let payload_drops_before_stop = payload_drop_count();
+
+        // SAFETY: `actor` is the live, exclusively owned test actor.
+        unsafe { hew_actor_stop(actor) };
+
+        // SAFETY: `actor` is still live until the teardown below.
+        let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        // SAFETY: the creator reference keeps `channel` live. A timeout fails
+        // the oracle closed instead of hanging the entire test job.
+        let wait_result =
+            unsafe { reply_channel::hew_reply_wait_timeout(channel, WAITER_TIMEOUT_MS) };
+        // SAFETY: the creator reference remains live until `free` below.
+        let failure_kind = unsafe { reply_channel::hew_reply_channel_failure_kind(channel) };
+        // SAFETY: `mailbox` remains live until the teardown below.
+        let queued_after_stop = unsafe { mailbox::hew_mailbox_len(mailbox) };
+        // SAFETY: release the creator reference after all observations.
+        unsafe { reply_channel::hew_reply_channel_free(channel) };
+
+        // SAFETY: the actor and mailbox were created above, never published,
+        // and terminal reclaim has detached their queued node.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
+        }
+
+        TerminalAskPayloadReport {
+            send_result,
+            actor_state,
+            wait_returned_null: wait_result.is_null(),
+            failure_kind,
+            payload_drops_before_stop,
+            queued_before_stop,
+            queued_after_stop,
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -8311,6 +8914,304 @@ mod tests {
         assert!(free_done.load(Ordering::Acquire));
     }
 
+    /// `hew_actor_drain_set` resolves IDs before calling the raw-pointer stop
+    /// entry point. Prove that resolution takes an allocation pin under
+    /// `LIVE_ACTORS` and holds it until stop returns.
+    ///
+    /// The free thread is paused after it has untracked the actor but before
+    /// its pin-drain loop. At that point the old implementation's unpinned raw
+    /// lookup left `send_pin_count == 0`: releasing free would reclaim the
+    /// allocation before drain dereferenced it. The production path must
+    /// instead expose exactly one drain pin. The free hook is also a safety
+    /// harness for that executable counterfactual: all observations are saved,
+    /// both threads are released and joined, and assertions run afterward, so
+    /// reverting only the pin produces a deterministic failure without
+    /// intentionally executing a use-after-free.
+    #[test]
+    fn drain_set_pins_target_across_lookup_stop_and_final_free() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state and no-op dispatch form a valid actor spawn.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: the actor is live and remains allocated until both test
+        // rendezvous are released and the free thread is joined.
+        let actor_id = unsafe { (*actor).id };
+
+        let drain_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let drain_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _drain_hook = install_drain_post_pin_pre_stop_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&drain_entered),
+            std::sync::Arc::clone(&drain_release),
+        );
+
+        let free_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let free_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _free_hook = install_free_post_retire_registration_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&free_entered),
+            std::sync::Arc::clone(&free_release),
+        );
+
+        let (drain_done_tx, drain_done_rx) = std::sync::mpsc::channel();
+        let drain = std::thread::spawn(move || {
+            let ids = [actor_id];
+            let mut outcome = DrainOutcomeRepr::default();
+            // SAFETY: ids and outcome remain valid for this synchronous FFI
+            // call; the timeout comfortably exceeds the test rendezvous.
+            let status = unsafe {
+                hew_actor_drain_set(ids.as_ptr(), ids.len(), 5_000_000_000, &raw mut outcome)
+            };
+            let observed = (status, outcome.still_live_len, outcome.crashed_len);
+            // SAFETY: outcome was initialized by hew_actor_drain_set.
+            unsafe { hew_actor_drain_outcome_free(&raw mut outcome) };
+            drain_done_tx
+                .send(observed)
+                .expect("drain result receiver must remain live");
+        });
+
+        // Drain has resolved actor_id, incremented send_pin_count under
+        // LIVE_ACTORS, and is paused immediately before hew_actor_stop.
+        drain_entered.wait();
+
+        let actor_addr = actor as usize;
+        let (free_done_tx, free_done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            // SAFETY: the drain pin keeps the allocation live until stop has
+            // returned; the free path then owns final reclamation.
+            let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
+            free_done_tx
+                .send(status)
+                .expect("free result receiver must remain live");
+        });
+
+        // Free has latched the actor terminal and removed it from LIVE_ACTORS,
+        // but is paused before it can wait on or reclaim the drain pin.
+        free_entered.wait();
+        let retired_before_stop = !live_actors::is_actor_live_with_id(actor_id, actor);
+        // SAFETY: free is blocked at the post-retire hook, so the allocation is
+        // still live even in the counterfactual where the drain pin is absent.
+        let pin_while_retired = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+        let drain_blocked_before_release = matches!(
+            drain_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let free_blocked_before_release = matches!(
+            free_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        // Let drain perform its sole raw-pointer dereference and release the
+        // pin. Free remains paused, making the post-stop count safe to inspect.
+        drain_release.wait();
+        let drain_result = drain_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("drain_set must finish after its stop pin is released");
+        drain.join().expect("drain thread");
+        // SAFETY: free is still blocked before its pin-drain/finalize sequence.
+        let pin_after_stop = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        free_release.wait();
+        let free_result = free_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("free must finish after the drain pin reaches zero");
+        free.join().expect("free thread");
+
+        assert!(
+            retired_before_stop,
+            "free must reach the final untracked window while drain is paused"
+        );
+        assert_eq!(
+            pin_while_retired, 1,
+            "the drain target must own exactly one allocation pin across stop"
+        );
+        assert!(
+            drain_blocked_before_release,
+            "drain_set must remain paused before the raw-pointer stop"
+        );
+        assert!(
+            free_blocked_before_release,
+            "free must not complete while the drain pin is still owned"
+        );
+        assert_eq!(
+            drain_result,
+            (0, 0, 0),
+            "retired actor must resolve to a successful drained outcome"
+        );
+        assert_eq!(
+            pin_after_stop, 0,
+            "drain must release its allocation pin exactly once after stop"
+        );
+        assert_eq!(free_result, 0, "final actor free must succeed");
+    }
+
+    static DRAIN_CLEANUP_FINALIZE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn drain_one_actor_via_ffi(actor_id: ActorId) -> (i32, usize, usize) {
+        let ids = [actor_id];
+        let mut outcome = DrainOutcomeRepr::default();
+        // SAFETY: ids and outcome remain valid for this synchronous call.
+        let status = unsafe {
+            hew_actor_drain_set(ids.as_ptr(), ids.len(), 5_000_000_000, &raw mut outcome)
+        };
+        let observed = (status, outcome.still_live_len, outcome.crashed_len);
+        // SAFETY: outcome was initialized by hew_actor_drain_set.
+        unsafe { hew_actor_drain_outcome_free(&raw mut outcome) };
+        observed
+    }
+
+    fn spawn_stateful_noop_actor() -> *mut HewActor {
+        let mut initial_state = 0_u8;
+        // SAFETY: the one-byte source remains valid for this synchronous deep
+        // copy, and no-op dispatch is a valid actor entry point.
+        unsafe {
+            hew_actor_spawn(
+                (&raw mut initial_state).cast(),
+                std::mem::size_of_val(&initial_state),
+                Some(noop_dispatch),
+            )
+        }
+    }
+
+    fn count_drain_cleanup_finalize(_actor: *mut HewActor) {
+        DRAIN_CLEANUP_FINALIZE_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Prove that a drain's quiescent state observation retains exact actor
+    /// lifetime through cleanup's first dereference and retirement claim.
+    ///
+    /// The rendezvous is the old unlock-to-prepare gap: the drain has observed
+    /// `Stopped`, but has not entered `prepare_quiescent_actor_for_cleanup`.
+    /// A concurrent free then retires the actor. Without the carried pin, the
+    /// actor can be finalized while drain still holds the stale raw pointer.
+    /// The post-retire free hook keeps the counterfactual executable without
+    /// allowing that UAF; the test records all proof values, releases and joins
+    /// both threads, then asserts the carried pin, exact release, and one final
+    /// cleanup.
+    #[test]
+    fn drain_set_pins_quiescent_state_into_cleanup_claim() {
+        let _guard = crate::runtime_test_guard();
+
+        let actor = spawn_stateful_noop_actor();
+        assert!(!actor.is_null());
+        // SAFETY: the actor remains live through the coordinated teardown.
+        let actor_id = unsafe { (*actor).id };
+        TERMINATE_CALL_COUNT.store(0, Ordering::Release);
+        DRAIN_CLEANUP_FINALIZE_COUNT.store(0, Ordering::Release);
+        // SAFETY: the actor is live and solely controlled by this test.
+        unsafe { hew_actor_set_terminate(actor, counting_terminate_callback) };
+        set_pre_queue_destroy_hook_for_test(Some(count_drain_cleanup_finalize));
+
+        let state_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let state_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _state_hook = install_drain_post_state_pre_cleanup_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&state_entered),
+            std::sync::Arc::clone(&state_release),
+        );
+
+        let free_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let free_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _free_hook = install_free_post_retire_registration_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&free_entered),
+            std::sync::Arc::clone(&free_release),
+        );
+
+        let (drain_done_tx, drain_done_rx) = std::sync::mpsc::channel();
+        let drain = std::thread::spawn(move || {
+            drain_done_tx
+                .send(drain_one_actor_via_ffi(actor_id))
+                .expect("drain result receiver must remain live");
+        });
+
+        // Initial stop has completed; drain now owns the state-to-cleanup pin.
+        state_entered.wait();
+        // SAFETY: the drain pin keeps this allocation live at the rendezvous.
+        let pin_at_state_handoff = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        let actor_addr = actor as usize;
+        let (free_done_tx, free_done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            // SAFETY: drain's carried pin keeps the actor allocated until free
+            // wins retirement and later observes that pin reach zero.
+            let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
+            free_done_tx
+                .send(status)
+                .expect("free result receiver must remain live");
+        });
+
+        // Free owns final retirement but cannot reclaim across drain's first
+        // cleanup dereference or retirement-claim attempt.
+        free_entered.wait();
+        let retired_before_cleanup = !live_actors::is_actor_live_with_id(actor_id, actor);
+        // SAFETY: free is paused after retirement and before pin drain/finalize.
+        let pin_while_retired = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+        let drain_blocked_before_release = matches!(
+            drain_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let free_blocked_before_release = matches!(
+            free_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        state_release.wait();
+        let drain_result = drain_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("drain must yield to the winning final freer");
+        drain.join().expect("drain thread");
+        // SAFETY: free remains blocked at its post-retirement proof hook.
+        let pin_after_cleanup_handoff = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        free_release.wait();
+        let free_result = free_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("free must complete after the cleanup pin is released");
+        free.join().expect("free thread");
+
+        let terminate_count = TERMINATE_CALL_COUNT.load(Ordering::Acquire);
+        let finalize_count = DRAIN_CLEANUP_FINALIZE_COUNT.load(Ordering::Acquire);
+        set_pre_queue_destroy_hook_for_test(None);
+
+        assert_eq!(
+            pin_at_state_handoff, 1,
+            "quiescent state must be carried by exactly one allocation pin"
+        );
+        assert!(
+            retired_before_cleanup,
+            "the final free must retire the actor in the old state-to-prepare gap"
+        );
+        assert_eq!(
+            pin_while_retired, 1,
+            "retirement must retain the drain's state-to-cleanup pin"
+        );
+        assert!(
+            drain_blocked_before_release,
+            "drain must remain paused before cleanup's first dereference"
+        );
+        assert!(
+            free_blocked_before_release,
+            "free must not reclaim while the cleanup handoff pin is owned"
+        );
+        assert_eq!(drain_result, (0, 0, 0));
+        assert_eq!(
+            pin_after_cleanup_handoff, 0,
+            "the losing drain must release its caller pin exactly once"
+        );
+        assert_eq!(free_result, 0, "the retirement winner must finalize");
+        assert_eq!(
+            terminate_count, 1,
+            "stop/free composition must invoke terminate exactly once"
+        );
+        assert_eq!(
+            finalize_count, 1,
+            "exactly one path may reach actor resource finalization"
+        );
+    }
+
     #[test]
     fn actor_cleanup_drains_every_direct_identity() {
         let _guard = crate::runtime_test_guard();
@@ -8741,8 +9642,1000 @@ mod tests {
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
                 sys_dispatch: None,
+                state_drop_consumed: AtomicBool::new(false),
+                state_drop_borrowed: AtomicBool::new(false),
             }));
             (actor, mailbox)
+        }
+    }
+
+    /// Deterministic #2831 ownership witness for the idle-stop half.
+    ///
+    /// The send rendezvous fires AFTER the ask node (and its retained
+    /// sender-side channel reference) transfers into the mailbox, but BEFORE
+    /// the sender attempts `Idle -> Runnable`. The test then lets stop win
+    /// `Idle -> Stopped`.
+    ///
+    /// The first case is the exact pre-fix counterfactual: it executes the whole
+    /// direct-idle stop path while omitting only the new terminal mailbox
+    /// reclaim. The same node pointer remains registered, the same channel
+    /// remains not-ready with both refs, and a zero-deadline wait returns only as
+    /// a timeout. The second case executes production stop and proves that exact
+    /// node disappears, the queued sender ref is consumed, and the channel is
+    /// ready+orphaned before the paused sender even attempts its doomed wake CAS.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic FFI ownership witness keeps each unsafe assertion beside the exact lifecycle phase it proves"
+    )]
+    fn idle_stop_retires_ask_enqueued_before_sender_wake_cas() {
+        struct AskSubmission {
+            actor: *mut HewActor,
+            ch: *mut HewReplyChannel,
+        }
+        // SAFETY: each actor outlives its joined sender thread; the thread uses
+        // both pointers only through the held-pointer ask ABI, and the test
+        // retains the creator-side channel reference until after the join.
+        unsafe impl Send for AskSubmission {}
+        impl AskSubmission {
+            unsafe fn submit(self) -> i32 {
+                // SAFETY: upheld by the caller; this method exists so the
+                // closure captures the Send wrapper as a whole, rather than
+                // disjoint-capturing its raw-pointer fields.
+                unsafe {
+                    ask_with_channel_pinned(self.actor, 1, ptr::null_mut(), 0, self.ch.cast())
+                }
+            }
+        }
+
+        unsafe fn run_case(reclaim_queued: bool, close_instead_of_stop: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_310_000);
+
+            let frame_baseline = crate::observe::coroutine_snapshot();
+
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Idle);
+            // SAFETY: the helper returned a fully initialized actor with a
+            // unique id; tracking owns no allocation reference.
+            assert!(unsafe { live_actors::track_actor(actor) });
+            assert!(live_actors::is_actor_live_with_id(id, actor));
+
+            let ch = reply_channel::hew_reply_channel_new();
+            assert!(!ch.is_null());
+            let (hook, entered, release) = SendPostEnqueueHookGuard::install(id);
+            let submission = AskSubmission { actor, ch };
+            let sender = std::thread::spawn(move || {
+                // SAFETY: target stays live/tracked until this thread joins;
+                // null payload of size zero is valid and ch remains creator-owned
+                // by the test until after the join.
+                unsafe { submission.submit() }
+            });
+
+            // Sender is now paused after enqueue and before wake.
+            entered.wait();
+            // SAFETY: the creator reference keeps ch live.
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(ch) },
+                2,
+                "creator + exact queued-node sender reference"
+            );
+            let exact_node = mailbox::ask_node_for_reply_channel_for_test(ch.cast::<c_void>());
+            assert!(
+                !exact_node.is_null(),
+                "the queued ask node is identity-tracked"
+            );
+            // SAFETY: mailbox is live and the no-worker scheduler gives this
+            // test exclusive consumer-side control.
+            assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+
+            if reclaim_queued {
+                // Production edge: closes, wins Idle -> Stopped, then retires
+                // the queued node before returning.
+                if close_instead_of_stop {
+                    unsafe { hew_actor_close(actor) };
+                } else {
+                    unsafe { hew_actor_stop(actor) };
+                }
+            } else {
+                // Exact counterfactual: same close + terminal CAS + lifecycle
+                // path, differing only by omission of the new reclaim call.
+                unsafe { mailbox::mailbox_close(mb) };
+                // SAFETY: actor/a/mb are the same live allocation; mailbox is closed.
+                assert!(unsafe { try_terminalize_idle_actor(actor, &*actor, mb, false) });
+            }
+            // SAFETY: actor stays live through this test.
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Stopped as i32
+            );
+
+            // A zero-deadline wait distinguishes "published" from "still
+            // waiting" without using an elapsed-time threshold.
+            // SAFETY: creator ref keeps ch live; one waiter, on this thread.
+            let waited = unsafe { reply_channel::hew_reply_wait_timeout(ch, 0) };
+            assert!(waited.is_null());
+
+            if reclaim_queued {
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "terminal reclaim publishes the null sentinel"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(ch) },
+                    1
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    1,
+                    "only the creator ref remains after exact-once node retirement"
+                );
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "the exact queued node was reclaimed before sender wake"
+                );
+                // SAFETY: mailbox remains live, now drained.
+                assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 0);
+            } else {
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "without the reclaim edge the wait returns only because its deadline elapsed"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(ch) },
+                    0
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    2,
+                    "the same stranded node still owns the sender ref"
+                );
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                    exact_node,
+                    "the exact sender-carrying node survives the pre-fix omission"
+                );
+                // SAFETY: mailbox remains live and solely consumed here.
+                assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+            }
+
+            // Let the sender attempt Idle -> Runnable. It must lose to Stopped,
+            // while the send itself reports success because ownership already
+            // transferred into the mailbox before the rendezvous.
+            release.wait();
+            assert_eq!(sender.join().expect("sender thread panicked"), 0);
+            drop(hook);
+
+            if !reclaim_queued {
+                // The counterfactual omitted the terminal publisher's drain,
+                // so the sender-side helper must retire its own already-
+                // published enqueue after its wake CAS observes Stopped. This
+                // is the backstop for a producer that passed the open check but
+                // publishes after the terminal owner's first drain.
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "the losing sender helps retire a late terminal enqueue"
+                );
+            }
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(ch) },
+                1,
+                "terminal cleanup consumes the queued sender ref exactly once"
+            );
+            assert!(mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null());
+            // SAFETY: release the test's creator reference.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+            assert!(live_actors::untrack_actor(actor));
+            assert!(!live_actors::is_actor_live_with_id(id, actor));
+            // SAFETY: actor and mailbox came from the fixture, are untracked,
+            // stopped, empty, and unused after this point.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        // Counterfactual first, then the production edge.
+        unsafe {
+            run_case(false, false);
+            run_case(true, false);
+            run_case(true, true);
+        }
+    }
+
+    /// The post-link handoff takes a scheduler lifetime pin only when it
+    /// actually observes `Idle` and may publish `Runnable`. An enqueue against
+    /// an already runnable/running actor belongs to that existing activation;
+    /// retaining and immediately releasing a speculative queue entry needlessly
+    /// touches the actor's shared lifetime counter. Terminal states still run
+    /// the reclaim handoff even though they likewise need no queue entry.
+    #[test]
+    fn post_enqueue_handoff_pins_only_an_observed_idle_actor() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+
+        for (id, state) in [
+            (28_311_700, HewActorState::Runnable),
+            (28_311_701, HewActorState::Running),
+        ] {
+            let (actor, mb) = make_stop_test_actor_with_id(id, state);
+            // Saturation makes any attempted speculative retain fail instead
+            // of allowing a retain/release pair to escape a final-value check.
+            // SAFETY: this isolated fixture is not visible to a scheduler.
+            unsafe {
+                (*actor).send_pin_count.store(u32::MAX, Ordering::Release);
+                finish_mailbox_enqueue_inner(actor, &*actor, true);
+                assert_eq!((*actor).send_pin_count.load(Ordering::Acquire), u32::MAX);
+                assert_eq!((*actor).actor_state.load(Ordering::Acquire), state as i32);
+                (*actor).send_pin_count.store(0, Ordering::Release);
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+        }
+
+        let (terminal_actor, terminal_mb) =
+            make_stop_test_actor_with_id(28_311_702, HewActorState::Crashed);
+        let ch = reply_channel::hew_reply_channel_new();
+        assert!(!ch.is_null());
+        // SAFETY: the fresh channel and isolated terminal fixture remain live
+        // through the synchronous enqueue/reclaim handoff.
+        unsafe {
+            reply_channel::hew_reply_channel_retain(ch);
+            assert_eq!(
+                mailbox::hew_mailbox_send_with_reply(terminal_mb, 1, ptr::null_mut(), 0, ch.cast(),),
+                0
+            );
+            (*terminal_actor)
+                .send_pin_count
+                .store(u32::MAX, Ordering::Release);
+            finish_mailbox_enqueue_inner(terminal_actor, &*terminal_actor, true);
+            assert_eq!(
+                (*terminal_actor).send_pin_count.load(Ordering::Acquire),
+                u32::MAX,
+                "terminal reclaim must not acquire a scheduler queue pin"
+            );
+            assert!(
+                mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                "non-Idle terminal handoff must still retire the queued node"
+            );
+            assert!(reply_channel::hew_reply_channel_is_ready_for_test(ch));
+            assert_eq!(reply_channel::ref_count_for_test(ch), 1);
+
+            (*terminal_actor).send_pin_count.store(0, Ordering::Release);
+            reply_channel::hew_reply_channel_free(ch);
+            drop(Box::from_raw(terminal_actor));
+            mailbox::hew_mailbox_free(terminal_mb);
+        }
+
+        let (idle_actor, idle_mb) = make_stop_test_actor_with_id(28_311_703, HewActorState::Idle);
+        // SAFETY: the worker-less scheduler owns the resulting queue entry
+        // until this test explicitly discards it.
+        unsafe { finish_mailbox_enqueue_inner(idle_actor, &*idle_actor, true) };
+        // SAFETY: fixture remains live and exclusively test-owned.
+        let idle = unsafe { &*idle_actor };
+        assert_eq!(
+            idle.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert_eq!(
+            idle.send_pin_count.load(Ordering::Acquire),
+            1,
+            "an observed Idle actor must be pinned before queue publication"
+        );
+        assert!(scheduler::discard_queued_actor_for_test(idle_actor));
+        assert_eq!(idle.send_pin_count.load(Ordering::Acquire), 0);
+        // SAFETY: the only queue entry was discarded and the fixture is unused.
+        unsafe {
+            drop(Box::from_raw(idle_actor));
+            mailbox::hew_mailbox_free(idle_mb);
+        }
+    }
+
+    /// A producer that completes its MPSC predecessor link after the terminal
+    /// owner's bounded empty observation must perform the common post-link
+    /// handoff. The exact omission strands the same ask node and sender ref;
+    /// production retires it once and wakes the waiter.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic MPSC ownership witness keeps each unsafe assertion beside the lifecycle seam it proves"
+    )]
+    fn terminal_sender_rechecks_after_last_activation_drain() {
+        struct SendSubmission {
+            actor: *mut HewActor,
+            mailbox: *mut HewMailbox,
+            channel: *mut HewReplyChannel,
+            close_terminal_handoff: bool,
+        }
+
+        // SAFETY: each pointer outlives the joined sender thread and the test
+        // retains the channel's creator reference until after the join.
+        unsafe impl Send for SendSubmission {}
+
+        impl SendSubmission {
+            unsafe fn submit(self) -> i32 {
+                // SAFETY: the channel carries creator + queued-sender refs and
+                // the mailbox remains live through the joined call.
+                let result = unsafe {
+                    mailbox::hew_mailbox_send_with_reply(
+                        self.mailbox,
+                        1,
+                        ptr::null_mut(),
+                        0,
+                        self.channel.cast(),
+                    )
+                };
+                if result != 0 {
+                    return result;
+                }
+
+                // Mirror the production post-enqueue wake. The actor is already
+                // terminal at this point, so the CAS must lose before entering
+                // the handoff helper.
+                // SAFETY: actor stays live through the joined call.
+                let a = unsafe { &*self.actor };
+                assert!(a
+                    .actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err());
+                // SAFETY: exact production post-link handoff with a switch that
+                // omits only terminal help for the counterfactual.
+                unsafe {
+                    finish_mailbox_enqueue_inner(self.actor, a, self.close_terminal_handoff);
+                }
+                result
+            }
+        }
+
+        unsafe fn run_case(close_terminal_handoff: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_312_000);
+
+            let frame_baseline = crate::observe::coroutine_snapshot();
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Crashed);
+            // SAFETY: fully initialized unique actor, owned through cleanup.
+            assert!(unsafe { live_actors::track_actor(actor) });
+            assert!(live_actors::is_actor_live_with_id(id, actor));
+
+            let ch = reply_channel::hew_reply_channel_new();
+            assert!(!ch.is_null());
+            // Mint the sender reference transferred into the delayed ask node.
+            // SAFETY: fresh creator-owned channel.
+            unsafe { reply_channel::hew_reply_channel_retain(ch) };
+
+            let (link_hook, link_entered, link_release) =
+                mailbox::MpscPostSwapPreLinkHookGuard::install(ch.cast());
+
+            let submission = SendSubmission {
+                actor,
+                mailbox: mb,
+                channel: ch,
+                close_terminal_handoff,
+            };
+            let sender = std::thread::spawn(move || {
+                // SAFETY: pointer and reference lifetimes are upheld by run_case.
+                unsafe { submission.submit() }
+            });
+
+            // The producer has swapped the queue head but has not linked the
+            // predecessor, so the activation's bounded dequeue sees only
+            // `Inconsistent`.
+            link_entered.wait();
+            let exact_node = mailbox::ask_node_for_reply_channel_for_test(ch.cast());
+            assert!(
+                !exact_node.is_null(),
+                "the delayed ask node is identity-tracked"
+            );
+            // SAFETY: creator reference keeps the exact channel live.
+            assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 2);
+
+            // The terminal owner exhausts its bounded pass while the new head
+            // is unreachable from the old tail.
+            // SAFETY: this thread is the sole terminal consumer.
+            unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+            assert_eq!(
+                mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                exact_node
+            );
+
+            // Finish the predecessor link; the producer's canonical handoff is
+            // now the only code guaranteed to run.
+            link_release.wait();
+            assert_eq!(sender.join().expect("sender thread panicked"), 0);
+
+            if close_terminal_handoff {
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "producer-side handoff retires the late-linked exact node"
+                );
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "late terminal ask publishes its orphan sentinel"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    1,
+                    "only the creator reference survives the exact-once retire"
+                );
+            } else {
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                    exact_node,
+                    "omitting post-link terminal handoff strands the exact node"
+                );
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "the stranded ask remains unresolved after both owners return"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    2,
+                    "the stranded node still owns its sender reference"
+                );
+
+                // Test cleanup after the omission proof.
+                // SAFETY: both producer and activation owner have returned, so
+                // this thread is the sole terminal consumer.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+                assert!(mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null());
+                assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 1);
+            }
+
+            drop(link_hook);
+            // SAFETY: release the creator ref after the queued sender ref is gone.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+            assert!(live_actors::untrack_actor(actor));
+            assert!(!live_actors::is_actor_live_with_id(id, actor));
+            // SAFETY: untracked terminal actor and drained mailbox are unused.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        // Counterfactual first, then the repaired production handoff.
+        unsafe {
+            run_case(false);
+            run_case(true);
+        }
+    }
+
+    /// System producers use the same post-link terminal handoff as user sends
+    /// and asks. A delayed system predecessor link that lands after the
+    /// terminal drain is reclaimed by the producer; omitting only that handoff
+    /// leaves the system node observable.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic delayed-link fixture keeps each raw actor/mailbox operation inside one unsafe case helper"
+    )]
+    fn delayed_system_link_uses_common_terminal_handoff() {
+        unsafe fn run_case(close_terminal_handoff: bool) {
+            let (actor, mb) = make_stop_test_actor_with_id(28_312_500, HewActorState::Crashed);
+            assert!(unsafe { live_actors::track_actor(actor) });
+
+            let (hook, entered, release) =
+                mailbox::MpscPostSwapPreLinkHookGuard::install_system(mailbox::HewSysMsg::Down);
+            let actor_addr = actor.addr();
+            let sender = std::thread::spawn(move || {
+                let actor = ptr::with_exposed_provenance_mut::<HewActor>(actor_addr);
+                // SAFETY: fixture and mailbox outlive this joined producer.
+                let a = unsafe { &*actor };
+                let mailbox = a.mailbox.cast::<HewMailbox>();
+                assert!(unsafe {
+                    mailbox::mailbox_send_sys_checked(
+                        mailbox,
+                        mailbox::HewSysMsg::Down,
+                        ptr::null_mut(),
+                        0,
+                    )
+                });
+                unsafe {
+                    finish_mailbox_enqueue_inner(actor, a, close_terminal_handoff);
+                }
+            });
+
+            entered.wait();
+            // SAFETY: the queue is intentionally inconsistent and this thread
+            // owns the terminal consumer.
+            unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+            release.wait();
+            sender.join().expect("system producer");
+
+            // SAFETY: terminal fixture has no concurrent consumer.
+            let remaining = unsafe { mailbox::hew_mailbox_try_recv_sys(mb) };
+            if close_terminal_handoff {
+                assert!(
+                    remaining.is_null(),
+                    "common handoff must retire the delayed system node"
+                );
+            } else {
+                assert!(
+                    !remaining.is_null(),
+                    "omitting system post-link handoff must strand its node"
+                );
+                // SAFETY: dequeue transferred the stranded node to this test.
+                unsafe { mailbox::hew_msg_node_free(remaining) };
+            }
+
+            drop(hook);
+            assert!(live_actors::untrack_actor(actor));
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        unsafe {
+            run_case(false);
+            run_case(true);
+        }
+    }
+
+    /// A self-send runs inside the activation whose `dispatch_active` flag it
+    /// observes. Waiting for that same flag would deadlock the handler before
+    /// its ownership guard can perform the terminal drain. The helper instead
+    /// takes the terminal-reclaim lock, observes its own still-active frame,
+    /// and defers to that frame's final locked drain without waiting.
+    #[test]
+    fn terminal_self_sender_defers_to_own_activation_without_deadlock() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let frame_baseline = crate::observe::coroutine_snapshot();
+        let id = 28_313_000;
+        let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Running);
+        // SAFETY: fully initialized unique actor, owned through cleanup.
+        assert!(unsafe { live_actors::track_actor(actor) });
+        assert!(live_actors::is_actor_live_with_id(id, actor));
+
+        let ch = reply_channel::hew_reply_channel_new();
+        assert!(!ch.is_null());
+        // SAFETY: mint the sender ref and enqueue while the actor is live.
+        unsafe {
+            reply_channel::hew_reply_channel_retain(ch);
+            assert_eq!(
+                mailbox::hew_mailbox_send_with_reply(mb, 1, ptr::null_mut(), 0, ch.cast(),),
+                0
+            );
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            (*actor).dispatch_active.store(true, Ordering::Release);
+            mailbox::mailbox_close(mb);
+        }
+        let exact_node = mailbox::ask_node_for_reply_channel_for_test(ch.cast());
+        assert!(!exact_node.is_null());
+
+        {
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor,
+                actor_id: id,
+                ..HewExecutionContext::default()
+            });
+            // SAFETY: actor stays live and this context proves the caller owns
+            // the active dispatch it would otherwise wait on.
+            unsafe { reclaim_terminal_enqueue_if_unowned(&*actor) };
+        }
+        assert_eq!(
+            mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+            exact_node,
+            "self-owner leaves the fully-linked node for its own final drain"
+        );
+        // SAFETY: the creator reference keeps the exact channel live.
+        assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 2);
+
+        // Execute that exact final activation release.
+        // SAFETY: isolated actor, no real scheduler activation.
+        unsafe { crate::scheduler::release_terminal_activation_ownership_for_test(actor) };
+        assert!(mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null());
+        assert!(
+            // SAFETY: the creator reference keeps the exact channel live.
+            unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+            "the owning activation resolves its self-enqueued ask"
+        );
+        // SAFETY: the creator reference keeps the exact channel live.
+        assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 1);
+        // SAFETY: release the remaining creator ref.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+        assert!(live_actors::untrack_actor(actor));
+        assert!(!live_actors::is_actor_live_with_id(id, actor));
+        // SAFETY: untracked terminal actor and drained mailbox are unused.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mb);
+        }
+        let frame_after = crate::observe::coroutine_snapshot();
+        assert_eq!(frame_after.live, frame_baseline.live);
+        assert_eq!(
+            frame_after.frame_bytes_live,
+            frame_baseline.frame_bytes_live
+        );
+    }
+
+    /// An activation release must not snapshot a non-terminal state, lose to an
+    /// external trap that observes `dispatch_active == true`, and then clear
+    /// ownership without either side reclaiming the queued ask.
+    ///
+    /// The rendezvous stops the activation after the counterfactual's state
+    /// snapshot but before ownership release. The external trap then publishes
+    /// `Crashed` and defers its locked drain to that active owner. Omitting only
+    /// the activation's locked terminal recheck strands the exact node and its
+    /// sender reference; production observes the trap publication under the
+    /// shared lock and retires both before clearing ownership.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the trap/drop ownership witness keeps each unsafe assertion beside the lifecycle seam it proves"
+    )]
+    fn terminal_trap_and_activation_drop_share_reclaim_handoff() {
+        struct OwnerRelease {
+            actor: *mut HewActor,
+            close_terminal_handoff: bool,
+        }
+
+        // SAFETY: the actor outlives the joined owner thread and remains
+        // exclusively controlled by the test fixture.
+        unsafe impl Send for OwnerRelease {}
+
+        impl OwnerRelease {
+            unsafe fn release(self) {
+                if self.close_terminal_handoff {
+                    // SAFETY: actor remains live and no scheduler sees it.
+                    unsafe {
+                        crate::scheduler::release_terminal_activation_ownership_for_test(
+                            self.actor,
+                        );
+                    }
+                } else {
+                    // SAFETY: same fixture contract; this executes only the
+                    // exact pre-fix omission counterfactual.
+                    unsafe {
+                        crate::scheduler::release_activation_ownership_omitting_terminal_recheck_for_test(
+                            self.actor,
+                        );
+                    }
+                }
+            }
+        }
+
+        unsafe fn run_case(close_terminal_handoff: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_314_000);
+
+            let frame_baseline = crate::observe::coroutine_snapshot();
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Running);
+            // SAFETY: fully initialized unique actor, owned through cleanup.
+            assert!(unsafe { live_actors::track_actor(actor) });
+            assert!(live_actors::is_actor_live_with_id(id, actor));
+
+            let ch = reply_channel::hew_reply_channel_new();
+            assert!(!ch.is_null());
+            // Mint the sender reference transferred into the queued ask node.
+            // SAFETY: fresh creator-owned channel and live mailbox.
+            unsafe {
+                reply_channel::hew_reply_channel_retain(ch);
+                assert_eq!(
+                    mailbox::hew_mailbox_send_with_reply(mb, 1, ptr::null_mut(), 0, ch.cast(),),
+                    0
+                );
+            }
+            let exact_node = mailbox::ask_node_for_reply_channel_for_test(ch.cast());
+            assert!(!exact_node.is_null());
+            // SAFETY: creator reference keeps the exact channel live.
+            assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 2);
+
+            let (hook, owner_entered, owner_release) =
+                crate::scheduler::ActivationPreTerminalLockHookGuard::install(id);
+            let release = OwnerRelease {
+                actor,
+                close_terminal_handoff,
+            };
+            let owner = std::thread::spawn(move || {
+                // SAFETY: run_case joins before actor cleanup.
+                unsafe { release.release() };
+            });
+
+            owner_entered.wait();
+            // The synthetic activation has published ownership but has not
+            // entered the terminal-reclaim critical section.
+            // SAFETY: actor remains live through the joined owner.
+            assert!(unsafe { (*actor).dispatch_active.load(Ordering::Acquire) });
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Running as i32
+            );
+
+            // Publish terminal through the production external-trap path. Its
+            // locked quiescence check sees the active owner and must defer.
+            // SAFETY: actor is live and tracked.
+            unsafe { hew_actor_trap(actor, 91) };
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Crashed as i32
+            );
+            assert!(unsafe { (*actor).dispatch_active.load(Ordering::Acquire) });
+            assert_eq!(
+                mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                exact_node,
+                "the trap correctly leaves the exact node to its active owner"
+            );
+            assert!(
+                !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                "the deferred ask remains unresolved until ownership handoff"
+            );
+            assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 2);
+
+            owner_release.wait();
+            owner.join().expect("activation owner thread panicked");
+            assert!(!unsafe { (*actor).dispatch_active.load(Ordering::Acquire) });
+
+            if close_terminal_handoff {
+                assert!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                    "the locked terminal recheck retires the deferred node"
+                );
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "the exact ask receives its orphan sentinel"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    1,
+                    "only the creator reference survives the exact-once retire"
+                );
+            } else {
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(ch.cast()),
+                    exact_node,
+                    "the pre-fix state snapshot strands the deferred node"
+                );
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(ch) },
+                    "neither omitted handoff participant resolves the ask"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(ch) },
+                    2,
+                    "the stranded node still owns its sender reference"
+                );
+
+                // Counterfactual cleanup after proving the omission.
+                // SAFETY: trap and activation owner have both returned.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+                assert!(mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null());
+                assert_eq!(unsafe { reply_channel::ref_count_for_test(ch) }, 1);
+            }
+
+            drop(hook);
+            // SAFETY: release the creator ref after the queued sender ref is gone.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+            assert!(live_actors::untrack_actor(actor));
+            assert!(!live_actors::is_actor_live_with_id(id, actor));
+            // SAFETY: untracked terminal actor and drained mailbox are unused.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        // Counterfactual first, then the repaired production handoff.
+        unsafe {
+            run_case(false);
+            run_case(true);
+        }
+    }
+
+    /// Deterministic #2831 ownership witness for the crash half.
+    ///
+    /// Two real ask nodes are queued. The scheduler ownership transfer is then
+    /// modeled exactly: dequeue the first node (it is now in-flight and solely
+    /// scheduler-owned), publish its crash fallback, and free it before entering
+    /// the trap publisher. The second node remains queued behind it.
+    ///
+    /// The counterfactual executes all crash publication while omitting only the
+    /// new trap-side mailbox reclaim. It proves the in-flight ask is settled but
+    /// the exact queued node/ref remains unready through a zero-deadline wait.
+    /// Production settles both before notification can transfer the crashed
+    /// incarnation to a supervisor.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic FFI ownership witness keeps each unsafe assertion beside the exact lifecycle phase it proves"
+    )]
+    fn crash_trap_retires_asks_queued_behind_inflight_ask() {
+        unsafe fn run_case(reclaim_queued: bool) {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(28_311_000);
+
+            let frame_baseline = crate::observe::coroutine_snapshot();
+
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let (actor, mb) = make_stop_test_actor_with_id(id, HewActorState::Crashing);
+            // SAFETY: fully initialized unique actor.
+            assert!(unsafe { live_actors::track_actor(actor) });
+            assert!(live_actors::is_actor_live_with_id(id, actor));
+
+            let inflight_ch = reply_channel::hew_reply_channel_new();
+            let queued_ch = reply_channel::hew_reply_channel_new();
+            assert!(!inflight_ch.is_null() && !queued_ch.is_null());
+            // The ask submission mints one sender-side reference for each node.
+            // SAFETY: both channels are fresh and creator-owned.
+            unsafe {
+                reply_channel::hew_reply_channel_retain(inflight_ch);
+                reply_channel::hew_reply_channel_retain(queued_ch);
+            }
+            // SAFETY: live mailbox, empty payload, valid retained channels.
+            assert_eq!(
+                unsafe {
+                    mailbox::hew_mailbox_send_with_reply(
+                        mb,
+                        1,
+                        ptr::null_mut(),
+                        0,
+                        inflight_ch.cast(),
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    mailbox::hew_mailbox_send_with_reply(
+                        mb,
+                        2,
+                        ptr::null_mut(),
+                        0,
+                        queued_ch.cast(),
+                    )
+                },
+                0
+            );
+            // Scheduler dequeues one ask and now owns it in-flight; the next ask
+            // remains in the mailbox.
+            // SAFETY: test is the sole mailbox consumer.
+            let inflight_node = unsafe { mailbox::hew_mailbox_try_recv(mb) };
+            assert!(!inflight_node.is_null());
+            let exact_queued_node = mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast());
+            assert!(!exact_queued_node.is_null());
+            // SAFETY: mailbox remains live.
+            assert_eq!(unsafe { mailbox::hew_mailbox_len(mb) }, 1);
+
+            // Mirror activate_actor's pre-publication in-flight cleanup:
+            // publish crash failure, detach the consumed sender reference from
+            // the node, then free that exclusively-owned node.
+            // SAFETY: inflight_ch has a live sender ref and node is exclusive.
+            unsafe {
+                reply_channel::hew_reply_channel_publish_crash_fallback(inflight_ch);
+                (*inflight_node).reply_channel = ptr::null_mut();
+                mailbox::hew_msg_node_free(inflight_node);
+            }
+            assert!(
+                unsafe { reply_channel::hew_reply_channel_is_ready_for_test(inflight_ch) },
+                "in-flight crash fallback is published before terminal state"
+            );
+            assert_eq!(
+                unsafe { reply_channel::ref_count_for_test(inflight_ch) },
+                1,
+                "in-flight sender ref was consumed exactly once"
+            );
+            assert!(
+                mailbox::ask_node_for_reply_channel_for_test(inflight_ch.cast()).is_null(),
+                "only the exact queued-behind ask node remains at the trap seam"
+            );
+
+            // Exact production/counterfactual split.
+            // SAFETY: actor is in Crashing, live and tracked.
+            let mailbox_reclaim = if reclaim_queued {
+                TrapMailboxReclaim::OwnedActivation
+            } else {
+                TrapMailboxReclaim::OmitForTest
+            };
+            unsafe { hew_actor_trap_inner(actor, -1, mailbox_reclaim) };
+            assert_eq!(
+                unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+                HewActorState::Crashed as i32
+            );
+
+            // SAFETY: creator refs keep both channels live.
+            assert!(unsafe { reply_channel::hew_reply_wait_timeout(inflight_ch, 0).is_null() });
+            assert!(unsafe { reply_channel::hew_reply_wait_timeout(queued_ch, 0).is_null() });
+
+            if reclaim_queued {
+                assert!(
+                    unsafe { reply_channel::hew_reply_channel_is_ready_for_test(queued_ch) },
+                    "queued crash ask is published before supervisor notification"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::hew_reply_channel_is_orphaned(queued_ch) },
+                    1
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(queued_ch) },
+                    1,
+                    "queued crash sender ref is consumed exactly once"
+                );
+                assert!(mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()).is_null());
+            } else {
+                assert!(
+                    !unsafe { reply_channel::hew_reply_channel_is_ready_for_test(queued_ch) },
+                    "without the trap reclaim edge the wait only returns at its deadline"
+                );
+                assert_eq!(
+                    unsafe { reply_channel::ref_count_for_test(queued_ch) },
+                    2,
+                    "the exact queued node still owns its sender ref"
+                );
+                assert_eq!(
+                    mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()),
+                    exact_queued_node
+                );
+                // SAFETY: crashed actor remains live and test is sole consumer.
+                unsafe { mailbox::mailbox_reclaim_queued_terminal(mb) };
+            }
+
+            assert_eq!(unsafe { reply_channel::ref_count_for_test(queued_ch) }, 1);
+            // SAFETY: release both creator references.
+            unsafe {
+                reply_channel::hew_reply_channel_free(inflight_ch);
+                reply_channel::hew_reply_channel_free(queued_ch);
+            }
+
+            assert!(live_actors::untrack_actor(actor));
+            assert!(!live_actors::is_actor_live_with_id(id, actor));
+            // SAFETY: untracked crashed actor and drained mailbox are unused.
+            unsafe {
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+            let frame_after = crate::observe::coroutine_snapshot();
+            assert_eq!(frame_after.live, frame_baseline.live);
+            assert_eq!(
+                frame_after.frame_bytes_live,
+                frame_baseline.frame_bytes_live
+            );
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        unsafe {
+            run_case(false);
+            run_case(true);
         }
     }
 
@@ -8765,8 +10658,8 @@ mod tests {
         // SAFETY: the helper hands over sole ownership; nothing else can see it.
         let a = unsafe { &*actor };
 
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: `frame` outlives this test body.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -8847,10 +10740,76 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
         actor
+    }
+
+    #[test]
+    fn wasm_send_by_id_live_actor_delivers_and_wakes() {
+        let _guard = crate::runtime_test_guard();
+        crate::scheduler_wasm::hew_sched_init();
+
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Idle);
+        // SAFETY: the test exclusively owns the actor and newly allocated
+        // cooperative mailbox until teardown below.
+        let mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        // SAFETY: actor remains uniquely owned by this test.
+        unsafe { (*actor).mailbox = mailbox.cast() };
+        // SAFETY: actor remains allocated and uniquely owned by this test.
+        let actor_id = unsafe { (*actor).id };
+        let mut payload = 42_i64;
+
+        // SAFETY: actor is tracked and the payload is live for the complete
+        // copying call.
+        let rc = unsafe {
+            actor_send_by_id_wasm_internal(actor_id, 7, (&raw mut payload).cast(), size_of::<i64>())
+        };
+        assert_eq!(rc, HewError::Ok as i32);
+        assert_eq!(
+            // SAFETY: mailbox remains live and exclusively owned here.
+            unsafe { crate::mailbox_wasm::hew_mailbox_len(mailbox) },
+            1,
+            "live by-ID delivery must copy exactly one message"
+        );
+        assert_eq!(
+            // SAFETY: actor remains live and exclusively owned here.
+            unsafe { (*actor).actor_state.load(Ordering::Acquire) },
+            HewActorState::Runnable as i32,
+            "successful by-ID delivery must wake an idle cooperative actor"
+        );
+
+        // Shutdown drains the queued actor before its mailbox is reclaimed.
+        crate::scheduler_wasm::hew_sched_shutdown();
+        assert!(live_actors::untrack_actor(actor));
+        // SAFETY: the scheduler queue is empty and the test owns both objects.
+        unsafe {
+            (*actor).mailbox = ptr::null_mut();
+            crate::mailbox_wasm::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn wasm_send_by_id_missing_or_stopped_actor_returns_err_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
+        // SAFETY: actor remains allocated and exclusively owned after its live
+        // route is retired, modeling a stopped ID at the lookup boundary.
+        let actor_id = unsafe { (*actor).id };
+        assert!(live_actors::untrack_actor(actor));
+
+        // SAFETY: zero-size payload permits a null data pointer. The retired ID
+        // must be rejected before any actor or mailbox dereference.
+        let rc = unsafe { actor_send_by_id_wasm_internal(actor_id, 7, ptr::null_mut(), 0) };
+        assert_eq!(rc, HewError::ErrActorStopped as i32);
+
+        // SAFETY: no live registry entry or scheduler queue retains the box.
+        unsafe { drop(Box::from_raw(actor)) };
     }
 
     // --- null-guard regression tests ---
@@ -9768,6 +11727,198 @@ mod tests {
             "no actor pointer may remain queued after free (a queued pointer here \
              would dangle — the use-after-free)"
         );
+        drop(sched);
+    }
+
+    /// A queue reference is acquired before publishing the raw actor pointer.
+    /// Forced trap/free cannot reclaim the box while the producer is paused in
+    /// that window, and remains blocked after publication until the entry is
+    /// removed. The exact no-reference counterfactual frees first and leaves
+    /// the same raw address queued.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the red-first queue-publication fixture keeps raw actor lifetime operations adjacent to the two compared protocol branches"
+    )]
+    fn scheduler_enqueue_reference_closes_terminal_free_uaf() {
+        unsafe fn run_case(sched: &scheduler::NoWorkerSchedulerForTest, own_queue_ref: bool) {
+            let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+            assert!(!actor.is_null());
+            let id = unsafe { (*actor).id };
+            if !own_queue_ref {
+                unsafe {
+                    (*actor)
+                        .actor_state
+                        .store(HewActorState::Runnable as i32, Ordering::Release);
+                }
+            }
+
+            let (hook, entered, release) =
+                scheduler::SchedulerQueueHandoffHookGuard::install_enqueue_pre_publish(id);
+            let actor_addr = actor.addr();
+            let producer = std::thread::spawn(move || {
+                let actor = ptr::with_exposed_provenance_mut::<HewActor>(actor_addr);
+                if own_queue_ref {
+                    // SAFETY: the test keeps this actor live through the call.
+                    // The canonical producer takes queue ownership before its
+                    // Idle -> Runnable transition.
+                    unsafe { finish_mailbox_enqueue(actor, &*actor) };
+                } else {
+                    // SAFETY: actor is live on hook entry; this is the exact
+                    // missing-retain counterfactual.
+                    unsafe { scheduler::sched_enqueue_omitting_queue_ref_for_test(actor) };
+                }
+            });
+            entered.wait();
+
+            // SAFETY: actor is live at the rendezvous.
+            unsafe { hew_actor_trap(actor, 1) };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let free = std::thread::spawn(move || {
+                // SAFETY: ownership is transferred to this free thread.
+                let rc = unsafe {
+                    hew_actor_free(ptr::with_exposed_provenance_mut::<HewActor>(actor_addr))
+                };
+                done_tx.send(rc).expect("free result receiver");
+            });
+
+            if own_queue_ref {
+                assert!(
+                    matches!(
+                        done_rx.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ),
+                    "queue reference must pin actor before raw-pointer publish"
+                );
+                release.wait();
+                producer.join().expect("enqueue producer");
+                assert!(
+                    matches!(
+                        done_rx.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ),
+                    "published queue entry must retain actor after producer returns"
+                );
+                assert_eq!(
+                    sched.pop_global(),
+                    Some(actor),
+                    "removing the exact queue entry releases its lifetime ref"
+                );
+            } else {
+                assert_eq!(
+                    done_rx
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .expect("omission permits free before publish"),
+                    0,
+                    "without the queue reference terminal free wins the rendezvous"
+                );
+                release.wait();
+                producer.join().expect("counterfactual producer");
+                assert_eq!(
+                    sched.pop_global_without_queue_ref(),
+                    Some(ptr::with_exposed_provenance_mut::<HewActor>(actor_addr)),
+                    "omission leaves the freed raw address queued"
+                );
+            }
+
+            drop(hook);
+            if own_queue_ref {
+                assert_eq!(done_rx.recv().expect("free result"), 0);
+            }
+            free.join().expect("free thread");
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+        // The no-reference counterfactual must demonstrate the stale pointer
+        // first; production then proves both sides of the handoff pin.
+        unsafe {
+            run_case(&sched, false);
+            run_case(&sched, true);
+        }
+        drop(sched);
+    }
+
+    /// A dequeued entry keeps its queue reference until `dispatch_active` is
+    /// successfully claimed. Trap/free is held out at the exact popped-before-
+    /// claim seam. Dropping that reference first lets free reclaim the actor
+    /// while the worker still holds its raw pointer.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the red-first pop-to-claim fixture uses explicit raw pointers to witness the scheduler lifetime handoff"
+    )]
+    fn scheduler_pop_to_claim_reference_closes_terminal_free_uaf() {
+        let _guard = crate::runtime_test_guard();
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+
+        // Counterfactual: pop, release the only queue ref before claim, then
+        // terminal free can complete while the worker-local raw address remains.
+        let omitted = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!omitted.is_null());
+        unsafe {
+            (*omitted)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+        }
+        scheduler::sched_enqueue(omitted);
+        assert_eq!(sched.take_global_with_queue_ref(), Some(omitted));
+        unsafe { scheduler::release_scheduler_queue_ref_for_test(omitted) };
+        let omitted_addr = omitted.addr();
+        unsafe {
+            hew_actor_trap(omitted, 1);
+            assert_eq!(hew_actor_free(omitted), 0);
+        }
+        assert_eq!(
+            omitted_addr,
+            omitted.addr(),
+            "worker-local raw address survives only as a stale pointer"
+        );
+
+        // Production: the real activation pauses after pop while its queue ref
+        // still owns the allocation.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        let id = unsafe { (*actor).id };
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+        }
+        scheduler::sched_enqueue(actor);
+        let (hook, entered, release) =
+            scheduler::SchedulerQueueHandoffHookGuard::install_activate_pre_claim(id);
+        let sched_addr = (&raw const sched).addr();
+        let activation = std::thread::spawn(move || {
+            // SAFETY: the guard outlives this joined activation.
+            let sched = unsafe {
+                &*ptr::with_exposed_provenance::<scheduler::NoWorkerSchedulerForTest>(sched_addr)
+            };
+            assert!(sched.activate_one_global());
+        });
+        entered.wait();
+        unsafe { hew_actor_trap(actor, 1) };
+
+        let actor_addr = actor.addr();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            let rc =
+                unsafe { hew_actor_free(ptr::with_exposed_provenance_mut::<HewActor>(actor_addr)) };
+            done_tx.send(rc).expect("free result receiver");
+        });
+        assert!(
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "popped queue reference must block free before activation claim"
+        );
+
+        release.wait();
+        activation.join().expect("activation thread");
+        assert_eq!(done_rx.recv().expect("free result"), 0);
+        free.join().expect("free thread");
+        drop(hook);
         drop(sched);
     }
 
@@ -12569,28 +14720,24 @@ mod tests {
         }
     }
 
-    static CRASH_SKIP_STATE_DROP_COUNT: std::sync::atomic::AtomicUsize =
+    static STATE_DROP_AUTHORITY_COUNT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
-    unsafe extern "C" fn crash_skip_state_drop_callback(_state: *mut c_void) {
-        CRASH_SKIP_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    unsafe extern "C" fn authority_state_drop_callback(_state: *mut c_void) {
+        STATE_DROP_AUTHORITY_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     #[test]
-    fn free_actor_resources_skips_state_drop_on_crashed_actor() {
-        // Crashed actors may have partially torn-down state; running user
-        // Drop on it risks a second crash or a double-free of fields the
-        // crash already released. The free path must skip the state-drop
-        // callback when actor_state is Crashed but still run structural
-        // cleanup (libc::free, arena, mailbox, Box::from_raw) so the
-        // allocation is not leaked.
+    fn externally_crashed_actor_without_escrow_runs_state_drop_once() {
+        // An actor may be marked Crashed while idle, before dispatch has opened
+        // or consumed any state escrow. Lifecycle state cannot suppress its
+        // still-live typed owner.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // Spawn with a malloc'd source so the resulting actor has a
         // non-null `state` field (deep-copied). This ensures the
-        // state-drop call is only suppressed by the actor_state ==
-        // Crashed check, not by the inner is_null guard.
+        // state-drop call is not hidden by the inner is_null guard.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
         assert!(!src.is_null());
@@ -12602,7 +14749,7 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
             a.actor_state
@@ -12611,27 +14758,155 @@ mod tests {
             // Go through the public hew_actor_free entry point so the
             // LIVE_ACTORS untracking, timer cancellation, and link/monitor
             // teardown all fire in the order the runtime expects. The
-            // crash-skip lives in free_actor_resources, which
-            // hew_actor_free calls after the prerequisites above.
             let rc = hew_actor_free(actor);
             assert_eq!(rc, 0);
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
-            0,
-            "state-drop callback must not run on a Crashed actor"
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
+            1,
+            "an externally crashed actor retained final typed-drop authority"
+        );
+    }
+
+    #[test]
+    fn crash_escrow_consumed_state_is_not_dropped_twice_at_free() {
+        let _guard = crate::runtime_test_guard();
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
+
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies initialized bytes; src is released below.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn completed its deep copy and retains no source pointer.
+        unsafe { libc::free(src) };
+
+        // Model the scheduler's post-drain authority transfer. The callback
+        // count represents the escrow's exactly-once typed drop.
+        // SAFETY: the test exclusively owns the live actor and intentionally
+        // models the scheduler's ordered drop-then-authority transfer.
+        unsafe {
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
+            authority_state_drop_callback((*actor).state);
+            record_dispatch_state_drop_consumed(actor);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
+            1,
+            "final free must not retry state already consumed by crash escrow"
+        );
+    }
+
+    #[test]
+    fn caught_unwind_after_state_clear_transfers_final_drop_authority() {
+        let _guard = crate::runtime_test_guard();
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
+
+        let src = 41_u64;
+        // SAFETY: spawn copies the initialized scalar bytes into actor state.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::from_ref(&src).cast_mut().cast(),
+                std::mem::size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Model the caught-Rust-unwind window after generated code neutralized
+        // the escrow field but before it completed the live-field overwrite.
+        // Recovery(false) must consume the now-authoritative snapshot and
+        // transfer that fact to final actor teardown.
+        // SAFETY: the test exclusively owns the actor and brackets one complete
+        // dispatch escrow before terminal free.
+        unsafe {
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
+            assert!(crate::cont::begin_dispatch_crash_cleanup(
+                (*actor).state,
+                (*actor).state_size,
+                Some(authority_state_drop_callback),
+            ));
+            assert!(crate::cont::hew_dispatch_state_cleanup_clear(
+                (*actor).state,
+                std::mem::size_of::<u64>() as u64,
+            ));
+            let outcome = crate::cont::recover_dispatch_crash_cleanup_with_outcome(false);
+            assert!(outcome.registry_found);
+            assert!(
+                outcome.state_authority_consumed,
+                "a begun state mutation makes false-recovery one-way"
+            );
+            assert_eq!(STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst), 1);
+            record_dispatch_state_drop_consumed(actor);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
+            1,
+            "final free must not retry live bytes after a cleared escrow consumed state authority"
+        );
+    }
+
+    #[test]
+    fn caught_unwind_before_state_mutation_preserves_final_drop_authority() {
+        let _guard = crate::runtime_test_guard();
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
+
+        let src = 42_u64;
+        // SAFETY: spawn copies the initialized scalar bytes into actor state.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::from_ref(&src).cast_mut().cast(),
+                std::mem::size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Untouched false-recovery remains the control: discard only escrow
+        // bytes and leave the original state callback for final actor free.
+        // SAFETY: the test exclusively owns the actor and brackets one complete
+        // dispatch escrow before terminal free.
+        unsafe {
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
+            assert!(crate::cont::begin_dispatch_crash_cleanup(
+                (*actor).state,
+                (*actor).state_size,
+                Some(authority_state_drop_callback),
+            ));
+            let outcome = crate::cont::recover_dispatch_crash_cleanup_with_outcome(false);
+            assert!(outcome.registry_found);
+            assert!(!outcome.state_authority_consumed);
+            assert_eq!(STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst), 0);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
+            1,
+            "untouched false-recovery must preserve final live-state drop authority"
         );
     }
 
     #[test]
     fn free_actor_resources_runs_state_drop_on_stopped_actor() {
-        // Companion to free_actor_resources_skips_state_drop_on_crashed_actor:
+        // Companion to the crash-authority tests above:
         // a non-Crashed actor MUST still see its state-drop callback fire.
         // Pins the negative case so the crash-skip guard cannot regress to
         // an unconditional skip.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
@@ -12644,7 +14919,7 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
             a.actor_state
@@ -12655,7 +14930,7 @@ mod tests {
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             1,
             "state-drop callback must fire exactly once on a Stopped actor"
         );
@@ -12684,8 +14959,8 @@ mod tests {
         // would: publish Parked + store the handle, then mark the actor
         // Suspended. The scratch frame owns a real heap_guard allocation the
         // destroy outline must free.
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(4));
-        let handle = Box::into_raw(frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(4);
+        let handle = frame.into_handle();
         // SAFETY: actor is live and owned by this test thread.
         unsafe {
             let a = &*actor;
@@ -12709,10 +14984,11 @@ mod tests {
         // Reclaim the scratch frame struct (scratch_destroy freed only its
         // heap_guard, not the frame) and assert the destroy outline ran exactly
         // once on the free path.
-        // SAFETY: `handle` is the scratch frame `Box::into_raw`'d above; its
-        // struct memory is still valid (scratch_destroy frees only heap_guard).
+        // SAFETY: `handle` came from ScratchFrameOwner::into_handle above; its
+        // outer allocation remains live because scratch_destroy frees only the
+        // heap guard.
         let frame =
-            unsafe { Box::from_raw(handle.cast::<crate::coro_exec::test_support::ScratchFrame>()) };
+            unsafe { crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle) };
         assert_eq!(
             frame.destroyed.load(Ordering::Acquire),
             1,
@@ -12725,27 +15001,13 @@ mod tests {
     }
 
     #[test]
-    fn hew_actor_free_for_restart_skips_state_drop_on_stopped_sibling() {
-        // Supervisor restart paths (ONE_FOR_ALL / REST_FOR_ONE) free
-        // non-crashed siblings before re-spawning them from
-        // `spec.init_state`. The runtime byte-copies `spec.init_state` into
-        // every actor's `state` and `init_state` slots, so the field
-        // pointers (Vec.ptr, String.ptr, IO handles) inside `spec.init_state`
-        // are byte-aliased by every spawned actor. Running `state_drop_fn`
-        // on a stopped sibling would free those field pointers, leaving
-        // `spec.init_state` byte-aliasing dangling pointers; the next
-        // restart byte-copies that dangling spec into the new actor and
-        // dereferences it on the next teardown — a use-after-free.
-        //
-        // This test pins the contract: `hew_actor_free_for_restart` MUST
-        // NOT invoke the codegen-emitted `state_drop_fn` on a non-crashed
-        // (Stopped/Idle) actor, even when that callback is registered.
-        //
-        // Companion to `free_actor_resources_runs_state_drop_on_stopped_actor`,
-        // which pins the inverse: the regular `hew_actor_free` entry point
-        // MUST run the callback on a Stopped actor.
+    fn borrowed_shallow_state_has_no_final_drop_authority() {
+        // A legacy supervisor byte-copy incarnation explicitly records that
+        // its embedded owners are borrowed from the persistent spec. The same
+        // common free entry point used by fresh actors must therefore skip its
+        // typed drop without relying on restart context or lifecycle state.
         let _guard = crate::runtime_test_guard();
-        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+        STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
@@ -12758,24 +15020,21 @@ mod tests {
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
-            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            hew_actor_set_state_drop(actor, authority_state_drop_callback);
             let a = &*actor;
             assert!(!a.state.is_null(), "spawn must produce a non-null state");
+            mark_state_drop_borrowed(actor);
             a.actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
 
-            // Drive the supervisor-restart-aware free path. Even though the
-            // actor is Stopped (not Crashed), the state-drop callback must
-            // be suppressed because the supervisor's `spec.init_state`
-            // still byte-aliases this actor's field pointers.
-            let rc = hew_actor_free_for_restart(actor);
+            let rc = hew_actor_free(actor);
             assert_eq!(rc, 0);
         }
 
         assert_eq!(
-            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            STATE_DROP_AUTHORITY_COUNT.load(Ordering::SeqCst),
             0,
-            "state-drop callback must NOT run on a Stopped sibling freed via the restart-aware path"
+            "borrowed shallow state must not claim typed-drop authority"
         );
     }
 
@@ -12819,7 +15078,7 @@ mod tests {
     #[test]
     fn terminate_fires_on_normal_stop_and_not_on_crash() {
         // LESSONS: cleanup-all-exits (P0) — on(stop) must run at normal actor
-        // teardown (finalize_quiescent_actor_cleanup_with_options) but must NOT
+        // teardown (finalize_quiescent_actor_cleanup) but must NOT
         // run when the actor is in the Crashed state (same path guards
         // state_drop_fn). Pins the crash-skip invariant and the normal-stop
         // fire invariant with a minimal in-process test.
@@ -12989,8 +15248,8 @@ mod tests {
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
         // SAFETY: this test exclusively owns the tracked actor.
         let a = unsafe { &*actor };
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: `frame` stays live through both free attempts.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -13164,6 +15423,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

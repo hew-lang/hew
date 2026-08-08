@@ -1,0 +1,14 @@
+// Ownership markers belong only to nominal `type` / `enum` declarations.
+// A record has no ResourceMarker slot; this must fail during parsing rather
+// than silently becoming a copyable record and reaching the clone below.
+#[resource]
+record Token { id: i64 }
+
+impl Token {
+    fn close(self) {}
+}
+
+fn main() {
+    let t = Token { id: 1 };
+    let _copy = t.clone();
+}

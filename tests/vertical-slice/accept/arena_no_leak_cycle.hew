@@ -1,0 +1,17 @@
+// Arena<string>: an insert/remove cycle over a heap-owning element type must
+// not leak the taken value nor double-free it. Each iteration inserts a fresh
+// heap string and immediately removes it. The companion Rust leak oracle runs
+// this shape under the platform leak checker. One survivor remains, so the
+// exact post-cycle live count is 1.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    for i in 0..100 {
+        let key = store.insert(f"item-{i}");
+        store.remove(key);
+    }
+    let survivor = store.insert("survivor");
+    println(store.len());
+    println(store.get(survivor).unwrap());
+}

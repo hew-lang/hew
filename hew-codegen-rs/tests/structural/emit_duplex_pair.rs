@@ -13,7 +13,7 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 /// Build a minimal pipeline that exercises the three E4 codegen seams:
 /// the `hew_duplex_pair` out-param call, the `hew_duplex_send` message
@@ -26,12 +26,8 @@ use hew_types::ResolvedTy;
 /// - locals[3] = message payload (i64, holds the value to send)
 /// - locals[4] = length (i64, holds the byte length 8)
 fn duplex_exemplar_pipeline() -> IrPipeline {
-    let duplex_ty = ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let duplex_ty =
+        ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![]);
     let raw_blocks = vec![BasicBlock {
         id: 0,
         statements: vec![],
@@ -168,8 +164,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

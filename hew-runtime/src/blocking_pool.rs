@@ -170,7 +170,7 @@ where
     let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(value) => SlotOutcome::Ready(value),
         Err(payload) => {
-            let message = crate::util::panic_payload_message(payload.as_ref());
+            let message = crate::util::take_panic_payload_message(payload);
             SlotOutcome::Panicked(message)
         }
     };
@@ -204,7 +204,7 @@ where
 /// pool is never deadlocked — workers drain the queue as previous tasks
 /// complete.
 ///
-/// WASM-TODO(#1451): there is no blocking pool on WASM; until a
+/// WASM-TODO(blocking-pool): there is no blocking pool on WASM; until a
 /// WASM-compatible deadline primitive exists (web-sys + Promise
 /// integration, wasi-threads, or polled futures), transport callers on WASM
 /// keep their pre-existing unguarded blocking shape.
@@ -376,7 +376,7 @@ impl Drop for OwnedBlockingPool {
 /// Idempotent within a runtime: subsequent calls under the same runtime return
 /// the same pointer.
 ///
-/// WASM-TODO(#1451): there is no blocking pool on WASM; transport callers
+/// WASM-TODO(blocking-pool): there is no blocking pool on WASM; transport callers
 /// on WASM keep their pre-existing unguarded blocking shape until a
 /// WASM-compatible deadline primitive exists.
 #[must_use]
@@ -427,7 +427,7 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
         if let Err(panic_payload) = handle.join() {
             let message = format!(
                 "blocking pool worker panicked during teardown: {}",
-                crate::util::panic_payload_message(panic_payload.as_ref())
+                crate::util::take_panic_payload_message(panic_payload)
             );
             crate::set_last_error(message.clone());
             eprintln!("hew: {message}");
@@ -469,7 +469,7 @@ fn worker_loop(inner: &PoolInner) {
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     /// A count paired with a Mutex+Condvar "done" latch so the submitting
     /// thread can wait for the worker to actually finish, rather than racing
@@ -694,6 +694,34 @@ mod tests {
             let following = spawn_blocking_result(pool, || 41_i32 + 1, None);
             assert_eq!(following, Ok(42), "the pool queue must remain serviceable");
 
+            hew_blocking_pool_stop(pool);
+        }
+    }
+
+    #[test]
+    fn hostile_worker_panic_payload_is_quarantined_and_pool_survives() {
+        static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        struct HostilePayload;
+        impl Drop for HostilePayload {
+            fn drop(&mut self) {
+                PAYLOAD_DROPS.fetch_add(1, Ordering::SeqCst);
+                panic!("hostile blocking-worker payload destructor");
+            }
+        }
+
+        PAYLOAD_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: test owns the pool and stops it after all submissions finish.
+        unsafe {
+            let pool = hew_blocking_pool_new();
+            let result = spawn_blocking_result::<(), _>(
+                pool,
+                || std::panic::panic_any(HostilePayload),
+                None,
+            );
+            assert_eq!(result, Err(BlockingPoolError::WorkerPanicked));
+            assert_eq!(PAYLOAD_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(spawn_blocking_result(pool, || 42, None), Ok(42));
             hew_blocking_pool_stop(pool);
         }
     }

@@ -25,7 +25,7 @@
 //! (it also covers `Terminator::Call` builtin spellings) and is
 //! deliberately not folded into the admission predicate.
 
-use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily};
+use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily, VecGetElem};
 
 /// Runtime-backed MIR symbols not yet represented by a typed family.
 ///
@@ -165,11 +165,22 @@ pub enum ResultOwnership {
     FreshOwnedString,
     /// Fresh bytes allocation; caller owes the matching bytes release.
     FreshOwnedBytes,
+    /// Fresh vector allocation; the typed destination owns its normal Vec
+    /// release obligation.
+    FreshOwnedVec,
     /// Result is borrowed and carries no caller-owned drop obligation.
     Borrowed,
     /// Result borrows storage owned by arg[0].
     InteriorAliasOfReceiver,
-    /// No drop obligation is tracked by this contract.
+    /// Result is a SELF-CONTAINED value: a bit-copy of a heap-free element, or
+    /// a deep clone. It shares no storage with the receiver, so releasing the
+    /// receiver cannot invalidate it. Distinct from [`Self::Untracked`], which
+    /// is the ABSENCE of a claim (and what an unknown callee gets): callers
+    /// asking "may I own this independently of the receiver?" must be able to
+    /// tell a positive answer from a missing one.
+    IndependentValue,
+    /// No drop obligation is tracked by this contract. Also the unknown-callee
+    /// answer — treat it as "this contract makes no claim", never as a licence.
     Untracked,
 }
 
@@ -275,11 +286,115 @@ impl CalleeOwnershipContract {
             ResultOwnership::Borrowed | ResultOwnership::InteriorAliasOfReceiver
         )
     }
+
+    /// `true` only for result classes KNOWN to hand the caller an owner that is
+    /// independent of the receiver's storage — so the caller may release the
+    /// receiver without invalidating the result, and may hand the result to
+    /// another owner without creating a second owner of one leaf.
+    ///
+    /// POSITIVE membership, deliberately. The negation of
+    /// [`Self::returns_receiver_interior_alias`] is NOT the same question: an
+    /// unknown callee's fail-closed contract carries
+    /// [`ResultOwnership::Untracked`], which is not an alias, so a negated
+    /// alias test admits every unregistered symbol. That is fail-OPEN for this
+    /// query — the caller acts on the admission by RELEASING storage, and a
+    /// wrong admission over an unrecognised borrow is a double-free. Asking
+    /// positively makes a missing contract row degrade to a refused admission:
+    /// a leak, which is visible and safe.
+    ///
+    /// The match is exhaustive on purpose: a new [`ResultOwnership`] variant
+    /// must state its answer here rather than inherit one.
+    #[must_use]
+    pub const fn yields_independent_owner(self) -> bool {
+        match self.result {
+            ResultOwnership::FreshOwnedString
+            | ResultOwnership::FreshOwnedBytes
+            | ResultOwnership::FreshOwnedVec
+            | ResultOwnership::IndependentValue => true,
+            ResultOwnership::Borrowed
+            | ResultOwnership::InteriorAliasOfReceiver
+            | ResultOwnership::Untracked => false,
+        }
+    }
 }
 
 impl Default for CalleeOwnershipContract {
     fn default() -> Self {
         Self::FAIL_CLOSED
+    }
+}
+
+/// Ownership truth for the complete typed `Vec` getter family.
+///
+/// Keeping this match on [`VecGetElem`] makes result ownership a closed
+/// compiler contract: adding a getter variant is a compile error here until it
+/// states whether the result is independent or aliases the receiver.
+#[must_use]
+pub(crate) const fn vec_getter_ownership_contract(
+    family: RuntimeCallFamily,
+) -> Option<CalleeOwnershipContract> {
+    let RuntimeCallFamily::VecGet(elem) = family else {
+        return None;
+    };
+    let result = match elem {
+        VecGetElem::Str => ResultOwnership::FreshOwnedString,
+        VecGetElem::Owned | VecGetElem::Ptr => ResultOwnership::Borrowed,
+        VecGetElem::Bool
+        | VecGetElem::Clone
+        | VecGetElem::F32
+        | VecGetElem::F64
+        | VecGetElem::I8
+        | VecGetElem::I16
+        | VecGetElem::I32
+        | VecGetElem::I64
+        | VecGetElem::Layout
+        | VecGetElem::U8
+        | VecGetElem::U16 => ResultOwnership::IndependentValue,
+    };
+    Some(CalleeOwnershipContract::new(
+        ReceiverOwnership::BorrowsReceiver {
+            scans: ReceiverScanSet::VEC,
+        },
+        StringArgsOwnership::Escaping,
+        result,
+    ))
+}
+
+/// Project one compiler-synthetic callee through the real runtime ownership
+/// contract it emits.
+///
+/// Synthetic identity-display names are not linkable C symbols: codegen
+/// rewrites them to `hew_node_id_format` / `hew_location_format`. Their result
+/// may therefore be admitted only when that real formatter's audited FFI row
+/// proves every fact needed by the string drop plan: one borrowed parameter, a
+/// fresh/retained result, the shallow `hew_string_drop` release, and a measured
+/// transfer showing that the runtime keeps no pointer. Any missing or drifted
+/// conjunct returns the fail-closed contract (no caller release).
+fn compiler_synthetic_ownership_contract(runtime_symbol: &str) -> CalleeOwnershipContract {
+    use crate::ffi_contracts::{
+        ExternParamOwnership, ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    };
+
+    let admitted = crate::ffi_contracts::extern_ownership_contract(runtime_symbol)
+        .contract()
+        .is_some_and(|contract| {
+            contract.params == [ExternParamOwnership::Borrow]
+                && matches!(
+                    contract.result,
+                    ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+                )
+                && contract.release_symbol == "hew_string_drop"
+                && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                && contract.result_retention == ExternResultRetention::Transferred
+        });
+    if admitted {
+        CalleeOwnershipContract::new(
+            ReceiverOwnership::Escapes,
+            StringArgsOwnership::Escaping,
+            ResultOwnership::FreshOwnedString,
+        )
+    } else {
+        CalleeOwnershipContract::FAIL_CLOSED
     }
 }
 
@@ -294,8 +409,45 @@ impl Default for CalleeOwnershipContract {
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{Borrowed, FreshOwnedBytes, FreshOwnedString, Untracked};
+    use ResultOwnership::{FreshOwnedBytes, FreshOwnedString, FreshOwnedVec, Untracked};
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
+
+    if let Some(runtime_symbol) =
+        hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee)
+    {
+        return compiler_synthetic_ownership_contract(runtime_symbol);
+    }
+
+    if let Some(contract) =
+        RuntimeCallFamily::from_c_symbol(callee).and_then(vec_getter_ownership_contract)
+    {
+        return contract;
+    }
+
+    // These result facts are selected from the closed runtime family, never
+    // from a spelling branch: both calls otherwise use the ordinary generic
+    // Vec function path, but each mints a fresh owner at its result boundary.
+    match RuntimeCallFamily::from_c_symbol(callee) {
+        Some(RuntimeCallFamily::VecClone) => {
+            return CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                Escaping,
+                FreshOwnedVec,
+            );
+        }
+        Some(RuntimeCallFamily::VecJoinStr) => {
+            return CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                BorrowingUse,
+                FreshOwnedString,
+            );
+        }
+        _ => {}
+    }
 
     match callee {
         // Bytes append borrows the receiver and the unpacked source triple.
@@ -412,23 +564,12 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         // or remove's tail shift, so there is no double owner). Both shapes
         // share the identical ownership contract — the caller owes one drop.
         // (Scalar/ptr `pop`/`remove` classes stay `Untracked`: no heap to drop.)
-        "hew_vec_get_str" | "hew_vec_pop_str" | "hew_vec_remove_at_str" => {
-            CalleeOwnershipContract::new(
-                BorrowsReceiver {
-                    scans: ReceiverScanSet::VEC,
-                },
-                Escaping,
-                FreshOwnedString,
-            )
-        }
-
-        // Vec owned-element getters return aliases into the receiver storage.
-        "hew_vec_get_owned" | "hew_vec_get_ptr" => CalleeOwnershipContract::new(
+        "hew_vec_pop_str" | "hew_vec_remove_at_str" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::VEC,
             },
             Escaping,
-            Borrowed,
+            FreshOwnedString,
         ),
 
         // Vec receivers are borrowed in place; element and range operands keep
@@ -446,17 +587,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_contains_owned"
         | "hew_vec_contains_str"
         | "hew_vec_contains_thunk"
-        | "hew_vec_get_bool"
-        | "hew_vec_get_clone"
-        | "hew_vec_get_f32"
-        | "hew_vec_get_f64"
-        | "hew_vec_get_i16"
-        | "hew_vec_get_i32"
-        | "hew_vec_get_i64"
-        | "hew_vec_get_i8"
-        | "hew_vec_get_layout"
-        | "hew_vec_get_u16"
-        | "hew_vec_get_u8"
         | "hew_vec_is_empty"
         | "hew_vec_join_str"
         | "hew_vec_pop_bool"
@@ -551,7 +681,34 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_to_lowercase"
         | "hew_string_to_uppercase"
         | "hew_string_trim"
-        | "string_concat" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
+        | "string_concat"
+        | "to_string_str" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
+
+        // Scalar and catalog display producers allocate a fresh string result
+        // without borrowing a string operand. Keeping this separate from the
+        // string-transform arm matters to temporary-drop planning: a fresh
+        // result is not evidence that any argument carries a string lifetime.
+        // The `to_string_*` catalog spellings are the MIR presentation for
+        // f-string display dispatch and map to the `hew_*_to_string` runtime
+        // allocation entries.
+        "hew_bool_to_string"
+        | "hew_char_to_string"
+        | "hew_float_to_string"
+        | "hew_i64_to_string"
+        | "hew_int_to_string"
+        | "hew_node_api_identity_key"
+        | "hew_string_from_char"
+        | "hew_u64_to_string"
+        | "hew_uint_to_string"
+        | "to_string_bool"
+        | "to_string_char"
+        | "to_string_f64"
+        | "to_string_i32"
+        | "to_string_i64"
+        | "to_string_u16"
+        | "to_string_u32"
+        | "to_string_u64"
+        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, Escaping, FreshOwnedString),
 
         // String inspectors and container producers borrow their string input
         // without handing back a tracked string result. Scalar/bytes/Vec
@@ -575,29 +732,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_starts_with"
         | "hew_string_to_bytes" => CalleeOwnershipContract::new(Escapes, BorrowingUse, Untracked),
 
-        // Scalar and catalog display producers allocate a fresh string result.
-        // The `to_string_*` catalog spellings are the MIR presentation for
-        // f-string display dispatch and map to the `hew_*_to_string` runtime
-        // allocation entries.
-        "hew_bool_to_string"
-        | "hew_char_to_string"
-        | "hew_float_to_string"
-        | "hew_i64_to_string"
-        | "hew_int_to_string"
-        | "hew_node_api_identity_key"
-        | "hew_string_from_char"
-        | "hew_u64_to_string"
-        | "hew_uint_to_string"
-        | "to_string_bool"
-        | "to_string_char"
-        | "to_string_f64"
-        | "to_string_i32"
-        | "to_string_i64"
-        | "to_string_u16"
-        | "to_string_u32"
-        | "to_string_u64"
-        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, Escaping, FreshOwnedString),
-
         // Print sinks borrow their string operands for output.
         "print" | "print_str" | "println" | "println_str" => {
             CalleeOwnershipContract::new(Escapes, PrintSink, Untracked)
@@ -614,7 +748,15 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
         "fresh",
         ResultOwnership::FreshOwnedString,
     ),
-    ("hew_vec_get_clone", "fresh", ResultOwnership::Untracked),
+    // The TOML has always called this result "fresh" while the hand table could
+    // only say `Untracked` — there was no class for "self-contained value that
+    // is not a string/bytes allocation". `IndependentValue` closes that gap, so
+    // the two tables now agree rather than diverging by documented exception.
+    (
+        "hew_vec_get_clone",
+        "fresh",
+        ResultOwnership::IndependentValue,
+    ),
     ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
     (
         "hew_vec_get_str",
@@ -694,7 +836,10 @@ mod tests {
         "hew_hashset_to_vec_layout",
         "hew_i64_to_string",
         "hew_int_to_string",
+        "hew_location_display",
         "hew_node_api_identity_key",
+        "hew_node_id_display",
+        "hew_remote_pid_display",
         "hew_string_char_at",
         "hew_string_char_at_utf8",
         "hew_string_char_count",
@@ -889,7 +1034,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 172);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 175);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),
@@ -910,6 +1055,38 @@ mod tests {
             callee_ownership_contract("hew_nope"),
             CalleeOwnershipContract::FAIL_CLOSED
         );
+    }
+
+    #[test]
+    fn plain_vec_fresh_results_are_derived_from_runtime_families() {
+        let clone = callee_ownership_contract("hew_vec_clone");
+        assert_eq!(clone.result, ResultOwnership::FreshOwnedVec);
+        assert!(clone.yields_independent_owner());
+
+        let join = callee_ownership_contract("hew_vec_join_str");
+        assert_eq!(join.result, ResultOwnership::FreshOwnedString);
+        assert!(join.yields_independent_owner());
+    }
+
+    #[test]
+    fn identity_display_synthetics_inherit_measured_runtime_transfer_contracts() {
+        for (callee, runtime_symbol) in [
+            ("hew_node_id_display", "hew_node_id_format"),
+            ("hew_location_display", "hew_location_format"),
+            ("hew_remote_pid_display", "hew_location_format"),
+        ] {
+            assert_eq!(
+                hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee),
+                Some(runtime_symbol),
+                "{callee} must project to its real runtime allocator"
+            );
+            assert_eq!(
+                callee_ownership_contract(callee).result,
+                ResultOwnership::FreshOwnedString,
+                "{callee} must mint exactly the caller-owned string share measured for \
+                 {runtime_symbol}"
+            );
+        }
     }
 
     #[test]

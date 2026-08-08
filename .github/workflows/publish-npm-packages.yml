@@ -7,6 +7,8 @@
 #
 # Trigger: manual workflow_dispatch only — publishing is decoupled from the
 # release tag gate so the maintainer controls the exact moment of publication.
+# Every run must name the immutable release tag it publishes; the workflow
+# checks out and verifies that tag rather than trusting the dispatch-page ref.
 #
 # dry_run defaults to true so accidental runs are safe. Set to false only
 # when ready to publish for real.
@@ -21,13 +23,17 @@ name: Publish npm packages
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Immutable release tag to publish (for example v0.6.0-rc1)"
+        required: true
+        type: string
       dry_run:
         description: "Dry run only (build + pack, skip publish)"
         type: boolean
         default: true
 
 concurrency:
-  group: publish-npm-packages-${{ github.ref }}
+  group: publish-npm-packages-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 permissions:
@@ -43,6 +49,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
@@ -78,6 +87,45 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@hew-lang"
 
+      - name: Verify immutable release identity and package versions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release_tag must be a SemVer tag beginning with v (got ${RELEASE_TAG})"
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            echo "::error::release_tag ${RELEASE_TAG} is not an immutable repository tag"
+            exit 1
+          fi
+          TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          HEAD_COMMIT=$(git rev-parse HEAD)
+          if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+            echo "::error::checked-out commit ${HEAD_COMMIT} does not match ${RELEASE_TAG} (${TAG_COMMIT})"
+            exit 1
+          fi
+          EXPECTED_VERSION="${RELEASE_TAG#v}"
+          WORKSPACE_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          SANDBOX_VM_VERSION=$(node -p "require('./hew-sandbox-vm/package.json').version")
+          if [ "${WORKSPACE_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            echo "::error::Cargo.toml version ${WORKSPACE_VERSION} does not match ${RELEASE_TAG}"
+            exit 1
+          fi
+          if [ "${SANDBOX_VM_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            echo "::error::hew-sandbox-vm version ${SANDBOX_VM_VERSION} does not match ${RELEASE_TAG}"
+            exit 1
+          fi
+          if [[ "${EXPECTED_VERSION}" == *-* ]]; then
+            NPM_DIST_TAG=next
+          else
+            NPM_DIST_TAG=latest
+          fi
+          echo "NPM_DIST_TAG=${NPM_DIST_TAG}" >> "${GITHUB_ENV}"
+          echo "Publishing ${RELEASE_TAG} on npm dist-tag ${NPM_DIST_TAG}"
+
       - name: Build all npm packages
         run: node scripts/build-npm-packages.mjs
         env:
@@ -101,7 +149,7 @@ jobs:
           if npm view "@hew-lang/wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
             echo "::notice::@hew-lang/wasm@${PKG_VERSION} already published — skipping"
           else
-            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+            npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,7 +162,7 @@ jobs:
           if npm view "@hew-lang/sandbox-wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
             echo "::notice::@hew-lang/sandbox-wasm@${PKG_VERSION} already published — skipping"
           else
-            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+            npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -127,7 +175,7 @@ jobs:
           if npm view "@hew-lang/sandbox-vm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
             echo "::notice::@hew-lang/sandbox-vm@${PKG_VERSION} already published — skipping"
           else
-            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+            npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

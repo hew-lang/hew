@@ -28,6 +28,12 @@ pub enum BuiltinFieldTy {
     I64,
     U64,
     U32,
+    /// The fixed-width crash-class tag carried by an exit notification.
+    ///
+    /// This remains a named builtin in the IR so lifecycle identity is not
+    /// inferred from its integer representation.  LLVM lowers the canonical
+    /// enum to its `i32` tag at the ABI boundary.
+    CrashKind,
     /// An owned heap `string` field (`*mut c_char`). A builtin record carrying
     /// one (e.g. `CrashInfo.message`) is heap-owning, so it is no longer a
     /// `BitCopy` aggregate — it routes through the owned-aggregate record
@@ -42,6 +48,11 @@ impl BuiltinFieldTy {
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
             Self::U32 => ResolvedTy::U32,
+            Self::CrashKind => ResolvedTy::named_builtin(
+                "std.failure.CrashKind",
+                BuiltinType::CrashKind,
+                Vec::new(),
+            ),
             Self::String => ResolvedTy::String,
         }
     }
@@ -93,6 +104,21 @@ const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[
     BuiltinTypeField {
         name: "message",
         ty: BuiltinFieldTy::String,
+    },
+];
+
+/// `CrashNotification { actor_id: u64, kind: CrashKind }` is rebuilt by the
+/// synthetic `#[on(exit)]` prologue from the runtime's two-field mailbox ABI.
+/// Its source declaration remains import-authoritative; this catalog entry is
+/// the fixed representation authority shared by that prologue, MIR and LLVM.
+const CRASH_NOTIFICATION_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "actor_id",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "kind",
+        ty: BuiltinFieldTy::CrashKind,
     },
 ];
 
@@ -174,6 +200,8 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(Duplex, BuiltinTypeShape::Opaque),
     registration!(Sink, BuiltinTypeShape::Opaque),
     registration!(Stream, BuiltinTypeShape::Opaque),
+    registration!(Sender, BuiltinTypeShape::Opaque),
+    registration!(Receiver, BuiltinTypeShape::Opaque),
     registration!(Vec, BuiltinTypeShape::Opaque),
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
@@ -198,6 +226,15 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
 ];
 
+// Compiler-created lifecycle payloads need a representation entry without
+// becoming bare-name source builtins. Keeping this table separate prevents a
+// user `CrashNotification` declaration from acquiring the std.failure ABI
+// while still giving the generated exit-hook prologue a disjoint layout key.
+const SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS: &[BuiltinTypeRegistration] = &[registration!(
+    CrashNotification,
+    BuiltinTypeShape::Struct(CRASH_NOTIFICATION_FIELDS)
+)];
+
 #[must_use]
 pub fn builtin_type_registrations() -> &'static [BuiltinTypeRegistration] {
     BUILTIN_TYPE_REGISTRATIONS
@@ -208,6 +245,28 @@ pub fn builtin_type_registration(name: &str) -> Option<&'static BuiltinTypeRegis
     BUILTIN_TYPE_REGISTRATIONS
         .iter()
         .find(|registration| registration.name() == name)
+}
+
+/// Return the representation entry for a compiler-owned record identity.
+///
+/// This includes synthetic lifecycle carriers that intentionally do not
+/// participate in bare source-name admission.
+#[must_use]
+pub fn compiler_record_layout_registration(
+    builtin: BuiltinType,
+) -> Option<&'static BuiltinTypeRegistration> {
+    BUILTIN_TYPE_REGISTRATIONS
+        .iter()
+        .chain(SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS)
+        .find(|registration| registration.builtin == builtin)
+}
+
+/// Iterate every compiler-owned record representation entry.
+pub fn compiler_record_layout_registrations(
+) -> impl Iterator<Item = &'static BuiltinTypeRegistration> {
+    BUILTIN_TYPE_REGISTRATIONS
+        .iter()
+        .chain(SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS)
 }
 
 /// Return the compiler-known crash-info payload registration.
@@ -255,6 +314,19 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// program-start so user programs never need to see the compiler-internal table.
 pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
     for registration in builtin_type_registrations() {
+        // Channel endpoints are admitted through `ResolvedTy::Named.builtin`,
+        // never through an unqualified table row.  Keeping a bare `Sender` or
+        // `Receiver` resource row here would make a same-named user record
+        // acquire the endpoint close/drop plan before declaration metadata is
+        // available.  The typed lookup in `lookup_type_marker_for_ty` reads
+        // this registration directly, including for `channel.Sender` and
+        // `channel.Receiver` spellings.
+        if matches!(
+            registration.builtin,
+            BuiltinType::Sender | BuiltinType::Receiver
+        ) {
+            continue;
+        }
         debug_assert!(
             registration.marker != ResourceMarker::BitCopy || registration.close_method.is_none(),
             "BitCopy builtin types must not register close methods"
@@ -271,14 +343,12 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::value_class::ValueClass;
 
     #[test]
     fn duplex_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Duplex"),
@@ -288,7 +358,7 @@ mod tests {
 
     #[test]
     fn sink_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Sink"),
@@ -298,7 +368,7 @@ mod tests {
 
     #[test]
     fn stream_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Stream"),
@@ -307,8 +377,52 @@ mod tests {
     }
 
     #[test]
+    fn channel_endpoints_use_typed_registration_not_bare_seed_rows() {
+        let mut table = TypeClassTable::default();
+        seed_builtin_type_classes(&mut table);
+        for endpoint in ["Sender", "Receiver"] {
+            assert!(
+                !table.contains_key(endpoint),
+                "{endpoint} must not make a same-named user declaration into a builtin resource"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_endpoint_named_tys_resolve_to_affine_resources() {
+        let mut table = TypeClassTable::default();
+        seed_builtin_type_classes(&mut table);
+        for (name, builtin) in [
+            ("channel.Sender", BuiltinType::Sender),
+            ("channel.Receiver", BuiltinType::Receiver),
+        ] {
+            let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
+            assert_eq!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::AffineResource,
+                "{name}<string> must enter resource drop elaboration"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_endpoint_names_without_builtin_identity_are_not_resources() {
+        let mut table = TypeClassTable::default();
+        seed_builtin_type_classes(&mut table);
+
+        for name in ["Sender", "Receiver", "channel.Sender", "channel.Receiver"] {
+            let ty = ResolvedTy::named_user(name, vec![ResolvedTy::String]);
+            assert_ne!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::AffineResource,
+                "user `{name}` without builtin identity must not receive channel endpoint teardown"
+            );
+        }
+    }
+
+    #[test]
     fn lambda_actor_handle_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaActorHandle"),
@@ -318,7 +432,7 @@ mod tests {
 
     #[test]
     fn lambda_pid_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaPid"),
@@ -328,7 +442,7 @@ mod tests {
 
     #[test]
     fn send_half_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("SendHalf"),
@@ -338,7 +452,7 @@ mod tests {
 
     #[test]
     fn recv_half_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("RecvHalf"),
@@ -348,7 +462,7 @@ mod tests {
 
     #[test]
     fn duplex_named_ty_resolves_to_affine_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_builtin(
             "Duplex",
@@ -364,7 +478,7 @@ mod tests {
         // marker-`BitCopy`. The `None` marker routes it through the
         // owned-aggregate record clone/drop synthesis; the `CrashInfo` ROLE (not
         // the marker) is now the crash-hook-payload discriminant.
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             crate::lookup_type_marker("CrashInfo", &table),
@@ -380,7 +494,7 @@ mod tests {
         // leak the message string. A `None`-marker builtin record resolves to
         // `Unknown` at the bare `ValueClass::of_ty` level (the owned-aggregate
         // record machinery in MIR is what admits it as `CowValue` for drop).
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_user("CrashInfo", vec![]);
         assert_ne!(
@@ -412,8 +526,35 @@ mod tests {
     }
 
     #[test]
+    fn crash_notification_shape_carries_the_canonical_crash_kind_enum() {
+        assert!(
+            builtin_type_registration("CrashNotification").is_none(),
+            "the generated payload layout must not admit a bare source builtin"
+        );
+        let registration = compiler_record_layout_registration(BuiltinType::CrashNotification)
+            .expect("CrashNotification must have a compiler-owned layout");
+        assert_eq!(
+            registration.shape,
+            BuiltinTypeShape::Struct(&[
+                BuiltinTypeField {
+                    name: "actor_id",
+                    ty: BuiltinFieldTy::U64,
+                },
+                BuiltinTypeField {
+                    name: "kind",
+                    ty: BuiltinFieldTy::CrashKind,
+                },
+            ])
+        );
+        assert_eq!(
+            BuiltinFieldTy::CrashKind.to_resolved_ty(),
+            ResolvedTy::named_builtin("std.failure.CrashKind", BuiltinType::CrashKind, Vec::new(),)
+        );
+    }
+
+    #[test]
     fn crash_action_is_seeded_as_none_marker() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("CrashAction"),
@@ -424,7 +565,7 @@ mod tests {
 
     #[test]
     fn crash_info_named_ty_is_known_to_type_classes() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert!(
             table.contains_key("CrashInfo"),
@@ -434,7 +575,7 @@ mod tests {
 
     #[test]
     fn crash_action_named_ty_is_known_to_type_classes() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert!(
             table.contains_key("CrashAction"),

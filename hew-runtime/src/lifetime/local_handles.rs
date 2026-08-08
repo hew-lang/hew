@@ -2,9 +2,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-#[cfg(test)]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -123,6 +121,7 @@ pub(crate) struct SupervisorControl {
     direct_id: HewLocalPidId,
     runtime_id: RuntimeId,
     access_state: AtomicUsize,
+    teardown_claimed: AtomicBool,
     drain_mutex: Mutex<()>,
     drained: Condvar,
 }
@@ -139,6 +138,7 @@ impl SupervisorControl {
             direct_id,
             runtime_id,
             access_state: AtomicUsize::new(0),
+            teardown_claimed: AtomicBool::new(false),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
         }
@@ -174,6 +174,28 @@ impl SupervisorControl {
                 Err(observed) => state = observed,
             }
         }
+    }
+
+    /// Claim the exact-once destructor authority for this allocation.
+    pub(crate) fn claim_teardown(&self) -> bool {
+        self.teardown_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Roll back a claimed teardown after a failed ownership handoff.
+    pub(crate) fn release_teardown(&self) {
+        self.teardown_claimed.store(false, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn teardown_is_claimed(&self) -> bool {
+        self.teardown_claimed.load(Ordering::Acquire)
+    }
+
+    /// Whether stable access is closed and every admitted operation drained.
+    pub(crate) fn is_closed_and_drained(&self) -> bool {
+        self.access_state.load(Ordering::Acquire) == SUPERVISOR_CLOSING_BIT
     }
 
     /// Close new admission. Returns true only to the linearization winner.
@@ -967,6 +989,14 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
     runtime
         .local_handles
         .pin_supervisor(runtime.runtime_id(), token)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_control_for_raw(
+    token: HewLocalPidId,
+    supervisor: *mut crate::supervisor::HewSupervisor,
+) -> Option<Arc<SupervisorControl>> {
+    current_handles()?.supervisor_control_for_raw(token, supervisor)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

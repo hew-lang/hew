@@ -27,11 +27,12 @@ use hew_parser::ast::{
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
 use hew_types::{
-    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildSlot,
+    ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, OptionResultMethod, PatternKind, RcIntrinsicOp, ResolvedTy, SpanKey, Ty,
-    TyPattern, TypeCheckOutput, WireCodecDirection,
+    NumericMethodLowering, OptionResultMethod, PatternKind, ProducedValueDependency,
+    ProducedValueFact, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TyPattern,
+    TypeCheckOutput, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -49,10 +50,11 @@ use crate::node::{
     HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
     HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
     HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind,
+    HirPayloadVariantPredicate, HirProducedValueFact, HirProducedValueProducer,
+    HirProducedValueRelation, HirProducedValueSourceAnchor, HirRecordDecl, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -96,7 +98,7 @@ fn collect_match_payload_predicates(
     match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
             let field_tys = ctx
-                .lookup_variant_ctor(name)
+                .lookup_variant_ctor(name, Some(scrutinee_ty))
                 .map(|(_, _, kind)| match kind {
                     HirVariantKind::Tuple(field_tys) => field_tys.clone(),
                     HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
@@ -163,23 +165,22 @@ fn collect_match_payload_predicates(
                     field_tys.len()
                 ));
             }
-            Ok(patterns
-                .iter()
-                .zip(field_tys)
-                .enumerate()
-                .filter_map(|(field_idx, ((sub_pat, _), ty))| {
-                    let Pattern::Literal(lit) = sub_pat else {
-                        return None;
-                    };
-                    let field_idx = u32::try_from(field_idx).ok()?;
-                    let (literal, _) = literal_to_hir(lit);
-                    Some(HirPayloadPredicate {
-                        field_idx,
-                        literal,
-                        ty: ty.clone(),
-                    })
-                })
-                .collect())
+            let mut predicates = Vec::new();
+            for (field_idx, ((sub_pat, _), ty)) in patterns.iter().zip(field_tys).enumerate() {
+                let Pattern::Literal(lit) = sub_pat else {
+                    continue;
+                };
+                let field_idx = u32::try_from(field_idx).map_err(|_| {
+                    "tuple literal predicate field index exceeds the HIR u32 carrier".to_string()
+                })?;
+                let (literal, _) = literal_to_hir(lit);
+                predicates.push(HirPayloadPredicate {
+                    field_idx,
+                    literal,
+                    ty: ty.clone(),
+                });
+            }
+            Ok(predicates)
         }
         Pattern::Wildcard
         | Pattern::Identifier(_)
@@ -382,15 +383,58 @@ const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
 const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
+/// One compiler-owned cursor record admitted at the HIR layout boundary.
+///
+/// The typed builtin discriminator is the identity. Presentation names are
+/// derived from it and never participate in lookup, so a user declaration with
+/// the same leaf cannot enter the synthetic record namespace.
+pub(crate) struct SyntheticCursorLayoutSpec {
+    pub(crate) builtin: BuiltinType,
+    pub(crate) origin: ItemId,
+    pub(crate) type_params: &'static [&'static str],
+}
+
+pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] = &[
+    SyntheticCursorLayoutSpec {
+        builtin: BuiltinType::VecIter,
+        origin: SYNTHETIC_VEC_ITER_ITEM,
+        type_params: &["T"],
+    },
+    SyntheticCursorLayoutSpec {
+        builtin: BuiltinType::HashMapIter,
+        origin: SYNTHETIC_HASHMAP_ITER_ITEM,
+        type_params: &["K", "V"],
+    },
+];
+
+/// Resolve the declaration and substituted field shape for one synthetic
+/// cursor instantiation. Every origin-site and post-monomorphisation layout
+/// registration consumes this catalog path.
+pub(crate) fn synthetic_cursor_layout(
+    builtin: BuiltinType,
+    type_args: &[ResolvedTy],
+) -> Option<(
+    &'static SyntheticCursorLayoutSpec,
+    Vec<(String, ResolvedTy)>,
+)> {
+    let spec = SYNTHETIC_CURSOR_LAYOUT_SPECS
+        .iter()
+        .find(|spec| spec.builtin == builtin)?;
+    let fields = match (builtin, type_args) {
+        (BuiltinType::VecIter, [elem]) => vec_iter_field_shape(elem),
+        (BuiltinType::HashMapIter, [key, value]) => hashmap_iter_field_shape(key, value),
+        _ => return None,
+    };
+    Some((spec, fields))
+}
+
 /// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
 /// idx: i64 }` in declaration order.
 ///
-/// This is the SINGLE authority both the origin-site layout registration
-/// ([`LowerCtx::register_vec_iter_layout`]) and the per-monomorphisation
-/// layout discovery ([`crate::layout_mono::run_layout_mono_pass`], which seeds
-/// `VecIter` into its record-decl table) consume, so the two paths can never
-/// disagree on field order or field types. The for-in / into-iter desugar
-/// constructs the `VecIter` literal with exactly these fields in this order.
+/// This shape is selected by [`synthetic_cursor_layout`], the shared catalog
+/// path used by origin-site registration and per-monomorphisation discovery.
+/// The for-in / into-iter desugar constructs the `VecIter` literal with exactly
+/// these fields in this order.
 pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
     vec![
         (
@@ -519,7 +563,10 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 /// payload type-parameter names index into `type_params`.
 #[derive(Clone, Copy)]
 pub(crate) struct BuiltinEnumSpec {
+    /// Prelude spelling used only to publish compatibility aliases.
     pub(crate) type_name: &'static str,
+    /// Exact declaration identity used by every semantic registry.
+    pub(crate) canonical_type_name: &'static str,
     pub(crate) item_id: ItemId,
     pub(crate) type_params: &'static [&'static str],
     variants: BuiltinEnumVariants,
@@ -589,6 +636,7 @@ const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicE
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
 const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
     type_name: "",
+    canonical_type_name: "",
     item_id: ItemId(0),
     type_params: &[],
     variants: BuiltinEnumVariants::Generic(&[]),
@@ -597,14 +645,17 @@ const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
 /// HIR registration order is observable for duplicate bare variant names:
 /// later specs replace earlier entries in `machine_ctor_registry`.
 const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
-    ("LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
-    ("SendError", SYNTHETIC_SEND_ERROR_ITEM),
-    ("TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
-    ("LinkError", SYNTHETIC_LINK_ERROR_ITEM),
-    ("AskError", SYNTHETIC_ASK_ERROR_ITEM),
-    ("CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
-    ("CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
-    ("MonitorError", SYNTHETIC_MONITOR_ERROR_ITEM),
+    ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
+    ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
+    ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
+    ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
+    ("std.builtins.AskError", SYNTHETIC_ASK_ERROR_ITEM),
+    ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
+    ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
+    (
+        "std.link_monitor.MonitorError",
+        SYNTHETIC_MONITOR_ERROR_ITEM,
+    ),
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {
@@ -624,12 +675,12 @@ const fn const_str_eq(left: &str, right: &str) -> bool {
 }
 
 const fn monomorphic_builtin_enum(
-    type_name: &str,
+    canonical_type_name: &str,
 ) -> hew_types::builtin_enums::BuiltinMonomorphicEnum {
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUMS.len() {
         let candidate = MONOMORPHIC_BUILTIN_ENUMS[index];
-        if const_str_eq(candidate.name, type_name) {
+        if const_str_eq(candidate.canonical_name, canonical_type_name) {
             return candidate;
         }
         index += 1;
@@ -657,7 +708,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     let mut catalog_index = 0;
     while catalog_index < MONOMORPHIC_BUILTIN_ENUMS.len() {
         assert!(
-            hir_order_entry_count(MONOMORPHIC_BUILTIN_ENUMS[catalog_index].name) == 1,
+            hir_order_entry_count(MONOMORPHIC_BUILTIN_ENUMS[catalog_index].canonical_name) == 1,
             "monomorphic builtin enum must have exactly one HIR order entry"
         );
         catalog_index += 1;
@@ -666,6 +717,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     let mut specs = [EMPTY_BUILTIN_ENUM_SPEC; BUILTIN_ENUM_SPEC_COUNT];
     specs[0] = BuiltinEnumSpec {
         type_name: "Option",
+        canonical_type_name: "Option",
         item_id: SYNTHETIC_OPTION_ITEM,
         type_params: &["T"],
         variants: BuiltinEnumVariants::Generic(&["Some", "None"]),
@@ -673,6 +725,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     };
     specs[1] = BuiltinEnumSpec {
         type_name: "Result",
+        canonical_type_name: "Result",
         item_id: SYNTHETIC_RESULT_ITEM,
         type_params: &["T", "E"],
         variants: BuiltinEnumVariants::Generic(&["Ok", "Err"]),
@@ -681,10 +734,11 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
 
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER.len() {
-        let (type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
-        let catalog_entry = monomorphic_builtin_enum(type_name);
+        let (canonical_type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
+        let catalog_entry = monomorphic_builtin_enum(canonical_type_name);
         specs[index + 2] = BuiltinEnumSpec {
             type_name: catalog_entry.name,
+            canonical_type_name: catalog_entry.canonical_name,
             item_id,
             type_params: &[],
             variants: BuiltinEnumVariants::Monomorphic(catalog_entry.variants),
@@ -933,6 +987,162 @@ struct ImportedImplLowering<'a> {
     symbol_self_name: Option<&'a str>,
 }
 
+/// Pre-lowering proof that a checker-selected impl declaration will emit one
+/// exact HIR body symbol.  This bridges source-order root bodies (which may
+/// call a file/package imported impl before the imported module is emitted)
+/// without treating a first-pass signature row as executable evidence.
+#[derive(Debug, Default)]
+struct ImplBodyPlan {
+    symbols: HashMap<hew_types::DefId, String>,
+}
+
+fn plan_impl_block_symbols(
+    ctx: &mut LowerCtx,
+    impl_decl: &hew_parser::ast::ImplDecl,
+    base_symbol_self_name: &str,
+    skip_methods: &HashSet<String>,
+) {
+    if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
+        return;
+    }
+    let TypeExpr::Named {
+        name: self_type_name,
+        type_args,
+    } = &impl_decl.target_type.0
+    else {
+        return;
+    };
+    if impl_type_param_names(impl_decl)
+        .iter()
+        .any(|type_param| type_param == self_type_name)
+    {
+        return;
+    }
+    let impl_type_params = impl_type_param_names(impl_decl);
+    let concrete_args: Vec<ResolvedTy> = if impl_type_params.is_empty() {
+        type_args
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|arg| ctx.lower_type(arg))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let symbol_self_name = if concrete_args.is_empty() {
+        base_symbol_self_name.to_string()
+    } else {
+        crate::monomorph::mangle(base_symbol_self_name, &concrete_args)
+    };
+    for method in &impl_decl.methods {
+        if skip_methods.contains(&method.name) {
+            continue;
+        }
+        let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+        let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).cloned() else {
+            continue;
+        };
+        if let Some(existing) = ctx
+            .impl_body_plan
+            .symbols
+            .insert(declaration.clone(), symbol.clone())
+        {
+            if existing != symbol {
+                ctx.impl_body_plan.symbols.remove(&declaration);
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("impl body `{}`", declaration.full_path()),
+                        reason: format!(
+                            "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
+                        ),
+                    },
+                    0..0,
+                    "one implementation declaration selected two distinct emitted-body symbols",
+                ));
+            }
+        }
+    }
+}
+
+fn plan_imported_impl_bodies(
+    ctx: &mut LowerCtx,
+    program: &Program,
+    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+) {
+    let empty_skips = HashSet::new();
+    // Source-order bodies include root declarations and flattened file imports.
+    // They may be called before their tail-spliced item is emitted.
+    for (item, _) in &program.items {
+        if let Item::Impl(impl_decl) = item {
+            if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
+            }
+        }
+    }
+
+    let Some(module_graph) = &program.module_graph else {
+        return;
+    };
+    for module_id in &module_graph.topo_order {
+        if *module_id == module_graph.root
+            || file_import_modules.contains(module_id)
+            || !module_graph.modules.contains_key(module_id)
+        {
+            continue;
+        }
+        let module = &module_graph.modules[module_id];
+        let source_module = module_id.path.join(".");
+        let previous_module = ctx.current_module_name.replace(source_module.clone());
+        let private_fns: HashSet<String> = module
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Function(function) if !function.visibility.is_pub() => {
+                    Some(function.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let public_fns: HashSet<String> = module
+            .items
+            .iter()
+            .filter_map(|(item, _)| match item {
+                Item::Function(function) if function.visibility.is_pub() => {
+                    Some(function.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let private_closure = collect_imported_private_fn_closure(module, &private_fns);
+        let rewrites: HashMap<String, String> = public_fns
+            .iter()
+            .chain(private_closure.iter())
+            .map(|name| {
+                (
+                    name.clone(),
+                    crate::mangle_dotted_name(&format!("{source_module}.{name}")),
+                )
+            })
+            .collect();
+        for (item, _) in &module.items {
+            let Item::Impl(impl_decl) = item else {
+                continue;
+            };
+            if item_is_duplicated_in_preferred_module(program, preferred_modules, module_id, item) {
+                continue;
+            }
+            let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+                continue;
+            };
+            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
+            let base_symbol_self_name = format!("{source_module}.{name}");
+            plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
+        }
+        ctx.current_module_name = previous_module;
+    }
+}
+
 /// Walk the program and its module graph collecting inherent-impl `close`
 /// method signatures, keyed by the self-type name. Trait impls (`impl T for U`)
 /// are deliberately skipped — the `close` ritual under the W3.030 contract is
@@ -1060,29 +1270,73 @@ fn collect_inherent_impl_consuming_methods_from_items(
     }
 }
 
-/// Collect trait default method bodies from all `Item::Trait` declarations
-/// in the root program. Keyed by trait name; values are the `TraitMethod`
-/// entries that carry a non-`None` body. Used by `lower_impl_block` to lower
-/// default methods for concrete impls that do not override them.
-fn collect_trait_default_methods(items: &[(Item, Span)]) -> HashMap<String, Vec<TraitMethod>> {
+/// Collect trait default method bodies from the complete module graph.  Root
+/// traits retain their root spelling; imported traits are keyed by their full
+/// declaration owner so same-final-module traits cannot overwrite one another.
+/// Also returns the `module_idx` the checker stamped each declaring trait's
+/// `SpanKey` facts with.
+///
+/// A default body materialised onto an impl keeps the SPANS of the trait
+/// declaration it was copied from, but is lowered at the impl's site. When the
+/// trait lives in another module the impl's `current_module_idx` does not match
+/// the index the checker recorded those spans under, so every `mk_key` lookup
+/// inside the body misses and the fail-closed contract fires
+/// (`MethodCallNoRewrite` for a `self.other()` call in a default body). The
+/// index numbering mirrors `Checker::check_program` exactly: skip the root,
+/// bump a 1-based counter for every module present in `modules`, in topo order.
+fn collect_trait_default_methods(
+    program: &Program,
+    file_import_module_idx: &HashMap<usize, u32>,
+) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
+    let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
     let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    for (item, _) in items {
-        let Item::Trait(trait_decl) = item else {
-            continue;
-        };
-        let defaults: Vec<TraitMethod> = trait_decl
-            .items
-            .iter()
-            .filter_map(|ti| match ti {
-                TraitItem::Method(m) if m.body.is_some() => Some(m.clone()),
-                _ => None,
-            })
-            .collect();
-        if !defaults.is_empty() {
-            out.insert(trait_decl.name.clone(), defaults);
+    let mut collect = |items: &[(Item, Span)], module: Option<(&str, u32)>| {
+        for (item_idx, (item, _)) in items.iter().enumerate() {
+            let Item::Trait(trait_decl) = item else {
+                continue;
+            };
+            let defaults: Vec<TraitMethod> = trait_decl
+                .items
+                .iter()
+                .filter_map(|ti| match ti {
+                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !defaults.is_empty() {
+                let key = module.map_or_else(
+                    || trait_decl.name.clone(),
+                    |(owner, _)| format!("{owner}.{}", trait_decl.name),
+                );
+                // A trait spliced into the ROOT items by a file import keeps
+                // its bare root spelling, but the checker validated it during
+                // the module walk under that file's own index — recover it
+                // per item rather than assuming root (0).
+                let idx = module.map_or_else(
+                    || file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
+                    |(_, idx)| idx,
+                );
+                owner_module_idx.insert(key.clone(), idx);
+                out.insert(key, defaults);
+            }
+        }
+    };
+    collect(&program.items, None);
+    if let Some(graph) = &program.module_graph {
+        let mut module_idx = 0_u32;
+        for module_id in &graph.topo_order {
+            if *module_id == graph.root {
+                continue;
+            }
+            let Some(module) = graph.modules.get(module_id) else {
+                continue;
+            };
+            module_idx += 1;
+            let owner = module_id.path.join(".");
+            collect(&module.items, Some((&owner, module_idx)));
         }
     }
-    out
+    (out, owner_module_idx)
 }
 
 fn collect_trait_declaring_surfaces(
@@ -1093,7 +1347,7 @@ fn collect_trait_declaring_surfaces(
 ) {
     fn visit_items(
         items: &[(Item, Span)],
-        module_short: Option<&str>,
+        module_owner: Option<&str>,
         supers: &mut HashMap<String, Vec<String>>,
         methods: &mut HashMap<String, HashSet<String>>,
     ) {
@@ -1101,7 +1355,7 @@ fn collect_trait_declaring_surfaces(
             let Item::Trait(trait_decl) = item else {
                 continue;
             };
-            let key = module_short.map_or_else(
+            let key = module_owner.map_or_else(
                 || trait_decl.name.clone(),
                 |module| format!("{module}.{}", trait_decl.name),
             );
@@ -1123,9 +1377,15 @@ fn collect_trait_declaring_surfaces(
                     bounds
                         .iter()
                         .map(|bound| {
-                            module_short.map_or_else(
+                            module_owner.map_or_else(
                                 || bound.name.clone(),
-                                |module| format!("{module}.{}", bound.name),
+                                |module| {
+                                    if bound.name.contains('.') {
+                                        bound.name.clone()
+                                    } else {
+                                        format!("{module}.{}", bound.name)
+                                    }
+                                },
                             )
                         })
                         .collect()
@@ -1144,8 +1404,13 @@ fn collect_trait_declaring_surfaces(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                let module_short = mod_id.path.last().map(String::as_str);
-                visit_items(&module.items, module_short, &mut supers, &mut methods);
+                let module_owner = mod_id.path.join(".");
+                visit_items(
+                    &module.items,
+                    Some(&module_owner),
+                    &mut supers,
+                    &mut methods,
+                );
             }
         }
     }
@@ -1219,8 +1484,13 @@ fn collect_opaque_type_short_names(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                let module_short = mod_id.path.last().map(String::as_str);
-                visit_items(&module.items, module_short, opaque, non_opaque);
+                let module_identity = mod_id.path.join(".");
+                visit_items(
+                    &module.items,
+                    Some(module_identity.as_str()),
+                    opaque,
+                    non_opaque,
+                );
             }
         }
     }
@@ -1364,6 +1634,22 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     )
 }
 
+/// Linker/metadata owner for one compiler-injected builtin impl target.
+/// Synthetic cursors use their canonical std owner so a root user nominal
+/// with the same leaf can emit an independent impl and method body. The input
+/// comes only from the parsed `BUILTINS_HEW_SOURCE` program; ordinary source
+/// declarations never call this projection.
+fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
+    SYNTHETIC_CURSOR_LAYOUT_SPECS
+        .iter()
+        .find(|spec| spec.builtin.canonical_name() == source_name)
+        .map_or(source_name, |spec| match spec.builtin {
+            BuiltinType::VecIter => "std.builtins.VecIter",
+            BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+            _ => unreachable!("synthetic cursor catalog contains only cursor builtins"),
+        })
+}
+
 fn is_builtin_display_impl(item: &Item) -> bool {
     let Item::Impl(impl_decl) = item else {
         return false;
@@ -1455,15 +1741,82 @@ fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
 }
 
 fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
+    // The parsed embedded source uses private leaf spellings for its synthetic
+    // cursor declarations. Type-check a projection whose impl targets carry
+    // their exact compiler owner so declaration IDs and call facts cannot
+    // collide with root user nominals of the same leaf. The executable HIR is
+    // still lowered from the original source AST, preserving all source spans.
+    let mut checker_program = program.clone();
+    for (item, _) in &mut checker_program.items {
+        let Item::Impl(impl_decl) = item else {
+            continue;
+        };
+        canonicalize_injected_cursor_type_expr(&mut impl_decl.target_type.0);
+        for alias in &mut impl_decl.type_aliases {
+            canonicalize_injected_cursor_type_expr(&mut alias.ty.0);
+        }
+        for method in &mut impl_decl.methods {
+            for param in &mut method.params {
+                canonicalize_injected_cursor_type_expr(&mut param.ty.0);
+            }
+            if let Some(return_type) = &mut method.return_type {
+                canonicalize_injected_cursor_type_expr(&mut return_type.0);
+            }
+        }
+    }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_program(program);
+    let output = checker.check_program(&checker_program);
     debug_assert!(
         output.errors.is_empty(),
         "std/builtins.hew receiver impls failed to type-check: {:?}",
         output.errors
     );
     output
+}
+
+fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            let canonical = injected_builtin_impl_symbol_owner(name).to_string();
+            if canonical != *name {
+                *name = canonical;
+            }
+            if let Some(type_args) = type_args {
+                for arg in type_args {
+                    canonicalize_injected_cursor_type_expr(&mut arg.0);
+                }
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            canonicalize_injected_cursor_type_expr(&mut ok.0);
+            canonicalize_injected_cursor_type_expr(&mut err.0);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Borrow(inner)
+        | TypeExpr::Pointer { pointee: inner, .. } => {
+            canonicalize_injected_cursor_type_expr(&mut inner.0);
+        }
+        TypeExpr::Tuple(elements) => {
+            for element in elements {
+                canonicalize_injected_cursor_type_expr(&mut element.0);
+            }
+        }
+        TypeExpr::Array { element, .. } => {
+            canonicalize_injected_cursor_type_expr(&mut element.0);
+        }
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                canonicalize_injected_cursor_type_expr(&mut param.0);
+            }
+            canonicalize_injected_cursor_type_expr(&mut return_type.0);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+    }
 }
 
 /// Map each *spliced file-import* entry in `program.items` to the `module_idx`
@@ -1748,6 +2101,46 @@ fn item_is_duplicated_in_preferred_module(
     })
 }
 
+/// Whether a directory module absorbed an item from a distinct child module.
+///
+/// A directory import may contain both its same-leaf root file (`http.hew` for
+/// `std.net.http`) and child files such as `http_client.hew`. The root-file
+/// declarations retain the directory module's identity; only declarations
+/// duplicated by a preferred module with a different leaf belong to a child
+/// owner and must be skipped during directory-module function emission.
+fn item_is_duplicated_in_distinct_leaf_module(
+    program: &Program,
+    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    current_module: &hew_parser::module::ModuleId,
+    item: &Item,
+    item_span: &Span,
+) -> bool {
+    if preferred_modules.contains(current_module) {
+        return false;
+    }
+    let Some(module_graph) = &program.module_graph else {
+        return false;
+    };
+    let current_leaf = current_module.path.last();
+    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+        module_graph.modules.get(module_id).is_some_and(|module| {
+            module
+                .items
+                .iter()
+                .any(|(candidate, candidate_span)| candidate == item && candidate_span == item_span)
+        })
+    };
+    if preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+    {
+        return false;
+    }
+    preferred_modules
+        .iter()
+        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
+}
+
 fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
     match item {
         Item::TypeDecl(decl) => decl.name == type_name,
@@ -1817,11 +2210,10 @@ fn root_imported_fn_rewrites(
         let Item::Import(decl) = item else {
             continue;
         };
-        let (Some(module_short), Some(resolved_items)) =
-            (decl.path.last(), decl.resolved_items.as_ref())
-        else {
+        let Some(resolved_items) = decl.resolved_items.as_ref() else {
             continue;
         };
+        let module_full_path = decl.path.join(".");
         for (resolved_item, _) in resolved_items {
             let Item::Function(function) = resolved_item else {
                 continue;
@@ -1848,7 +2240,7 @@ fn root_imported_fn_rewrites(
                 }
                 rewrites.insert(
                     binding,
-                    crate::mangle_dotted_name(&format!("{module_short}.{}", function.name)),
+                    crate::mangle_dotted_name(&format!("{module_full_path}.{}", function.name)),
                 );
             }
         }
@@ -1883,6 +2275,22 @@ pub fn lower_program_host_target(
     lower_program(program, type_check_output, ctx, TargetArch::host())
 }
 
+/// Construct the sole legacy surface key for a tagged-union constructor.
+///
+/// `machine_ctor_registry` is keyed by exact source-owner paths for imported
+/// declarations. This spelling is only the compatibility alias for a unique
+/// source form such as `Toggle::On`; it never selects an owner by itself. The
+/// checker-provided type at the use site and the pre-pass uniqueness count
+/// remain the authority for admitting that alias.
+fn tagged_union_surface_ctor_key(owner: &str, variant: &str) -> String {
+    format!("{owner}::{variant}")
+}
+
+/// The user-facing companion type for a machine's events.
+fn machine_event_surface_type(machine: &str) -> String {
+    format!("{machine}Event")
+}
+
 /// Variant of [`lower_program`] with an explicit monomorphisation-registry
 /// cap. Intended for tests that exercise the
 /// `MonomorphisationCapExceeded` diagnostic with a small fixture; the
@@ -1902,6 +2310,27 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let file_import_module_idx = file_import_item_module_indices(program);
+    // Source items flattened from a file import still belong to that file's
+    // declaration namespace.  Compute the checker-aligned module-name carrier
+    // once and use it in every HIR pass that creates declaration identity,
+    // not only while lowering executable bodies in the third pass.
+    let module_idx_to_name: HashMap<u32, String> = {
+        let mut names = HashMap::new();
+        if let Some(module_graph) = &program.module_graph {
+            let mut module_idx = 0_u32;
+            for module_id in &module_graph.topo_order {
+                if *module_id == module_graph.root {
+                    continue;
+                }
+                if module_graph.modules.contains_key(module_id) {
+                    module_idx += 1;
+                    names.insert(module_idx, module_id.path.join("."));
+                }
+            }
+        }
+        names
+    };
     ctx.seed_stdlib_fn_registry();
     let builtin_receiver_impl_program = builtin_receiver_impl_program();
     let builtin_receiver_impl_output = builtin_receiver_impl_program
@@ -1923,7 +2352,10 @@ pub fn lower_program_with_mono_cap(
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
-    ctx.trait_default_methods = collect_trait_default_methods(&program.items);
+    let (trait_defaults, trait_default_module_idx) =
+        collect_trait_default_methods(program, &file_import_module_idx);
+    ctx.trait_default_methods = trait_defaults;
+    ctx.trait_default_module_idx = trait_default_module_idx;
     let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
     ctx.trait_super = trait_super;
     ctx.trait_declared_methods = trait_declared_methods;
@@ -1940,6 +2372,71 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.opaque_type_short_names,
         &mut ctx.non_opaque_type_short_names,
     );
+    ctx.root_opaque_type_short_names
+        .extend(program.items.iter().filter_map(|(item, _)| {
+            let Item::TypeDecl(decl) = item else {
+                return None;
+            };
+            decl.is_opaque.then(|| decl.name.clone())
+        }));
+    ctx.root_visible_source_type_short_names
+        .extend(program.items.iter().filter_map(|(item, _)| match item {
+            Item::TypeDecl(decl) => Some(decl.name.clone()),
+            Item::Record(decl) => Some(decl.name.clone()),
+            _ => None,
+        }));
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
+            }
+            let module_full_path = module_id.path.join(".");
+            let Some(module) = module_graph.modules.get(module_id) else {
+                continue;
+            };
+            let identities = module
+                .items
+                .iter()
+                .filter_map(|(item, _)| {
+                    match item {
+                        Item::TypeDecl(decl) => {
+                            Some(vec![format!("{module_full_path}.{}", decl.name)])
+                        }
+                        Item::Record(decl) => {
+                            Some(vec![format!("{module_full_path}.{}", decl.name)])
+                        }
+                        // A machine publishes two nominal declarations: its
+                        // value state and the generated event companion. Both
+                        // travel across imports with the exact source owner;
+                        // omitting the companion loses `MachineEvent` at HIR
+                        // lowering and poisons every `.step(event)` site at
+                        // the MIR value-class boundary.
+                        Item::Machine(decl) => Some(vec![
+                            format!("{module_full_path}.{}", decl.name),
+                            format!("{module_full_path}.{}Event", decl.name),
+                        ]),
+                        _ => None,
+                    }
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            ctx.source_type_identities
+                .extend(identities.iter().cloned());
+            // A `std` path segment is not provenance: a user package may use
+            // that spelling.  Only the resolved source selected by the
+            // stdlib search-path authority can grant compiler builtin
+            // identity to declarations in this module.
+            let canonical_std_source = module.source_paths.iter().any(|source| {
+                hew_types::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    &module_full_path,
+                )
+            });
+            if canonical_std_source {
+                ctx.canonical_std_source_type_identities.extend(identities);
+            }
+        }
+    }
 
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
@@ -1947,7 +2444,9 @@ pub fn lower_program_with_mono_cap(
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
         match item {
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
@@ -2012,16 +2511,19 @@ pub fn lower_program_with_mono_cap(
                         if let Some(tb) = &impl_decl.trait_bound {
                             let overridden: HashSet<&str> =
                                 impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
-                            if let Some(defaults) = ctx.trait_default_methods.get(&tb.name).cloned()
-                            {
-                                for default_method in &defaults {
-                                    if !overridden.contains(default_method.name.as_str()) {
-                                        let fn_decl = trait_method_to_fn_decl(default_method);
-                                        ctx.register_impl_method_fn_entry(
-                                            &symbol_name,
-                                            &fn_decl,
-                                            &impl_type_params,
-                                        );
+                            if let Some(default_owner) = ctx.trait_default_owner_key(&tb.name) {
+                                if let Some(defaults) =
+                                    ctx.trait_default_methods.get(&default_owner).cloned()
+                                {
+                                    for default_method in &defaults {
+                                        if !overridden.contains(default_method.name.as_str()) {
+                                            let fn_decl = trait_method_to_fn_decl(default_method);
+                                            ctx.register_impl_method_fn_entry(
+                                                &symbol_name,
+                                                &fn_decl,
+                                                &impl_type_params,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -2045,6 +2547,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: register user-module pub fn signatures under their qualified,
     // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
     // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
@@ -2110,19 +2614,30 @@ pub fn lower_program_with_mono_cap(
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map_or("", String::as_str);
+            let module_full_path = mod_id.path.join(".");
             if let Some(module) = mg.modules.get(mod_id) {
                 // #2202: lower this imported module's type-decl/record members
                 // under its OWN module context so a member typed by an import
                 // alias canonicalises through `import_type_name_aliases` (keyed
                 // by the full dotted path) instead of freezing as a bare name
                 // that MIR cannot resolve.
-                let saved_module_name = ctx.current_module_name.replace(mod_id.path.join("."));
-                for (item, _) in &module.items {
+                let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
+                for (item, item_span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            let qualified =
-                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                item_span,
+                            ) {
+                                continue;
+                            }
+                            let qualified = crate::mangle_dotted_name(&format!(
+                                "{module_full_path}.{}",
+                                func.name
+                            ));
                             ctx.register_fn_entry(&qualified, func);
                         }
                         // Register public type declarations plus private
@@ -2158,21 +2673,24 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                             ctx.record_registry.insert(
-                                format!("{module_short}.{}", decl.name),
+                                format!("{module_full_path}.{}", decl.name),
                                 RecordEntry {
                                     id,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
                             );
-                            ctx.record_registry.insert(
-                                decl.name.clone(),
-                                RecordEntry {
+                            // The bare spelling is a compatibility lookup
+                            // only.  The full source owner above owns the
+                            // record identity; never let a same-leaf sibling
+                            // overwrite it here.
+                            ctx.record_registry
+                                .entry(decl.name.clone())
+                                .or_insert_with(|| RecordEntry {
                                     id,
                                     type_params,
                                     fields,
-                                },
-                            );
+                                });
                         }
                         Item::Record(decl) if decl.visibility.is_pub() => {
                             let id = ctx.ids.item();
@@ -2188,23 +2706,23 @@ pub fn lower_program_with_mono_cap(
                                 RecordKind::Tuple(_) => Vec::new(),
                             };
                             ctx.record_registry.insert(
-                                format!("{module_short}.{}", decl.name),
+                                format!("{module_full_path}.{}", decl.name),
                                 RecordEntry {
                                     id,
                                     type_params: type_params.clone(),
                                     fields: fields.clone(),
                                 },
                             );
-                            ctx.record_registry.insert(
-                                decl.name.clone(),
-                                RecordEntry {
+                            ctx.record_registry
+                                .entry(decl.name.clone())
+                                .or_insert_with(|| RecordEntry {
                                     id,
                                     type_params,
                                     fields,
-                                },
-                            );
+                                });
                             ctx.type_classes
-                                .insert(decl.name.clone(), (ResourceMarker::None, None));
+                                .entry(decl.name.clone())
+                                .or_insert((ResourceMarker::None, None));
                         }
                         // Register extern fn signatures declared by imported
                         // modules so call sites in user code resolve them
@@ -2249,18 +2767,44 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
-                                    let symbol_self_name =
-                                        if colliding_imported_record_names.contains(name) {
-                                            format!("{module_short}.{name}")
-                                        } else {
-                                            name.clone()
-                                        };
+                                    let qualified_identity = format!("{module_full_path}.{name}");
+                                    let symbol_self_name = qualified_identity;
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
                                             &symbol_self_name,
                                             method,
                                             &impl_type_params,
                                         );
+                                    }
+                                    if let Some(tb) = &impl_decl.trait_bound {
+                                        let overridden: HashSet<&str> = impl_decl
+                                            .methods
+                                            .iter()
+                                            .map(|m| m.name.as_str())
+                                            .collect();
+                                        if let Some(default_owner) =
+                                            ctx.trait_default_owner_key(&tb.name)
+                                        {
+                                            if let Some(defaults) = ctx
+                                                .trait_default_methods
+                                                .get(&default_owner)
+                                                .cloned()
+                                            {
+                                                for default_method in &defaults {
+                                                    if !overridden
+                                                        .contains(default_method.name.as_str())
+                                                    {
+                                                        let fn_decl =
+                                                            trait_method_to_fn_decl(default_method);
+                                                        ctx.register_impl_method_fn_entry(
+                                                            &symbol_self_name,
+                                                            &fn_decl,
+                                                            &impl_type_params,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2276,7 +2820,7 @@ pub fn lower_program_with_mono_cap(
                         Item::Const(const_decl) => {
                             let id = ctx.ids.item();
                             let ty = ctx.lower_type(&const_decl.ty);
-                            let qualified = format!("{module_short}.{}", const_decl.name);
+                            let qualified = format!("{module_full_path}.{}", const_decl.name);
                             ctx.const_registry.insert(qualified, ConstEntry { id, ty });
                         }
                         // Non-pub Function/TypeDecl/Record fall here (not exported to importers).
@@ -2323,10 +2867,28 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params,
-                        fields,
+                        type_params: type_params.clone(),
+                        fields: fields.clone(),
                     },
                 );
+                // rc1-F1 stage F: publish the root declaration's canonical
+                // `{root}.{name}` identity (via `TypeCheckOutput::identity`,
+                // reused here for a nominal leaf rather than a fn) alongside
+                // the legacy bare key. `canonical_current_module_record_name`
+                // deliberately never rewrites root items today, so this rung
+                // is inert until a consumer resolves canonically; it exists
+                // so no registration-side change is needed there. WHEN
+                // OBSOLETE: rc2 render-canonicalization stage, once the bare
+                // key retires.
+                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
+                    ctx.record_registry
+                        .entry(canonical)
+                        .or_insert_with(|| RecordEntry {
+                            id,
+                            type_params,
+                            fields,
+                        });
+                }
                 ctx.type_classes
                     .insert(decl.name.clone(), (ResourceMarker::None, None));
             }
@@ -2351,10 +2913,22 @@ pub fn lower_program_with_mono_cap(
                     decl.name.clone(),
                     RecordEntry {
                         id,
-                        type_params,
-                        fields,
+                        type_params: type_params.clone(),
+                        fields: fields.clone(),
                     },
                 );
+                // rc1-F1 stage F: see the matching comment on the TypeDecl
+                // arm above — same canonical-identity publication, same
+                // inert-until-consumed rationale.
+                if let Some(canonical) = type_check_output.identity.root_fn_identity(&decl.name) {
+                    ctx.record_registry
+                        .entry(canonical)
+                        .or_insert_with(|| RecordEntry {
+                            id,
+                            type_params,
+                            fields,
+                        });
+                }
             }
             // No record shape to register for the variants below. If a new
             // Item variant with field layout is added, the compiler will force
@@ -2415,6 +2989,7 @@ pub fn lower_program_with_mono_cap(
         // pass can skip the bare-form insertion for those names (preventing
         // the last-write-wins overwrite of the user's registration).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        let mut surface_ctor_counts: HashMap<String, usize> = HashMap::new();
         // Accumulate user-declared variant names from root `program.items` so
         // the builtin registration pass can honour local-shadows-global.
         let mut user_declared_variant_names: std::collections::HashSet<String> =
@@ -2424,11 +2999,20 @@ pub fn lower_program_with_mono_cap(
                 Item::Machine(md) => {
                     for state in &md.states {
                         *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                        *surface_ctor_counts
+                            .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
+                            .or_insert(0) += 1;
                         // Machine states shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(state.name.clone());
                     }
                     for event in &md.events {
                         *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                        *surface_ctor_counts
+                            .entry(tagged_union_surface_ctor_key(
+                                &machine_event_surface_type(&md.name),
+                                &event.name,
+                            ))
+                            .or_insert(0) += 1;
                         // Machine events shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(event.name.clone());
                     }
@@ -2441,6 +3025,9 @@ pub fn lower_program_with_mono_cap(
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
                             *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            *surface_ctor_counts
+                                .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
+                                .or_insert(0) += 1;
                             // Track root-program user variants for the
                             // local-shadows-global builtin registration guard.
                             user_declared_variant_names.insert(v.name.clone());
@@ -2486,6 +3073,9 @@ pub fn lower_program_with_mono_cap(
                             Item::Machine(md) => {
                                 for state in &md.states {
                                     *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                    *surface_ctor_counts
+                                        .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
+                                        .or_insert(0) += 1;
                                     // Machine states (pub or private) shadow same-named
                                     // builtins across the flat global registry, matching
                                     // the checker's global register_machine_decl walk.
@@ -2493,6 +3083,12 @@ pub fn lower_program_with_mono_cap(
                                 }
                                 for event in &md.events {
                                     *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                    *surface_ctor_counts
+                                        .entry(tagged_union_surface_ctor_key(
+                                            &machine_event_surface_type(&md.name),
+                                            &event.name,
+                                        ))
+                                        .or_insert(0) += 1;
                                     // Machine events shadow same-named builtins.
                                     user_declared_variant_names.insert(event.name.clone());
                                 }
@@ -2506,6 +3102,9 @@ pub fn lower_program_with_mono_cap(
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
                                         *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                        *surface_ctor_counts
+                                            .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
+                                            .or_insert(0) += 1;
                                         user_declared_variant_names.insert(v.name.clone());
                                     }
                                 }
@@ -2618,59 +3217,82 @@ pub fn lower_program_with_mono_cap(
                 if *mod_id == mg.root {
                     continue;
                 }
-                let module_short = mod_id.path.last().map_or("", String::as_str);
                 if let Some(module) = mg.modules.get(mod_id) {
+                    let source_module = mod_id.path.join(".");
                     for (item, _) in &module.items {
                         match item {
                             Item::Machine(md) => {
                                 let event_type_name = format!("{}Event", md.name);
+                                let source_state_type = format!("{source_module}.{}", md.name);
+                                let source_event_type =
+                                    format!("{source_module}.{event_type_name}");
                                 for (idx, state) in md.states.iter().enumerate() {
-                                    let qualified = format!("{}::{}", md.name, state.name);
-                                    ctx.machine_ctor_registry
-                                        .insert(qualified, (md.name.clone(), idx));
                                     let module_qualified =
-                                        format!("{module_short}.{}::{}", md.name, state.name);
+                                        format!("{source_module}.{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
-                                        .insert(module_qualified, (md.name.clone(), idx));
-                                    if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                                        .insert(module_qualified, (source_state_type.clone(), idx));
+                                    let surface =
+                                        tagged_union_surface_ctor_key(&md.name, &state.name);
+                                    if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                         ctx.machine_ctor_registry
-                                            .insert(state.name.clone(), (md.name.clone(), idx));
+                                            .entry(surface)
+                                            .or_insert_with(|| (source_state_type.clone(), idx));
+                                    }
+                                    if bare_counts.get(&state.name).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(state.name.clone())
+                                            .or_insert_with(|| (source_state_type.clone(), idx));
                                     }
                                 }
                                 for (idx, event) in md.events.iter().enumerate() {
-                                    let qualified = format!("{}::{}", event_type_name, event.name);
+                                    let module_qualified = format!(
+                                        "{source_module}.{event_type_name}::{}",
+                                        event.name
+                                    );
                                     ctx.machine_ctor_registry
-                                        .insert(qualified, (event_type_name.clone(), idx));
-                                    let module_qualified =
-                                        format!("{module_short}.{event_type_name}::{}", event.name);
-                                    ctx.machine_ctor_registry
-                                        .insert(module_qualified, (event_type_name.clone(), idx));
-                                    if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
-                                        ctx.machine_ctor_registry.insert(
-                                            event.name.clone(),
-                                            (event_type_name.clone(), idx),
-                                        );
+                                        .insert(module_qualified, (source_event_type.clone(), idx));
+                                    let surface = tagged_union_surface_ctor_key(
+                                        &event_type_name,
+                                        &event.name,
+                                    );
+                                    if surface_ctor_counts.get(&surface).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(surface)
+                                            .or_insert_with(|| (source_event_type.clone(), idx));
+                                    }
+                                    if bare_counts.get(&event.name).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(event.name.clone())
+                                            .or_insert_with(|| (source_event_type.clone(), idx));
                                     }
                                 }
                             }
                             Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                                let source_enum_name = format!("{source_module}.{}", td.name);
                                 let mut variant_idx: usize = 0;
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
-                                        let qualified = format!("{}::{}", td.name, v.name);
-                                        ctx.machine_ctor_registry
-                                            .insert(qualified, (td.name.clone(), variant_idx));
                                         let module_qualified =
-                                            format!("{module_short}.{}::{}", td.name, v.name);
+                                            format!("{source_module}.{}::{}", td.name, v.name);
                                         ctx.machine_ctor_registry.insert(
                                             module_qualified,
-                                            (td.name.clone(), variant_idx),
+                                            (source_enum_name.clone(), variant_idx),
                                         );
-                                        if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
-                                            ctx.machine_ctor_registry.insert(
-                                                v.name.clone(),
-                                                (td.name.clone(), variant_idx),
-                                            );
+                                        let surface =
+                                            tagged_union_surface_ctor_key(&td.name, &v.name);
+                                        if surface_ctor_counts.get(&surface).copied() == Some(1) {
+                                            ctx.machine_ctor_registry
+                                                .entry(surface)
+                                                .or_insert_with(|| {
+                                                    (source_enum_name.clone(), variant_idx)
+                                                });
+                                        }
+                                        if bare_counts.get(&v.name).copied() == Some(1) {
+                                            ctx.machine_ctor_registry
+                                                .entry(v.name.clone())
+                                                .or_insert_with(|| {
+                                                    (source_enum_name.clone(), variant_idx)
+                                                });
                                         }
                                         variant_idx += 1;
                                     }
@@ -2711,9 +3333,17 @@ pub fn lower_program_with_mono_cap(
         // existing code that uses the fully-qualified path keeps working.
         for spec in BUILTIN_ENUM_SPECS {
             for (variant_idx, variant_name) in spec.variant_names().enumerate() {
-                let qualified = format!("{}::{}", spec.type_name, variant_name);
+                let canonical = format!("{}::{variant_name}", spec.canonical_type_name);
+                ctx.machine_ctor_registry.insert(
+                    canonical,
+                    (spec.canonical_type_name.to_string(), variant_idx),
+                );
+                // `Type::Variant` is a prelude presentation alias. Never let
+                // it replace an exact root declaration with the same leaf.
+                let qualified_alias = format!("{}::{variant_name}", spec.type_name);
                 ctx.machine_ctor_registry
-                    .insert(qualified, (spec.type_name.to_string(), variant_idx));
+                    .entry(qualified_alias)
+                    .or_insert_with(|| (spec.canonical_type_name.to_string(), variant_idx));
                 // Register the bare form only when count == 1 (unique) AND
                 // the user has not declared their own variant with this name.
                 if bare_counts.get(variant_name).copied().unwrap_or(0) == 1
@@ -2721,7 +3351,7 @@ pub fn lower_program_with_mono_cap(
                 {
                     ctx.machine_ctor_registry.insert(
                         variant_name.to_string(),
-                        (spec.type_name.to_string(), variant_idx),
+                        (spec.canonical_type_name.to_string(), variant_idx),
                     );
                 }
             }
@@ -2738,13 +3368,13 @@ pub fn lower_program_with_mono_cap(
     for spec in BUILTIN_ENUM_SPECS {
         let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
-            .insert(spec.type_name.to_string(), variants);
+            .insert(spec.canonical_type_name.to_string(), variants);
         ctx.enum_type_params.insert(
-            spec.type_name.to_string(),
+            spec.canonical_type_name.to_string(),
             spec.type_params.iter().map(|s| (*s).to_string()).collect(),
         );
         ctx.enum_item_ids
-            .insert(spec.type_name.to_string(), spec.item_id);
+            .insert(spec.canonical_type_name.to_string(), spec.item_id);
         // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
         // `type_classes` registration so MIR `push_unknown_type_diagnostics`
         // does not flag them, and so `ValueClass::of_ty` resolves them as
@@ -2754,8 +3384,10 @@ pub fn lower_program_with_mono_cap(
         // `enum_layouts.iter().map(origin_name)` chain in `hew-mir/src/lower.rs`,
         // and their `ValueClass` is computed on the substituted variants.
         if spec.type_params.is_empty() {
-            ctx.type_classes
-                .insert(spec.type_name.to_string(), (ResourceMarker::BitCopy, None));
+            ctx.type_classes.insert(
+                spec.canonical_type_name.to_string(),
+                (ResourceMarker::BitCopy, None),
+            );
         }
     }
 
@@ -2809,22 +3441,22 @@ pub fn lower_program_with_mono_cap(
     let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
         HashMap::new();
     let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
-    for (item, span) in &program.items {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         if let Item::TypeDecl(decl) = item {
-            let hir_decl = ctx.lower_type_decl(decl, span.clone());
-            let builtin_registration =
-                crate::builtin_type_classes::builtin_type_registration(&hir_decl.name);
+            ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+            ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+            let hir_decl = if let Some(module) = ctx.current_module_name.clone() {
+                ctx.lower_imported_type_decl(decl, span.clone(), &module)
+            } else {
+                ctx.lower_type_decl(decl, span.clone())
+            };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
-                builtin_registration
-                    .and_then(|registration| registration.close_method.map(str::to_string))
-                    .or_else(|| {
-                        hir_decl
-                            .consuming_methods
-                            .iter()
-                            .find(|m| m.as_str() == "close")
-                            .cloned()
-                    })
+                hir_decl
+                    .consuming_methods
+                    .iter()
+                    .find(|m| m.as_str() == "close")
+                    .cloned()
                     // W3.030 Q-α-B: a `#[resource]` whose `close` lives in a
                     // sibling inherent-impl block must still register the
                     // close-method symbol so the MIR elaborator's
@@ -2841,8 +3473,29 @@ pub fn lower_program_with_mono_cap(
             } else {
                 None
             };
+            let class_entry = (marker, close_method);
             ctx.type_classes
-                .insert(hir_decl.name.clone(), (marker, close_method));
+                .insert(hir_decl.name.clone(), class_entry.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_classes
+                    .insert(hir_decl.qualified_name(), class_entry);
+            }
+            // Structural member set for the mailbox-transfer walk: record
+            // fields plus every variant's payload types. Registered under the
+            // same keys as `type_classes` so a module-qualified message type
+            // resolves identically.
+            let member_tys: Vec<ResolvedTy> = hir_decl
+                .fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .chain(hir_decl.variants.iter().flat_map(hew_hir_variant_field_tys))
+                .collect();
+            ctx.type_member_tys
+                .insert(hir_decl.name.clone(), member_tys.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_member_tys
+                    .insert(hir_decl.qualified_name(), member_tys);
+            }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -2867,6 +3520,8 @@ pub fn lower_program_with_mono_cap(
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     for (item, _) in &program.items {
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
@@ -2877,7 +3532,6 @@ pub fn lower_program_with_mono_cap(
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
                 let source_module = mod_id.path.join(".");
                 let diag_start = ctx.diagnostics.len();
@@ -2890,26 +3544,20 @@ pub fn lower_program_with_mono_cap(
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
                         {
                             let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let canonical_name = format!("{source_module}.{}", hir_decl.name);
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
-                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
-                                ctx.enum_variants_by_name.insert(
-                                    format!("{module_short}.{}", hir_decl.name),
-                                    hir_decl.variants.clone(),
-                                );
+                                    .insert(canonical_name.clone(), hir_decl.variants.clone());
                             }
                             ctx.enum_type_params
-                                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-                            ctx.enum_type_params.insert(
-                                format!("{module_short}.{}", hir_decl.name),
-                                hir_decl.type_params.clone(),
-                            );
-                            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
-                            ctx.enum_item_ids
-                                .insert(format!("{module_short}.{}", hir_decl.name), hir_decl.id);
+                                .insert(canonical_name.clone(), hir_decl.type_params.clone());
+                            ctx.enum_item_ids.insert(canonical_name, hir_decl.id);
                         }
                         Item::Machine(machine) if machine.visibility.is_pub() => {
-                            ctx.register_machine_ctor_variant_metadata(Some(module_short), machine);
+                            ctx.register_machine_ctor_variant_metadata(
+                                Some(&source_module),
+                                machine,
+                            );
                         }
                         // No enum-variant metadata for these items in imported
                         // modules. Compiler enforces exhaustivity if a new
@@ -2972,10 +3620,6 @@ pub fn lower_program_with_mono_cap(
             }
             if let Some(module) = mg.modules.get(mod_id) {
                 let source_module = mod_id.path.join(".");
-                let module_short = mod_id
-                    .path
-                    .last()
-                    .map_or_else(|| source_module.as_str(), String::as_str);
                 let diag_start = ctx.diagnostics.len();
                 // #2202: §4b lowers imported type-decl + machine members into
                 // the HIR descriptors MIR consumes; resolve their alias-typed
@@ -2990,26 +3634,18 @@ pub fn lower_program_with_mono_cap(
                                     && decl.type_params.is_none()) =>
                         {
                             let hir_decl =
-                                ctx.lower_imported_type_decl(decl, span.clone(), module_short);
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                                crate::builtin_type_classes::builtin_type_registration(
-                                    &hir_decl.name,
-                                )
-                                .and_then(|registration| {
-                                    registration.close_method.map(str::to_string)
-                                })
-                                .or_else(|| {
-                                    hir_decl
-                                        .consuming_methods
-                                        .iter()
-                                        .find(|m| m.as_str() == "close")
-                                        .cloned()
-                                })
-                                .or_else(|| {
-                                    ctx.impl_close_methods
-                                        .get(&hir_decl.name)
-                                        .map(|_| "close".to_string())
-                                })
+                                hir_decl
+                                    .consuming_methods
+                                    .iter()
+                                    .find(|m| m.as_str() == "close")
+                                    .cloned()
+                                    .or_else(|| {
+                                        ctx.impl_close_methods
+                                            .get(&hir_decl.name)
+                                            .map(|_| "close".to_string())
+                                    })
                             } else {
                                 None
                             };
@@ -3025,7 +3661,7 @@ pub fn lower_program_with_mono_cap(
                             }
                             let qualified_entry = ctx
                                 .type_classes
-                                .entry(format!("{module_short}.{}", hir_decl.name))
+                                .entry(format!("{source_module}.{}", hir_decl.name))
                                 .or_insert((hir_decl.marker, close_method.clone()));
                             if hir_decl.marker == ResourceMarker::Resource
                                 && qualified_entry.1.is_none()
@@ -3034,10 +3670,8 @@ pub fn lower_program_with_mono_cap(
                                 qualified_entry.1 = close_method;
                             }
                             if !hir_decl.variants.is_empty() {
-                                ctx.enum_variants_by_name
-                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
                                 ctx.enum_variants_by_name.insert(
-                                    format!("{module_short}.{}", hir_decl.name),
+                                    format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.variants.clone(),
                                 );
                             }
@@ -3053,15 +3687,12 @@ pub fn lower_program_with_mono_cap(
                             // layout then never registers and codegen-front
                             // fails closed with registration-mismatch).
                             if decl.kind == TypeDeclKind::Enum {
-                                ctx.enum_type_params
-                                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
                                 ctx.enum_type_params.insert(
-                                    format!("{module_short}.{}", hir_decl.name),
+                                    format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.type_params.clone(),
                                 );
-                                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
                                 ctx.enum_item_ids.insert(
-                                    format!("{module_short}.{}", hir_decl.name),
+                                    format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.id,
                                 );
                             }
@@ -3100,7 +3731,7 @@ pub fn lower_program_with_mono_cap(
                                 })
                                 .collect();
                             ctx.enum_variants_by_name
-                                .insert(md.name.clone(), state_variants);
+                                .insert(format!("{source_module}.{}", md.name), state_variants);
 
                             // Synthesise event companion variants under the
                             // `{Name}Event` key, matching the checker's
@@ -3129,8 +3760,10 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 })
                                 .collect();
-                            ctx.enum_variants_by_name
-                                .insert(event_type_name, event_variants);
+                            ctx.enum_variants_by_name.insert(
+                                format!("{source_module}.{event_type_name}"),
+                                event_variants,
+                            );
                         }
                         // #2755: a type-decl the emission guard above excluded
                         // (a module-private generic struct — pub/enum/non-generic
@@ -3149,56 +3782,54 @@ pub fn lower_program_with_mono_cap(
                         // guard are untouched), only ABI discovery is widened.
                         Item::TypeDecl(decl) => {
                             let hir_decl =
-                                ctx.lower_imported_type_decl(decl, span.clone(), module_short);
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
                                 .fields
                                 .iter()
                                 .map(|f| (f.name.clone(), f.ty.clone()))
                                 .collect();
                             ctx.record_registry.insert(
-                                format!("{module_short}.{}", hir_decl.name),
+                                format!("{source_module}.{}", hir_decl.name),
                                 RecordEntry {
                                     id: hir_decl.id,
                                     type_params: hir_decl.type_params.clone(),
                                     fields: entry_fields.clone(),
                                 },
                             );
-                            ctx.record_registry.insert(
-                                hir_decl.name.clone(),
-                                RecordEntry {
+                            ctx.record_registry
+                                .entry(hir_decl.name.clone())
+                                .or_insert_with(|| RecordEntry {
                                     id: hir_decl.id,
                                     type_params: hir_decl.type_params.clone(),
                                     fields: entry_fields,
-                                },
-                            );
+                                });
                             layout_universe_decls.push(HirItem::TypeDecl(hir_decl));
                         }
                         // A module-private record excluded from emission (the
                         // emission arm admits only pub records) — same rationale.
                         Item::Record(decl) if !decl.visibility.is_pub() => {
                             let mut hir_record = ctx.lower_record_decl(decl, span.clone());
-                            hir_record.defining_module = Some(module_short.to_string());
+                            hir_record.defining_module = Some(source_module.clone());
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_record
                                 .fields
                                 .iter()
                                 .map(|f| (f.name.clone(), f.ty.clone()))
                                 .collect();
                             ctx.record_registry.insert(
-                                format!("{module_short}.{}", hir_record.name),
+                                format!("{source_module}.{}", hir_record.name),
                                 RecordEntry {
                                     id: hir_record.id,
                                     type_params: hir_record.type_params.clone(),
                                     fields: entry_fields.clone(),
                                 },
                             );
-                            ctx.record_registry.insert(
-                                hir_record.name.clone(),
-                                RecordEntry {
+                            ctx.record_registry
+                                .entry(hir_record.name.clone())
+                                .or_insert_with(|| RecordEntry {
                                     id: hir_record.id,
                                     type_params: hir_record.type_params.clone(),
                                     fields: entry_fields,
-                                },
-                            );
+                                });
                             layout_universe_decls.push(HirItem::Record(hir_record));
                         }
                         // No enum-variant/machine descriptors to cache for
@@ -3282,10 +3913,13 @@ pub fn lower_program_with_mono_cap(
                     continue;
                 }
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    let symbol_owner = injected_builtin_impl_symbol_owner(name);
                     let method_symbols: Vec<String> = impl_decl
                         .methods
                         .iter()
-                        .map(|method| crate::node::HirImplBlock::method_symbol(name, &method.name))
+                        .map(|method| {
+                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name)
+                        })
                         .collect();
                     if method_symbols
                         .iter()
@@ -3295,13 +3929,61 @@ pub fn lower_program_with_mono_cap(
                     }
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
-                        ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
+                        ctx.register_impl_method_fn_entry(symbol_owner, method, &impl_type_params);
+                        // Establish the declaration-keyed body plan for the
+                        // injected builtin impl NOW, before any user body is
+                        // lowered in the third pass. The body itself is emitted
+                        // later in the fourth pass (`lower_impl_block` under
+                        // `lowering_injected_items`), but a direct method call
+                        // such as `x.fmt()` inside a user body resolves its
+                        // callee through `registered_impl_method_symbol` at
+                        // third-pass time — before that emission. Without the
+                        // plan entry the projection is absent and the call fails
+                        // closed (`CallableUnsupportedInMir`), even though the
+                        // identical value renders fine through the f-string
+                        // Display path, which never consults this projection.
+                        // `plan_imported_impl_bodies` covers user/imported
+                        // bodies; the compiler-injected builtins live in a
+                        // separate program, so they must be planned here.
+                        let emitted_symbol =
+                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name);
+                        let source_symbol =
+                            crate::node::HirImplBlock::method_symbol(name, &method.name);
+                        if let Some(declaration) = ctx
+                            .impl_method_declaration_ids
+                            .get(&emitted_symbol)
+                            .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
+                            .cloned()
+                            .or_else(|| {
+                                builtin_receiver_impl_output.as_ref().and_then(|output| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
+                            })
+                        {
+                            ctx.impl_body_plan
+                                .symbols
+                                .entry(declaration)
+                                .or_insert(emitted_symbol);
+                        }
                     }
                     builtin_receiver_impl_method_symbols.extend(method_symbols);
                 }
             }
         }
     }
+
+    // Establish every executable impl body before lowering any source body.
+    // In particular, a root function can call a flattened file-import or a
+    // package method whose HIR function is emitted later in the fourth pass.
+    // This plan is declaration-keyed and uses the same imported-body skip
+    // authority as that fourth pass; `fn_registry` never serves as proof.
+    plan_imported_impl_bodies(&mut ctx, program, &file_import_modules, &preferred_modules);
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
@@ -3313,7 +3995,6 @@ pub fn lower_program_with_mono_cap(
     // guards, closure facts, await reads, range bounds, channel/stream
     // rewrites, expr types) to resolve to the checker's facts. Genuine root
     // items stay at index 0. See `file_import_item_module_indices`.
-    let file_import_module_idx = file_import_item_module_indices(program);
     // Companion table: module_idx (1-based topo order) → FULL dotted module name
     // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
     // `current_module_name` when lowering file-import items, mirroring the
@@ -3321,22 +4002,6 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let module_idx_to_name: HashMap<u32, String> = {
-        let mut m = HashMap::new();
-        if let Some(mg) = &program.module_graph {
-            let mut idx: u32 = 0;
-            for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
-                    continue;
-                }
-                if mg.modules.contains_key(mod_id) {
-                    idx += 1;
-                    m.insert(idx, mod_id.path.join("."));
-                }
-            }
-        }
-        m
-    };
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -3420,7 +4085,12 @@ pub fn lower_program_with_mono_cap(
                         ),
                     ));
                 }
-                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone(), None)));
+                let defining_module = ctx.current_module_name.clone();
+                items.push(HirItem::Actor(ctx.lower_actor(
+                    actor,
+                    span.clone(),
+                    defining_module.as_deref(),
+                )));
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
@@ -3477,6 +4147,7 @@ pub fn lower_program_with_mono_cap(
                             ctx.check_boundary_consume_discipline(
                                 &method.name,
                                 &method.params,
+                                None,
                                 "trait method signature",
                                 &method.span,
                             );
@@ -3506,6 +4177,7 @@ pub fn lower_program_with_mono_cap(
                     ctx.check_boundary_consume_discipline(
                         &func.name,
                         &func.params,
+                        Some(&param_tys),
                         "extern fn",
                         &func.span,
                     );
@@ -3514,6 +4186,12 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::ExternFn(crate::node::HirExternFn {
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
+                        declaration: hew_types::DefId::new(
+                            ctx.current_module_name.as_ref().map_or_else(
+                                || func.name.clone(),
+                                |module| format!("{module}.{}", func.name),
+                            ),
+                        ),
                         name: func.name.clone(),
                         abi: block.abi.clone(),
                         param_tys,
@@ -3613,7 +4291,6 @@ pub fn lower_program_with_mono_cap(
                 ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
-                let module_short = mod_id.path.last().map_or("", String::as_str);
                 // Per-module helper sets used by the imported-body scan in
                 // both the free-fn (Item::Function) and impl-method
                 // (Item::Impl) arms. Computed once per module so the two
@@ -3661,7 +4338,7 @@ pub fn lower_program_with_mono_cap(
                 for helper_name in &imported_private_closure {
                     if let Some(helper) = same_module_private_fn_decls.get(helper_name) {
                         let qualified =
-                            crate::mangle_dotted_name(&format!("{module_short}.{}", helper.name));
+                            crate::mangle_dotted_name(&format!("{source_module}.{}", helper.name));
                         ctx.register_fn_entry(&qualified, helper);
                     }
                 }
@@ -3671,7 +4348,7 @@ pub fn lower_program_with_mono_cap(
                     .map(|name| {
                         (
                             name.clone(),
-                            crate::mangle_dotted_name(&format!("{module_short}.{name}")),
+                            crate::mangle_dotted_name(&format!("{source_module}.{name}")),
                         )
                     })
                     .collect();
@@ -3688,7 +4365,7 @@ pub fn lower_program_with_mono_cap(
                     .iter()
                     .filter_map(|(it, _)| {
                         if let Item::Const(cd) = it {
-                            let qualified = format!("{module_short}.{}", cd.name);
+                            let qualified = format!("{source_module}.{}", cd.name);
                             ctx.const_registry
                                 .get(&qualified)
                                 .map(|entry| (cd.name.clone(), entry.clone()))
@@ -3703,8 +4380,19 @@ pub fn lower_program_with_mono_cap(
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            let qualified =
-                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
+                            let qualified = crate::mangle_dotted_name(&format!(
+                                "{source_module}.{}",
+                                func.name
+                            ));
                             if let Some(lowered) = ctx.lower_imported_fn_floor_aware(
                                 func,
                                 &qualified,
@@ -3718,8 +4406,19 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
-                            let qualified =
-                                crate::mangle_dotted_name(&format!("{module_short}.{}", func.name));
+                            if item_is_duplicated_in_distinct_leaf_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                                span,
+                            ) {
+                                continue;
+                            }
+                            let qualified = crate::mangle_dotted_name(&format!(
+                                "{source_module}.{}",
+                                func.name
+                            ));
                             if let Some(lowered) = ctx.lower_imported_fn_floor_aware(
                                 func,
                                 &qualified,
@@ -3752,15 +4451,14 @@ pub fn lower_program_with_mono_cap(
                             // of the enum from the emitted decl. Non-enum
                             // TypeDecls (records) were not cached above — fall
                             // back to lowering them inline.
-                            if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
-                                items.push(HirItem::TypeDecl(hir_decl));
+                            let hir_decl = if let Some(hir_decl) =
+                                type_decl_cache.remove(&(decl as *const _))
+                            {
+                                hir_decl
                             } else {
-                                items.push(HirItem::TypeDecl(ctx.lower_imported_type_decl(
-                                    decl,
-                                    span.clone(),
-                                    module_short,
-                                )));
-                            }
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
+                            };
+                            items.push(HirItem::TypeDecl(hir_decl));
                         }
                         // Emit `HirItem::Machine` entries for imported pub
                         // machines so MIR's `machine_layout_names` set (built
@@ -3797,6 +4495,7 @@ pub fn lower_program_with_mono_cap(
                                 ctx.check_boundary_consume_discipline(
                                     &func.name,
                                     &func.params,
+                                    Some(&param_tys),
                                     "extern fn",
                                     &func.span,
                                 );
@@ -3807,6 +4506,10 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::ExternFn(crate::node::HirExternFn {
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
+                                    declaration: hew_types::DefId::new(format!(
+                                        "{source_module}.{}",
+                                        func.name
+                                    )),
                                     name: func.name.clone(),
                                     abi: block.abi.clone(),
                                     param_tys,
@@ -3924,111 +4627,21 @@ pub fn lower_program_with_mono_cap(
                                 // block. A signature naming one (`Option<B>` on
                                 // `impl<I, A, B> Iterator for Map<I, A, B>`) is a
                                 // carrier resolved at monomorphisation time, not a
-                                // concrete type the importer must already know.
-                                let impl_generic_params: HashSet<String> = impl_decl
-                                    .type_params
-                                    .as_ref()
-                                    .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
-                                    .unwrap_or_default();
-                                let mut skip_methods: HashSet<String> = HashSet::new();
-                                for method in &impl_decl.methods {
-                                    let callable_params: HashSet<&str> = method
-                                        .params
-                                        .iter()
-                                        .filter(|param| {
-                                            matches!(&param.ty.0, TypeExpr::Function { .. })
-                                        })
-                                        .map(|param| param.name.as_str())
-                                        .collect();
-                                    let body_unresolvable = collect_all_bare_call_names(
-                                        &method.body,
-                                    )
-                                    .into_iter()
-                                    .any(|callee| {
-                                        // Built-in tagged-union variant
-                                        // constructors (`Ok`, `Err`,
-                                        // `Some`, `None`, …) parse as bare
-                                        // `Expr::Call { Identifier }` but
-                                        // resolve through
-                                        // `machine_ctor_registry`, not
-                                        // `fn_registry`. They are always
-                                        // resolvable cross-module, so a
-                                        // body that constructs an
-                                        // `Ok(n)` / `Err(e)` result is not
-                                        // "unresolvable" on their account.
-                                        !is_builtin_enum_variant_bare_name(&callee)
-                                            && !same_module_fn_rewrites.contains_key(&callee)
-                                            && !ctx.fn_registry.contains_key(&callee)
-                                            && !callable_params.contains(callee.as_str())
-                                            && !stdlib_catalog::is_overloaded_builtin(&callee)
-                                    });
-                                    // The generic params in scope for this method:
-                                    // the impl-block params plus the method's own.
-                                    let mut method_generic_params = impl_generic_params.clone();
-                                    if let Some(tps) = &method.type_params {
-                                        for tp in tps {
-                                            method_generic_params.insert(tp.name.clone());
-                                        }
-                                    }
-                                    // A user type in a signature is safe iff its
-                                    // backing declaration was registered at the
-                                    // MIR boundary by the imported-module
-                                    // pre-pass (above): pub enums land in
-                                    // `enum_variants_by_name` / `type_classes`,
-                                    // pub records in `record_registry`. Dotted
-                                    // cross-module names and bare same-module
-                                    // names both consult those registries.
-                                    let is_known_registered_type = |name: &str| {
-                                        ctx.enum_variants_by_name.contains_key(name)
-                                            || ctx.type_classes.contains_key(name)
-                                            || ctx.record_registry.contains_key(name)
-                                    };
-                                    let sig_unresolvable =
-                                        method_signature_type_exprs(method).any(|ty| {
-                                            !imported_impl_signature_type_is_safe(
-                                                ty,
-                                                self_type_name,
-                                                &method_generic_params,
-                                                &is_known_registered_type,
-                                            )
-                                        });
-                                    if body_unresolvable || sig_unresolvable {
-                                        skip_methods.insert(method.name.clone());
-                                    }
-                                }
-                                // Transitive closure: a lowered method whose
-                                // body method-calls a skip-listed sibling
-                                // (e.g. `respond_html` calling the skipped
-                                // `respond`) would trip the HIR callable-set
-                                // gate at module level — the gate scans every
-                                // EMITTED body, not just user call sites — so
-                                // it must be skipped too. Matching is by bare
-                                // method name (the receiver is not
-                                // type-resolved in this pre-pass), which can
-                                // only over-skip: fail-closed, never
-                                // fail-open. Runs to a fixed point so chains
-                                // of intra-impl calls are covered.
-                                loop {
-                                    let mut grew = false;
-                                    for method in &impl_decl.methods {
-                                        if skip_methods.contains(&method.name) {
-                                            continue;
-                                        }
-                                        if collect_all_method_call_names(&method.body)
-                                            .iter()
-                                            .any(|callee| skip_methods.contains(callee))
-                                        {
-                                            skip_methods.insert(method.name.clone());
-                                            grew = true;
-                                        }
-                                    }
-                                    if !grew {
-                                        break;
-                                    }
-                                }
-                                let qualified_symbol_self_name = colliding_imported_record_names
-                                    .contains(self_type_name)
-                                    .then(|| format!("{module_short}.{self_type_name}"));
+                                // The pre-lowering body plan and this emitter
+                                // share one exact eligibility authority.
+                                let skip_methods = ctx.imported_impl_skip_methods(
+                                    impl_decl,
+                                    &source_module,
+                                    &same_module_fn_rewrites,
+                                );
+                                let qualified_identity =
+                                    format!("{source_module}.{self_type_name}");
+                                // Impl method symbols are declaration-owned,
+                                // not collision-owned.  Always use the full
+                                // source module path so two modules ending in
+                                // `render` cannot emit the same `Box::render`
+                                // linker label.
+                                let qualified_symbol_self_name = Some(qualified_identity);
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -4058,7 +4671,7 @@ pub fn lower_program_with_mono_cap(
                         // name, lower, then remove the alias to avoid polluting the
                         // global registry.
                         Item::Const(const_decl) => {
-                            let qualified = format!("{module_short}.{}", const_decl.name);
+                            let qualified = format!("{source_module}.{}", const_decl.name);
                             if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
                                 ctx.const_registry.insert(const_decl.name.clone(), entry);
                                 let lowered = ctx.lower_const(const_decl, span.clone());
@@ -4114,7 +4727,7 @@ pub fn lower_program_with_mono_cap(
                             let lowered = ctx.lower_imported_actor(
                                 actor,
                                 span.clone(),
-                                module_short,
+                                &source_module,
                                 &same_module_fn_rewrites,
                             );
                             items.push(HirItem::Actor(lowered));
@@ -4139,6 +4752,7 @@ pub fn lower_program_with_mono_cap(
                                         ctx.check_boundary_consume_discipline(
                                             &method.name,
                                             &method.params,
+                                            None,
                                             "trait method signature",
                                             &method.span,
                                         );
@@ -4210,13 +4824,50 @@ pub fn lower_program_with_mono_cap(
                         let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
                             continue;
                         };
+                        let symbol_owner = injected_builtin_impl_symbol_owner(name);
                         let registered = impl_decl.methods.iter().all(|method| {
                             builtin_receiver_impl_method_symbols.contains(
-                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
+                                &crate::node::HirImplBlock::method_symbol(
+                                    symbol_owner,
+                                    &method.name,
+                                ),
                             )
                         });
                         if !registered {
                             continue;
+                        }
+                        // The checker output for the isolated builtins source
+                        // keys impl declarations by its source symbol
+                        // (`HashMapIter::next`). The emitted synthetic cursor
+                        // body uses the canonical owner-qualified linker symbol
+                        // so it cannot collide with a root user same-leaf impl.
+                        // Alias the exact checker declaration onto that linker
+                        // projection only inside this injected-source scope.
+                        for method in &impl_decl.methods {
+                            let source_symbol =
+                                crate::node::HirImplBlock::method_symbol(name, &method.name);
+                            let emitted_symbol = crate::node::HirImplBlock::method_symbol(
+                                symbol_owner,
+                                &method.name,
+                            );
+                            if let Some(declaration) = ctx
+                                .impl_method_declaration_ids
+                                .get(&emitted_symbol)
+                                .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
+                                .cloned()
+                                .or_else(|| {
+                                    output
+                                        .impl_method_declaration_ids
+                                        .get(&emitted_symbol)
+                                        .or_else(|| {
+                                            output.impl_method_declaration_ids.get(&source_symbol)
+                                        })
+                                        .cloned()
+                                })
+                            {
+                                ctx.impl_method_declaration_ids
+                                    .insert(emitted_symbol, declaration);
+                            }
                         }
                         ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
                     }
@@ -4258,6 +4909,7 @@ pub fn lower_program_with_mono_cap(
     // `Result`) continue to flow through `EnumLayoutRegistry` per-instantiation
     // (see below).
 
+    let pending_produced_value_carrier = ctx.take_pending_produced_value_carrier();
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let mut record_layouts = ctx.record_layout_registry.into_vec();
@@ -4302,9 +4954,33 @@ pub fn lower_program_with_mono_cap(
     enum_layouts.extend(extra_enum_layouts);
     ctx.diagnostics.extend(layout_mono_diagnostics);
 
+    // Extern-backed record surface: the `#[extern_symbol]` method names were
+    // collected at impl lowering (the attribute does not survive onto the
+    // lowered `HirFn`); `extern` block fns are folded in here from their
+    // lowered signatures, qualified by their captured defining-module
+    // provenance so the spellings match the `record_registry` keys.
+    let mut extern_backed_records = std::mem::take(&mut ctx.extern_backed_record_names);
+    for item in &items {
+        if let HirItem::ExternFn(extern_fn) = item {
+            for ty in extern_fn
+                .param_tys
+                .iter()
+                .chain(std::iter::once(&extern_fn.return_ty))
+            {
+                for name in crate::value_class::named_type_names(ty) {
+                    if let crate::node::ExternProvenance::Module(module) = &extern_fn.provenance {
+                        extern_backed_records.insert(format!("{module}.{name}"));
+                    }
+                    extern_backed_records.insert(name);
+                }
+            }
+        }
+    }
+
     finalize_user_record_value_classes(
         &ctx.record_registry,
         &record_layouts,
+        &extern_backed_records,
         &mut ctx.type_classes,
     );
 
@@ -4336,36 +5012,626 @@ pub fn lower_program_with_mono_cap(
         crate::machine_mono::run_machine_mono_pass(&items, &monomorphisations, mono_cap);
     ctx.diagnostics.extend(machine_mono_diagnostics);
 
+    admit_opaque_resource_lifecycles(
+        &items,
+        &ctx.opaque_resource_candidates,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
+    admit_declared_opaque_resource_lifecycles(
+        &items,
+        &ctx.opaque_resource_candidates,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
+    admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
+
+    let mut module = HirModule {
+        items,
+        produced_value_facts: HashMap::new(),
+        diagnostic_source_modules,
+        root_item_ids: ctx.root_item_ids,
+        caller_visible_param_projections: ctx.caller_visible_param_projections,
+        wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
+        type_classes: ctx.type_classes,
+        monomorphisations,
+        call_site_type_args,
+        vec_generic_element_abi: type_check_output.vec_generic_element_abi.clone(),
+        record_layouts,
+        enum_layouts,
+        machine_instantiations,
+        supervisor_child_slots,
+        pool_accessor_sites,
+        regex_literals: ctx.regex_literals,
+    };
+    let occurrence_parents = crate::verify::collect_site_parents(&module);
+    module.produced_value_facts =
+        pending_produced_value_carrier.resolve(&occurrence_parents, &mut ctx.diagnostics);
+    module.produced_value_facts = crate::verify::complete_produced_value_facts(&module);
+
     LowerOutput {
-        module: HirModule {
-            items,
-            diagnostic_source_modules,
-            root_item_ids: ctx.root_item_ids,
-            wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
-            type_classes: ctx.type_classes,
-            monomorphisations,
-            call_site_type_args,
-            vec_generic_element_abi: type_check_output.vec_generic_element_abi.clone(),
-            record_layouts,
-            enum_layouts,
-            machine_instantiations,
-            supervisor_child_slots,
-            pool_accessor_sites,
-            regex_literals: ctx.regex_literals,
-        },
+        module,
         diagnostics: ctx.diagnostics,
+    }
+}
+
+/// Admit field-bearing resource lifecycles while exact HIR declaration and
+/// body identities are simultaneously available. No downstream stage may
+/// reconstruct a close declaration from a record-layout or symbol spelling.
+fn admit_resource_record_lifecycles(
+    items: &[HirItem],
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for decl in items.iter().filter_map(|item| match item {
+        HirItem::TypeDecl(decl)
+            if !decl.is_opaque
+                && decl.marker == ResourceMarker::Resource
+                && decl.variants.is_empty() =>
+        {
+            Some(decl)
+        }
+        _ => None,
+    }) {
+        let exact_owner = decl.declaration.full_path();
+        let close_methods: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Impl(impl_block)
+                    if impl_block.trait_name.is_none()
+                        && impl_block.self_type_name == exact_owner =>
+                {
+                    Some(impl_block)
+                }
+                _ => None,
+            })
+            .flat_map(|impl_block| {
+                impl_block
+                    .method_names
+                    .iter()
+                    .zip(&impl_block.method_ids)
+                    .zip(&impl_block.method_symbols)
+            })
+            .filter_map(|((name, declaration), symbol)| {
+                (name == "close")
+                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .flatten()
+            })
+            .collect();
+
+        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                format!(
+                    "resource record requires one exact inherent close declaration; found {}",
+                    close_methods.len()
+                ),
+                &decl.span,
+                "resource lifecycle identity did not survive HIR lowering",
+            ));
+            continue;
+        };
+
+        let close_bodies: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function)
+                    if function.declaration == *close_declaration
+                        && function.name == *close_symbol =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        let [close_body] = close_bodies.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                format!(
+                    "resource record close requires one exact emitted body; found {}",
+                    close_bodies.len()
+                ),
+                &decl.span,
+                "resource lifecycle close body did not survive HIR lowering",
+            ));
+            continue;
+        };
+        if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                "resource record close body must take one receiver and return unit".to_string(),
+                &decl.span,
+                "resource lifecycle close body has an inadmissible signature",
+            ));
+            continue;
+        }
+
+        let lifecycle = crate::ResourceRecordLifecycle {
+            resource_declaration: decl.declaration.clone(),
+            close_declaration: close_declaration.clone(),
+            close_symbol: close_symbol.clone(),
+        };
+        if type_classes
+            .admit_resource_record_lifecycle(lifecycle)
+            .is_err()
+        {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                "duplicate exact resource-record lifecycle admission".to_string(),
+                &decl.span,
+                "one qualified resource may have exactly one automatic lifecycle authority",
+            ));
+        }
+    }
+}
+
+/// Render an opaque-resource lifecycle conflict for a diagnostic message.
+/// A hand-written arm per variant instead of `{:?}` keeps the surfaced text
+/// stable and readable if the enum's field names or ordering change.
+fn describe_opaque_resource_lifecycle_conflict(
+    kind: &hew_types::OpaqueResourceLifecycleConflictKind,
+) -> String {
+    use hew_types::OpaqueResourceLifecycleConflictKind as Kind;
+    match kind {
+        Kind::ProducerResultMismatch { actual } => {
+            format!("producer result type does not match the resource type: found `{actual}`")
+        }
+        Kind::ReleaseDeclarationMissing => {
+            "no matching release declaration was found for the producer".to_string()
+        }
+        Kind::CloseDeclarationMissing => {
+            "no inherent `close` declaration was found for the resource".to_string()
+        }
+        Kind::ReleaseSignatureMismatch { detail } => {
+            format!("release declaration signature does not match: {detail}")
+        }
+        Kind::MultipleProducerLifecycle {
+            established,
+            conflicting,
+        } => format!(
+            "resource already has an established lifecycle from `{established}`; \
+             `{conflicting}` conflicts with it"
+        ),
+    }
+}
+
+fn resource_lifecycle_boundary_diagnostic(
+    name: &str,
+    reason: String,
+    span: &Span,
+    note: &str,
+) -> HirDiagnostic {
+    HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: name.to_string(),
+            reason,
+        },
+        span.clone(),
+        note,
+    )
+}
+
+/// Admit checker-derived opaque lifecycles only after every declaration,
+/// extern, and inherent close body has a resolved HIR identity.
+fn validate_opaque_resource_close(
+    items: &[HirItem],
+    candidate: &hew_types::OpaqueResourceLifecycleCandidate,
+) -> Result<String, String> {
+    let close_functions: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(function) if function.declaration == candidate.close_declaration => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect();
+    let release_externs: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::ExternFn(extern_fn)
+                if extern_fn.declaration == candidate.release_declaration =>
+            {
+                Some(extern_fn)
+            }
+            _ => None,
+        })
+        .collect();
+
+    match (close_functions.as_slice(), release_externs.as_slice()) {
+        ([close], [release]) if close.return_ty == ResolvedTy::Unit && close.params.len() == 1 => {
+            let receiver = close.params[0].id;
+            let exact_wrapper = is_exact_release_forwarding_wrapper(
+                &close.body,
+                &candidate.release_declaration,
+                &candidate.release_symbol,
+                candidate.release_param_index,
+                receiver,
+            );
+            exact_wrapper
+                .then(|| close.name.clone())
+                .ok_or_else(|| {
+                    "canonical close must be one unconditional straight-line exact release call"
+                        .to_string()
+                })
+        }
+        (closes, releases) => Err(format!(
+            "expected one unit close and one owner-module release declaration; found {} close(s), {} release declaration(s)",
+            closes.len(),
+            releases.len()
+        )),
+    }
+}
+
+fn admit_opaque_resource_lifecycles(
+    items: &[HirItem],
+    graph: &hew_types::OpaqueResourceCandidateGraph,
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for conflict in &graph.conflicts {
+        diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::OpaqueResourceLifecycleConflict {
+                resource_type: conflict.resource_type.clone(),
+                producer: conflict.producer_symbol.clone(),
+                release: conflict.release_symbol.clone(),
+                detail: describe_opaque_resource_lifecycle_conflict(&conflict.kind),
+            },
+            0..0,
+            "conflicting generated/source lifecycle facts leave no automatic close authority",
+        ));
+    }
+
+    for candidate in graph.candidates.values() {
+        let matching_decls: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::TypeDecl(decl) if decl.declaration == candidate.resource_declaration => {
+                    Some(decl)
+                }
+                _ => None,
+            })
+            .collect();
+        let [decl] = matching_decls.as_slice() else {
+            diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                    resource_type: candidate.resource_type.clone(),
+                    expected_release: candidate.release_symbol.clone(),
+                    detail: format!(
+                        "expected one exact HIR declaration, found {}",
+                        matching_decls.len()
+                    ),
+                },
+                0..0,
+                "checker lifecycle identity did not survive HIR declaration lowering",
+            ));
+            continue;
+        };
+
+        if !decl.is_opaque || decl.marker != ResourceMarker::Resource {
+            diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CloseableOpaqueMustBeResource {
+                    resource_type: candidate.resource_type.clone(),
+                    producer: candidate
+                        .producer_symbols
+                        .iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default(),
+                    release: candidate.release_symbol.clone(),
+                },
+                decl.span.clone(),
+                "an independently owned opaque result must declare `#[resource]` and one inherent `close`",
+            ));
+            continue;
+        }
+
+        let detail = validate_opaque_resource_close(items, candidate);
+
+        match detail {
+            Ok(close_symbol) => {
+                let lifecycle = crate::OpaqueResourceLifecycle {
+                    resource_declaration: candidate.resource_declaration.clone(),
+                    close_declaration: candidate.close_declaration.clone(),
+                    release_declaration: candidate.release_declaration.clone(),
+                    close_symbol,
+                    release_symbol: candidate.release_symbol.clone(),
+                    discharge_depth: candidate.discharge_depth,
+                    producer_declarations: candidate.producer_declarations.clone(),
+                    producer_symbols: candidate.producer_symbols.clone(),
+                    producer_modules: candidate.producer_modules.clone(),
+                };
+                if type_classes
+                    .admit_opaque_resource_lifecycle(lifecycle)
+                    .is_err()
+                {
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                            resource_type: candidate.resource_type.clone(),
+                            expected_release: candidate.release_symbol.clone(),
+                            detail: "duplicate exact lifecycle admission".to_string(),
+                        },
+                        decl.span.clone(),
+                        "one qualified resource may have exactly one automatic lifecycle authority",
+                    ));
+                }
+            }
+            Err(detail) => diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                    resource_type: candidate.resource_type.clone(),
+                    expected_release: candidate.release_symbol.clone(),
+                    detail,
+                },
+                decl.span.clone(),
+                "the canonical close does not match the checker-admitted consuming release",
+            )),
+        }
+    }
+}
+
+/// Admit the ordinary authored `#[resource] #[opaque]` form when it has no
+/// checker-discovered producer/release pair.  The candidate graph deliberately
+/// covers wrappers around a known external producer; it must not be mistaken
+/// for the authority on whether a source-owned resource has an automatic
+/// close.  A direct actor-state field can be constructed by arbitrary FFI or
+/// passed in from its owner and still needs its exact inherent `close` body at
+/// teardown.
+///
+/// This is declaration-keyed throughout.  In particular, a user `MonitorRef`
+/// or `Receiver` can never inherit the standard-library lifecycle merely from
+/// its leaf spelling.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates one source-owned opaque lifecycle end-to-end: declaration, exact impl method, emitted body, and registry admission"
+)]
+fn admit_declared_opaque_resource_lifecycles(
+    items: &[HirItem],
+    graph: &hew_types::OpaqueResourceCandidateGraph,
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for decl in items.iter().filter_map(|item| match item {
+        HirItem::TypeDecl(decl) if decl.is_opaque && decl.marker == ResourceMarker::Resource => {
+            Some(decl)
+        }
+        _ => None,
+    }) {
+        if !decl.variants.is_empty() {
+            // Every sibling rejection under this filter emits a diagnostic;
+            // a variant-bearing `#[resource]` opaque declaration has no
+            // single-representation lifecycle boundary to admit and must not
+            // fall out of the iterator silently.
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                decl.declaration.full_path(),
+                "opaque #[resource] declarations with variants have no single-representation \
+                 lifecycle boundary to admit"
+                    .to_string(),
+                &decl.span,
+                "a variant-bearing opaque resource cannot receive an automatic close",
+            ));
+            continue;
+        }
+        // The authored fallback exists only when the checker discovered no
+        // producer/release contract for this exact declaration. Once a
+        // candidate or conflict exists, the checker graph owns the lifecycle
+        // decision; a failed validation must not be converted into an
+        // automatic close by this less-informed fallback.
+        let checker_owns_lifecycle_decision = graph.candidates.contains_key(&decl.declaration)
+            || graph
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.resource_type == decl.declaration.full_path());
+        if checker_owns_lifecycle_decision {
+            continue;
+        }
+        if type_classes
+            .lifecycle_registry()
+            .opaque_resource(&decl.declaration)
+            .is_some()
+        {
+            continue;
+        }
+        let exact_owner = decl.declaration.full_path();
+        let close_methods: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Impl(impl_block)
+                    if impl_block.trait_name.is_none()
+                        && impl_block.self_type_name == exact_owner =>
+                {
+                    Some(impl_block)
+                }
+                _ => None,
+            })
+            .flat_map(|impl_block| {
+                impl_block
+                    .method_names
+                    .iter()
+                    .zip(&impl_block.method_ids)
+                    .zip(&impl_block.method_symbols)
+            })
+            .filter_map(|((name, declaration), symbol)| {
+                (name == "close")
+                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .flatten()
+            })
+            .collect();
+        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                format!(
+                    "opaque resource requires one exact inherent close declaration; found {}",
+                    close_methods.len()
+                ),
+                &decl.span,
+                "opaque resource lifecycle identity did not survive HIR lowering",
+            ));
+            continue;
+        };
+        let close_bodies: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function)
+                    if function.declaration == *close_declaration
+                        && function.name == *close_symbol =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        let [close_body] = close_bodies.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                format!(
+                    "opaque resource close requires one exact emitted body; found {}",
+                    close_bodies.len()
+                ),
+                &decl.span,
+                "opaque resource close body did not survive HIR lowering",
+            ));
+            continue;
+        };
+        if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                "opaque resource close body must take one receiver and return unit".to_string(),
+                &decl.span,
+                "opaque resource close body has an inadmissible signature",
+            ));
+            continue;
+        }
+        let lifecycle = crate::OpaqueResourceLifecycle {
+            resource_declaration: decl.declaration.clone(),
+            close_declaration: close_declaration.clone(),
+            // There is no separately declared release ABI in this authored
+            // form.  The generated close body is the exact lifecycle endpoint;
+            // the fields are retained for the shared lifecycle carrier.
+            release_declaration: close_declaration.clone(),
+            close_symbol: close_symbol.clone(),
+            release_symbol: close_symbol.clone(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        };
+        if type_classes
+            .admit_opaque_resource_lifecycle(lifecycle)
+            .is_err()
+        {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                "duplicate exact opaque resource lifecycle admission".to_string(),
+                &decl.span,
+                "one qualified resource may have exactly one automatic lifecycle authority",
+            ));
+        }
+    }
+}
+
+fn is_exact_release_forwarding_wrapper(
+    block: &HirBlock,
+    release_declaration: &hew_types::DefId,
+    release_symbol: &str,
+    release_param_index: usize,
+    receiver: BindingId,
+) -> bool {
+    let expression = match (block.statements.as_slice(), block.tail.as_deref()) {
+        ([statement], None) => {
+            let HirStmtKind::Expr(expression) = &statement.kind else {
+                return false;
+            };
+            expression
+        }
+        ([], Some(expression)) => expression,
+        _ => return false,
+    };
+    is_exact_release_forwarding_expr(
+        expression,
+        release_declaration,
+        release_symbol,
+        release_param_index,
+        receiver,
+    )
+}
+
+fn is_exact_release_forwarding_expr(
+    expr: &HirExpr,
+    release_declaration: &hew_types::DefId,
+    release_symbol: &str,
+    release_param_index: usize,
+    receiver: BindingId,
+) -> bool {
+    match &expr.kind {
+        HirExprKind::Call { target, args, .. } => {
+            matches!(
+                target,
+                hew_types::CallTarget::Extern {
+                    declaration, endpoint, ..
+                }
+                    if declaration == release_declaration && endpoint == release_symbol
+            ) && args.get(release_param_index).is_some_and(|arg| {
+                matches!(
+                    arg.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(binding),
+                        ..
+                    } if binding == receiver
+                )
+            }) && args.iter().enumerate().all(|(index, arg)| {
+                index == release_param_index
+                    || matches!(
+                        arg.kind,
+                        HirExprKind::Literal(_) | HirExprKind::BindingRef { .. }
+                    )
+            })
+        }
+        HirExprKind::Block(block) => is_exact_release_forwarding_wrapper(
+            block,
+            release_declaration,
+            release_symbol,
+            release_param_index,
+            receiver,
+        ),
+        _ => false,
     }
 }
 
 fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,
     record_layouts: &[RecordLayout],
+    extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
 ) {
     for name in record_registry.keys() {
         type_classes
             .entry(name.clone())
             .or_insert((ResourceMarker::None, None));
+    }
+
+    // Zero-field records are structurally uninferable, and the bare
+    // `type Empty {}` case is pinned fail-closed by the
+    // `empty_field_user_type_remains_uninferred` oracle. The one honest
+    // exception is the FFI handle stand-in: a zero-field, non-generic record
+    // named in the signature of an `#[extern_symbol]` method or an `extern`
+    // block fn. Its values only exist behind the C ABI (the checker rewrites
+    // every call to the extern symbol; the declared stub body is dead), so
+    // the record is a pointer-width stand-in with no implicit drop — the same
+    // class the `#[opaque]` rule assigns (`ResourceMarker::BitCopy`), with
+    // release explicit through the declared FFI surface. An explicit
+    // `#[resource]`/`#[linear]` marker on such a record wins: only the
+    // unmarked (`None`) state is promoted.
+    for (name, entry) in record_registry {
+        if entry.type_params.is_empty()
+            && entry.fields.is_empty()
+            && extern_backed_records.contains(name)
+        {
+            if let Some(slot) = type_classes.get_mut(name) {
+                if slot.0 == ResourceMarker::None {
+                    slot.0 = ResourceMarker::BitCopy;
+                }
+            }
+        }
     }
 
     let mut changed = true;
@@ -4459,11 +5725,9 @@ struct RangeAdapterChain<'a> {
 struct TraitMethodStaticSite {
     /// Type-parameter name of the receiver (e.g. "T" in `fn display<T: Show>`).
     receiver_type_param: String,
-    /// Trait that directly declares the method (e.g. "Show") — used as the
-    /// structured registry key so we don't reverse-parse the impl symbol.
-    declaring_trait: String,
-    /// Method name on the declaring trait (e.g. "show").
-    method_name: String,
+    /// Checker-selected trait-method identity. The monomorphisation lookup
+    /// consumes its ids directly rather than rebuilding them from spellings.
+    target: hew_types::CallTarget,
 }
 
 #[allow(
@@ -4477,16 +5741,21 @@ fn closure_under_substitution(
     cap: usize,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
-    use crate::monomorph::{mangle, MonomorphizedFn};
+    use crate::monomorph::{function_monomorph_symbol, MonomorphizedFn};
 
     // Build origin_id → &HirFn map for body lookup.
     let mut origin_fns: HashMap<ItemId, &HirFn> = HashMap::new();
-    // Map of fn name → (origin id, type_params) for inner-call resolution.
-    let mut fn_info: HashMap<String, (ItemId, Vec<String>)> = HashMap::new();
+    // Map of emitted fn symbol → checker declaration identity plus the local
+    // body origin and type parameters. The linker symbol locates the body;
+    // the declaration is the authority carried into every MonoKey.
+    let mut fn_info: HashMap<String, (ItemId, hew_types::DefId, Vec<String>)> = HashMap::new();
     for item in items {
         if let HirItem::Function(f) = item {
             origin_fns.insert(f.id, f);
-            fn_info.insert(f.name.clone(), (f.id, f.type_params.clone()));
+            fn_info.insert(
+                f.name.clone(),
+                (f.id, f.declaration.clone(), f.type_params.clone()),
+            );
         }
     }
     // Structured `(declaring_trait, self_type_name, method_name)` index
@@ -4517,7 +5786,8 @@ fn closure_under_substitution(
 
         // ── Direct Call sites (existing logic) ───────────────────────────
         for (callee_name, site) in inner_sites {
-            let Some((origin_id, type_params)) = fn_info.get(&callee_name).cloned() else {
+            let Some((origin_id, declaration, type_params)) = fn_info.get(&callee_name).cloned()
+            else {
                 continue;
             };
             if type_params.is_empty() {
@@ -4539,7 +5809,8 @@ fn closure_under_substitution(
             }
             let new_key = MonoKey {
                 origin: origin_id,
-                origin_name: callee_name.clone(),
+                declaration,
+                linker_symbol: callee_name.clone(),
                 type_args: substituted.clone(),
             };
             if !seen.insert(new_key.clone()) {
@@ -4558,7 +5829,7 @@ fn closure_under_substitution(
                 }
                 continue;
             }
-            let mangled = mangle(&callee_name, &substituted);
+            let mangled = function_monomorph_symbol(&callee_name, &substituted);
             monomorphisations.push(MonomorphizedFn {
                 key: new_key.clone(),
                 mangled_name: mangled,
@@ -4576,23 +5847,29 @@ fn closure_under_substitution(
             let Some(concrete_ty) = subst.get(&tms.receiver_type_param) else {
                 continue;
             };
-            // Canonical (self_type_name, type_args) for impl lookup.
-            let Some((self_type_name, type_args)) =
-                crate::dispatch::receiver_self_type_for_impl_lookup(concrete_ty)
+            // Canonical nominal instance for impl lookup.
+            let Some(self_type) =
+                crate::dispatch::receiver_self_type_for_impl_lookup_instance(concrete_ty)
             else {
                 continue;
             };
+            let type_args = self_type.args.clone();
             // Structured registry lookup. The key is built from HIR-side
-            // structured fields only — no symbol-name parsing. Tolerant of a
-            // module-qualified receiver name: an imported generic adapter
-            // (`iter.Map`) keys its impl block on the bare `Map`.
-            // Pass `type_args` to resolve concrete-specialised impls (#2270).
-            let Some(entry) = crate::dispatch::lookup_trait_impl_entry(
+            // structured identities only — no symbol-name parsing or leaf
+            // retry. A concrete instance is tried before the same nominal's
+            // generic implementation.
+            let hew_types::CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } = &tms.target
+            else {
+                continue;
+            };
+            let Some(entry) = crate::dispatch::lookup_trait_impl_entry_by_id(
                 &impl_index,
-                &tms.declaring_trait,
-                &self_type_name,
-                &tms.method_name,
-                &type_args,
+                declaring_trait,
+                &self_type,
+                method,
             ) else {
                 continue;
             };
@@ -4604,10 +5881,17 @@ fn closure_under_substitution(
             // Find the origin fn that owns this impl method symbol so
             // we can build a `MonoKey` whose `origin` points at the
             // pre-substitution body.
-            let Some((origin_id, origin_type_params)) = fn_info.get(&entry.method_symbol).cloned()
+            let Some((origin_id, origin_declaration, origin_type_params)) =
+                fn_info.get(&entry.method_symbol).cloned()
             else {
                 continue;
             };
+            // The body found by linker symbol must attest to the exact
+            // checker-selected implementation declaration. A symbol collision
+            // is a boundary failure, not a reason to pick another body.
+            if origin_declaration != entry.method {
+                continue;
+            }
             if origin_type_params.is_empty() {
                 // Impl-block carried type params but the per-method
                 // origin did not — invariant violation upstream;
@@ -4623,7 +5907,8 @@ fn closure_under_substitution(
             }
             let new_key = MonoKey {
                 origin: origin_id,
-                origin_name: entry.method_symbol.clone(),
+                declaration: entry.method.clone(),
+                linker_symbol: entry.method_symbol.clone(),
                 type_args: type_args.clone(),
             };
             if !seen.insert(new_key.clone()) {
@@ -4642,7 +5927,7 @@ fn closure_under_substitution(
                 }
                 continue;
             }
-            let mangled = mangle(&entry.method_symbol, &type_args);
+            let mangled = function_monomorph_symbol(&entry.method_symbol, &type_args);
             monomorphisations.push(MonomorphizedFn {
                 key: new_key.clone(),
                 mangled_name: mangled,
@@ -4762,7 +6047,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(operand, out, trait_out);
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
@@ -4809,8 +6094,7 @@ fn collect_call_sites_in_expr(
         HirExprKind::CallTraitMethodStatic {
             receiver,
             receiver_type_param,
-            declaring_trait,
-            method_name,
+            target,
             args,
             ..
         } => {
@@ -4819,8 +6103,7 @@ fn collect_call_sites_in_expr(
             // function's type params are substituted.
             trait_out.push(TraitMethodStaticSite {
                 receiver_type_param: receiver_type_param.clone(),
-                declaring_trait: declaring_trait.clone(),
-                method_name: method_name.clone(),
+                target: target.clone(),
             });
             collect_call_sites_in_expr(receiver, out, trait_out);
             for arg in args {
@@ -4829,21 +6112,22 @@ fn collect_call_sites_in_expr(
         }
         HirExprKind::VarSelfMethodCall {
             receiver,
+            call_target,
             target,
             args,
             ..
         } => {
             match target {
-                HirVarSelfMethodTarget::Direct { callee } => out.push((callee.clone(), expr.site)),
+                // Direct var-self monomorphisation is registered by the
+                // checker-targeted source lowering site.  This marker carries
+                // no presentation string to re-discover it here.
+                HirVarSelfMethodTarget::Direct => {}
                 HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
-                    declaring_trait,
-                    method_name,
                     ..
                 } => trait_out.push(TraitMethodStaticSite {
                     receiver_type_param: receiver_type_param.clone(),
-                    declaring_trait: declaring_trait.clone(),
-                    method_name: method_name.clone(),
+                    target: call_target.clone(),
                 }),
             }
             collect_call_sites_in_expr(receiver, out, trait_out);
@@ -4999,7 +6283,10 @@ fn collect_call_sites_in_expr(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
         }
         HirExprKind::StreamRecvAwait { stream, .. } => {
@@ -5148,14 +6435,14 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
 
 fn contains_abstract_symbol(
     ty: &ResolvedTy,
-    fn_info: &HashMap<String, (ItemId, Vec<String>)>,
+    fn_info: &HashMap<String, (ItemId, hew_types::DefId, Vec<String>)>,
 ) -> bool {
     // A type contains an abstract symbol if any `Named { args: [] }`
     // matches a type-parameter name declared on any top-level fn.
     let is_type_param = |name: &str| {
         fn_info
             .values()
-            .any(|(_, params)| params.iter().any(|p| p == name))
+            .any(|(_, _, params)| params.iter().any(|p| p == name))
     };
     match ty {
         ResolvedTy::Named { name, args, .. } => {
@@ -5229,6 +6516,11 @@ struct LowerCtx {
     scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Source-declared `extern` symbols. A resource argument crosses one of
+    /// these bodyless ABI boundaries by borrow only when the generated
+    /// per-symbol/per-parameter ownership contract says so; ordinary Hew
+    /// functions that merely share a spelling never inherit that privilege.
+    extern_fn_names: HashSet<String>,
     /// Same-module bare-call rewrites active while lowering an imported module
     /// free-function body. Keys are source-visible bare identifiers; values are
     /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
@@ -5247,6 +6539,9 @@ struct LowerCtx {
     /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
     /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
+    /// Checker-derived closeable-opaque candidates awaiting resolved HIR
+    /// close-body admission.
+    opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
     /// Pre-collected inherent-impl `close` method signatures, keyed by the
     /// self-type name. Populated in `lower_program` before the type-decl
     /// pre-pass so `lower_type_decl` can:
@@ -5277,11 +6572,50 @@ struct LowerCtx {
     /// symbol. Var-self write-back lowering reads `requires_mutable_receiver`
     /// from this table instead of re-deriving it from syntax at call sites.
     fn_sigs: HashMap<String, hew_types::FnSig>,
+    /// Checker-selected targets for ordinary calls, keyed by the call span.
+    /// Missing facts lower as an explicit unsupported target; HIR never
+    /// guesses from the callee spelling.
+    direct_call_targets: HashMap<SpanKey, CallTarget>,
+    /// User-module names reported by the checker. This lets a missing
+    /// module-qualified call rewrite fail at the checker/HIR boundary instead
+    /// of being misreported as an ordinary receiver-method omission.
+    user_modules: HashSet<String>,
+    /// Checker-published canonical `(trait, method)` declaration identities,
+    /// keyed by owner-qualified source method paths. HIR only carries these
+    /// declaration facts; it does not rebuild IDs from method spellings.
+    trait_method_ids: HashMap<String, (hew_types::DefId, hew_types::DefId)>,
+    /// Checker-published canonical trait identities addressed through an exact
+    /// importer binding.  This resolves default-method ownership for `impl
+    /// AliasTrait for Type` without a leaf-name or suffix lookup.
+    trait_method_ids_by_binding:
+        HashMap<(Option<String>, String, String), (hew_types::DefId, hew_types::DefId)>,
+    /// Checker-owned impl-method declaration identities.  Keys are linker
+    /// presentation strings retained only to locate the already-allocated ID;
+    /// HIR never constructs an ID from a method spelling.
+    impl_method_declaration_ids: HashMap<String, hew_types::DefId>,
+    /// Exact declaration-ID → emitted-body-symbol projection, populated only
+    /// after HIR emits an impl body.  This is deliberately separate from
+    /// `impl_method_declaration_ids`: the checker table retains compatibility
+    /// aliases (including methods HIR deliberately skips), while direct
+    /// dispatch needs the one symbol HIR actually emitted for the selected
+    /// declaration.
+    impl_method_body_symbols: HashMap<hew_types::DefId, String>,
+    /// Exact pre-lowering proof for impl bodies scheduled to emit.  Unlike
+    /// `fn_registry`, this excludes imported methods rejected by the shared
+    /// body/signature eligibility analysis.
+    impl_body_plan: ImplBodyPlan,
     /// Checker-owned method-call lowering decisions. Keyed by the method-call
     /// expression span. `Expr::MethodCall` lowering looks up each call site
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-proven affine close calls. Their receiver release obligation is
+    /// discharged, but their closed handle storage remains readable.
+    method_call_discharges_receiver: HashSet<SpanKey>,
+    /// Receiver-identity calls whose result is discarded in statement
+    /// position. These call sites borrow the original owner into the exact
+    /// receiver/result alias instead of moving it away.
+    method_call_preserves_receiver_identity: HashSet<SpanKey>,
     /// Checker-owned integer opt-out method lowering decisions keyed by the
     /// method-call expression span. HIR checks this before generic method-call
     /// rewrites so numeric methods lower to a dedicated node without any
@@ -5358,6 +6692,29 @@ struct LowerCtx {
     /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
+    /// Checker result-ownership rows waiting to be projected from their
+    /// source spans onto stable HIR expression sites.
+    produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
+    produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
+    /// Every source expression lowered through `lower_expr`, keyed exactly as
+    /// the checker keyed its result row.  Kept even where no row exists so a
+    /// receiver-identity row can resolve its receiver structurally.
+    produced_value_source_sites: HashMap<SpanKey, Vec<SiteId>>,
+    /// Site-keyed rows awaiting receiver-span resolution at module finish.
+    produced_value_fact_sites: HashMap<SiteId, HirProducedValueFact>,
+    /// Facts for compiler-generated expression roots that have no checker span
+    /// identity of their own. Kept disjoint from source-keyed facts until the
+    /// occurrence graph has resolved so a wrapper can never consume its
+    /// authored child's row merely because both share a source span.
+    generated_produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
+    /// The checker key for each pending site fact.  This is retained until all
+    /// expressions have lowered, at which point every dependency edge can be
+    /// translated to its exact `SiteId` without relying on traversal order.
+    produced_value_fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
+    /// Depth while lowering compiler-synthesised AST whose root has a real
+    /// checker side-table row but whose cloned operands are not new checker
+    /// occurrences. The root is recorded explicitly after leaving this mode.
+    suppress_produced_value_recording_depth: usize,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from
@@ -5520,6 +6877,16 @@ struct LowerCtx {
     /// land here with `fields = []`; they never trigger record-layout
     /// emission (their constructor goes through `Expr::Call`).
     record_registry: HashMap<String, RecordEntry>,
+    /// Nominal type names appearing in the signature (params or return) of an
+    /// `#[extern_symbol]` impl method, collected at impl lowering — the only
+    /// stage where the attribute is still visible (the lowered `HirFn` carries
+    /// no extern marker). Stored in the bare spelling and, when lowered under
+    /// a module context, the module-qualified spelling, matching the two
+    /// `record_registry` keys. Consumed by
+    /// `finalize_user_record_value_classes` to admit a zero-field record that
+    /// is provably FFI-backed as a `BitCopy` handle stand-in while a bare
+    /// `type Empty {}` stays fail-closed uninferred.
+    extern_backed_record_names: HashSet<String>,
     /// Bare imported record names that have distinct definitions in more than
     /// one canonical module and therefore require module-qualified identities.
     colliding_imported_record_names: HashSet<String>,
@@ -5630,6 +6997,14 @@ struct LowerCtx {
     /// as `current_machine_events`. Used by `MachineVariantCtor` and
     /// `MachineFieldAccess` resolution to carry the machine type name.
     current_machine_name: Option<String>,
+    /// Exact generic self type of the machine currently being lowered.
+    ///
+    /// Machine-state constructor sites are not checker-typed expression sites:
+    /// HIR derives them from the enclosing declaration.  Keeping this symbolic
+    /// `Machine<T, ..>` type in the context (rather than reconstructing a bare
+    /// `Machine`) is what lets MIR's concrete machine-mono substitution retain
+    /// the registered instance identity through a generated step body.
+    current_machine_self_ty: Option<ResolvedTy>,
     /// Ordered state descriptors for the machine currently being lowered.
     /// Each entry is `(state_name, fields)` in declaration order, matching
     /// `HirMachineDecl.states` indices. Used by bare state-name resolution
@@ -5690,6 +7065,16 @@ struct LowerCtx {
     /// `machine_ctor_registry`'s `(type_name, variant_idx)` indexes directly
     /// into it.
     enum_variants_by_name: HashMap<String, Vec<HirVariant>>,
+    /// Structural member types per named type, in declaration order: record
+    /// fields, plus every enum variant's payload types. Populated alongside
+    /// `type_classes` in the type-decl pre-pass, so it is complete before any
+    /// function body lowers.
+    ///
+    /// `resolved_ty_transfers_ownership_to_mailbox` walks it to see THROUGH an
+    /// aggregate: a plain record carries no ownership marker of its own, but a
+    /// `#[resource]` field inside it still transfers when the record crosses a
+    /// mailbox.
+    type_member_tys: HashMap<String, Vec<ResolvedTy>>,
     /// Checker-resolved per-arm pattern classifications. Cloned from
     /// `tc_output.pattern_resolutions` at construction. Keyed by the
     /// `SpanKey` of each match arm's pattern span. Consumed by
@@ -5735,6 +7120,12 @@ struct LowerCtx {
     /// so that `lower_impl_block` can lower default methods that are not
     /// overridden in the concrete impl.
     trait_default_methods: HashMap<String, Vec<TraitMethod>>,
+    /// The checker `module_idx` each entry of `trait_default_methods` was
+    /// recorded under, keyed identically. A default body materialised onto an
+    /// impl in another module must be lowered under its DECLARING module's
+    /// index or every `mk_key` lookup inside the copied body misses the
+    /// checker fact recorded against the trait's own source.
+    trait_default_module_idx: HashMap<String, u32>,
     trait_super: HashMap<String, Vec<String>>,
     trait_declared_methods: HashMap<String, HashSet<String>>,
     /// Short names of every `#[opaque]` type declaration in the program
@@ -5757,6 +7148,31 @@ struct LowerCtx {
     /// identity fact rather than a short-name heuristic.
     opaque_type_short_names: HashSet<String>,
     non_opaque_type_short_names: HashSet<String>,
+    /// Root-visible opaque declarations: declarations authored in the root
+    /// source plus flattened file-import declarations, kept separate from
+    /// package-imported compiler carriers. A root-visible
+    /// `#[opaque] type Receiver {}` shadows the builtin by declaration identity
+    /// even though its short name is registered in the builtin catalog.
+    root_opaque_type_short_names: HashSet<String>,
+    /// Source-declared type names visible in the root namespace, including
+    /// declarations flattened from file imports. These identities must be
+    /// considered before the compiler-only `Task`, `Unit`, and
+    /// `CancellationToken` fallbacks, including for generic source types.
+    root_visible_source_type_short_names: HashSet<String>,
+    /// Exact `{module_owner}.{type}` identities declared by non-root modules.
+    /// This lets the three compiler-special spellings retain their source
+    /// identity inside a declaring module and through named imports without
+    /// broadening the general builtin-shadow rules.
+    source_type_identities: HashSet<String>,
+    /// Source declarations owned by canonical `std.*` modules, keyed with the
+    /// same full owner identity as `source_type_identities`. This provenance
+    /// distinguishes shipped source carriers from a user package with the same
+    /// leaf module and type spelling.
+    canonical_std_source_type_identities: HashSet<String>,
+    /// Exact nominal identities accepted by the checker. This proves that a
+    /// self-qualified spelling really belongs to the full current owner;
+    /// downstream lowering never recovers that proof from a short name.
+    checker_type_identities: HashSet<String>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
@@ -5773,6 +7189,11 @@ struct LowerCtx {
     /// rendered against the root source ONLY for a proven-root function. A
     /// positive record — never inferred by absence-from-a-foreign-set.
     root_item_ids: HashSet<ItemId>,
+    /// Checker-proven caller-visible parameter projections translated from
+    /// declaration spans to stable `(ItemId, parameter index)` identities.
+    caller_visible_param_projections: HashSet<(ItemId, usize)>,
+    /// Declaration-span authority consumed while lowering each function.
+    caller_visible_param_spans: HashSet<SpanKey>,
     /// True while lowering items that are INJECTED at root `current_module_idx`
     /// but do NOT index the user's root source — currently the `std/builtins.hew`
     /// receiver impls (and the Vec iterator harness), which are lowered
@@ -5791,54 +7212,396 @@ struct LowerCtx {
     /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
-    /// Import type alias resolution table: maps `(importer_module, alias)` →
-    /// canonical qualified source identity, for every `import m::{ T as U }`.
+    /// Checker-authoritative import resolution table: maps `(importer_module,
+    /// source spelling)` → canonical qualified source identity for named/glob
+    /// imports and canonical lifecycle whole-module aliases.
     ///
     /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
-    /// at `LowerCtx::new` time and consulted as a **fallback** (after local /
-    /// builtin / record-registry lookups) in:
-    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)`).
+    /// at `LowerCtx::new` time and consulted in:
+    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)` or
+    ///   `fn f(x: lifecycle.CrashNotification)`).
     /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
     ///
     /// Per-module keying prevents a same-named alias from a different imported
     /// module from hijacking the lookup (last-write-wins flat map defect).
-    /// The fallback position ensures a local `type U` shadows an import alias
-    /// `import m::{ Payload as U }` (local-shadows-imported rule).
+    /// Type references consult the source binding before the builtin catalog,
+    /// so an explicitly imported user `Receiver` cannot become the channel
+    /// endpoint. Local-shadow filtering remains checker-authoritative.
     import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    /// Exact owner identities for lexical module qualifiers. Both whole and
+    /// selective module-path imports carry this fact: after
+    /// `import hew::closableerr::{ Closable as C }`,
+    /// `closableerr.CloseError` still resolves to
+    /// `hew.closableerr.CloseError` without a leaf-name retry.
+    module_import_bindings: HashMap<(Option<String>, String), String>,
 }
 
-/// True when `ty` is — or transitively carries through generic args, tuples,
-/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+struct PendingProducedValueCarrier {
+    facts: HashMap<SiteId, HirProducedValueFact>,
+    generated_facts: HashMap<SiteId, HirProducedValueFact>,
+    fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
+    source_sites: HashMap<SpanKey, Vec<SiteId>>,
+    ownership: HashMap<SpanKey, ProducedValueFact>,
+}
+
+impl PendingProducedValueCarrier {
+    fn join_source_sites(
+        &self,
+        key: &SpanKey,
+        result: SiteId,
+        parents: &HashMap<SiteId, Option<SiteId>>,
+    ) -> Result<Vec<SiteId>, String> {
+        let Some(candidates) = self.source_sites.get(key) else {
+            return Err(format!("source key {key:?} lowered to no HIR site"));
+        };
+        let descendants: Vec<SiteId> = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != result)
+            .filter(|candidate| {
+                let mut cursor = parents.get(candidate).copied().flatten();
+                while let Some(parent) = cursor {
+                    if parent == result {
+                        return true;
+                    }
+                    cursor = parents.get(&parent).copied().flatten();
+                }
+                false
+            })
+            .collect();
+        if !descendants.is_empty() {
+            // An or-pattern expands one checker-authored arm body into several
+            // HIR branches. A Join must retain every structural producer;
+            // singular relations continue to reject this ambiguity.
+            return Ok(descendants);
+        }
+        let parent = parents.get(&result).copied().flatten();
+        let siblings: Vec<SiteId> = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != result)
+            .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
+            .collect();
+        if siblings.is_empty() {
+            Err(format!(
+                "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
+            ))
+        } else {
+            Ok(siblings)
+        }
+    }
+
+    fn source_site(
+        &self,
+        key: &SpanKey,
+        result: SiteId,
+        parents: &HashMap<SiteId, Option<SiteId>>,
+    ) -> Result<SiteId, String> {
+        let Some(candidates) = self.source_sites.get(key) else {
+            return Err(format!("source key {key:?} lowered to no HIR site"));
+        };
+        let descendants: Vec<SiteId> = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != result)
+            .filter(|candidate| {
+                let mut cursor = parents.get(candidate).copied().flatten();
+                while let Some(parent) = cursor {
+                    if parent == result {
+                        return true;
+                    }
+                    cursor = parents.get(&parent).copied().flatten();
+                }
+                false
+            })
+            .collect();
+        match descendants.as_slice() {
+            [site] => Ok(*site),
+            [] => {
+                // A few HIR desugarings (notably actor ask/await) consume the
+                // parsed child into a specialised node rather than retaining
+                // it as a HIR child.  The two occurrences remain siblings in
+                // the same cloned parent branch; admit only a unique sibling,
+                // never a global candidate or a self-edge.
+                let parent = parents.get(&result).copied().flatten();
+                let siblings: Vec<SiteId> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|candidate| *candidate != result)
+                    .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
+                    .collect();
+                match siblings.as_slice() {
+                    [site] => Ok(*site),
+                    [] => Err(format!(
+                        "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
+                    )),
+                    sites => Err(format!(
+                        "source key {key:?} has ambiguous candidates in result occurrence branch {result}: {sites:?}"
+                    )),
+                }
+            }
+            sites => Err(format!(
+                "source key {key:?} has ambiguous candidates in result occurrence subtree {result}: {sites:?}"
+            )),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fail-closed pass resolves and diagnoses every carrier relation"
+    )]
+    fn resolve(
+        mut self,
+        parents: &HashMap<SiteId, Option<SiteId>>,
+        diagnostics: &mut Vec<HirDiagnostic>,
+    ) -> HashMap<SiteId, HirProducedValueFact> {
+        let sites: Vec<SiteId> = self.facts.keys().copied().collect();
+        for site in sites {
+            let Some((key, dependency)) = self.fact_keys.get(&site).cloned() else {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value dependency".to_string(),
+                        reason: format!("HIR site {site} lost its checker source key"),
+                    },
+                    0..0,
+                    "produced-value fact must retain its checker source identity",
+                ));
+                if let Some(fact) = self.facts.get_mut(&site) {
+                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
+                }
+                continue;
+            };
+            if !parents.contains_key(&site) {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value occurrence".to_string(),
+                        reason: format!(
+                            "checker key {key:?} projected to HIR site {site}, but a later rewrite removed that occurrence"
+                        ),
+                    },
+                    key.start..key.end,
+                    "specialised HIR rewrites must preserve consumed checker children as source anchors",
+                ));
+            }
+            let edge = |source: &SpanKey| self.source_site(source, site, parents);
+            let relation = match dependency.as_ref() {
+                Some(ProducedValueDependency::Leaf) => {
+                    Ok(crate::node::HirProducedValueRelation::Leaf)
+                }
+                Some(ProducedValueDependency::Identity(source)) => {
+                    edge(source).map(crate::node::HirProducedValueRelation::Identity)
+                }
+                Some(ProducedValueDependency::Subsumes(source)) => {
+                    edge(source).map(crate::node::HirProducedValueRelation::Subsumes)
+                }
+                Some(ProducedValueDependency::MoveOut(source)) => {
+                    edge(source).map(crate::node::HirProducedValueRelation::MoveOut)
+                }
+                Some(ProducedValueDependency::Projection(source)) => {
+                    edge(source).map(crate::node::HirProducedValueRelation::Projection)
+                }
+                Some(ProducedValueDependency::Join(sources)) => {
+                    let mut joined = Vec::new();
+                    let mut seen = HashSet::new();
+                    let mut error = None;
+                    for source in sources {
+                        match self.join_source_sites(source, site, parents) {
+                            Ok(source_sites) => {
+                                for source_site in source_sites {
+                                    if seen.insert(source_site) {
+                                        joined.push(source_site);
+                                    }
+                                }
+                            }
+                            Err(reason) => {
+                                error = Some(reason);
+                                break;
+                            }
+                        }
+                    }
+                    error.map_or_else(
+                        || Ok(crate::node::HirProducedValueRelation::Join(joined)),
+                        Err,
+                    )
+                }
+                None => {
+                    Err("checker output omitted this expression's closed relation row".to_string())
+                }
+            };
+            let receiver = self
+                .ownership
+                .get(&key)
+                .and_then(|source| source.receiver_span.as_ref())
+                .and_then(|source| edge(source).ok());
+            let fact = self
+                .facts
+                .get_mut(&site)
+                .expect("site collected from facts");
+            match relation {
+                Ok(relation) => fact.relation = relation,
+                Err(reason) => {
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value dependency".to_string(),
+                            reason,
+                        },
+                        0..0,
+                        "produced-value dependency must resolve within its HIR occurrence subtree",
+                    ));
+                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
+                    fact.relation = crate::node::HirProducedValueRelation::Leaf;
+                }
+            }
+            fact.receiver = receiver;
+            if matches!(
+                fact.ownership,
+                hew_types::ProducedValueOwnership::ReceiverIdentity
+            ) && fact.receiver.is_none()
+            {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value receiver identity".to_string(),
+                        reason: "receiver source did not resolve in result occurrence subtree"
+                            .to_string(),
+                    },
+                    0..0,
+                    "receiver identity must carry one structural receiver occurrence",
+                ));
+            }
+        }
+        for (site, fact) in self.generated_facts {
+            if self.facts.insert(site, fact).is_some() {
+                diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "generated produced value identity".to_string(),
+                        reason: format!("generated HIR site {site} collides with a source fact"),
+                    },
+                    0..0,
+                    "generated and authored produced-value facts must occupy disjoint sites",
+                ));
+                if let Some(fact) = self.facts.get_mut(&site) {
+                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
+                }
+            }
+        }
+        self.facts
+    }
+}
+
+/// Whether `ty` transitively carries a value whose SOLE ownership crosses an
+/// actor message boundary: a substrate handle (the builtin list owned by
+/// [`hew_types::BuiltinType::transfers_ownership_across_actor_boundary`],
+/// which the env checker reads too, so the two ownership authorities cannot
+/// drift), or a user `#[resource]` / `#[linear]` declaration.
 ///
-/// This mirrors `resolved_ty_contains_channel_handle` in `hew-codegen-rs`, which
-/// drives the xnode-codec skip for handle-bearing message types. Both
-/// predicates dispatch on the typed `builtin` discriminant alone — never the
-/// bare source name — so a user `record Sender` / `record Receiver` resolved
-/// with `builtin: None` keeps its normal actor-send and codec treatment. A type
-/// the codegen predicate marks as handle-bearing must also be marked by this
-/// one so HIR's consume decision and codegen's codec decision agree
-/// (`dedup-semantic-boundary` LESSONS invariant).
+/// The nominal arm dispatches on `type_classes`, never on the bare source
+/// name, and only for `builtin: None` types — a user `record Sender` keeps
+/// ordinary copy treatment while the real builtin handle transfers.
+///
+/// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+/// carry the `Resource` MARKER for drop elaboration but are shareable
+/// addresses; sending a pid must not consume the sender's own handle, so they
+/// are excluded on both sides.
 ///
 /// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
-/// handle still reaches the serialiser walk and fails closed there, so we do
-/// not need to recurse into struct fields here.
-fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+/// handle still reaches the serialiser walk and fails closed there.
+/// Positional payload types of a variant, for the mailbox-transfer member set.
+fn hew_hir_variant_field_tys(variant: &HirVariant) -> Vec<ResolvedTy> {
+    variant.field_tys()
+}
+
+fn resolved_ty_transfers_ownership_to_mailbox(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+) -> bool {
+    let mut visiting = HashSet::new();
+    transfers_ownership_to_mailbox_guarded(ty, type_classes, type_member_tys, &mut visiting)
+}
+
+/// Recursion body for [`resolved_ty_transfers_ownership_to_mailbox`].
+///
+/// `visiting` makes the walk total over recursive type graphs
+/// (`type Node { next: Vec<Node> }`). Re-entering a name already on the stack
+/// contributes no NEW ownership edge, so it answers `false` — the neutral
+/// element of the `any(...)` disjunction — and the verdict is decided by the
+/// non-recursive members.
+fn transfers_ownership_to_mailbox_guarded(
+    ty: &ResolvedTy,
+    type_classes: &crate::value_class::TypeClassTable,
+    type_member_tys: &HashMap<String, Vec<ResolvedTy>>,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match ty {
-        ResolvedTy::Named { args, builtin, .. } => {
-            matches!(
-                builtin,
-                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
-            ) || args.iter().any(resolved_ty_contains_channel_handle)
+        ResolvedTy::CancellationToken => true,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if builtin
+                .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            // A source-declared lifecycle type reaches some positions spelled
+            // by its qualified path with no `builtin` tag attached, so the tag
+            // test alone misses it. Only the DOTTED spelling resolves here: a
+            // bare user `type MonitorRef` shadow is a clone-total record and
+            // must keep ordinary value semantics.
+            if name.contains('.')
+                && hew_types::lookup_builtin_type(name)
+                    .is_some_and(hew_types::BuiltinType::transfers_ownership_across_actor_boundary)
+            {
+                return true;
+            }
+            if builtin.is_none()
+                && matches!(
+                    type_classes.get(name).map(|(marker, _)| *marker),
+                    Some(ResourceMarker::Resource | ResourceMarker::Linear)
+                )
+            {
+                return true;
+            }
+            if args.iter().any(|arg| {
+                transfers_ownership_to_mailbox_guarded(arg, type_classes, type_member_tys, visiting)
+            }) {
+                return true;
+            }
+            // A builtin carries no user member set to descend into, and its
+            // ownership verdict is already decided above.
+            if builtin.is_some() || !visiting.insert(name.clone()) {
+                return false;
+            }
+            let carries = type_member_tys.get(name).is_some_and(|members| {
+                members.iter().any(|member| {
+                    transfers_ownership_to_mailbox_guarded(
+                        member,
+                        type_classes,
+                        type_member_tys,
+                        visiting,
+                    )
+                })
+            });
+            visiting.remove(name);
+            carries
         }
-        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Tuple(elements) => elements.iter().any(|element| {
+            transfers_ownership_to_mailbox_guarded(element, type_classes, type_member_tys, visiting)
+        }),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_contains_channel_handle(inner)
+            transfers_ownership_to_mailbox_guarded(inner, type_classes, type_member_tys, visiting)
         }
         _ => false,
     }
 }
 
 impl LowerCtx {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "initializes the complete checker-to-HIR ownership fact carrier atomically"
+    )]
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
@@ -5849,14 +7612,56 @@ impl LowerCtx {
             ids: IdGen::default(),
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
+            extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
             imported_module_consts: None,
             type_classes,
+            opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
-            fn_sigs: tc_output.fn_sigs.clone(),
+            fn_sigs: {
+                // rc1-F1 stage F: publish each root free function's canonical
+                // `{root}.{name}` identity (via `TypeCheckOutput::identity`)
+                // alongside the legacy bare key the checker still republishes
+                // at this boundary — the same additive, `or_insert`-only
+                // pattern used for `record_registry` below. `root_fn_identity`
+                // rejects any spelling containing `.`/`::`, so imported and
+                // already-qualified entries pass through untouched; only bare
+                // root keys gain a canonical twin. This rung is inert until a
+                // consumer looks up the canonical key (none does yet — see
+                // `direct_method_return_ty`/`generic_iterator_next_shape`,
+                // which key by mangled method symbol, not free-fn name); it
+                // activates without further code change once the checker
+                // publishes canonically. WHEN OBSOLETE: rc2
+                // render-canonicalization stage, once the bare key retires.
+                let mut sigs = tc_output.fn_sigs.clone();
+                let canonical_entries: Vec<(String, hew_types::FnSig)> = sigs
+                    .iter()
+                    .filter_map(|(name, sig)| {
+                        tc_output
+                            .identity
+                            .root_fn_identity(name)
+                            .map(|canonical| (canonical, sig.clone()))
+                    })
+                    .collect();
+                for (canonical, sig) in canonical_entries {
+                    sigs.entry(canonical).or_insert(sig);
+                }
+                sigs
+            },
+            direct_call_targets: tc_output.direct_call_targets.clone(),
+            user_modules: tc_output.user_modules.clone(),
+            trait_method_ids: tc_output.trait_method_ids.clone(),
+            trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
+            impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
+            impl_method_body_symbols: HashMap::new(),
+            impl_body_plan: ImplBodyPlan::default(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            method_call_discharges_receiver: tc_output.method_call_discharges_receiver.clone(),
+            method_call_preserves_receiver_identity: tc_output
+                .method_call_preserves_receiver_identity
+                .clone(),
             numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             width_cast_lowerings: tc_output.width_cast_lowerings.clone(),
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
@@ -5870,6 +7675,13 @@ impl LowerCtx {
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
+            produced_value_ownership: tc_output.produced_value_ownership.clone(),
+            produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
+            produced_value_source_sites: HashMap::new(),
+            produced_value_fact_sites: HashMap::new(),
+            generated_produced_value_facts: HashMap::new(),
+            produced_value_fact_keys: HashMap::new(),
+            suppress_produced_value_recording_depth: 0,
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -5897,6 +7709,7 @@ impl LowerCtx {
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
+            extern_backed_record_names: HashSet::new(),
             colliding_imported_record_names: HashSet::new(),
             file_import_module_names: HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
@@ -5915,6 +7728,7 @@ impl LowerCtx {
             regex_literal_index: HashMap::new(),
             current_machine_events: None,
             current_machine_name: None,
+            current_machine_self_ty: None,
             current_machine_states: None,
             current_machine_transition_event: None,
             current_machine_source_state: None,
@@ -5922,6 +7736,7 @@ impl LowerCtx {
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
+            type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
             lang_items: tc_output.lang_items.clone(),
@@ -5929,15 +7744,24 @@ impl LowerCtx {
             current_impl_self_ty: None,
             current_fn_type_params: HashSet::new(),
             trait_default_methods: HashMap::new(),
+            trait_default_module_idx: HashMap::new(),
             trait_super: HashMap::new(),
             trait_declared_methods: HashMap::new(),
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
+            root_opaque_type_short_names: HashSet::new(),
+            root_visible_source_type_short_names: HashSet::new(),
+            source_type_identities: HashSet::new(),
+            canonical_std_source_type_identities: HashSet::new(),
+            checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
             current_module_idx: 0,
             root_item_ids: HashSet::new(),
+            caller_visible_param_projections: HashSet::new(),
+            caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
+            module_import_bindings: tc_output.module_import_bindings.clone(),
         }
     }
 
@@ -5971,6 +7795,14 @@ impl LowerCtx {
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
             std::mem::replace(
+                &mut self.produced_value_ownership,
+                tc_output.produced_value_ownership.clone(),
+            ),
+            std::mem::replace(
+                &mut self.produced_value_dependencies,
+                tc_output.produced_value_dependencies.clone(),
+            ),
+            std::mem::replace(
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
             ),
@@ -5990,6 +7822,8 @@ impl LowerCtx {
             self.dyn_trait_method_calls,
             self.resolved_calls,
             self.expr_types,
+            self.produced_value_ownership,
+            self.produced_value_dependencies,
             self.resolved_expr_types,
         ) = saved;
 
@@ -6067,18 +7901,54 @@ impl LowerCtx {
     /// Resolves through `ResolvedTy::from_ty` so the decision rides the typed
     /// value-class, never a name string. Absent or unconvertible entries answer
     /// `false` — the conservative no-ownership-transfer default.
-    fn checked_span_is_user_resource(&self, span: &Span) -> bool {
+    fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         self.expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .is_some_and(|resolved| {
+            .and_then(|resolved| {
                 // Builtin runtime handles (`builtin: Some(_)`) and the
                 // non-`Named` affine variants (`CancellationToken`) are
                 // excluded: they reach borrowing FFI intrinsics by value.
-                matches!(resolved, ResolvedTy::Named { builtin: None, .. })
-                    && crate::value_class::ValueClass::of_ty(&resolved, &self.type_classes)
-                        == ValueClass::AffineResource
+                let ResolvedTy::Named {
+                    name,
+                    builtin: None,
+                    ..
+                } = resolved
+                else {
+                    return None;
+                };
+                (crate::value_class::ValueClass::of_ty(
+                    &ResolvedTy::Named {
+                        name: name.clone(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    &self.type_classes,
+                ) == ValueClass::AffineResource)
+                    .then_some(name)
             })
+    }
+
+    fn checked_span_is_user_resource(&self, span: &Span) -> bool {
+        self.checked_span_user_resource_type(span).is_some()
+    }
+
+    /// Project the checker's terminal-receiver disposition without
+    /// reclassifying the selected method in HIR.
+    fn method_receiver_intent(
+        &self,
+        key: &SpanKey,
+        consumes_receiver: bool,
+        preserves_receiver: bool,
+    ) -> IntentKind {
+        if self.method_call_discharges_receiver.contains(key) {
+            IntentKind::Discharge
+        } else if consumes_receiver && !preserves_receiver {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
     }
 
     /// Intent for an ordinary (non-receiver) call argument at `span`: `Consume`
@@ -6093,6 +7963,33 @@ impl LowerCtx {
         }
     }
 
+    /// Intent for an argument crossing a direct, source-declared C-ABI call.
+    ///
+    /// A plain resource parameter would normally be an ownership move. The
+    /// only exception is an exact generated ownership row proving that THIS
+    /// declared extern borrows THIS parameter. Missing, short, consume and
+    /// retain rows deliberately fall back to the ordinary consuming intent.
+    fn call_arg_move_intent(&self, symbol: Option<&str>, index: usize, span: &Span) -> IntentKind {
+        let borrows_resource = symbol.is_some_and(|symbol| {
+            self.extern_fn_names.contains(symbol)
+                && self
+                    .checked_span_user_resource_type(span)
+                    .is_some_and(|resource_type| {
+                        hew_types::ffi_contracts::extern_resource_param_is_audited_borrow(
+                            symbol,
+                            index,
+                            self.current_module_name.as_deref(),
+                            &resource_type,
+                        )
+                    })
+        });
+        if borrows_resource && self.checked_span_is_user_resource(span) {
+            IntentKind::Read
+        } else {
+            self.arg_move_intent(span)
+        }
+    }
+
     /// Lower a call's ordinary (non-receiver) arguments, choosing each
     /// argument's move-vs-borrow intent through `arg_move_intent`. A by-value
     /// user-`#[resource]` argument is lowered `Consume` (an ownership move into
@@ -6101,9 +7998,21 @@ impl LowerCtx {
     /// single funnel every free-call and method-call argument list flows
     /// through so the value-move consume decision lives in exactly one place.
     fn lower_call_args(&mut self, args: &[CallArg]) -> Vec<HirExpr> {
+        self.lower_call_args_for_callee(args, None)
+    }
+
+    /// Lower call arguments after the caller has identified an optional direct
+    /// C-ABI symbol. All other call shapes use the normal by-value ownership
+    /// intent; only a declared extern can consult the FFI contract table.
+    fn lower_call_args_for_callee(
+        &mut self,
+        args: &[CallArg],
+        symbol: Option<&str>,
+    ) -> Vec<HirExpr> {
         args.iter()
-            .map(|arg| {
-                let intent = self.arg_move_intent(&arg.expr().1);
+            .enumerate()
+            .map(|(index, arg)| {
+                let intent = self.call_arg_move_intent(symbol, index, &arg.expr().1);
                 self.lower_expr(arg.expr(), intent)
             })
             .collect()
@@ -6132,35 +8041,42 @@ impl LowerCtx {
             })
     }
 
-    /// True when the checker typed the expression at `span` as a type that
-    /// transitively contains a channel handle (`Sender<T>` / `Receiver<T>`).
+    /// Whether `ty` transitively carries a value whose SOLE ownership crosses
+    /// an actor message boundary: a substrate handle (the builtin list owned by
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], shared with
+    /// the env checker), or a user `#[resource]` / `#[linear]` declaration.
     ///
-    /// This is the recursive version of `checked_span_is_channel_handle` and
-    /// mirrors `resolved_ty_contains_channel_handle` from codegen. A direct
-    /// handle, a tuple carrying one, or a generic whose type arg is a handle
-    /// all return true. Absent or unconvertible entries answer `false` —
-    /// the conservative no-ownership-transfer default.
+    /// The nominal arm reads `type_classes`, which the item passes populate
+    /// before any function body is lowered, so a `Resource` / `Linear` marker
+    /// is always available here.
     ///
-    /// ## Why this matters at the actor-send boundary
+    /// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+    /// carry the `Resource` MARKER for drop elaboration but are shareable
+    /// addresses, so they are excluded on both sides — sending a pid must not
+    /// consume the sender's own handle.
+    fn resolved_ty_transfers_ownership_to_mailbox(&self, ty: &ResolvedTy) -> bool {
+        resolved_ty_transfers_ownership_to_mailbox(ty, &self.type_classes, &self.type_member_tys)
+    }
+
+    /// The [`IntentKind`] an actor message argument at `span` must carry.
     ///
-    /// Channel handles are single-owner on the ownership axis even though they
-    /// are `BitCopy` on the representation axis (`#[opaque]`-only types are
-    /// pointer-width and memcpy'd). The HIR actor-send lowering must issue
-    /// `Consume` intent for any arg whose type transitively carries a handle so
-    /// that the MIR dataflow checker sees a `Use { intent: Consume }` and
-    /// transitions the binding to `Consumed`. Without this, a tuple arg such as
-    /// `(rx, "tag")` is lowered as `Read` (`CowShare` in MIR), the caller binding
-    /// stays live, and a subsequent `rx.close()` is not statically refused —
-    /// producing a double-close at runtime (SIGABRT / SIGSEGV).
-    ///
-    /// Codegen's `resolved_ty_contains_channel_handle` predicate serves the
-    /// same purpose for the xnode-codec skip; the two predicates must stay in
-    /// sync (`dedup-semantic-boundary` LESSONS invariant).
-    fn checked_span_contains_channel_handle(&self, span: &Span) -> bool {
-        self.expr_types
+    /// `Consume` when the mailbox hand-off takes sole ownership (see
+    /// [`Self::resolved_ty_transfers_ownership_to_mailbox`]), `Read` otherwise.
+    /// MIR lowers EVERY message argument through `lower_value_for_move`, so
+    /// this intent is what lets the MIR dataflow checker see the consume and
+    /// refuse a second transfer — the ask/tell/select-arm paths all route
+    /// through here so no argument position is left unowned.
+    fn actor_message_arg_intent(&self, span: &Span) -> IntentKind {
+        let transfers = self
+            .expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .is_some_and(|resolved| resolved_ty_contains_channel_handle(&resolved))
+            .is_some_and(|resolved| self.resolved_ty_transfers_ownership_to_mailbox(&resolved));
+        if transfers {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
     }
 
     /// Construct a `SpanKey` for `span` in the current module context.
@@ -6373,10 +8289,15 @@ impl LowerCtx {
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
-        let Some((origin, type_param_count, linkage)) = self
+        let declaration = self.impl_method_declaration_ids.get(callee).cloned();
+        let Some((origin, type_param_count, linkage, declaration)) = self
             .fn_registry
             .get(callee)
             .map(|entry| (entry.id, entry.type_params.len(), entry.linkage))
+            .zip(declaration)
+            .map(|((origin, type_param_count, linkage), declaration)| {
+                (origin, type_param_count, linkage, declaration)
+            })
         else {
             return;
         };
@@ -6396,7 +8317,9 @@ impl LowerCtx {
             let mut call_args = Vec::with_capacity(raw_call_args.len());
             for ty in &raw_call_args {
                 match ResolvedTy::from_ty(ty) {
-                    Ok(resolved) => call_args.push(resolved),
+                    Ok(resolved) => {
+                        call_args.push(self.qualify_current_module_record_ty(resolved));
+                    }
                     Err(err) => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
@@ -6430,7 +8353,8 @@ impl LowerCtx {
         }
         let mono_key = MonoKey {
             origin,
-            origin_name: callee.to_string(),
+            declaration,
+            linker_symbol: callee.to_string(),
             type_args,
         };
         match self.mono_registry.insert(mono_key) {
@@ -6474,7 +8398,57 @@ impl LowerCtx {
             name
         }
         .to_string();
-        self.register_free_fn_monomorphisation(&registry_name, call_span, call_site);
+        self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
+    }
+
+    /// Diagnose a poisoned checker `call_type_args` entry before the generic
+    /// missing-target boundary can mask it.
+    ///
+    /// This lookup is diagnostic-only: it uses the source spelling solely to
+    /// identify the generic declaration whose checker side-table entry is
+    /// corrupt. It never manufactures an executable [`CallTarget`]; the caller
+    /// still lowers the expression as unsupported when the canonical target is
+    /// absent. Valid entries continue through the ordinary strict target gate.
+    fn diagnose_poisoned_direct_call_type_args(
+        &mut self,
+        callee_expr: &hew_parser::ast::Expr,
+        call_span: &std::ops::Range<usize>,
+    ) -> bool {
+        let Expr::Identifier(name) = callee_expr else {
+            return false;
+        };
+        let registry_name = if self.lookup(name).is_none() {
+            self.imported_rewrite_symbol(name).unwrap_or(name)
+        } else {
+            name
+        }
+        .to_string();
+        let is_generic_user_fn = self
+            .fn_registry
+            .get(&registry_name)
+            .is_some_and(|entry| entry.linkage.is_none() && !entry.type_params.is_empty());
+        if !is_generic_user_fn {
+            return false;
+        }
+        let key = self.mk_key(call_span);
+        let Some(type_args) = self.call_type_args.get(&key) else {
+            return false;
+        };
+        let Some(err) = type_args
+            .iter()
+            .find_map(|ty| ResolvedTy::from_ty(ty).err())
+        else {
+            return false;
+        };
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
+                callee: registry_name,
+                reason: err.to_string(),
+            },
+            call_span.clone(),
+            "checker-authoritative call_type_args entry failed boundary conversion before target publication",
+        ));
+        true
     }
 
     /// Register the per-instantiation monomorphisation of a generic top-level
@@ -6489,7 +8463,7 @@ impl LowerCtx {
     ///
     /// `registry_name` is the un-mono symbol the emitted `BindingRef.name`
     /// carries; MIR re-mangles it with `call_site_type_args[call_site]`, so
-    /// `MonoKey.origin_name == registry_name` keeps the registry's
+    /// `MonoKey.linker_symbol == registry_name` keeps the registry's
     /// `mangled_name` and the MIR-side mangling spine identical.
     ///
     /// Reads type args exclusively from the checker side-table
@@ -6501,6 +8475,7 @@ impl LowerCtx {
     fn register_free_fn_monomorphisation(
         &mut self,
         registry_name: &str,
+        selected_declaration: Option<&hew_types::DefId>,
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
@@ -6524,8 +8499,19 @@ impl LowerCtx {
         }
         let builtin_family = entry.builtin_family;
         let origin = entry.id;
-        let origin_name = registry_name.to_string();
+        let linker_symbol = registry_name.to_string();
         let key = self.mk_key(call_span);
+        // Dot-qualified source calls carry their exact `User(DefId)` in the
+        // module-call rewrite, not in the ordinary-call target table. Thread
+        // that checker-selected declaration through instead of trying to
+        // recover it from the linker spelling. Bare direct calls continue to
+        // read the ordinary target side table.
+        let Some(declaration) = selected_declaration
+            .cloned()
+            .or_else(|| self.direct_monomorph_declaration(call_span))
+        else {
+            return;
+        };
         let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
             // Generic callee with no recorded type args at this site.
             // The checker records every generic call site — inferred,
@@ -6546,7 +8532,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(resolved),
+                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
                 Err(err) => {
                     // Fail-closed: poisoned side-table for this call.
                     // Emit a diagnostic; skip the registry entry so the
@@ -6554,7 +8540,7 @@ impl LowerCtx {
                     // unresolved type. (LESSONS: checker-output-boundary P0)
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
-                            callee: origin_name.clone(),
+                            callee: linker_symbol.clone(),
                             reason: err.to_string(),
                         },
                         call_span.clone(),
@@ -6603,7 +8589,8 @@ impl LowerCtx {
         }
         let mono_key = MonoKey {
             origin,
-            origin_name: origin_name.clone(),
+            declaration,
+            linker_symbol,
             type_args,
         };
         match self.mono_registry.insert(mono_key) {
@@ -6705,7 +8692,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(resolved),
+                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::RecordLayoutTypeArgsViolation {
@@ -6781,6 +8768,7 @@ impl LowerCtx {
             origin,
             origin_name,
             type_args,
+            symbol_class: crate::mono::SymbolClass::Function,
         };
         if self
             .record_layout_registry
@@ -6875,6 +8863,46 @@ fn method_signature_type_exprs(method: &FnDecl) -> impl Iterator<Item = &TypeExp
         .iter()
         .map(|param| &param.ty.0)
         .chain(method.return_type.as_ref().map(|rt| &rt.0))
+}
+
+/// Collect every nominal leaf name mentioned in a surface `TypeExpr`,
+/// descending through type arguments and structural composites. Source
+/// spellings only — no resolution, no qualification.
+fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            out.push(name.clone());
+            for arg in type_args.as_deref().unwrap_or(&[]) {
+                collect_type_expr_named_leaves(&arg.0, out);
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            collect_type_expr_named_leaves(&ok.0, out);
+            collect_type_expr_named_leaves(&err.0, out);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Array { element: inner, .. }
+        | TypeExpr::Pointer { pointee: inner, .. }
+        | TypeExpr::Borrow(inner) => {
+            collect_type_expr_named_leaves(&inner.0, out);
+        }
+        TypeExpr::Tuple(elements) => {
+            for element in elements {
+                collect_type_expr_named_leaves(&element.0, out);
+            }
+        }
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                collect_type_expr_named_leaves(&param.0, out);
+            }
+            collect_type_expr_named_leaves(&return_type.0, out);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+    }
 }
 
 /// Whether a `TypeExpr` appearing in an imported impl-method signature is safe
@@ -7441,30 +9469,26 @@ impl LowerCtx {
             };
             // Catalog rows whose NAME is itself a codegen `Terminator::Call`
             // intercept identity resolve to `ResolvedRef::Builtin(family)`
-            // so MIR threads the typed family onto the call and codegen
-            // dispatches on it, never on the callee string. Deliberately
-            // narrow: only the families whose intercepts are family-keyed
-            // today (math intrinsics, `Node::id`, `Node::lookup`, and the
-            // `HashMap::new` / `HashSet::new` constructor surface forms — `pid.send` /
-            // `conn.attach` and the channel/stream layout entries arrive typed
-            // through the checker's method-call rewrites instead).
+            // when their endpoint has a closed runtime family.  Other catalog
+            // rows remain catalog-builtin endpoints (for example print
+            // intercepts), which are carried through `CallTarget::Builtin`.
+            // No admitted catalog entry may fall through to an unsupported
+            // synthetic call target merely because it is not a runtime family.
             //
             // The lift must NOT apply to the `runtime_symbol()` alias
             // insert below: the alias callee name (e.g.
             // `hew_node_api_lookup_location`) is a different callee identity than
             // the family's `c_symbol()`, and carrying the family there
             // would break the `Terminator::Call` builtin↔callee invariant.
-            let primary_family =
-                match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(builtin.name) {
-                    Some(
-                        family @ (hew_types::runtime_call::RuntimeCallFamily::MathIntrinsic(_)
-                        | hew_types::runtime_call::RuntimeCallFamily::NodeId
-                        | hew_types::runtime_call::RuntimeCallFamily::NodeLookup
-                        | hew_types::runtime_call::RuntimeCallFamily::HashMapNew
-                        | hew_types::runtime_call::RuntimeCallFamily::HashSetNew),
-                    ) => Some(family),
-                    _ => None,
-                };
+            let primary_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                builtin.name,
+            )
+            .or_else(|| {
+                builtin
+                    .linkage
+                    .runtime_symbol()
+                    .and_then(hew_types::runtime_call::RuntimeCallFamily::from_c_symbol)
+            });
             self.fn_registry.insert(
                 builtin.name.to_string(),
                 FnEntry {
@@ -7732,6 +9756,9 @@ impl LowerCtx {
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+        // A later ordinary function registration must not inherit a stale
+        // extern privilege merely by reusing its symbol spelling.
+        self.extern_fn_names.remove(name);
         let id = self.ids.item();
         let return_ty = func
             .return_type
@@ -7762,16 +9789,10 @@ impl LowerCtx {
         method: &FnDecl,
         impl_type_params: &[String],
     ) {
-        // `self_type_name` is the symbol-prefix name — may be the mangled form
-        // for concrete specialised impls (e.g. `"Wrapper$$i64"`). The var-self
-        // check must use the bare AST receiver type name (e.g. `"Wrapper"`) so
-        // the param-type annotation `Wrapper<i64>` still matches (#2270).
-        let bare_type_name = self_type_name
-            .split_once("$$")
-            .map_or(self_type_name, |(bare, _)| bare);
+        let bare_type_name = Self::bare_impl_self_type_name(self_type_name);
         let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
         self.register_fn_entry(&symbol, method);
-        if Self::is_var_self_method_for_type(method, bare_type_name) {
+        if Self::is_var_self_method_for_type(method, Some(bare_type_name)) {
             if let Some(entry) = self.fn_registry.get_mut(&symbol) {
                 let Some(receiver_ty) = entry.param_tys.first().cloned() else {
                     unreachable!(
@@ -7817,19 +9838,42 @@ impl LowerCtx {
                 builtin_family: None,
             },
         );
+        self.extern_fn_names.insert(decl.name.clone());
     }
 
-    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: &str) -> bool {
+    /// Reduce a symbol-prefix impl self-type name to the bare AST receiver
+    /// type name — may be the mangled form for concrete specialised impls
+    /// (e.g. `"Wrapper$$i64"`), and must compare as `"Wrapper"` so the
+    /// param-type annotation `Wrapper<i64>` still matches (#2270).
+    ///
+    /// The SINGLE derivation feeding [`Self::is_var_self_method_for_type`]:
+    /// both the fn-registry ABI registration (dual-return tuple) and the
+    /// body-lowering return wrap key off this same name reduction so the
+    /// registered callee return type and the emitted body agree.
+    fn bare_impl_self_type_name(self_type_name: &str) -> &str {
+        let bare = self_type_name
+            .split_once("$$")
+            .map_or(self_type_name, |(bare, _)| bare);
+        hew_types::short_name(bare)
+    }
+
+    /// THE var-self receiver predicate. A method takes a `var self` receiver
+    /// iff its first parameter is mutable and typed `Self` — or, inside an
+    /// impl block, typed as the impl's own target type (the checker's
+    /// `is_receiver_param` accepts both spellings, so the ABI decision here
+    /// must too). Every site that decides the dual-return `(ret, Self)` ABI
+    /// carrier — registration and body lowering — goes through this one
+    /// function; a second predicate is how the call site and the callee
+    /// disagree on the return struct (the exact fail-closed ABI mismatch a
+    /// `fn next(var p: Pair<T>)` where-clause impl used to hit).
+    fn is_var_self_method_for_type(method: &FnDecl, self_type_name: Option<&str>) -> bool {
         method.params.first().is_some_and(|param| {
-            param.is_mutable && Self::is_receiver_param_for_type(param, self_type_name)
+            param.is_mutable
+                && match self_type_name {
+                    Some(name) => Self::is_receiver_param_for_type(param, name),
+                    None => Self::is_receiver_param(param),
+                }
         })
-    }
-
-    fn is_var_self_method(method: &FnDecl) -> bool {
-        method
-            .params
-            .first()
-            .is_some_and(|param| param.is_mutable && Self::is_receiver_param(param))
     }
 
     fn is_receiver_param_for_type(param: &Param, self_type_name: &str) -> bool {
@@ -8070,7 +10114,8 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            HirExprKind::Call { callee, args, .. }
+            | HirExprKind::SpawnedCall { callee, args, .. } => {
                 self.wrap_var_self_explicit_expr_returns(callee, receiver, abi_return_ty);
                 for arg in args {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
@@ -8163,6 +10208,7 @@ impl LowerCtx {
                 receiver: object, ..
             }
             | HirExprKind::RecordCloneCall { src: object, .. }
+            | HirExprKind::SubsumedValue { source: object, .. }
             | HirExprKind::ConnAwaitRead { conn: object, .. }
             | HirExprKind::AwaitRestart { child: object } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
@@ -8649,6 +10695,7 @@ impl LowerCtx {
             ty: return_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
+                target: self.registered_symbol_target(builtin_name),
                 callee: Box::new(callee),
                 args,
             },
@@ -8692,6 +10739,7 @@ impl LowerCtx {
             ty: return_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
+                target: self.registered_symbol_target(fn_name),
                 callee: Box::new(callee),
                 args,
             },
@@ -8708,17 +10756,28 @@ impl LowerCtx {
     /// resolves the concrete callee from `(declaring_trait, <substituted
     /// receiver>, method_name)` per monomorphisation and fails closed when
     /// no impl is registered.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "static dispatch preserves every checker-authored identity carrier explicitly"
+    )]
     fn make_static_trait_dispatch_call(
+        &mut self,
         receiver: HirExpr,
+        target: hew_types::CallTarget,
         receiver_type_param: String,
         bound_trait: String,
         declaring_trait: String,
         method_name: String,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
+        span: &Span,
     ) -> HirExprKind {
+        if !self.ensure_executable_target(&target, "static trait call", span) {
+            return HirExprKind::Unsupported("static trait call has no checker target".to_string());
+        }
         HirExprKind::CallTraitMethodStatic {
             receiver: Box::new(receiver),
+            target,
             receiver_type_param,
             bound_trait,
             declaring_trait,
@@ -8736,22 +10795,22 @@ impl LowerCtx {
     fn build_display_static_dispatch(
         &mut self,
         value: HirExpr,
+        target: hew_types::CallTarget,
+        declaring_trait: String,
         type_param_name: String,
         method_name: String,
         span: Span,
     ) -> HirExpr {
-        let display_trait = self
-            .lang_items
-            .display_trait()
-            .map_or_else(|| "Display".to_string(), str::to_owned);
-        let kind = Self::make_static_trait_dispatch_call(
+        let kind = self.make_static_trait_dispatch_call(
             value,
+            target,
             type_param_name,
-            display_trait.clone(),
-            display_trait,
+            declaring_trait.clone(),
+            declaring_trait,
             method_name,
             Vec::new(),
             ResolvedTy::String,
+            &span,
         );
         HirExpr {
             node: self.ids.node(),
@@ -8790,11 +10849,15 @@ impl LowerCtx {
     ///   sentinel — the checker's `require_display_impl` gate is the
     ///   authoritative reject point. Reaching the sentinel means
     ///   compilation halts: never a silent empty-string substitute.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "display lowering keeps all fail-closed dispatch cases in one authority"
+    )]
     fn lower_display_dispatch(&mut self, value: HirExpr, span: Span) -> HirExpr {
         // Resolve the Display method name through the lang-item registry.
         // Missing entry is fail-closed: f-string lowering cannot synthesise
         // dispatch without a method-name binding.
-        let Some(method_name) = self.lang_items.display_method().map(str::to_owned) else {
+        let Some(display_binding) = self.lang_items.get(hew_types::LANG_ITEM_DISPLAY_FMT) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: "Display::fmt".to_string(),
@@ -8809,6 +10872,35 @@ impl LowerCtx {
             ));
             return self.unsupported_expr(span, "f-string display dispatch: no display lang-item");
         };
+        let Some(method_name) = display_binding.method_name.clone() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: "display lang-item is missing its method spelling".to_string(),
+                },
+                span.clone(),
+                "f-string lowering requires a method-level display lang item",
+            ));
+            return self.unsupported_expr(
+                span,
+                "f-string display dispatch: malformed display lang-item",
+            );
+        };
+        let display_trait_name = display_binding.trait_name.clone();
+        let Some((display_trait, display_method)) = self.lang_items.display_method_identity()
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Display::fmt".to_string(),
+                    reason: "display lang-item lacks canonical declaration identities".to_string(),
+                },
+                span.clone(),
+                "f-string lowering requires checker-registered Display declaration identities",
+            ));
+            return self
+                .unsupported_expr(span, "f-string display dispatch: untyped display lang-item");
+        };
+        let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
         let ty = value.ty.clone();
         match &ty {
             // String: route through a user `impl Display for string` if one
@@ -8890,6 +10982,8 @@ impl LowerCtx {
                     let type_param_name = name.clone();
                     return self.build_display_static_dispatch(
                         value,
+                        display_target,
+                        display_trait_name,
                         type_param_name,
                         method_name,
                         span,
@@ -8905,7 +10999,14 @@ impl LowerCtx {
                 // monomorphisation (#1565); the concrete type is never
                 // re-derived here.
                 let type_param_name = name.clone();
-                self.build_display_static_dispatch(value, type_param_name, method_name, span)
+                self.build_display_static_dispatch(
+                    value,
+                    display_target,
+                    display_trait_name,
+                    type_param_name,
+                    method_name,
+                    span,
+                )
             }
             _ => {
                 // Same invariant as the named-type arm: the checker should
@@ -9109,13 +11210,40 @@ impl LowerCtx {
     /// non-generic callees, so safe to call unconditionally.
     fn lower_module_qualified_direct_call_lowered(
         &mut self,
+        target: CallTarget,
         c_symbol: &str,
         lowered_args: Vec<HirExpr>,
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        if !matches!(
+            target,
+            CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::Runtime(_)
+        ) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: c_symbol.to_string(),
+                    reason: "module-qualified call target is not direct".to_string(),
+                },
+                span.clone(),
+                "checker must publish a direct declaration or runtime target for module calls",
+            ));
+            return (
+                HirExprKind::Unsupported(
+                    "module-qualified call has unsupported target".to_string(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
         let symbol = crate::mangle_dotted_name(c_symbol);
-        self.register_free_fn_monomorphisation(&symbol, span, site);
+        let selected_declaration = match &target {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                Some(declaration)
+            }
+            CallTarget::Runtime(_) => None,
+            _ => unreachable!("direct-call target shape was validated above"),
+        };
+        self.register_free_fn_monomorphisation(&symbol, selected_declaration, span, site);
         let key = self.mk_key(span);
         let ret_ty = self
             .expr_types
@@ -9126,14 +11254,20 @@ impl LowerCtx {
                 self.qualify_current_module_record_ty(ty)
             });
         self.assert_resolved_ty_totality(span);
-        let resolved_ref = self
-            .fn_registry
-            .get(&symbol)
-            .map_or(ResolvedRef::Unresolved, |entry| {
-                entry
-                    .builtin_family
-                    .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
-            });
+        let resolved_ref = match target {
+            // The checker has already selected this closed executable family.
+            // Do not require a synthetic fn-registry spelling (or recover one
+            // from `symbol`) merely to mark the binding as directly callable.
+            CallTarget::Runtime(family) => ResolvedRef::Builtin(family),
+            _ => self
+                .fn_registry
+                .get(&symbol)
+                .map_or(ResolvedRef::Unresolved, |entry| {
+                    entry
+                        .builtin_family
+                        .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
+                }),
+        };
         let callee_ty = ResolvedTy::Function {
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
@@ -9152,6 +11286,7 @@ impl LowerCtx {
         };
         (
             HirExprKind::Call {
+                target,
                 callee: Box::new(callee),
                 args: lowered_args,
             },
@@ -9159,6 +11294,10 @@ impl LowerCtx {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "regular call lowering reconciles checker targets and module identities atomically"
+    )]
     fn lower_regular_call(
         &mut self,
         function: &Spanned<Expr>,
@@ -9175,10 +11314,98 @@ impl LowerCtx {
         // per-instantiation monomorphisation is registered — without it the
         // `FieldAccess` callee lowers to an unresolved binding.
         let rewrite_key = self.mk_key(span);
-        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) =
-            self.method_call_rewrites.get(&rewrite_key).cloned()
+        if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction {
+            target, c_symbol, ..
+        }) = self.method_call_rewrites.get(&rewrite_key).cloned()
         {
-            return self.lower_module_qualified_direct_call_lowered(&c_symbol, args, span, site);
+            return self
+                .lower_module_qualified_direct_call_lowered(target, &c_symbol, args, span, site);
+        }
+        // A direct target on `module.fn(args)` is insufficient on its own:
+        // the checker must also publish the module-qualified rewrite carrying
+        // the exact callee symbol. Without that fact, lowering the field access
+        // as an ordinary value call would leave an admitted HIR `Call` whose
+        // legacy MIR consumer can re-infer a target from strings.
+        if matches!(
+            &function.0,
+            Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Identifier(_))
+        ) && matches!(
+            self.ordinary_call_target(span),
+            Some(CallTarget::User(_) | CallTarget::Runtime(_))
+        ) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "module-qualified call".to_string(),
+                    reason: "missing module-qualified call rewrite".to_string(),
+                },
+                span.clone(),
+                "checker admitted a module-qualified call without its executable target fact",
+            ));
+            return (
+                HirExprKind::Unsupported(
+                    "module-qualified call has no checker rewrite".to_string(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
+        if self.ordinary_call_target(span).is_none()
+            && self.diagnose_poisoned_direct_call_type_args(&function.0, span)
+        {
+            return (
+                HirExprKind::Unsupported(
+                    "ordinary call has poisoned monomorphisation arguments".to_string(),
+                ),
+                ResolvedTy::Unit,
+            );
+        }
+        let source_name = Self::ordinary_call_presentation_name(function);
+        if source_name == "LambdaActorHandle::new" {
+            self.discard_rejected_call_child_facts(span);
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CallableUnsupportedInMir {
+                    name: source_name.clone(),
+                },
+                span.clone(),
+                "`LambdaActorHandle::new` is not a public constructor; use \
+                 `actor |params| { body }` to create a lambda actor",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("diagnosed: unsupported call to `{source_name}`")),
+                ResolvedTy::Unit,
+            );
+        }
+        let Some(target) = self.ordinary_call_target(span) else {
+            // Preserve source-resolution diagnostics when the checker rejected
+            // the callee before it could publish an executable target.  This is
+            // deliberately presentation-only: lowering the callee lets an
+            // unresolved identifier (including a non-callable layout descriptor)
+            // report `UnresolvedSymbol`, but its spelling is never retried as a
+            // direct-call target.
+            let _ = self.lower_expr(function, IntentKind::Read);
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    // This is presentation context only.  In particular, do
+                    // not turn it into a declaration lookup: a missing
+                    // checker target remains a hard HIR boundary failure.
+                    name: Self::ordinary_call_presentation_name(function),
+                    reason: "missing direct_call_targets entry".to_string(),
+                },
+                span.clone(),
+                "checker admitted an ordinary call without its canonical target",
+            ));
+            return (
+                HirExprKind::Unsupported("ordinary call has no checker target".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+        let target_name = Self::call_target_presentation_name(&target);
+        if !self.ensure_executable_target(&target, &target_name, span) {
+            return (
+                HirExprKind::Unsupported(
+                    "ordinary call has unsupported checker target".to_string(),
+                ),
+                ResolvedTy::Unit,
+            );
         }
         let callee = self.lower_expr(function, IntentKind::Read);
         // Record the per-instantiation monomorphisation if the callee is a
@@ -9197,14 +11424,12 @@ impl LowerCtx {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                 Err(err) => {
-                    let callee_name = if let Expr::Identifier(name) = &function.0 {
-                        name.clone()
-                    } else {
-                        "<expr>".to_string()
-                    };
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: callee_name,
+                            // The target's checker-owned declaration identity
+                            // is the diagnostic authority once one exists;
+                            // do not reconstruct it from the lowered callee.
+                            name: target_name,
                             reason: err.to_string(),
                         },
                         span.clone(),
@@ -9233,6 +11458,7 @@ impl LowerCtx {
         };
         (
             HirExprKind::Call {
+                target,
                 callee: Box::new(callee),
                 args,
             },
@@ -9279,6 +11505,224 @@ impl LowerCtx {
             }
         }
         None
+    }
+
+    /// Return the checker-authored declaration identities for a trait method.
+    /// An absent entry is intentionally propagated as `None`: static-dispatch
+    /// indexing must fail closed instead of constructing an id from HIR text.
+    fn trait_method_identity(
+        &self,
+        declaring_trait: &str,
+        method_name: &str,
+    ) -> Option<(hew_types::DefId, hew_types::DefId)> {
+        // An imported trait alias is a lexical binding, not an owner prefix.
+        // Consult the checker-published binding fact first; a bare trait bound
+        // inside the active module then has one exact canonical-owner fallback.
+        // Never reinterpret a final path segment as this module's owner.
+        if let Some(ids) = self.trait_method_ids_by_binding.get(&(
+            self.current_module_name.clone(),
+            declaring_trait.to_string(),
+            method_name.to_string(),
+        )) {
+            return Some(ids.clone());
+        }
+        if let Some(module) = self.current_module_name.as_deref() {
+            let key = format!("{module}.{declaring_trait}::{method_name}");
+            if let Some(ids) = self.trait_method_ids.get(&key) {
+                return Some(ids.clone());
+            }
+        }
+        self.trait_method_ids
+            .get(&format!("{declaring_trait}::{method_name}"))
+            .cloned()
+            .or_else(|| {
+                // The prelude iterator may be available without a lexical
+                // import binding.  Its lang-item binding carries the exact
+                // checker-minted declaration identities; compare only its
+                // checker-published surface names, never a hard-coded leaf or
+                // a scan over declaration-ID strings. Local/import bindings
+                // above remain higher priority.
+                let binding = self
+                    .lang_items
+                    .get(hew_types::LangItem::IteratorNext.key())?;
+                if declaring_trait == binding.trait_name
+                    && binding.method_name.as_deref() == Some(method_name)
+                {
+                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                // Display has the same prelude shape.  The method-level
+                // lang-item is the single exact authority, including if the
+                // stdlib later renames the trait or method.
+                let binding = self.lang_items.get(hew_types::LANG_ITEM_DISPLAY_FMT)?;
+                if declaring_trait == binding.trait_name
+                    && binding.method_name.as_deref() == Some(method_name)
+                {
+                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Resolve a trait bound written on an impl to the exact key used by the
+    /// default-method harvest.  Import aliases are resolved solely through the
+    /// checker-published binding table; local and already-qualified traits are
+    /// accepted only when an existing checker declaration ID proves that exact
+    /// owner.  There is intentionally no leaf-name/suffix fallback.
+    fn trait_default_owner_key(&self, trait_bound: &str) -> Option<String> {
+        let mut binding_owners: Vec<String> = self
+            .trait_method_ids_by_binding
+            .iter()
+            .filter(|((scope, binding, _), _)| {
+                scope == &self.current_module_name && binding == trait_bound
+            })
+            .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
+            .collect();
+        binding_owners.sort_unstable();
+        binding_owners.dedup();
+        if let [owner] = binding_owners.as_slice() {
+            return Some(owner.clone());
+        }
+        if !binding_owners.is_empty() {
+            return None;
+        }
+
+        let local_owner = self.current_module_name.as_ref().map_or_else(
+            || trait_bound.to_string(),
+            |module| format!("{module}.{trait_bound}"),
+        );
+        let mut exact_owners: Vec<String> = self
+            .trait_method_ids
+            .values()
+            .filter_map(|(trait_id, _)| {
+                let owner = trait_id.full_path();
+                (owner == trait_bound || owner == local_owner).then(|| owner.to_string())
+            })
+            .collect();
+        exact_owners.sort_unstable();
+        exact_owners.dedup();
+        (exact_owners.len() == 1).then(|| exact_owners.pop().expect("checked length"))
+    }
+
+    fn ordinary_call_target(&self, span: &Span) -> Option<CallTarget> {
+        self.direct_call_targets.get(&self.mk_key(span)).cloned()
+    }
+
+    /// Return the checker-owned declaration selected for a direct source call
+    /// that can own a generic body monomorphisation. Runtime, FFI, and
+    /// indirect targets deliberately have no source-body declaration.
+    fn direct_monomorph_declaration(&self, span: &Span) -> Option<hew_types::DefId> {
+        match self.ordinary_call_target(span)? {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                Some(declaration)
+            }
+            _ => None,
+        }
+    }
+
+    /// A call-site spelling is useful only when the checker did not publish a
+    /// target at all.  It is deliberately diagnostic-only: dispatch continues
+    /// to require a [`CallTarget`] fact and never retries this spelling.
+    fn ordinary_call_presentation_name(function: &Spanned<Expr>) -> String {
+        match &function.0 {
+            Expr::Identifier(name) => name.clone(),
+            Expr::FieldAccess { object, field } => match &object.0 {
+                Expr::Identifier(owner) => format!("{owner}::{field}"),
+                _ => "<call expression>".to_string(),
+            },
+            _ => "<call expression>".to_string(),
+        }
+    }
+
+    /// Render the checker-selected target without using the spelling carried
+    /// by a lowered expression.  Declaration-bearing targets retain their
+    /// full `DefId` path so diagnostics identify the same declaration that
+    /// structured dispatch will carry to MIR.
+    fn call_target_presentation_name(target: &CallTarget) -> String {
+        match target {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                declaration.full_path().to_string()
+            }
+            CallTarget::Extern { declaration, .. } => declaration.full_path().to_string(),
+            CallTarget::Runtime(family) => format!("runtime::{family:?}"),
+            CallTarget::Builtin { endpoint } => endpoint.clone(),
+            CallTarget::RuntimeCollection(family) => format!("runtime collection::{family:?}"),
+            CallTarget::DynamicVtable { method, .. }
+            | CallTarget::StaticTraitMethod { method, .. } => method.full_path().to_string(),
+            CallTarget::IndirectFunctionValue => "indirect function value".to_string(),
+            CallTarget::Unsupported { reason } => format!("unsupported call ({reason})"),
+        }
+    }
+
+    /// Reject a checker sentinel before it becomes executable HIR. Every typed
+    /// call-family constructor routes through this gate.
+    fn ensure_executable_target(&mut self, target: &CallTarget, name: &str, span: &Span) -> bool {
+        if !matches!(target, CallTarget::Unsupported { .. }) {
+            return true;
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: name.to_string(),
+                reason: "checker target is unsupported".to_string(),
+            },
+            span.clone(),
+            "checker admitted a call without an executable target",
+        ));
+        false
+    }
+
+    /// Remove checker-fact occurrences for children of a call rejected before
+    /// those children become HIR nodes. The call root itself remains live as an
+    /// `Unsupported` expression and retains its own fact for finalization.
+    fn discard_rejected_call_child_facts(&mut self, span: &Span) {
+        let call_key = self.mk_key(span);
+        let discarded: HashSet<SiteId> = self
+            .produced_value_fact_keys
+            .iter()
+            .filter_map(|(site, (key, _))| {
+                (key != &call_key && key.start >= call_key.start && key.end <= call_key.end)
+                    .then_some(*site)
+            })
+            .collect();
+        for sites in self.produced_value_source_sites.values_mut() {
+            sites.retain(|site| !discarded.contains(site));
+        }
+        self.produced_value_source_sites
+            .retain(|_, sites| !sites.is_empty());
+        self.produced_value_fact_sites
+            .retain(|site, _| !discarded.contains(site));
+        self.generated_produced_value_facts
+            .retain(|site, _| !discarded.contains(site));
+        self.produced_value_fact_keys
+            .retain(|site, _| !discarded.contains(site));
+    }
+
+    /// Return the checker-owned target for a compiler-synthesised call to an
+    /// already registered symbol.  Synthetic lowering is not allowed to turn
+    /// that presentation string back into a declaration ID: either the
+    /// registry supplies a typed runtime/impl target or the call is explicit
+    /// unsupported and stops at the HIR boundary.
+    fn registered_symbol_target(&self, symbol: &str) -> CallTarget {
+        if let Some(entry) = self.fn_registry.get(symbol) {
+            if let Some(family) = entry.builtin_family {
+                return CallTarget::Runtime(family);
+            }
+            if entry.linkage.is_some() {
+                return CallTarget::Builtin {
+                    endpoint: symbol.to_string(),
+                };
+            }
+        }
+        if let Some(declaration) = self.impl_method_declaration_ids.get(symbol) {
+            return CallTarget::ImplMethod(declaration.clone());
+        }
+        CallTarget::Unsupported {
+            reason: format!("synthetic call `{symbol}` has no checker-owned target"),
+        }
     }
 
     /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
@@ -9335,6 +11779,32 @@ impl LowerCtx {
             ));
             return;
         };
+        // Record the FFI-backed nominal surface of this impl BEFORE any
+        // metadata-only skip below drops the block: a record named in the
+        // signature of an `#[extern_symbol]` method is constructed/consumed
+        // behind the C ABI, which is the signal
+        // `finalize_user_record_value_classes` needs to admit a zero-field
+        // record as a pointer-width handle stand-in.
+        for method in &decl.methods {
+            if !method
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "extern_symbol")
+            {
+                continue;
+            }
+            for ty in method_signature_type_exprs(method) {
+                let mut names = Vec::new();
+                collect_type_expr_named_leaves(ty, &mut names);
+                for name in names {
+                    if let Some(module) = &self.current_module_name {
+                        self.extern_backed_record_names
+                            .insert(format!("{module}.{name}"));
+                    }
+                    self.extern_backed_record_names.insert(name);
+                }
+            }
+        }
         // Outer type-parameter names (e.g. `T` in `impl<T> Iterator for VecIter<T>`).
         let type_params: Vec<String> = decl
             .type_params
@@ -9363,9 +11833,13 @@ impl LowerCtx {
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
-        let base_symbol_self_name = imported
-            .and_then(|context| context.symbol_self_name)
-            .unwrap_or(self_type_name.as_str());
+        let base_symbol_self_name = if self.lowering_injected_items {
+            injected_builtin_impl_symbol_owner(self_type_name)
+        } else {
+            imported
+                .and_then(|context| context.symbol_self_name)
+                .unwrap_or(self_type_name.as_str())
+        };
         let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
             std::borrow::Cow::Borrowed(base_symbol_self_name)
         } else {
@@ -9392,6 +11866,34 @@ impl LowerCtx {
             ));
             return;
         }
+        // The checker-resolved target type is the authority for every
+        // compiler-reserved inherent-impl exception below. Source spellings
+        // such as `Vec`, `Option`, and `Result` are ordinary user nominals
+        // unless they carry the corresponding builtin discriminator.
+        let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        // Injected `std/builtins.hew` impls are compiler-owned declarations.
+        // A root user declaration with the same source leaf must not retag
+        // their `Self` type or their static-dispatch metadata. Recover the
+        // exact builtin discriminator only at this provenance-bearing injected
+        // boundary; ordinary source impls continue to trust checker resolution.
+        if self.lowering_injected_items {
+            let injected_builtin = SYNTHETIC_CURSOR_LAYOUT_SPECS
+                .iter()
+                .find(|spec| spec.builtin.canonical_name() == self_type_name)
+                .map(|spec| spec.builtin)
+                .or_else(|| hew_types::lookup_builtin_type(self_type_name));
+            if let (Some(builtin), ResolvedTy::Named { args, .. }) =
+                (injected_builtin, &resolved_impl_self_ty)
+            {
+                resolved_impl_self_ty =
+                    ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args.clone());
+            }
+        }
+        let builtin_impl_kind = match &resolved_impl_self_ty {
+            ResolvedTy::Named { builtin, .. } => *builtin,
+            ResolvedTy::Duration => Some(BuiltinType::Duration),
+            _ => None,
+        };
         // Inherent-impl on builtin nominal guard: reject `impl Vec<T> { ... }`
         // and similar bare inherent impls on builtin generic types (`Vec`,
         // `HashMap`, `Option`, `Result`, etc.). The stdlib ships its own
@@ -9421,7 +11923,7 @@ impl LowerCtx {
         // below would reject `duration` as a builtin nominal once its canonical
         // name became a recognised builtin lookup key.
         let duration_ctors = ["from_nanos", "from_micros", "from_millis", "from_secs"];
-        let is_duration_ctor_block = self_type_name == "duration"
+        let is_duration_ctor_block = builtin_impl_kind == Some(BuiltinType::Duration)
             && decl.methods.len() == duration_ctors.len()
             && decl.methods.iter().all(|m| {
                 duration_ctors.contains(&m.name.as_str())
@@ -9432,10 +11934,7 @@ impl LowerCtx {
                         )
                     })
             });
-        if !is_duration_ctor_block
-            && decl.trait_bound.is_none()
-            && hew_types::lookup_builtin_type(self_type_name).is_some()
-        {
+        if !is_duration_ctor_block && decl.trait_bound.is_none() && builtin_impl_kind.is_some() {
             let declared_resource_close_impl = self
                 .type_classes
                 .get(self_type_name)
@@ -9454,16 +11953,19 @@ impl LowerCtx {
                         .methods
                         .iter()
                         .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
-                let all_methods_are_option_result_markers =
-                    matches!(self_type_name.as_str(), "Option" | "Result")
-                        && !decl.methods.is_empty()
-                        && decl.methods.iter().all(|m| {
+                let all_methods_are_option_result_markers = !decl.methods.is_empty()
+                    && match builtin_impl_kind {
+                        Some(BuiltinType::Option) => decl.methods.iter().all(|m| {
                             matches!(
-                                (self_type_name.as_str(), m.name.as_str()),
-                                ("Option", "is_some" | "is_none" | "unwrap" | "unwrap_or")
-                                    | ("Result", "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+                                m.name.as_str(),
+                                "is_some" | "is_none" | "unwrap" | "unwrap_or"
                             )
-                        });
+                        }),
+                        Some(BuiltinType::Result) => decl.methods.iter().all(|m| {
+                            matches!(m.name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+                        }),
+                        _ => false,
+                    };
                 if all_methods_are_extern_symbol_ffi || all_methods_are_option_result_markers {
                     return;
                 }
@@ -9500,6 +12002,11 @@ impl LowerCtx {
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_declaring_traits: Vec<String> = Vec::with_capacity(decl.methods.len());
+        let mut method_declaring_trait_ids: Vec<Option<hew_types::DefId>> =
+            Vec::with_capacity(decl.methods.len());
+        let mut method_trait_method_ids: Vec<Option<hew_types::DefId>> =
+            Vec::with_capacity(decl.methods.len());
+        let mut method_ids: Vec<Option<hew_types::DefId>> = Vec::with_capacity(decl.methods.len());
         // W3.042 S2-S1: stash the resolved impl-target type so that `Self`
         // appearing in any method's parameter/return annotation (notably the
         // parser-injected `self: Self` for bare `self` / `var self` receivers)
@@ -9507,8 +12014,45 @@ impl LowerCtx {
         // outside the per-method loop so it pays the cost once. Restore the
         // previous value (almost always `None`) on exit so nested
         // impl-lowering reentry — should it ever arise — does not leak state.
+        // `HirImplBlock::self_type_name` is receiver identity metadata, not a
+        // callable-symbol prefix. Imported non-colliding impls deliberately
+        // retain a bare prefix (`Value::push_int`) for the checker-aligned
+        // function registry, while their resolved receiver type carries the
+        // source identity (`toml.Value`). Preserve both facts: MIR compares
+        // this metadata with parameter zero to distinguish a true receiver
+        // from an associated function's ordinary first argument.
+        let hir_impl_self_type_name = match &resolved_impl_self_ty {
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::VecIter),
+                ..
+            } => "std.builtins.VecIter".to_string(),
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::HashMapIter),
+                ..
+            } => "std.builtins.HashMapIter".to_string(),
+            ResolvedTy::Named { name, .. } => self.current_module_name.as_deref().map_or_else(
+                || name.clone(),
+                |module| {
+                    // Runtime carrier presentation may deliberately collapse a
+                    // source-owned builtin to its catalog name (`MonitorRef`),
+                    // but impl metadata participates in declaration/lifecycle
+                    // joins and must retain the exact source owner.  Consult the
+                    // declaration registry rather than rebuilding identity from
+                    // a builtin name, so a same-leaf user carrier cannot inherit
+                    // the standard-library lifecycle.
+                    let declared = format!("{module}.{self_type_name}");
+                    if self.source_type_identities.contains(&declared) {
+                        return declared;
+                    }
+                    let module_short = hew_types::short_name(module);
+                    name.strip_prefix(&format!("{module_short}."))
+                        .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
+                },
+            ),
+            _ => base_symbol_self_name.to_string(),
+        };
         let prior_self_ty = self.current_impl_self_ty.take();
-        self.current_impl_self_ty = Some(self.lower_type(&decl.target_type));
+        self.current_impl_self_ty = Some(resolved_impl_self_ty);
         // For imported impl blocks, apply the same-module fn-name rewrite map
         // (bare helper name → mangled qualified symbol) to method bodies, just
         // as `lower_imported_fn_with_name` does for free functions. Methods
@@ -9535,6 +12079,7 @@ impl LowerCtx {
                 &symbol,
                 span.clone(),
                 &type_params,
+                Some(&symbol_self_name),
             );
             // Explicit impl-method bodies are written in the file that declares
             // the impl, so record as root-origin when this impl is lowered from
@@ -9549,8 +12094,23 @@ impl LowerCtx {
             if self.current_module_idx == 0 && !self.lowering_injected_items {
                 self.root_item_ids.insert(hir_method.id);
             }
+            // Publish the body only after it has actually emitted, and prove
+            // it is the symbol promised by the pre-lowering declaration plan.
+            // The plan deliberately excludes imported methods skipped for an
+            // unresolved body/signature, so a checker compatibility alias can
+            // never be promoted into a callable implementation body.
+            if let Some(declaration) = self.impl_method_declaration_ids.get(&symbol) {
+                let declaration = declaration.clone();
+                if self.lowering_injected_items
+                    || self.validate_impl_body_plan(&declaration, &symbol, &span)
+                {
+                    self.impl_method_body_symbols
+                        .entry(declaration)
+                        .or_insert_with(|| symbol.clone());
+                }
+            }
             items.push(HirItem::Function(hir_method));
-            method_symbols.push(symbol);
+            method_symbols.push(symbol.clone());
             method_names.push(method.name.clone());
             let declaring_trait = decl
                 .trait_bound
@@ -9561,7 +12121,14 @@ impl LowerCtx {
                         .as_ref()
                         .map_or(String::new(), |tb| tb.name.clone())
                 });
+            let ids = self.trait_method_identity(&declaring_trait, &method.name);
+            let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
+                trait_id.full_path().to_string()
+            });
             method_declaring_traits.push(declaring_trait);
+            method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
+            method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
+            method_ids.push(self.impl_method_declaration_ids.get(&symbol).cloned());
         }
 
         // Lower trait default methods that are NOT overridden in this impl.
@@ -9571,31 +12138,116 @@ impl LowerCtx {
         // so `Self` inside the default body lowers to the correct concrete type.
         if let Some(tb) = &decl.trait_bound {
             let overridden: HashSet<&str> = decl.methods.iter().map(|m| m.name.as_str()).collect();
-            if let Some(defaults) = self.trait_default_methods.get(&tb.name).cloned() {
-                for default_method in &defaults {
-                    if overridden.contains(default_method.name.as_str()) {
-                        continue;
+            if let Some(default_owner_key) = self.trait_default_owner_key(&tb.name) {
+                if let Some(defaults) = self.trait_default_methods.get(&default_owner_key).cloned()
+                {
+                    // The bodies below were copied from the trait declaration,
+                    // so their spans index the DECLARING module's source. The
+                    // checker recorded their facts under that module's index
+                    // (it checks each trait's default bodies once, during the
+                    // module walk). Lower them under the same index or every
+                    // `mk_key` lookup inside a copied body misses — a
+                    // `self.other()` call in a default body then fails closed
+                    // with `MethodCallNoRewrite`. Restored below.
+                    let saved_module_idx = self.current_module_idx;
+                    self.current_module_idx = self
+                        .trait_default_module_idx
+                        .get(&default_owner_key)
+                        .copied()
+                        .unwrap_or(saved_module_idx);
+                    for default_method in &defaults {
+                        if overridden.contains(default_method.name.as_str()) {
+                            continue;
+                        }
+                        let fn_decl = trait_method_to_fn_decl(default_method);
+                        let symbol = crate::node::HirImplBlock::method_symbol(
+                            &symbol_self_name,
+                            &fn_decl.name,
+                        );
+                        let declaring_trait = tb.name.clone();
+                        let ids = self.trait_method_identity(&declaring_trait, &fn_decl.name);
+                        // Trait declaration IDs own static lookup; this
+                        // materialised default body needs a distinct concrete
+                        // implementation identity for body lookup and
+                        // monomorphisation. The checker has no explicit
+                        // method declaration for a body it did not see in the
+                        // impl AST, so mint one exactly at this synthesis
+                        // boundary from the carried trait and self identities.
+                        let synthetic_default_declaration =
+                            ids.as_ref().and_then(|(declaring_trait, _)| {
+                                Self::synthetic_default_impl_body_declaration(
+                                    declaring_trait,
+                                    self.current_impl_self_ty.as_ref(),
+                                    &fn_decl.name,
+                                )
+                            });
+                        if let Some(declaration) = &synthetic_default_declaration {
+                            if let Some(existing) = self
+                                .impl_body_plan
+                                .symbols
+                                .insert(declaration.clone(), symbol.clone())
+                            {
+                                if existing != symbol {
+                                    self.impl_body_plan.symbols.remove(declaration);
+                                    self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: format!(
+                                                "impl body `{}`",
+                                                declaration.full_path()
+                                            ),
+                                            reason: format!(
+                                                "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
+                                            ),
+                                        },
+                                        span.clone(),
+                                        "one materialized trait default selected two distinct emitted-body symbols",
+                                    ));
+                                }
+                            }
+                        }
+                        // Deliberately NOT recorded into `root_item_ids`: the body
+                        // was copied from the trait declaration (see
+                        // `trait_method_to_fn_decl`), so its span indexes the
+                        // trait's source — the root file only when the trait is
+                        // itself root-local. Excluding all generated default-method
+                        // bodies degrades to a bare fail-closed line (never a false
+                        // caret against the root source). This is the exact producer
+                        // an absence-from-a-foreign-set proxy misclassified.
+                        let mut hir_method = self.lower_fn_with_name_and_impl_params(
+                            &fn_decl,
+                            &symbol,
+                            span.clone(),
+                            &type_params,
+                            Some(&symbol_self_name),
+                        );
+                        if let Some(declaration) = &synthetic_default_declaration {
+                            hir_method.declaration = declaration.clone();
+                            if self.validate_impl_body_plan(declaration, &symbol, &span) {
+                                self.impl_method_body_symbols
+                                    .entry(declaration.clone())
+                                    .or_insert_with(|| symbol.clone());
+                            }
+                        }
+                        items.push(HirItem::Function(hir_method));
+                        method_symbols.push(symbol.clone());
+                        method_names.push(fn_decl.name.clone());
+                        let declaring_trait =
+                            ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
+                                trait_id.full_path().to_string()
+                            });
+                        method_declaring_trait_ids
+                            .push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
+                        method_trait_method_ids
+                            .push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
+                        method_ids.push(
+                            self.impl_method_declaration_ids
+                                .get(&symbol)
+                                .cloned()
+                                .or(synthetic_default_declaration),
+                        );
+                        method_declaring_traits.push(declaring_trait);
                     }
-                    let fn_decl = trait_method_to_fn_decl(default_method);
-                    let symbol =
-                        crate::node::HirImplBlock::method_symbol(&symbol_self_name, &fn_decl.name);
-                    // Deliberately NOT recorded into `root_item_ids`: the body
-                    // was copied from the trait declaration (see
-                    // `trait_method_to_fn_decl`), so its span indexes the
-                    // trait's source — the root file only when the trait is
-                    // itself root-local. Excluding all generated default-method
-                    // bodies degrades to a bare fail-closed line (never a false
-                    // caret against the root source). This is the exact producer
-                    // an absence-from-a-foreign-set proxy misclassified.
-                    items.push(HirItem::Function(self.lower_fn_with_name_and_impl_params(
-                        &fn_decl,
-                        &symbol,
-                        span.clone(),
-                        &type_params,
-                    )));
-                    method_symbols.push(symbol);
-                    method_names.push(fn_decl.name.clone());
-                    method_declaring_traits.push(tb.name.clone());
+                    self.current_module_idx = saved_module_idx;
                 }
             }
         }
@@ -9618,13 +12270,16 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
-            self_type_name: base_symbol_self_name.to_string(),
+            self_type_name: hir_impl_self_type_name,
             type_params,
             self_type_concrete_args,
             type_aliases,
             method_symbols,
             method_names,
             method_declaring_traits,
+            method_declaring_trait_ids,
+            method_trait_method_ids,
+            method_ids,
             span,
         }));
     }
@@ -9635,7 +12290,7 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
     ) -> HirFn {
-        self.lower_fn_with_name_and_impl_params(func, name, span, &[])
+        self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
     fn lower_imported_fn_with_name(
@@ -9671,12 +12326,12 @@ impl LowerCtx {
         &mut self,
         decl: &ActorDecl,
         span: Span,
-        module_short: &str,
+        module_full_path: &str,
         rewrites: &HashMap<String, String>,
     ) -> HirActorDecl {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let mut lowered = self.lower_actor(decl, span, Some(module_short));
-        lowered.defining_module = Some(module_short.to_string());
+        let mut lowered = self.lower_actor(decl, span, Some(module_full_path));
+        lowered.defining_module = Some(module_full_path.to_string());
         // `lower_actor` attached checker side-tables under the bare name
         // (the root-actor identity). A module actor's checker identity is
         // the dotted `qualified_name()`; re-attach the descriptor and the
@@ -9698,7 +12353,7 @@ impl LowerCtx {
         // instead CREATE a mismatch.
         for handler in &mut lowered.receive_handlers {
             handler.return_ty =
-                self.qualify_colliding_module_record_ty(&handler.return_ty, module_short);
+                self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
         }
         self.imported_fn_rewrites = previous_rewrites;
         lowered
@@ -9726,7 +12381,7 @@ impl LowerCtx {
     fn qualify_colliding_module_record_ty(
         &self,
         ty: &ResolvedTy,
-        module_short: &str,
+        module_full_path: &str,
     ) -> ResolvedTy {
         let ResolvedTy::Named {
             name,
@@ -9739,7 +12394,7 @@ impl LowerCtx {
         };
         let args = args
             .iter()
-            .map(|arg| self.qualify_colliding_module_record_ty(arg, module_short))
+            .map(|arg| self.qualify_colliding_module_record_ty(arg, module_full_path))
             .collect();
         if builtin.is_some()
             || *is_opaque
@@ -9753,7 +12408,7 @@ impl LowerCtx {
                 is_opaque: *is_opaque,
             };
         }
-        let qualified = format!("{module_short}.{name}");
+        let qualified = format!("{module_full_path}.{name}");
         if self.record_registry.contains_key(&qualified) {
             return ResolvedTy::named_user(qualified, args);
         }
@@ -9844,12 +12499,29 @@ impl LowerCtx {
         name: &str,
         span: std::ops::Range<usize>,
         impl_type_params: &[String],
+        impl_self_type_name: Option<&str>,
     ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
             .fn_registry
             .get(name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
+        // Keep the checker/source declaration identity distinct from `name`:
+        // imported free functions emit a linker-safe mangled symbol, while
+        // direct-call targets retain the dotted source path. Impl methods are
+        // already checker-published under their emitted symbol; ordinary
+        // functions use the exact defining-module context active while their
+        // source body is lowered, never a reverse parse of the linker name.
+        let declaration = self
+            .impl_method_declaration_ids
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| {
+                hew_types::DefId::new(self.current_module_name.as_ref().map_or_else(
+                    || func.name.clone(),
+                    |module| format!("{module}.{}", func.name),
+                ))
+            });
 
         self.push_scope();
         // Track this function's declared type parameters for the duration of
@@ -9863,7 +12535,14 @@ impl LowerCtx {
                 .collect(),
         );
         let mut params = Vec::new();
-        for param in &func.params {
+        for (param_index, param) in func.params.iter().enumerate() {
+            if self
+                .caller_visible_param_spans
+                .contains(&self.mk_key(&param.ty.1))
+            {
+                self.caller_visible_param_projections
+                    .insert((id, param_index));
+            }
             let binding = self.bind_param(param);
             params.push(binding);
         }
@@ -9886,6 +12565,7 @@ impl LowerCtx {
             return HirFn {
                 id,
                 node: self.ids.node(),
+                declaration,
                 name: name.to_string(),
                 type_params: Self::concat_type_params(impl_type_params, func),
                 params,
@@ -9896,7 +12576,13 @@ impl LowerCtx {
                 intrinsic_id: None,
             };
         }
-        let var_self_receiver = if Self::is_var_self_method(func) {
+        // Same predicate AND same name reduction as
+        // `register_impl_method_fn_entry`: the fn-registry entry for `name`
+        // already carries the dual-return `(ret, Self)` tuple when this fires,
+        // so the wrapped body below is what makes the emitted return type
+        // match the ABI every call site was told about.
+        let bare_self_type_name = impl_self_type_name.map(Self::bare_impl_self_type_name);
+        let var_self_receiver = if Self::is_var_self_method_for_type(func, bare_self_type_name) {
             params.first().cloned()
         } else {
             None
@@ -9918,6 +12604,7 @@ impl LowerCtx {
         HirFn {
             id,
             node: self.ids.node(),
+            declaration,
             name: name.to_string(),
             type_params: Self::concat_type_params(impl_type_params, func),
             params,
@@ -10026,13 +12713,15 @@ impl LowerCtx {
         &mut self,
         func_name: &str,
         params: &[hew_parser::ast::Param],
+        resolved_param_tys: Option<&[ResolvedTy]>,
         boundary: &str,
         span: &Span,
     ) {
         let offenders: Vec<(String, String)> = params
             .iter()
-            .filter(|p| !p.is_consume)
-            .filter_map(|p| match &p.ty.0 {
+            .enumerate()
+            .filter(|(_, p)| !p.is_consume)
+            .filter_map(|(index, p)| match &p.ty.0 {
                 TypeExpr::Named { name, .. } => {
                     // Builtin affine handles (LocalPid/RemotePid/LambdaPid,
                     // channel halves, CancellationToken, MonitorRef, ...) are
@@ -10048,12 +12737,40 @@ impl LowerCtx {
                     // user-declared resources, whose `close` frees a real
                     // foreign resource and could double-free across an
                     // invisible body, must pin `consume` here.
-                    if crate::builtin_type_classes::builtin_type_registration(name).is_some() {
+                    let resolved_nominal = resolved_param_tys
+                        .and_then(|tys| tys.get(index))
+                        .and_then(|ty| match ty {
+                            ResolvedTy::Named { name, builtin, .. } => Some((name, *builtin)),
+                            _ => None,
+                        });
+                    if resolved_nominal.is_some_and(|(_, builtin)| builtin.is_some())
+                        || crate::builtin_type_classes::builtin_type_registration(name).is_some()
+                    {
                         return None;
                     }
                     match self.type_classes.get(name) {
                         Some((ResourceMarker::Resource | ResourceMarker::Linear, _)) => {
-                            Some((p.name.clone(), name.clone()))
+                            // A typed FFI ownership-contract row is the only
+                            // positive proof that a by-value resource handle
+                            // is merely borrowed across this invisible body.
+                            // The proof binds the exact nominal and the
+                            // trusted std.net declaration too: an arbitrary
+                            // `Foo` must not inherit `hew_tcp_read`'s scalar
+                            // ABI spelling. An absent/short row, a wrong
+                            // nominal/module, Retain, or Consume still
+                            // requires the surface `consume` marker.
+                            if boundary == "extern fn"
+                                && hew_types::ffi_contracts::extern_resource_param_is_audited_borrow(
+                                    func_name,
+                                    index,
+                                    self.current_module_name.as_deref(),
+                                    resolved_nominal.map_or(name.as_str(), |(name, _)| name.as_str()),
+                                )
+                            {
+                                None
+                            } else {
+                                Some((p.name.clone(), name.clone()))
+                            }
                         }
                         _ => None,
                     }
@@ -10305,6 +13022,7 @@ impl LowerCtx {
         HirTypeDecl {
             id,
             node: self.ids.node(),
+            declaration: hew_types::DefId::new(decl.name.clone()),
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -10323,11 +13041,11 @@ impl LowerCtx {
 
     /// Lower a `record` declaration into `HirRecordDecl`.
     ///
-    /// Only named-form records produce a field list; tuple-form records have an
-    /// empty field list (`HirRecordDecl.fields` is empty) because their
-    /// constructor is a `Call` (`R(a, b)`) rather than a `StructInit`
-    /// (`R { x: a, y: b }`). Tuple records are never looked up in the
-    /// `record_field_orders` table — the MIR producer only handles named-form.
+    /// Only named-form records produce a named field list. Tuple-form records
+    /// keep `HirRecordDecl.fields` empty because their constructor is a `Call`
+    /// (`R(a, b)`) rather than a `StructInit` (`R { x: a, y: b }`), while
+    /// `HirRecordDecl.positional_field_tys` preserves the stored payload shape
+    /// for downstream layout and clone/drop classification.
     fn lower_record_decl(
         &mut self,
         decl: &RecordDecl,
@@ -10337,20 +13055,30 @@ impl LowerCtx {
             params.iter().map(|p| p.name.clone()).collect()
         });
 
-        let fields: Vec<HirField> = match &decl.kind {
-            RecordKind::Named(record_fields) => record_fields
-                .iter()
-                .map(|rf| HirField {
-                    name: rf.name.clone(),
-                    ty: self.lower_type(&rf.ty),
-                    default: None,
-                    is_mutable: false,
-                    span: rf.span.clone(),
-                })
-                .collect(),
-            // Tuple records have no named fields; their constructor fn handles
-            // positional argument binding.
-            RecordKind::Tuple(_) => vec![],
+        let (fields, positional_field_tys): (Vec<HirField>, Vec<ResolvedTy>) = match &decl.kind {
+            RecordKind::Named(record_fields) => (
+                record_fields
+                    .iter()
+                    .map(|rf| HirField {
+                        name: rf.name.clone(),
+                        ty: self.lower_type(&rf.ty),
+                        default: None,
+                        is_mutable: false,
+                        span: rf.span.clone(),
+                    })
+                    .collect(),
+                Vec::new(),
+            ),
+            // Tuple records have no named fields; retain their payload types
+            // separately so layout consumers can classify the stored value
+            // without exposing `.0`/`.1` field access.
+            RecordKind::Tuple(positional_types) => (
+                Vec::new(),
+                positional_types
+                    .iter()
+                    .map(|ty| self.lower_type(ty))
+                    .collect(),
+            ),
         };
 
         // Reuse the stable ItemId pre-allocated during the record/
@@ -10370,6 +13098,7 @@ impl LowerCtx {
             // so today every lowered record is root-identity.
             defining_module: None,
             type_params,
+            positional_field_tys,
             fields,
             span,
         }
@@ -10388,10 +13117,11 @@ impl LowerCtx {
         &mut self,
         decl: &TypeDecl,
         span: std::ops::Range<usize>,
-        module_short: &str,
+        module_name: &str,
     ) -> HirTypeDecl {
         let mut lowered = self.lower_type_decl(decl, span);
-        lowered.defining_module = Some(module_short.to_string());
+        lowered.declaration = hew_types::DefId::new(format!("{module_name}.{}", decl.name));
+        lowered.defining_module = Some(module_name.to_string());
         lowered
     }
 
@@ -10439,7 +13169,7 @@ impl LowerCtx {
                 };
                 HirSupervisorChild {
                     name: child.name.clone(),
-                    ty: child.actor_type.clone(),
+                    ty: self.canonical_supervisor_child_ty(&child.actor_type),
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,
                         RestartPolicy::Transient => HirRestartPolicy::Transient,
@@ -10538,12 +13268,12 @@ impl LowerCtx {
                 }
             })
             .collect();
+        let state_type_name = module_short.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
         self.enum_variants_by_name
-            .insert(decl.name.clone(), state_variants.clone());
-        if let Some(module_short) = module_short {
-            self.enum_variants_by_name
-                .insert(format!("{module_short}.{}", decl.name), state_variants);
-        }
+            .insert(state_type_name, state_variants);
 
         let event_type_name = format!("{}Event", decl.name);
         let event_variants: Vec<HirVariant> = decl
@@ -10567,12 +13297,11 @@ impl LowerCtx {
                 }
             })
             .collect();
+        let event_type_name = module_short.map_or(event_type_name.clone(), |module| {
+            format!("{module}.{event_type_name}")
+        });
         self.enum_variants_by_name
-            .insert(event_type_name.clone(), event_variants.clone());
-        if let Some(module_short) = module_short {
-            self.enum_variants_by_name
-                .insert(format!("{module_short}.{event_type_name}"), event_variants);
-        }
+            .insert(event_type_name, event_variants);
     }
 
     #[expect(
@@ -10628,9 +13357,24 @@ impl LowerCtx {
             .collect();
 
         // Install machine context so nested `lower_expr` calls can resolve
-        // state-name references and self-field accesses. Restored at the end
-        // of `lower_machine` via `mem::replace`.
+        // state-name references and self-field accesses.  State constructors
+        // do not receive a checker expression-type entry, so retain the
+        // declaration's symbolic generic arguments here; MIR substitutes them
+        // using the concrete `MachineMonoEntry` while synthesising each step.
+        // Restored at the end of `lower_machine` via `mem::replace`.
         let prev_machine_name = self.current_machine_name.replace(decl.name.clone());
+        let machine_origin = self.current_module_name.as_ref().map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
+        let machine_self_ty = ResolvedTy::named_user(
+            machine_origin,
+            decl.type_params
+                .iter()
+                .map(|param| ResolvedTy::named_user(param.name.clone(), Vec::new()))
+                .collect(),
+        );
+        let prev_machine_self_ty = self.current_machine_self_ty.replace(machine_self_ty);
         let prev_machine_states = self
             .current_machine_states
             .replace(machine_state_descriptors.clone());
@@ -10799,6 +13543,7 @@ impl LowerCtx {
                 // Restore machine context before early return so the next
                 // top-level item lowers in a clean context.
                 self.current_machine_name = prev_machine_name;
+                self.current_machine_self_ty = prev_machine_self_ty;
                 self.current_machine_states = prev_machine_states;
                 return None;
             }
@@ -10971,12 +13716,14 @@ impl LowerCtx {
         if has_machine_errors {
             // Restore machine context before early return.
             self.current_machine_name = prev_machine_name;
+            self.current_machine_self_ty = prev_machine_self_ty;
             self.current_machine_states = prev_machine_states;
             return None;
         }
 
         // Restore machine context before returning.
         self.current_machine_name = prev_machine_name;
+        self.current_machine_self_ty = prev_machine_self_ty;
         self.current_machine_states = prev_machine_states;
 
         // Lower trait bounds declared on the machine's type parameters.
@@ -11035,6 +13782,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
+            defining_module: self.current_module_name.clone(),
             type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
             type_param_bounds,
             states: hir_states,
@@ -11308,10 +14056,12 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
-            // Root-program identity. Package-module actors get their
-            // defining module stamped by `lower_imported_actor`; file-import
-            // spliced actors lower through this path and stay root-identical.
-            defining_module: None,
+            // File-import items are flattened for source-order lowering, but
+            // flattening does not erase declaration ownership.  The third
+            // pass supplies their checker-aligned module identity here; a
+            // genuine root actor still carries `None`. Package-module actors
+            // use the same identity through `lower_imported_actor`.
+            defining_module: decl_module.map(str::to_string),
             state_fields,
             init,
             receive_handlers,
@@ -12813,7 +15563,7 @@ impl LowerCtx {
                 // (the condition is "tag matches None") and a plain
                 // identifier pattern is semantically a `while true` with
                 // a re-bind which is not what users mean.
-                let (PatternKind::VariantCtor, Some(variant_match)) =
+                let (PatternKind::VariantCtor, Some(mut variant_match)) =
                     (resolution.pattern_kind, resolution.variant_match)
                 else {
                     self.unsupported(
@@ -12847,11 +15597,8 @@ impl LowerCtx {
                 // Resolve variant_idx via `machine_ctor_registry` (same
                 // qualified-key lookup used by `lower_match_expr` so that
                 // MIR/codegen consume identical indices).
-                let qualified = format!(
-                    "{}::{}",
-                    variant_match.type_name, variant_match.variant_name
-                );
-                let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                let Some((registered_type, idx_usize, _)) =
+                    self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
                 else {
                     self.unsupported(
                         pattern_span.clone(),
@@ -12876,6 +15623,7 @@ impl LowerCtx {
                         span: span.clone(),
                     };
                 };
+                variant_match.type_name = registered_type;
                 let variant_idx = u32::try_from(idx_usize)
                     .expect("variant index exceeds u32::MAX — impossible in Hew");
 
@@ -12884,7 +15632,7 @@ impl LowerCtx {
                 let mut binding_error = false;
                 for payload in &resolution.payload_bindings {
                     let ty = match ResolvedTy::from_ty(&payload.ty) {
-                        Ok(ty) => ty,
+                        Ok(ty) => self.qualify_current_module_record_ty(ty),
                         Err(err) => {
                             self.unsupported(
                                 pattern_span.clone(),
@@ -13344,7 +16092,7 @@ impl LowerCtx {
         let mut prelude = Vec::new();
         let mut had_error = false;
         let field_tys = self
-            .lookup_variant_ctor(ctor_name)
+            .lookup_variant_ctor(ctor_name, Some(scrutinee_ty))
             .map(|(type_name, _, kind)| match kind {
                 HirVariantKind::Tuple(field_tys) => {
                     let scrutinee_args = match scrutinee_ty {
@@ -13438,7 +16186,7 @@ impl LowerCtx {
         // Declared struct-variant fields in declaration order, with generic
         // type params substituted from the scrutinee's type args.
         let field_decls: Vec<(String, ResolvedTy)> = self
-            .lookup_variant_ctor(variant_name)
+            .lookup_variant_ctor(variant_name, Some(scrutinee_ty))
             .map(|(type_name, _, kind)| match kind {
                 HirVariantKind::Struct(field_decls) => {
                     let scrutinee_args = match scrutinee_ty {
@@ -13578,11 +16326,9 @@ impl LowerCtx {
             return None;
         };
 
-        let qualified = format!(
-            "{}::{}",
-            variant_match.type_name, variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((_, idx_usize, _)) =
+            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "let-else variant not registered in machine/enum ctor registry",
@@ -13599,7 +16345,7 @@ impl LowerCtx {
         let mut binding_error = false;
         for payload in &resolution.payload_bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -13811,7 +16557,7 @@ impl LowerCtx {
             });
         }
 
-        let (PatternKind::VariantCtor, Some(variant_match)) =
+        let (PatternKind::VariantCtor, Some(mut variant_match)) =
             (resolution.pattern_kind, resolution.variant_match)
         else {
             self.unsupported(
@@ -13830,11 +16576,9 @@ impl LowerCtx {
             return None;
         };
 
-        let qualified = format!(
-            "{}::{}",
-            variant_match.type_name, variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((registered_type, idx_usize, _)) =
+            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "if-let variant not registered in machine/enum ctor registry",
@@ -13848,6 +16592,7 @@ impl LowerCtx {
             }
             return None;
         };
+        variant_match.type_name = registered_type;
         let variant_idx =
             u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
 
@@ -13856,7 +16601,7 @@ impl LowerCtx {
         let mut binding_error = false;
         for payload in &resolution.payload_bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -14005,6 +16750,29 @@ impl LowerCtx {
     }
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        let mut lowered = self.lower_expr_without_root_fact(expr, intent);
+        let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
+        if normalized_ty != lowered.ty {
+            lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
+            lowered.ty = normalized_ty;
+        }
+        if !self
+            .generated_produced_value_facts
+            .contains_key(&lowered.site)
+        {
+            self.record_produced_value_fact(&expr.1, &lowered);
+        }
+        lowered
+    }
+
+    /// Lower an authored expression while leaving its root occurrence for a
+    /// specialised caller to publish. Recursive child expressions still use
+    /// `lower_expr` and therefore retain their ordinary checker facts.
+    fn lower_expr_without_root_fact(
+        &mut self,
+        expr: &Spanned<Expr>,
+        intent: IntentKind,
+    ) -> HirExpr {
         let lowered = self.lower_expr_inner(expr, intent);
 
         // Function-tail Ok-coercion: the checker marked this tail expression's
@@ -14015,14 +16783,229 @@ impl LowerCtx {
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
         if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.wrap_tail_ok(lowered, &expr.1)
+            self.record_produced_value_fact(&expr.1, &lowered);
+            let wrapped = self.wrap_tail_ok(lowered, &expr.1);
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::Unknown,
+            );
+            wrapped
         } else {
             lowered
         }
     }
 
+    fn record_generated_produced_value_fact(
+        &mut self,
+        lowered: &HirExpr,
+        ownership: hew_types::ProducedValueOwnership,
+    ) {
+        let previous = self.generated_produced_value_facts.insert(
+            lowered.site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::classify(&lowered.kind),
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        assert!(previous.is_none(), "generated HIR site published twice");
+    }
+
+    /// Publish a synthetic expression root that deliberately has no checker
+    /// span identity of its own. Actor-lambda bodies can share the enclosing
+    /// spawn span, so consuming the spawn's fresh-handle fact for the body
+    /// would mint an owner of the wrong type. Bit-copy bodies are exactly
+    /// `NoOwner`; all other body roots fail closed as `Unknown` while their
+    /// authored child facts remain intact.
+    fn record_synthetic_body_fact(&mut self, span: &Span, lowered: &HirExpr) {
+        let key = self.mk_key(span);
+        self.produced_value_source_sites
+            .entry(key.clone())
+            .or_default()
+            .push(lowered.site);
+        self.produced_value_fact_keys
+            .insert(lowered.site, (key, Some(ProducedValueDependency::Leaf)));
+        let ownership = if lowered.value_class == ValueClass::BitCopy {
+            hew_types::ProducedValueOwnership::NoOwner
+        } else {
+            hew_types::ProducedValueOwnership::Unknown
+        };
+        self.produced_value_fact_sites.insert(
+            lowered.site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::classify(&lowered.kind),
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+    }
+
+    /// Project the checker fact for one parsed expression onto its stable HIR
+    /// site.  The receiver relation remains a span-key lookup until every
+    /// expression has lowered; this avoids using source/display names as an
+    /// identity fallback and also supports nested receivers naturally.
+    fn record_produced_value_fact(&mut self, span: &Span, lowered: &HirExpr) {
+        if self.suppress_produced_value_recording_depth != 0 {
+            return;
+        }
+        let key = self.mk_key(span);
+        self.produced_value_source_sites
+            .entry(key.clone())
+            .or_default()
+            .push(lowered.site);
+        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
+            // Resolve dependency and receiver edges only after all HIR source
+            // expressions have registered their sites.  Branch joins and
+            // wrappers may lower their result before a sibling source, so
+            // eager resolution would make traversal order semantic.
+            self.produced_value_fact_keys.insert(
+                lowered.site,
+                (
+                    key.clone(),
+                    self.produced_value_dependencies.get(&key).cloned(),
+                ),
+            );
+            self.produced_value_fact_sites.insert(
+                lowered.site,
+                HirProducedValueFact {
+                    producer: crate::node::HirProducedValueProducer::classify(&lowered.kind),
+                    ownership: fact.ownership,
+                    relation: crate::node::HirProducedValueRelation::Leaf,
+                    receiver: None,
+                    receiver_boundary: fact.receiver_boundary,
+                    arguments: fact.arguments,
+                },
+            );
+        }
+    }
+
+    /// Lower a compiler-synthesised expression whose root corresponds to a
+    /// checker-authored synthetic side-table row, while keeping cloned operand
+    /// AST out of the occurrence map. This prevents one source receiver span
+    /// from acquiring facts for every generated `.keys()`/`.values()`/`to_vec()`
+    /// reread.
+    fn lower_synthetic_checker_root(
+        &mut self,
+        expr: &Spanned<Expr>,
+        intent: IntentKind,
+    ) -> HirExpr {
+        self.suppress_produced_value_recording_depth += 1;
+        let lowered = self.lower_expr(expr, intent);
+        self.suppress_produced_value_recording_depth -= 1;
+        self.record_produced_value_fact(&expr.1, &lowered);
+        lowered
+    }
+
+    fn lower_synthetic_operand(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        self.suppress_produced_value_recording_depth += 1;
+        let lowered = self.lower_expr(expr, intent);
+        self.suppress_produced_value_recording_depth -= 1;
+        lowered
+    }
+
+    /// Retain a checker child occurrence that a specialised HIR node consumes.
+    /// The returned anchor participates in HIR structure and ownership facts,
+    /// but is intentionally not executable MIR.
+    fn produced_value_source_anchor(
+        &mut self,
+        span: &Span,
+        ty: ResolvedTy,
+        intent: IntentKind,
+        producer: HirProducedValueProducer,
+    ) -> HirProducedValueSourceAnchor {
+        let site = self.ids.site();
+        let key = self.mk_key(span);
+        self.produced_value_source_sites
+            .entry(key.clone())
+            .or_default()
+            .push(site);
+        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
+            self.produced_value_fact_keys.insert(
+                site,
+                (
+                    key.clone(),
+                    self.produced_value_dependencies.get(&key).cloned(),
+                ),
+            );
+            self.produced_value_fact_sites.insert(
+                site,
+                HirProducedValueFact {
+                    producer,
+                    ownership: fact.ownership,
+                    relation: crate::node::HirProducedValueRelation::Leaf,
+                    receiver: None,
+                    receiver_boundary: fact.receiver_boundary,
+                    arguments: fact.arguments,
+                },
+            );
+        }
+        HirProducedValueSourceAnchor {
+            node: self.ids.node(),
+            site,
+            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+            ty,
+            intent,
+            producer,
+            span: span.clone(),
+            source: None,
+        }
+    }
+
+    fn source_anchor_from_lowered(lowered: &HirExpr) -> HirProducedValueSourceAnchor {
+        HirProducedValueSourceAnchor {
+            node: lowered.node,
+            site: lowered.site,
+            ty: lowered.ty.clone(),
+            value_class: lowered.value_class,
+            intent: lowered.intent,
+            producer: HirProducedValueProducer::classify(&lowered.kind),
+            span: lowered.span.clone(),
+            source: None,
+        }
+    }
+
+    fn subsumed_value(
+        &mut self,
+        site: SiteId,
+        span: &Span,
+        intent: IntentKind,
+        source: HirExpr,
+        producer: HirProducedValueProducer,
+    ) -> HirExpr {
+        let ty = source.ty.clone();
+        HirExpr {
+            node: self.ids.node(),
+            site,
+            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+            ty,
+            intent,
+            kind: HirExprKind::SubsumedValue {
+                source: Box::new(source),
+                producer,
+            },
+            span: span.clone(),
+        }
+    }
+
+    fn take_pending_produced_value_carrier(&mut self) -> PendingProducedValueCarrier {
+        PendingProducedValueCarrier {
+            facts: std::mem::take(&mut self.produced_value_fact_sites),
+            generated_facts: std::mem::take(&mut self.generated_produced_value_facts),
+            fact_keys: std::mem::take(&mut self.produced_value_fact_keys),
+            source_sites: std::mem::take(&mut self.produced_value_source_sites),
+            ownership: std::mem::take(&mut self.produced_value_ownership),
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
+        clippy::single_match_else,
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
@@ -14117,12 +17100,9 @@ impl LowerCtx {
                 // entry for this expression; the result type is derived from the
                 // machine declaration context held in `current_machine_states`.
                 if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
-                    let machine_ty = ResolvedTy::Named {
-                        name: machine_name.clone(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    };
+                    let machine_ty = self.current_machine_self_ty.clone().expect(
+                        "machine-state resolution requires the enclosing machine self type",
+                    );
                     (
                         HirExprKind::MachineVariantCtor {
                             machine_name,
@@ -14201,7 +17181,13 @@ impl LowerCtx {
                         span,
                     };
                 }
-                let mut args = self.lower_call_args(args);
+                let direct_extern_symbol = match &function.0 {
+                    Expr::Identifier(name) if self.extern_fn_names.contains(name) => {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                };
+                let mut args = self.lower_call_args_for_callee(args, direct_extern_symbol);
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
@@ -14212,8 +17198,9 @@ impl LowerCtx {
                     // positionally) emits a structured diagnostic and falls
                     // through to the regular-call path so checker-stream
                     // coverage is preserved.
+                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                     let variant_kind_for_call = self
-                        .lookup_variant_ctor(name)
+                        .lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                         .map(|(_, _, kind)| kind.clone());
                     if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
                         let taken = std::mem::take(&mut args);
@@ -14230,6 +17217,7 @@ impl LowerCtx {
                             let callee = self.lower_stdlib_callee(entry, function.1.clone());
                             (
                                 HirExprKind::Call {
+                                    target: self.registered_symbol_target(entry.name),
                                     callee: Box::new(callee),
                                     args,
                                 },
@@ -14253,6 +17241,11 @@ impl LowerCtx {
                                         self.unresolved_builtin_callee(name, function.1.clone());
                                     (
                                         HirExprKind::Call {
+                                            target: CallTarget::Unsupported {
+                                                reason: format!(
+                                                    "builtin overload `{name}` was rejected by the checker"
+                                                ),
+                                            },
                                             callee: Box::new(callee),
                                             args,
                                         },
@@ -14335,8 +17328,9 @@ impl LowerCtx {
                 // enum variant in `enum_variants_by_name`. Resolved before
                 // the machine-state path so a qualified `Shape::Box` is
                 // routed correctly even outside any machine body.
+                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
-                    self.lookup_variant_ctor(name)
+                    self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                 {
                     match kind {
                         HirVariantKind::Struct(_) => Some((type_name, variant_idx, kind.clone())),
@@ -14487,12 +17481,9 @@ impl LowerCtx {
                             (fname.clone(), self.lower_expr(expr, IntentKind::Read))
                         })
                         .collect();
-                    let machine_ty = ResolvedTy::Named {
-                        name: machine_name.clone(),
-                        args: Vec::new(),
-                        builtin: None,
-                        is_opaque: false,
-                    };
+                    let machine_ty = self.current_machine_self_ty.clone().expect(
+                        "machine-state resolution requires the enclosing machine self type",
+                    );
                     // Break out of the match to let the outer wrapper build the HirExpr.
                     // We use a nested block that evaluates to `(kind, ty)`.
                     (
@@ -14513,8 +17504,15 @@ impl LowerCtx {
                     // checker-accepted span but missing type-arg entry,
                     // `record_record_layout` emits `RecordLayoutMissing`
                     // before returning `None` — fail-closed, not pretend.
-                    let resolved_type_args =
-                        self.record_record_layout(name, &span).unwrap_or_default();
+                    // The surface constructor spelling can be a bare local
+                    // name while the declaration is owned by a nested module.
+                    // Select the current source owner before looking up the
+                    // generic layout entry; the bare registry key is only a
+                    // compatibility alias and may name a same-leaf sibling.
+                    let record_identity = self.canonical_current_module_record_name(name);
+                    let resolved_type_args = self
+                        .record_record_layout(&record_identity, &span)
+                        .unwrap_or_default();
                     let hir_fields = fields
                         .iter()
                         .map(|(fname, expr)| {
@@ -14728,10 +17726,16 @@ impl LowerCtx {
                         } else {
                             ResolvedTy::Bytes
                         };
+                        let source_anchor = self.produced_value_source_anchor(
+                            &inner.1,
+                            result_ty.clone(),
+                            intent,
+                            HirProducedValueProducer::ConnAwaitRead,
+                        );
                         let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                         return HirExpr {
                             node: self.ids.node(),
-                            site: self.ids.site(),
+                            site,
                             value_class,
                             ty: result_ty,
                             intent,
@@ -14739,6 +17743,7 @@ impl LowerCtx {
                                 conn: Box::new(conn),
                                 to_string,
                                 deadline_ns: None,
+                                source_anchor,
                             },
                             span: span.clone(),
                         };
@@ -14759,21 +17764,28 @@ impl LowerCtx {
                             .get(&self.mk_key(&inner.1))
                             .cloned()
                             .unwrap_or(ResolvedTy::Named {
-                                name: "net.Connection".to_string(),
+                                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
                                 args: vec![],
                                 builtin: None,
                                 is_opaque: true,
                             });
+                        let source_anchor = self.produced_value_source_anchor(
+                            &inner.1,
+                            result_ty.clone(),
+                            intent,
+                            HirProducedValueProducer::ListenerAwaitAccept,
+                        );
                         let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                         return HirExpr {
                             node: self.ids.node(),
-                            site: self.ids.site(),
+                            site,
                             value_class,
                             ty: result_ty,
                             intent,
                             kind: HirExprKind::ListenerAwaitAccept {
                                 listener: Box::new(listener),
                                 deadline_ns: None,
+                                source_anchor,
                             },
                             span: span.clone(),
                         };
@@ -14789,7 +17801,14 @@ impl LowerCtx {
                 // blocking call for a context-free caller. Mirrors the
                 // actor-ask / conn-read bindable-await paths.
                 if self.is_stream_recv_await(&self.mk_key(&inner.1)) {
-                    return self.lower_expr(inner, intent);
+                    let source = self.lower_expr(inner, intent);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        source,
+                        HirProducedValueProducer::Await,
+                    );
                 }
                 // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
                 // the checker wired the inner method call to the layout-witness
@@ -14800,7 +17819,14 @@ impl LowerCtx {
                 // call for a context-free caller. Mirrors the stream-recv /
                 // conn-read bindable-await paths.
                 if self.is_channel_recv_await(&self.mk_key(&inner.1)) {
-                    return self.lower_expr(inner, intent);
+                    let source = self.lower_expr(inner, intent);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        source,
+                        HirProducedValueProducer::Await,
+                    );
                 }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
@@ -14826,7 +17852,14 @@ impl LowerCtx {
                             span,
                         };
                     }
-                    return self.lower_expr(inner, intent);
+                    let source = self.lower_expr(inner, intent);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        source,
+                        HirProducedValueProducer::Await,
+                    );
                 }
                 // Unwrap a bare block wrapping a single trailing method call
                 // (`await { method() }`) to recover the effective inner expression
@@ -14847,6 +17880,7 @@ impl LowerCtx {
                         }
                         _ => (inner, &inner.1),
                     };
+                let has_block_wrapper = !std::ptr::eq(effective_inner_expr, inner.as_ref());
                 if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
                     .actor_method_dispatch
                     .get(&self.mk_key(effective_inner_span))
@@ -14857,12 +17891,9 @@ impl LowerCtx {
                     // that downstream HIR consumers (PostfixTry, MIR lowering)
                     // see the unified result type.  The MIR `lower_actor_ask`
                     // reads `expr.ty` to allocate the `result_dest` slot.
-                    let ask_error_ty = ResolvedTy::Named {
-                        name: "AskError".to_string(),
-                        args: Vec::new(),
-                        builtin: Some(BuiltinType::AskError),
-                        is_opaque: false,
-                    };
+                    let ask_error_ty =
+                        hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                            .expect("generated builtin enum catalog must contain AskError");
                     let result_ty = match ResolvedTy::from_ty(&reply_ty) {
                         Ok(r) => ResolvedTy::Named {
                             name: "Result".to_string(),
@@ -14886,7 +17917,14 @@ impl LowerCtx {
                         Err(_) => {
                             // Fallback: return raw expr if reply_ty doesn't resolve;
                             // the checker already emitted an error in this case.
-                            return self.lower_expr(inner, intent);
+                            let source = self.lower_expr(inner, intent);
+                            return self.subsumed_value(
+                                site,
+                                &span,
+                                intent,
+                                source,
+                                HirProducedValueProducer::Await,
+                            );
                         }
                     };
                     // Register the `Result<reply_ty, AskError>` instantiation at
@@ -14902,9 +17940,74 @@ impl LowerCtx {
                     // `ResolvedImplCall` / `RewriteToFunction` /
                     // `RemoteActorAsk` sibling arms.
                     self.try_register_enum_instantiation_ty(&result_ty, &span);
-                    let mut ask_expr = self.lower_expr(effective_inner_expr, intent);
-                    ask_expr.ty = result_ty;
-                    return ask_expr;
+                    let ask_expr = self.lower_expr(effective_inner_expr, intent);
+                    let HirExpr {
+                        node: anchor_node,
+                        site: anchor_site,
+                        ty: _,
+                        value_class: _,
+                        intent: anchor_intent,
+                        kind: ask_kind,
+                        span: anchor_span,
+                    } = ask_expr;
+                    if let HirExprKind::ActorAsk {
+                        receiver,
+                        method_id,
+                        args,
+                        reply_ty,
+                        deadline_ns,
+                        source_anchor: None,
+                    } = ask_kind
+                    {
+                        let method_anchor = HirProducedValueSourceAnchor {
+                            node: anchor_node,
+                            site: anchor_site,
+                            ty: result_ty.clone(),
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            intent: anchor_intent,
+                            producer: HirProducedValueProducer::ActorAsk,
+                            span: anchor_span,
+                            source: None,
+                        };
+                        let source_anchor = if has_block_wrapper {
+                            let mut block_anchor = self.produced_value_source_anchor(
+                                &inner.1,
+                                result_ty.clone(),
+                                intent,
+                                HirProducedValueProducer::Block,
+                            );
+                            block_anchor.source = Some(Box::new(method_anchor));
+                            block_anchor
+                        } else {
+                            method_anchor
+                        };
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            ty: result_ty,
+                            intent,
+                            kind: HirExprKind::ActorAsk {
+                                receiver,
+                                method_id,
+                                args,
+                                reply_ty,
+                                deadline_ns,
+                                source_anchor: Some(source_anchor),
+                            },
+                            span: span.clone(),
+                        };
+                    }
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "await actor ask".to_string(),
+                            reason: "checker actor dispatch did not lower to one direct ActorAsk"
+                                .to_string(),
+                        },
+                        span.clone(),
+                        "await actor ask must retain its consumed method-call occurrence",
+                    ));
+                    return self.unsupported_expr(span, "malformed awaited actor ask");
                 }
                 // `await actor.close()` — lambda-actor (Duplex) close is awaitable
                 // in statement position at any scope depth.  The checker-resolved
@@ -14936,7 +18039,14 @@ impl LowerCtx {
                             span,
                         };
                     }
-                    return self.lower_expr(inner, intent);
+                    let source = self.lower_expr(inner, intent);
+                    return self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        source,
+                        HirProducedValueProducer::Await,
+                    );
                 }
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
@@ -14978,6 +18088,7 @@ impl LowerCtx {
                 // Resolve the inner expression. It must be a binding-ref with a
                 // `Task<T>` type to be awaitable.
                 let inner_hir = self.lower_expr(inner, IntentKind::Consume);
+                let source_anchor = Self::source_anchor_from_lowered(&inner_hir);
                 match &inner_hir.ty {
                     ResolvedTy::Task(output_ty) => {
                         let output_ty = *output_ty.clone();
@@ -15001,6 +18112,7 @@ impl LowerCtx {
                                     binding_name,
                                     binding_id,
                                     output_ty,
+                                    source_anchor,
                                 },
                                 span,
                             };
@@ -15184,6 +18296,20 @@ impl LowerCtx {
                         .get(&self.mk_key(&span))
                         .cloned()
                     {
+                        if !self.ensure_executable_target(
+                            &dyn_call.target,
+                            "dynamic trait call",
+                            &span,
+                        ) {
+                            return self.make_expr(
+                                HirExprKind::Unsupported(
+                                    "dynamic trait call has no checker target".to_string(),
+                                ),
+                                result_ty,
+                                intent,
+                                span,
+                            );
+                        }
                         return HirExpr {
                             node: self.ids.node(),
                             site,
@@ -15192,6 +18318,7 @@ impl LowerCtx {
                             intent,
                             kind: HirExprKind::CallDynMethod {
                                 receiver: Box::new(container),
+                                target: dyn_call.target,
                                 trait_name: dyn_call.trait_name,
                                 method_name: dyn_call.method_name,
                                 slot: dyn_call.slot,
@@ -15204,7 +18331,13 @@ impl LowerCtx {
                     }
 
                     if intent == IntentKind::Modify
-                        && matches!(&container.ty, ResolvedTy::Named { name, .. } if name == "Vec")
+                        && matches!(
+                            &container.ty,
+                            ResolvedTy::Named {
+                                builtin: Some(BuiltinType::Vec),
+                                ..
+                            }
+                        )
                     {
                         if let Some(resolved) =
                             self.resolved_calls.get(&self.mk_key(&span)).cloned()
@@ -15217,10 +18350,11 @@ impl LowerCtx {
                                 intent,
                                 kind: HirExprKind::ResolvedImplCall {
                                     receiver: Box::new(container),
+                                    target: resolved.target,
                                     impl_id: resolved.impl_id,
                                     method_name: resolved.method_name,
-                                    target_symbol: resolved.target.symbol_name,
-                                    target_family: resolved.target.family,
+                                    target_symbol: resolved.method_target.symbol_name,
+                                    target_family: resolved.method_target.family,
                                     type_args: resolved.type_args,
                                     args: vec![index_expr],
                                     ret_ty: result_ty.clone(),
@@ -15245,12 +18379,12 @@ impl LowerCtx {
                     // MIR `assign` arm recognises and lowers to
                     // `hew_hashmap_insert_layout`.
 
-                    if let ResolvedTy::Named { name, .. } = &container.ty {
+                    if let ResolvedTy::Named { name, builtin, .. } = &container.ty {
                         let callee_name = format!("{name}::at");
-                        if name != "Vec"
-                            && name != "HashMap"
+                        if !matches!(builtin, Some(BuiltinType::Vec | BuiltinType::HashMap))
                             && self.fn_registry.contains_key(&callee_name)
                         {
+                            let target = self.registered_symbol_target(&callee_name);
                             let callee_ty = ResolvedTy::Function {
                                 params: vec![container.ty.clone(), index_expr.ty.clone()],
                                 ret: Box::new(result_ty.clone()),
@@ -15280,6 +18414,7 @@ impl LowerCtx {
                                 ty: result_ty.clone(),
                                 intent,
                                 kind: HirExprKind::Call {
+                                    target,
                                     callee: Box::new(callee),
                                     args: vec![container, index_expr],
                                 },
@@ -15341,8 +18476,8 @@ impl LowerCtx {
                     || matches!(&object.0, Expr::Identifier(name) if name == "self")
                         && self.current_machine_name.is_some();
                 if is_self_receiver {
-                    if let Some(hir_expr) =
-                        self.try_lower_machine_self_field_access(field, &span, site, intent)
+                    if let Some(hir_expr) = self
+                        .try_lower_machine_self_field_access(field, &object.1, &span, site, intent)
                     {
                         return hir_expr;
                     }
@@ -15353,8 +18488,8 @@ impl LowerCtx {
                 if matches!(&object.0, Expr::Identifier(name) if name == "event")
                     && self.current_machine_name.is_some()
                 {
-                    if let Some(hir_expr) =
-                        self.try_lower_machine_event_field_access(field, &span, site, intent)
+                    if let Some(hir_expr) = self
+                        .try_lower_machine_event_field_access(field, &object.1, &span, site, intent)
                     {
                         return hir_expr;
                     }
@@ -15367,13 +18502,12 @@ impl LowerCtx {
                 // (which would `lower_expr(object)` on a bare module name and
                 // fail with `UnresolvedSymbol`).
                 //
-                // Guard: object is a bare `Expr::Identifier` and the qualified
-                // key `"{module_short}.{field}"` is in `const_registry`.  The
-                // `const_registry` pre-pass inserts pub consts from every
-                // imported module under qualified keys, so any hit here is
-                // authoritative.
+                // Guard: object is a bare `Expr::Identifier` and the checker-resolved
+                // owner key is in `const_registry`. The registry pre-pass stores
+                // imported consts under exact source owners, so the lexical module
+                // binding must cross the same owner map used by type checking.
                 if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = format!("{module_name}.{field}");
+                    let qualified_key = self.imported_module_member_key(module_name, field);
                     if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
@@ -15474,31 +18608,40 @@ impl LowerCtx {
                                             .iter()
                                             .any(|t| self.contains_abstract_type_param(t))
                                     {
-                                        let mono_key = MonoKey {
-                                            origin: entry.id,
-                                            origin_name: mangled.clone(),
-                                            type_args: type_args.clone(),
-                                        };
-                                        let mono_sym =
-                                            crate::monomorph::mangle(&mangled, &type_args);
-                                        if let Err(()) = self.mono_registry.insert(mono_key) {
-                                            if !self.mono_cap_diag_emitted {
-                                                self.mono_cap_diag_emitted = true;
-                                                let cap = self.mono_registry.cap();
-                                                self.diagnostics.push(HirDiagnostic::new(
-                                                    HirDiagnosticKind::MonomorphisationCapExceeded {
-                                                        cap,
-                                                    },
-                                                    span.clone(),
-                                                    "too many distinct generic-function \
-                                                     instantiations; cap exceeded at fn-value site",
-                                                ));
+                                        if let Some(declaration) =
+                                            self.direct_monomorph_declaration(&span)
+                                        {
+                                            let mono_key = MonoKey {
+                                                origin: entry.id,
+                                                declaration,
+                                                linker_symbol: mangled.clone(),
+                                                type_args: type_args.clone(),
+                                            };
+                                            let mono_sym =
+                                                crate::monomorph::function_monomorph_symbol(
+                                                    &mangled, &type_args,
+                                                );
+                                            if let Err(()) = self.mono_registry.insert(mono_key) {
+                                                if !self.mono_cap_diag_emitted {
+                                                    self.mono_cap_diag_emitted = true;
+                                                    let cap = self.mono_registry.cap();
+                                                    self.diagnostics.push(HirDiagnostic::new(
+                                                        HirDiagnosticKind::MonomorphisationCapExceeded {
+                                                            cap,
+                                                        },
+                                                        span.clone(),
+                                                        "too many distinct generic-function \
+                                                         instantiations; cap exceeded at fn-value site",
+                                                    ));
+                                                }
                                             }
+                                            // Record per-site type args for the
+                                            // closure-under-substitution pass.
+                                            self.call_site_type_args.insert(site, type_args);
+                                            mono_sym
+                                        } else {
+                                            mangled.clone()
                                         }
-                                        // Record per-site type args for the
-                                        // closure-under-substitution pass.
-                                        self.call_site_type_args.insert(site, type_args);
-                                        mono_sym
                                     } else {
                                         mangled.clone()
                                     }
@@ -15635,7 +18778,16 @@ impl LowerCtx {
                         let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned()
                         {
                             match ResolvedTy::from_ty(&ty) {
-                                Ok(resolved) => resolved,
+                                // `Ty::Named` does not carry HIR's opacity bit.
+                                // Normalize the checker-authored field result
+                                // through the same module-identity funnel used
+                                // by other checker→HIR reads. This is
+                                // load-bearing for an imported resource wrapper
+                                // reading its private opaque handle field:
+                                // `regex.Pattern.handle` must remain
+                                // `regex.PatternHandle`, not a bare user
+                                // `PatternHandle` that reaches D10.
+                                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                                 Err(err) => {
                                     let diagnostic = HirDiagnostic::new(
                                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -15764,7 +18916,20 @@ impl LowerCtx {
                 expr: timeout_inner,
                 duration,
             } => {
-                return self.lower_await_deadline(timeout_inner, duration, &span, intent);
+                let source = self.lower_await_deadline(timeout_inner, duration, &span, intent);
+                let ty = source.ty.clone();
+                return HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent,
+                    kind: HirExprKind::SubsumedValue {
+                        source: Box::new(source),
+                        producer: HirProducedValueProducer::Timeout,
+                    },
+                    span: span.clone(),
+                };
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.
@@ -15915,6 +19080,31 @@ impl LowerCtx {
             let dyn_ty = ResolvedTy::TraitObject {
                 traits: resolved_bounds,
             };
+            // The checker side table is keyed by source span and may preserve
+            // the original concrete provenance when an already-erased value is
+            // passed to the same `dyn Trait` type. Re-wrapping that value would
+            // make MIR box the two-word fat pointer as though it were the
+            // concrete payload, while the vtable still describes the original
+            // concrete allocation. Identical dyn-to-dyn adaptation is a no-op;
+            // a genuine trait-object upcast needs an explicit vtable-adjusting
+            // ABI and remains fail-closed.
+            if matches!(inner.ty, ResolvedTy::TraitObject { .. }) {
+                if inner.ty == dyn_ty {
+                    return inner;
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "dyn-trait coercion".to_string(),
+                        reason: format!(
+                            "unsupported dyn-to-dyn adaptation from `{:?}` to `{:?}`",
+                            inner.ty, dyn_ty
+                        ),
+                    },
+                    span.clone(),
+                    "dyn-to-dyn trait adaptation requires an explicit vtable upcast",
+                ));
+                return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
+            }
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
                 Ok(r) => r,
                 Err(err) => {
@@ -15929,7 +19119,8 @@ impl LowerCtx {
                     return inner;
                 }
             };
-            return HirExpr {
+            self.record_produced_value_fact(&span, &inner);
+            let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
@@ -15944,6 +19135,13 @@ impl LowerCtx {
                 },
                 span,
             };
+            self.record_generated_produced_value_fact(
+                &wrapped,
+                hew_types::ProducedValueOwnership::owned(
+                    hew_types::ProducedValueAcquisition::Fresh,
+                ),
+            );
+            return wrapped;
         }
         inner
     }
@@ -15952,18 +19150,21 @@ impl LowerCtx {
     ///
     /// For `ActorAsk` arms the reply type comes from the checker-authoritative
     /// `actor_method_dispatch` table keyed on the arm source expression's span.
-    /// For `StreamNext` and `TaskAwait` arms `Unit` is returned as a placeholder
-    /// — these arm kinds remain unsupported through MIR (slice 2+) and the real
-    /// element type is recoverable from the lowered source expression's `.ty`
-    /// field when those slices land. WHY placeholder: HIR has no type-inference
-    /// machinery; keeping a real element type here would require either duplicating
-    /// the checker's unification or adding a side table entry. WHEN obsolete: when
-    /// `StreamNext` and `TaskAwait` arm lowering lands in slice 2+.
+    /// The source expression's checker-resolved builtin discriminator is the
+    /// sole authority for channel and stream carriers. A malformed carrier
+    /// returns `None` after recording a boundary diagnostic; it must never be
+    /// represented as `Unit`, because MIR would otherwise treat that placeholder
+    /// as a real runtime layout witness.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::single_match_else,
+        reason = "each sealed select carrier has a distinct exact-type diagnostic"
+    )]
     fn select_arm_binding_ty(
-        &self,
+        &mut self,
         kind: &HirSelectArmKind,
         source_span: &std::ops::Range<usize>,
-    ) -> ResolvedTy {
+    ) -> Option<ResolvedTy> {
         match kind {
             HirSelectArmKind::ActorAsk { .. } => {
                 match self
@@ -15988,46 +19189,110 @@ impl LowerCtx {
                              the fail-open .unwrap_or(Unit) would install the wrong \
                              reply-channel ABI"
                         );
-                        ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit)
+                        match ResolvedTy::from_ty(&reply_ty) {
+                            Ok(ty) => Some(ty),
+                            Err(err) => {
+                                self.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: "select actor-ask reply".to_string(),
+                                        reason: err.to_string(),
+                                    },
+                                    source_span.clone(),
+                                    "select reply type must cross the checker/HIR boundary exactly",
+                                ));
+                                None
+                            }
+                        }
                     }
                     // A `receive gen fn` dispatch never reaches a `select`
-                    // ActorAsk arm — `for await` is its only consumer surface
-                    // — but fold it into the same Unit fallback as `Fire`/
-                    // `None` rather than panicking on a table mismatch.
+                    // ActorAsk arm — `for await` is its only consumer surface.
                     Some(ActorMethodKind::Fire(_) | ActorMethodKind::StreamProducer(_, _))
-                    | None => ResolvedTy::Unit,
+                    | None => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "select actor-ask reply".to_string(),
+                                reason: "missing checker-authoritative ask dispatch".to_string(),
+                            },
+                            source_span.clone(),
+                            "a select actor-ask arm must carry an ask reply type",
+                        ));
+                        None
+                    }
                 }
             }
             HirSelectArmKind::ChannelRecv { receiver } => {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
                 // The element type comes from the checker-resolved
-                // `Receiver<T>` handle type. Dispatch on the typed builtin
-                // discriminator (with the short-name fallback) — the name
-                // string is `"Receiver"` for a locally constructed handle but
-                // module-qualified (`"channel.Receiver"`) for an annotated
-                // parameter, and the bare-name compare silently produced
-                // `Option<Unit>` for the latter (surfacing later as a D10
-                // emitter refusal).
-                let elem = match &receiver.ty {
+                // `Receiver<T>` handle type. The builtin discriminator is the
+                // sole authority: a user `Receiver<T>` (including one in a
+                // module named `channel`) must never acquire channel receive
+                // semantics from its leaf spelling.
+                match &receiver.ty {
                     ResolvedTy::Named {
-                        name,
                         args,
-                        builtin,
+                        builtin: Some(BuiltinType::Receiver),
                         ..
-                    } if args.len() == 1
-                        && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
-                            || hew_types::short_name(name) == "Receiver") =>
-                    {
-                        args[0].clone()
+                    } if args.len() == 1 => Some(Self::resolved_option_ty(args[0].clone())),
+                    _ => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "select channel receive".to_string(),
+                                reason: format!(
+                                    "expected builtin Receiver<T>, found {}",
+                                    receiver.ty
+                                ),
+                            },
+                            source_span.clone(),
+                            "channel receive binding types require the builtin Receiver discriminator",
+                        ));
+                        None
                     }
-                    _ => ResolvedTy::Unit,
-                };
-                Self::resolved_option_ty(elem)
+                }
             }
-            HirSelectArmKind::StreamNext { .. }
-            | HirSelectArmKind::TaskAwait { .. }
-            | HirSelectArmKind::AfterTimer { .. } => ResolvedTy::Unit,
+            HirSelectArmKind::StreamNext { stream } => match &stream.ty {
+                ResolvedTy::Named {
+                    args,
+                    builtin: Some(BuiltinType::Stream),
+                    ..
+                } if args.len() == 1 => Some(args[0].clone()),
+                _ => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "select stream next".to_string(),
+                            reason: format!("expected builtin Stream<T>, found {}", stream.ty),
+                        },
+                        source_span.clone(),
+                        "stream-next binding types require the builtin Stream discriminator",
+                    ));
+                    None
+                }
+            },
+            HirSelectArmKind::TaskAwait { task } => match &task.ty {
+                ResolvedTy::Task(inner) => Some((**inner).clone()),
+                _ => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "select task await".to_string(),
+                            reason: format!("expected Task<T>, found {}", task.ty),
+                        },
+                        source_span.clone(),
+                        "task-await binding types require a resolved Task<T>",
+                    ));
+                    None
+                }
+            },
+            HirSelectArmKind::AfterTimer { .. } => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "select timer binding".to_string(),
+                        reason: "after arms do not produce a value".to_string(),
+                    },
+                    source_span.clone(),
+                    "an `after` arm cannot bind a value",
+                ));
+                None
+            }
         }
     }
 
@@ -16099,9 +19364,11 @@ impl LowerCtx {
             // `MirDiagnosticKind::UnresolvedPlace`.
             self.push_scope();
             let binding_id = if let Some(ref name) = binding_name {
-                let binding_ty = self.select_arm_binding_ty(&kind, &arm.source.1);
-                let bound = self.bind(name.clone(), binding_ty, false, arm.binding.1.clone());
-                Some(bound.id)
+                self.select_arm_binding_ty(&kind, &arm.source.1)
+                    .map(|binding_ty| {
+                        self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
+                            .id
+                    })
             } else {
                 None
             };
@@ -16263,9 +19530,14 @@ impl LowerCtx {
                 .cloned()
             {
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // Join branches are issued together, like select arm sources:
+                // the same owned value in two branches is a double transfer.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 let reply_ty = ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit);
                 return HirJoinBranch {
@@ -16473,22 +19745,18 @@ impl LowerCtx {
             }
         };
 
-        let (yield_ty, return_ty) = match &gen_ty {
-            ResolvedTy::Named { name, args, .. } if name == "Generator" && args.len() == 2 => {
-                (args[0].clone(), args[1].clone())
-            }
-            other => {
+        let (yield_ty, return_ty) =
+            Self::generator_yield_return_parts(&gen_ty).unwrap_or_else(|| {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
                         name: "gen block".to_string(),
-                        reason: format!("expected Generator<Yield, Return>, got {other:?}"),
+                        reason: format!("expected Generator<Yield, Return>, got {gen_ty:?}"),
                     },
                     span.clone(),
                     "gen block checker type did not have Generator<Yield, Return> shape",
                 ));
                 (ResolvedTy::Unit, ResolvedTy::Unit)
-            }
-        };
+            });
 
         // Snapshot the enclosing scope BEFORE lowering the body so the
         // gen-block's own `let`/`var` bindings are excluded and only captured
@@ -16509,6 +19777,18 @@ impl LowerCtx {
             },
             gen_ty,
         )
+    }
+
+    fn generator_yield_return_parts(ty: &ResolvedTy) -> Option<(ResolvedTy, ResolvedTy)> {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::Generator),
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        (args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
     }
 
     fn lower_closure(
@@ -16678,7 +19958,7 @@ impl LowerCtx {
             };
             let fact = remaining_facts.remove(fact_idx);
             let ty = match ResolvedTy::from_ty(&fact.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -16790,12 +20070,8 @@ impl LowerCtx {
         // resolution (a bare `spawn Account()` inside module `bank` resolves
         // to `bank.Account`), so it overrides the syntactic spelling. MIR
         // actor layouts key on the same identity (`qualified_name()`).
-        if let ResolvedTy::Named { name, args, .. } = &ty {
-            if name == "LocalPid" && args.len() == 1 {
-                if let ResolvedTy::Named { name: inner, .. } = &args[0] {
-                    actor_name.clone_from(inner);
-                }
-            }
+        if let Some(inner) = Self::local_pid_actor_identity(&ty) {
+            inner.clone_into(&mut actor_name);
         }
         (
             HirExprKind::Spawn {
@@ -16804,6 +20080,21 @@ impl LowerCtx {
             },
             ty,
         )
+    }
+
+    fn local_pid_actor_identity(ty: &ResolvedTy) -> Option<&str> {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::LocalPid),
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        let [ResolvedTy::Named { name, .. }] = args.as_slice() else {
+            return None;
+        };
+        Some(name)
     }
 
     /// Lower an `Expr::SpawnLambdaActor` to an
@@ -16864,7 +20155,9 @@ impl LowerCtx {
         // prior value on exit.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
-            ctx.lower_expr(body, IntentKind::Read)
+            let body = ctx.lower_expr_without_root_fact(body, IntentKind::Read);
+            ctx.record_synthetic_body_fact(&body.span, &body);
+            body
         });
         self.current_actor_self = my_self_id;
         self.pop_scope();
@@ -16974,9 +20267,17 @@ impl LowerCtx {
                     };
                 }
                 let actor = self.lower_expr(receiver, IntentKind::Read);
+                // A select arm source is SEQUENTIAL setup: every arm's ask is
+                // issued before dispatch picks a winner, so an owned argument
+                // handed to two arms is a real double transfer. MIR lowers each
+                // arm's args through `lower_value_for_move`; stamp the matching
+                // intent so the dataflow checker sees the consume.
                 let lowered_args: Vec<HirExpr> = args
                     .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                    .map(|arg| {
+                        let spanned = arg.expr();
+                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+                    })
                     .collect();
                 HirSelectArmKind::ActorAsk {
                     actor: Box::new(actor),
@@ -17166,7 +20467,7 @@ impl LowerCtx {
             return None;
         };
         match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => Some(resolved),
+            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -17386,7 +20687,7 @@ impl LowerCtx {
             return None;
         };
         let result_ty = match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => resolved,
+            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -17401,13 +20702,10 @@ impl LowerCtx {
         };
         match result_ty {
             ResolvedTy::Named {
-                name,
                 args,
-                builtin,
+                builtin: Some(BuiltinType::Vec),
                 ..
-            } if name == "Vec" && builtin == Some(BuiltinType::Vec) && args.len() == 1 => {
-                Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone()))
-            }
+            } if args.len() == 1 => Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone())),
             ResolvedTy::Array(elem_ty, _) => {
                 let elem_ty = *elem_ty;
                 Some((Self::resolved_vec_ty(elem_ty.clone()), elem_ty))
@@ -17432,17 +20730,17 @@ impl LowerCtx {
             .get(&key)
             .cloned()
             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+            .map(|ty| self.qualify_current_module_record_ty(ty))
     }
 
     fn is_hashmap_ty(ty: &ResolvedTy) -> bool {
         matches!(
             ty,
             ResolvedTy::Named {
-                name,
                 builtin: Some(BuiltinType::HashMap),
                 args,
                 ..
-            } if name == "HashMap" && args.len() == 2
+            } if args.len() == 2
         )
     }
 
@@ -17463,7 +20761,7 @@ impl LowerCtx {
             return None;
         };
         let result_ty = match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => resolved,
+            Ok(resolved) => self.qualify_current_module_record_ty(resolved),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -17478,13 +20776,10 @@ impl LowerCtx {
         };
         match &result_ty {
             ResolvedTy::Named {
-                name,
                 args,
                 builtin: Some(BuiltinType::HashMap),
                 ..
-            } if name == "HashMap" && args.len() == 2 => {
-                Some((result_ty.clone(), args[0].clone(), args[1].clone()))
-            }
+            } if args.len() == 2 => Some((result_ty.clone(), args[0].clone(), args[1].clone())),
             other => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -17577,6 +20872,7 @@ impl LowerCtx {
         );
         self.make_expr(
             HirExprKind::Call {
+                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecNew),
                 callee: Box::new(callee),
                 args: Vec::new(),
             },
@@ -17608,6 +20904,7 @@ impl LowerCtx {
         );
         let call = self.make_expr(
             HirExprKind::Call {
+                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::HashMapNew),
                 callee: Box::new(callee),
                 args: Vec::new(),
             },
@@ -17633,6 +20930,9 @@ impl LowerCtx {
         self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(map_ref),
+                target: hew_types::CallTarget::RuntimeCollection(
+                    hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert),
+                ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "insert".to_string(),
                 target_symbol: "hew_hashmap_insert_layout".to_string(),
@@ -17673,6 +20973,9 @@ impl LowerCtx {
         Some(self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(vec_ref),
+                target: hew_types::CallTarget::RuntimeCollection(
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
+                ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "push".to_string(),
                 target_symbol: target_symbol.to_string(),
@@ -18203,6 +21506,7 @@ impl LowerCtx {
                 );
                 let mapped = self.make_expr(
                     HirExprKind::Call {
+                        target: CallTarget::IndirectFunctionValue,
                         callee: Box::new(fn_ref),
                         args: vec![elem_read],
                     },
@@ -18245,6 +21549,7 @@ impl LowerCtx {
                 );
                 let cond = self.make_expr(
                     HirExprKind::Call {
+                        target: CallTarget::IndirectFunctionValue,
                         callee: Box::new(fn_ref),
                         args: vec![elem_read],
                     },
@@ -18318,6 +21623,7 @@ impl LowerCtx {
                 );
                 let folded = self.make_expr(
                     HirExprKind::Call {
+                        target: CallTarget::IndirectFunctionValue,
                         callee: Box::new(fn_ref),
                         args: vec![acc_read, elem_read],
                     },
@@ -18454,6 +21760,7 @@ impl LowerCtx {
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
         let call = self.make_expr(
             HirExprKind::Call {
+                target: CallTarget::IndirectFunctionValue,
                 callee: Box::new(fn_ref),
                 args: lowered_args,
             },
@@ -18545,45 +21852,26 @@ impl LowerCtx {
         // unit ctors resolving correctly across builtin/user name collisions
         // without depending on registration-order races in the pre-pass.
         let key = self.mk_key(&span);
-        let checker_qualified = match self.expr_types.get(&key) {
-            Some(Ty::Named { name: n, .. }) => Some(format!("{n}::{name}")),
-            _ => None,
-        };
-        let registry_hit = self.machine_ctor_registry.get(name).cloned().or_else(|| {
-            checker_qualified
-                .as_deref()
-                .and_then(|q| self.machine_ctor_registry.get(q).cloned())
-        });
-        // Import-alias fallback: `Hue::Red` where "Hue" is an alias for
-        // "aliassrc.Color".  Resolve the prefix through `import_type_name_aliases`
-        // and retry with the canonical qualified key ("aliassrc.Color::Red").
-        let registry_hit = if registry_hit.is_none() {
-            if let Some(sep) = name.rfind("::") {
-                let prefix = &name[..sep];
-                let variant_part = &name[sep + 2..];
-                let canonical = self
-                    .import_type_name_aliases
-                    .get(&(self.current_module_name.clone(), prefix.to_string()))
-                    .cloned();
-                if let Some(canonical) = canonical {
-                    let canonical_key = format!("{canonical}::{variant_part}");
-                    self.machine_ctor_registry
-                        .get(&canonical_key)
-                        .cloned()
-                        .or(registry_hit)
-                } else {
-                    registry_hit
-                }
-            } else {
-                registry_hit
-            }
-        } else {
-            registry_hit
-        };
+        let checker_owner = self
+            .expr_types
+            .get(&key)
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .map(|ty| self.qualify_current_module_record_ty(ty));
+        let registry_hit = self
+            .lookup_variant_ctor(name, checker_owner.as_ref())
+            .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
-            let checker_agrees = match self.expr_types.get(&key) {
-                None => true,
-                Some(Ty::Named { name: n, .. }) => Ty::names_match_qualified(n, &tagged_union_name),
+            let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+            let checker_agrees = match checker_owner.as_ref() {
+                None => !self.expr_types.contains_key(&key),
+                Some(ResolvedTy::Named { name, .. }) => {
+                    name == &tagged_union_name
+                        || (!name.contains('.')
+                            && self
+                                .machine_ctor_registry
+                                .get(&tagged_union_surface_ctor_key(name, variant_name))
+                                .is_some_and(|(owner, _)| owner == &tagged_union_name))
+                }
                 Some(_) => false,
             };
             if checker_agrees {
@@ -18599,7 +21887,7 @@ impl LowerCtx {
                 // always populate accepted unit-ctor reference sites.
                 let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
                     match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
+                        Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                         Err(err) => {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -18811,48 +22099,169 @@ impl LowerCtx {
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         let type_name = hew_types::short_name(name);
-        if args.is_empty() {
-            let canonical = self.canonical_current_module_record_name(name);
-            if canonical != name && !self.resolves_to_opaque_handle(&canonical, type_name) {
-                return ResolvedTy::named_user(canonical, args);
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        // Root-visible source declarations outrank the builtin catalog. A user
+        // `#[opaque] type Receiver {}` is a
+        // distinct nominal resource, not the std channel endpoint merely
+        // because the short spelling collides.
+        if self.current_module_name.is_none()
+            && !name.contains('.')
+            && self.root_opaque_type_short_names.contains(name)
+        {
+            return ResolvedTy::named_opaque(name.to_string(), args);
+        }
+        if !name.contains('.') {
+            if let Some(module_owner) = self.current_module_name.as_deref() {
+                let qualified = format!("{module_owner}.{name}");
+                // Several compiler carriers (notably Stream/Sink and lifecycle
+                // payloads) are non-opaque source declarations. Recover their
+                // builtin identity only while lowering a canonical `std.*`
+                // module. An arbitrary `acme.stream.Sink<T>` has the same leaf
+                // qualifier but is outside this authority and stays nominal.
+                if self
+                    .current_module_name
+                    .as_deref()
+                    .is_some_and(|module| module.starts_with("std."))
+                {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
+                    }
+                }
+                if self.resolves_to_opaque_handle(&qualified, name) {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
+                    }
+                    return ResolvedTy::named_opaque(qualified, args);
+                }
             }
         }
-        // A declared user record shadows a same-named builtin for a bare,
-        // argument-less reference: e.g. a package's `type Result { handle:
-        // i64 }` annotation `-> Result` names the record, never the prelude's
-        // generic `Result<T, E>` (a zero-arg reference to a generic builtin
-        // is not constructible). The checker already resolves such an
-        // annotation to the record; without this interception the HIR maps
-        // it to the builtin and MIR's actor-ask reply comparison sees
-        // builtin-`Result` vs user-`Result` and fails closed with a reply
-        // type mismatch. Dotted references and parameterised references are
-        // untouched, and an `#[opaque]` handle is never intercepted — it must
-        // keep its `is_opaque` discriminator so the actor-state clone/drop
-        // classifier stays fail-closed (a bodyless `#[opaque] type` also
-        // lands in `record_registry`, so registry membership alone cannot
-        // decide).
+
+        // A whole-module lifecycle alias is canonical only when the checker
+        // proved that its import resolves to the shipped std source. Consume
+        // the exact TypeCheckOutput fact before treating this qualified
+        // spelling as an ordinary user nominal; module spelling alone is not
+        // lifecycle authority.
+        if name.contains('.') {
+            if let Some(canonical) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.to_string()))
+                .cloned()
+            {
+                if canonical != name {
+                    return self.resolve_named_type_ref(&canonical, args);
+                }
+            }
+        }
+
+        // Whole-module imports carry a lexical qualifier, not a declaration
+        // identity.  Rewrite it through the checker-owned owner map before
+        // generic record/enum layout registration observes the type.  This
+        // preserves every path segment (`lmonobox.Box` →
+        // `hew.lmonobox.Box`) and deliberately does not use a leaf fallback.
+        if let Some((binding, tail)) = name.split_once('.') {
+            if let Some(owner) = self
+                .module_import_bindings
+                .get(&(self.current_module_name.clone(), binding.to_string()))
+            {
+                let canonical = format!("{owner}.{tail}");
+                if canonical != name {
+                    return self.resolve_named_type_ref(&canonical, args);
+                }
+            }
+        }
+
+        // A bare name inside its defining module canonicalises to that module's
+        // exact identity. Known std carrier identities stay builtin; a declared
+        // opaque user identity keeps its full qualified name.
+        let canonical = self.canonical_current_module_record_name(name);
+        if canonical != name {
+            if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
+            }
+            if self.resolves_to_opaque_handle(&canonical, type_name) {
+                return ResolvedTy::named_opaque(canonical, args);
+            }
+            return ResolvedTy::named_user(canonical, args);
+        }
+
+        // A declaration authored in the current source scope outranks both an
+        // imported binding and the builtin catalog, including when generic.
+        // Do not use the global `record_registry` here: it contains every
+        // imported record too and would turn `import std::failure::{
+        // CrashInfo }` into a user type, losing the crash-hook ABI identity.
         if !name.contains('.')
-            && args.is_empty()
-            && self.record_registry.contains_key(name)
+            && self.current_scope_declares_source_type(name, current_module_is_file_import)
             && !self.resolves_to_opaque_handle(name, type_name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
-        if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name)
-            .or_else(|| crate::builtin_type_classes::builtin_type_registration(type_name))
+
+        // Named/glob imports are source bindings, not aliases only. Resolve
+        // their bare spelling to the published qualified identity before any
+        // builtin lookup so `import foo::{ Receiver }` cannot become the
+        // runtime channel endpoint. This remains a fallback after the local
+        // declaration check above: authored local types shadow imports.
+        if !name.contains('.') {
+            if let Some(canonical) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.to_string()))
+                .cloned()
+            {
+                return self.resolve_named_type_ref(&canonical, args);
+            }
+        }
+
+        // A global record registry is layout metadata, not lexical authority.
+        // In particular, source-owned lifecycle payloads must reach this point
+        // through the checker-published import binding above; their bare
+        // catalog spelling must never become valid merely because another
+        // module loaded the record declaration.
+        if !name.contains('.')
+            && self.record_registry.contains_key(name)
+            && hew_types::lookup_source_owned_lifecycle_type(name).is_none()
+            && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
+            && !self.resolves_to_opaque_handle(name, type_name)
         {
+            return ResolvedTy::named_user(name.to_string(), args);
+        }
+
+        // Generated monomorphic enum annotations use the same exact source
+        // identity as checker-authored expression facts and synthetic HIR
+        // layouts. This runs only after local declarations and import bindings
+        // have had their chance to win, so a user same-leaf enum remains user
+        // owned and an unrelated qualified owner is never retried by leaf.
+        let builtin_hint = crate::builtin_type_classes::builtin_type_registration(name)
+            .map(|registration| registration.builtin)
+            .or_else(|| hew_types::lookup_builtin_type(type_name));
+        if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
+            name,
+            builtin_hint,
+            current_module_is_file_import,
+        ) {
+            return if let Some(builtin) = builtin_hint {
+                ResolvedTy::named_builtin(canonical, builtin, args)
+            } else {
+                ResolvedTy::named_user(canonical, args)
+            };
+        }
+
+        // Qualified inputs are resolved by exact identity only. The known std
+        // spellings live in `lookup_builtin_type`; an arbitrary
+        // `foo.Receiver` must never inherit the bare `Receiver` registration.
+        if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
-        } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
-            ResolvedTy::named_builtin(name.to_string(), builtin, args)
-        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
-            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
-        } else if self.resolves_to_opaque_handle(name, type_name) {
+        } else if let Some(builtin) = self.qualified_source_builtin(name) {
+            Self::resolved_source_builtin_ty(name, builtin, args)
+        } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
             // classifier fails closed on the handle even when its short name
             // collides with a user record/enum of the same name. See
             // `LowerCtx::resolves_to_opaque_handle`.
-            ResolvedTy::named_opaque(type_name.to_string(), args)
+            ResolvedTy::named_opaque(name.to_string(), args)
         } else if name.contains('.') {
             // Module-qualified user type (`widgeti64.Widget`). Preserve the
             // full `{module}.{name}` identity so MIR layout keys and field
@@ -18865,25 +22274,161 @@ impl LowerCtx {
             // over the bare last-write-wins entry once MIR keys by it. A bare
             // reference (single-module program) keeps its short name unchanged.
             ResolvedTy::named_user(name.to_string(), args)
-        } else if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(self.current_module_name.clone(), name.to_string()))
-            .cloned()
+        } else if let Some(registration) =
+            crate::builtin_type_classes::builtin_type_registration(type_name)
         {
-            // Import-alias fallback: `Tag` from `import aliassrc::{ Payload as Tag }`
-            // resolves to `aliassrc.Payload`.  Applied AFTER all local /
-            // builtin / record-registry / source-type lookups so a locally-
-            // declared `type Tag` shadows the alias (local-shadows-imported rule).
-            // The canonical name (e.g., "aliassrc.Payload") contains a dot, so
-            // the recursive call takes the module-qualified branch above and
-            // produces the right `ResolvedTy::Named { name: "aliassrc.Payload" }`.
-            self.resolve_named_type_ref(&canonical, args)
+            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name)
+            .filter(|builtin| !builtin.requires_source_import())
+        {
+            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
+        } else if self.resolves_to_opaque_handle(name, type_name) {
+            ResolvedTy::named_opaque(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
         }
     }
 
+    /// Resolve a source declaration that uses one of the three spellings with
+    /// dedicated HIR fallbacks (`Task`, `Unit`, or `CancellationToken`).
+    ///
+    /// This deliberately does not participate in general named-type
+    /// resolution: reserved primitives and contextual `Self` keep their
+    /// existing authority. It exists only so source identity wins before the
+    /// audited early arms below, including for generic `Task<T>` / `Unit<T>`.
+    fn resolve_early_source_type_ref(
+        &self,
+        name: &str,
+        args: Vec<ResolvedTy>,
+    ) -> Option<ResolvedTy> {
+        if name.contains('.') {
+            return None;
+        }
+
+        if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(self.current_module_name.clone(), name.to_string()))
+        {
+            return Some(self.resolve_named_type_ref(canonical, args));
+        }
+
+        if self.current_module_name.is_none()
+            && self.root_visible_source_type_short_names.contains(name)
+        {
+            return Some(if self.root_opaque_type_short_names.contains(name) {
+                ResolvedTy::named_opaque(name.to_string(), args)
+            } else {
+                ResolvedTy::named_user(name.to_string(), args)
+            });
+        }
+
+        if let Some(module_owner) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_owner}.{name}");
+            if self.source_type_identities.contains(&qualified) {
+                if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                    return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
+                }
+                return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                    ResolvedTy::named_opaque(qualified, args)
+                } else {
+                    ResolvedTy::named_user(qualified, args)
+                });
+            }
+        }
+
+        None
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one recursive checker-to-HIR identity authority covers every ResolvedTy wrapper"
+    )]
     fn qualify_current_module_record_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+        let ty = match ty {
+            ResolvedTy::Tuple(elements) => {
+                return ResolvedTy::Tuple(
+                    elements
+                        .into_iter()
+                        .map(|element| self.qualify_current_module_record_ty(element))
+                        .collect(),
+                );
+            }
+            ResolvedTy::Array(element, size) => {
+                return ResolvedTy::Array(
+                    Box::new(self.qualify_current_module_record_ty(*element)),
+                    size,
+                );
+            }
+            ResolvedTy::Slice(element) => {
+                return ResolvedTy::Slice(Box::new(
+                    self.qualify_current_module_record_ty(*element),
+                ));
+            }
+            ResolvedTy::Function { params, ret } => {
+                return ResolvedTy::Function {
+                    params: params
+                        .into_iter()
+                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .collect(),
+                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                };
+            }
+            ResolvedTy::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                return ResolvedTy::Closure {
+                    params: params
+                        .into_iter()
+                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .collect(),
+                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                    captures: captures
+                        .into_iter()
+                        .map(|capture| self.qualify_current_module_record_ty(capture))
+                        .collect(),
+                };
+            }
+            ResolvedTy::Pointer {
+                is_mutable,
+                pointee,
+            } => {
+                return ResolvedTy::Pointer {
+                    is_mutable,
+                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                };
+            }
+            ResolvedTy::Borrow { pointee } => {
+                return ResolvedTy::Borrow {
+                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                };
+            }
+            ResolvedTy::TraitObject { traits } => {
+                return ResolvedTy::TraitObject {
+                    traits: traits
+                        .into_iter()
+                        .map(|bound| ResolvedTraitBound {
+                            trait_name: bound.trait_name,
+                            args: bound
+                                .args
+                                .into_iter()
+                                .map(|arg| self.qualify_current_module_record_ty(arg))
+                                .collect(),
+                            assoc_bindings: bound
+                                .assoc_bindings
+                                .into_iter()
+                                .map(|(name, ty)| (name, self.qualify_current_module_record_ty(ty)))
+                                .collect(),
+                        })
+                        .collect(),
+                };
+            }
+            ResolvedTy::Task(result) => {
+                return ResolvedTy::Task(Box::new(self.qualify_current_module_record_ty(*result)));
+            }
+            other => other,
+        };
         let ResolvedTy::Named {
             name,
             args,
@@ -18897,37 +22442,261 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
-        if builtin.is_some() || is_opaque {
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        // Synthetic iterator cursors have no user-selectable constructor
+        // authority: the checker stamps them only while lowering a compiler
+        // `into_iter` result. Preserve that exact discriminator even when the
+        // source scope declares the same leaf; the user nominal arrives with
+        // `builtin: None` and remains distinct below.
+        if let Some(cursor @ (BuiltinType::VecIter | BuiltinType::HashMapIter)) = builtin {
+            return ResolvedTy::named_builtin(cursor.canonical_name(), cursor, args);
+        }
+        // A checker compatibility marker is representation metadata, not a
+        // license to replace a declaration selected from the current source
+        // scope.  This is especially important for generic prelude names:
+        // `type Result { .. }` is a user record even when an actor-dispatch
+        // side table still presents its reply as `Ty::Named(Result, builtin)`.
+        //
+        // Canonical standard-library declarations have already taken the
+        // exact-provenance path below (the `std.*` owner check), so this only
+        // removes an unproven presentation marker.  Preserve the source
+        // owner's complete identity rather than returning a bare leaf, so the
+        // same rule also keeps package-local `module.Result` nominally
+        // distinct from prelude `Result`.
+        if builtin.is_some()
+            && !name.contains('.')
+            && self.current_scope_declares_source_type(&name, current_module_is_file_import)
+        {
+            let canonical = self.canonical_current_module_record_name(&name);
+            if canonical.contains('.') {
+                if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                    return Self::resolved_source_builtin_ty(&canonical, builtin, args);
+                }
+            }
+            if self.resolves_to_opaque_handle(&canonical, &name) {
+                return ResolvedTy::named_opaque(canonical, args);
+            }
+            return ResolvedTy::named_user(canonical, args);
+        }
+        if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
+            &name,
+            builtin,
+            current_module_is_file_import,
+        ) {
+            return match builtin {
+                Some(builtin) => ResolvedTy::named_builtin(canonical, builtin, args),
+                None => ResolvedTy::named_user(canonical.to_string(), args),
+            };
+        }
+        if !name.contains('.')
+            && self.current_module_name.is_none()
+            && self.root_opaque_type_short_names.contains(&name)
+        {
+            return ResolvedTy::named_opaque(name, args);
+        }
+        if !name.contains('.') {
+            if let Some(module_owner) = self.current_module_name.as_deref() {
+                let qualified = format!("{module_owner}.{name}");
+                if self
+                    .current_module_name
+                    .as_deref()
+                    .is_some_and(|module| module.starts_with("std."))
+                {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
+                    }
+                }
+                if self.resolves_to_opaque_handle(&qualified, &name) {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return Self::resolved_source_builtin_ty(&qualified, builtin, args);
+                    }
+                    return ResolvedTy::named_opaque(qualified, args);
+                }
+            }
+        }
+        // `Ty::Named` intentionally has no opacity bit, so checker-authored
+        // expression facts lose that half of a root source declaration's
+        // identity when converted through `ResolvedTy::from_ty`. Restore it
+        // from the declaration registry at this single checker→HIR
+        // normalisation funnel. Builtin provenance remains authoritative:
+        // only a `builtin: None` bare root name can acquire the user-opaque
+        // discriminator.
+        let is_opaque = is_opaque
+            // `Ty::Named` has no opacity bit even when the checker preserved an
+            // exact qualified identity. Restore that declaration fact for any
+            // checker-authored qualified opaque name as well as the bare root
+            // case below. This matters for aggregate package modules that
+            // re-surface a source file: their copied function bodies carry the
+            // aggregate-qualified opaque identity (for example
+            // `http.ResponseHandle`), which is harvested as an exact opaque
+            // key but otherwise reached MIR as an ordinary user type.
+            || (builtin.is_none()
+                && self.resolves_to_opaque_handle(&name, hew_types::short_name(&name)))
+            || (builtin.is_none()
+                && self.current_module_name.is_none()
+                && !name.contains('.')
+                && self.root_opaque_type_short_names.contains(&name));
+        if let Some(builtin) = builtin {
+            // Checker-authored runtime signatures may retain the bare
+            // presentation name for a source-owned lifecycle carrier. When
+            // this scope has an exact import binding, restore that declaration
+            // identity before the builtin early-return below. The binding is
+            // checker-published from canonical source provenance, so a user
+            // same-leaf type cannot acquire lifecycle authority here.
+            if !name.contains('.')
+                && hew_types::lookup_source_owned_lifecycle_type(&name) == Some(builtin)
+            {
+                if let Some(imported) = self
+                    .import_type_name_aliases
+                    .get(&(self.current_module_name.clone(), name.clone()))
+                {
+                    if self.qualified_source_builtin(imported) == Some(builtin) {
+                        return Self::resolved_source_builtin_ty(imported, builtin, args);
+                    }
+                }
+            }
+            if !name.contains('.') {
+                // Preserve the checker-authored presentation identity. Runtime
+                // classification is carried exclusively by `builtin`; a
+                // renamed builtin must remain renamed across this boundary.
+                return ResolvedTy::Named {
+                    name,
+                    args,
+                    builtin: Some(builtin),
+                    is_opaque: false,
+                };
+            }
+            if self.qualified_source_builtin(&name) == Some(builtin) {
+                return Self::resolved_source_builtin_ty(&name, builtin, args);
+            }
+            return ResolvedTy::named_user(name, args);
+        }
+        if is_opaque {
             return ResolvedTy::Named {
                 name,
                 args,
-                builtin,
+                builtin: None,
                 is_opaque,
             };
         }
+        // Named imports are real source bindings, not catalog aliases. Project
+        // their bare spelling to the exact source owner before normalising the
+        // nominal. An unchanged checker-authored `builtin: None` remains user
+        // owned below; HIR must not manufacture representation authority from
+        // a bare spelling in the runtime catalog.
+        if !name.contains('.')
+            && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
+        {
+            if let Some(imported) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.clone()))
+            {
+                return self.qualify_current_module_record_ty(ResolvedTy::named_user(
+                    imported.clone(),
+                    args,
+                ));
+            }
+        }
         let canonical = self.canonical_current_module_record_name(&name);
+        // Checker facts inside an imported stdlib module can retain a lexical
+        // module binding (`net.NetError`) while the declaration and its
+        // signatures use the exact owner (`std.net.NetError`).  Normalize that
+        // owner before the unchanged-name compatibility path so produced-value
+        // joins, layouts, and call signatures agree on one nominal identity.
+        // `qualified_source_builtin` remains provenance-gated, so this cannot
+        // grant a user package a std carrier merely from its spelling.
+        if canonical.contains('.') {
+            if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                return Self::resolved_source_builtin_ty(&canonical, builtin, args);
+            }
+        }
         if canonical == name {
+            if name.contains('.') {
+                if let Some(builtin) = self.qualified_source_builtin(&name) {
+                    return Self::resolved_source_builtin_ty(&name, builtin, args);
+                }
+            }
+            // The checker-authored builtin discriminator is authoritative.
+            // An unchanged `builtin: None` identity must not be reclassified
+            // through the bare spelling catalog: a user `Vec<T>` is not the
+            // runtime vector merely because its leaf name collides. The
+            // qualified branch above is narrower: it requires exact canonical
+            // stdlib source provenance before recovering a compatibility
+            // spelling such as `stream.Sink`.
             ResolvedTy::Named {
                 name,
                 args,
                 builtin,
                 is_opaque,
             }
+        } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+            Self::resolved_source_builtin_ty(&canonical, builtin, args)
+        } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
+            ResolvedTy::named_opaque(canonical, args)
         } else {
             ResolvedTy::named_user(canonical, args)
         }
     }
 
+    /// Map a checker/presentation spelling of a generated monomorphic builtin
+    /// enum to its exact source owner. A bare leaf is admitted only when the
+    /// current source scope does not declare that leaf itself; an explicitly
+    /// qualified foreign owner is never retried by leaf.
+    fn canonical_monomorphic_builtin_enum_name(
+        &self,
+        name: &str,
+        builtin: Option<BuiltinType>,
+        current_module_is_file_import: bool,
+    ) -> Option<&'static str> {
+        for fact in MONOMORPHIC_BUILTIN_ENUMS {
+            if name == fact.canonical_name {
+                return Some(fact.canonical_name);
+            }
+            if name.contains('.') || name != fact.name {
+                continue;
+            }
+            if self.current_scope_declares_source_type(name, current_module_is_file_import)
+                && self.current_module_name.as_deref() != Some(fact.owner)
+            {
+                continue;
+            }
+            if builtin.is_none_or(|kind| kind.canonical_name() == fact.name) {
+                return Some(fact.canonical_name);
+            }
+        }
+        None
+    }
+
     fn canonical_current_module_record_name(&self, name: &str) -> String {
-        // An explicitly-qualified annotation (`module.Type`) is authoritative:
-        // preserve its qualifier into HIR so two same-short-name types from
-        // different modules keep distinct layout identities (#2270). Auto-
-        // qualification below only ever disambiguates a BARE name to the current
-        // module — it must never STRIP a qualifier the source already wrote
-        // (stripping `bank.Widget` to `Widget` collapses the per-module layout
-        // key and preempts the qualifier-preserving branch in
-        // `resolve_named_type_ref`).
+        // An explicitly-qualified annotation normally preserves its owner.
+        // The lexical self spelling is the exception: while lowering
+        // `hew.alpha.render`, `render.Box` is `hew.alpha.render.Box`, not an
+        // independent owner named only `render`.
+        //
+        // A true import binding wins first, preserving a same-leaf foreign
+        // module such as `import hew.right.render`. Only then use the shared
+        // current-module candidate helper, and only when the checker recorded
+        // that *full* identity. There is intentionally no short-name retry.
         if name.contains('.') {
+            if let Some((binding, tail)) = name.split_once('.') {
+                if let Some(owner) = self
+                    .module_import_bindings
+                    .get(&(self.current_module_name.clone(), binding.to_string()))
+                {
+                    return format!("{owner}.{tail}");
+                }
+            }
+            if let Some(canonical) = hew_types::current_module_qualified_type_candidate(
+                self.current_module_name.as_deref(),
+                name,
+            ) {
+                if self.checker_type_identities.contains(&canonical) {
+                    return canonical;
+                }
+            }
             return name.to_string();
         }
         // Bare reference inside an imported module to a record that module
@@ -18951,68 +22720,363 @@ impl LowerCtx {
         // module has no `{module_short}.{name}` entry and stays unqualified,
         // and a root item (`current_module_name` unset) is never rewritten.
         //
-        // A FILE-import module is excluded: `flatten_file_import_items`
-        // splices its types into the ROOT namespace, where they are
-        // constructed and dispatched with BARE identity. Owner-qualifying a
-        // file-import self-record ref (`{module}.Result`) would diverge from
-        // root's bare `%Result` construction and break same-type dispatch.
-        // Only genuine package modules — whose types are referenced qualified
-        // — take the owner identity.
-        //
         // Gated on a genuine cross-module bare-name collision: a record unique
         // to its module (e.g. stdlib `xml.Node`) is never rewritten, so the
         // qualification is inert for every non-colliding type and only fires
         // for the same-bare-name shape the actor-ask identity coupling needs.
-        if !self.cross_module_colliding_record_names.contains(name) {
-            return name.to_string();
-        }
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if !current_module_is_file_import {
-            if let Some(module_short) = self
-                .current_module_name
-                .as_deref()
-                .map(hew_types::short_name)
+        if let Some(module_full_path) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_full_path}.{name}");
+            // The checker can carry a bare `Ty::Named` for either a record or
+            // an opaque source declaration. Both recover their exact full
+            // module owner here. File-import flattening controls emission
+            // order only; it is not declaration-identity authority.
+            if self.record_registry.contains_key(&qualified)
+                || self.source_type_identities.contains(&qualified)
             {
-                let qualified = format!("{module_short}.{name}");
-                if self.record_registry.contains_key(&qualified) {
-                    return qualified;
-                }
+                return qualified;
             }
         }
         name.to_string()
     }
 
-    fn qualify_imported_impl_method_symbol(
+    fn imported_module_member_key(&self, module_binding: &str, member: &str) -> String {
+        self.module_import_bindings
+            .get(&(self.current_module_name.clone(), module_binding.to_string()))
+            .map_or_else(
+                || format!("{module_binding}.{member}"),
+                |owner| format!("{owner}.{member}"),
+            )
+    }
+
+    /// Canonicalize a supervisor child's user-spelled actor type to the
+    /// registered actor identity (`qualified_name()`), so the child's MIR
+    /// actor-layout lookup and the child-handle PID agree.
+    ///
+    /// A supervisor child records its actor type as the raw source spelling
+    /// (`child b: bank.Account` stores `bank.Account`), whose prefix is the
+    /// user's import alias. A module actor's identity is `qualified_name()` =
+    /// `{module_full_path}.{name}` (`hew.bank.Account`), which the MIR actor
+    /// layout keys on. Left raw, the alias-prefixed spelling never matches that
+    /// key and MIR rejects the supervisor with an unknown-actor
+    /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
+    /// `module_import_bindings` — the same table the checker's spawn resolution
+    /// uses — so a supervisor-child handle carries the same identity a spawn
+    /// handle does. A bare root-actor spelling has no module prefix and is
+    /// returned unchanged.
+    fn canonical_supervisor_child_ty(&self, raw: &str) -> String {
+        match raw.split_once('.') {
+            Some((module_binding, member)) => {
+                self.imported_module_member_key(module_binding, member)
+            }
+            None => raw.to_string(),
+        }
+    }
+
+    /// Whether bare `name` is authored by the scope currently being lowered.
+    ///
+    /// Root declarations use the root namespace. Every imported module,
+    /// including a flattened file import, uses the exact declaration
+    /// identities harvested from the module graph. This is deliberately narrower than
+    /// `record_registry`, which is a global layout index containing imports.
+    fn current_scope_declares_source_type(
         &self,
-        symbol: &str,
-        receiver_ty: &ResolvedTy,
-    ) -> String {
-        let Some((symbol_type, method)) = symbol.split_once("::") else {
-            return symbol.to_string();
-        };
-        let ResolvedTy::Named {
-            name: receiver_name,
-            ..
-        } = receiver_ty
-        else {
-            return symbol.to_string();
-        };
-        let receiver_short = hew_types::short_name(receiver_name);
-        if receiver_short == receiver_name {
-            return symbol.to_string();
+        name: &str,
+        _current_module_is_file_import: bool,
+    ) -> bool {
+        if self.current_module_name.is_none() {
+            return self.root_visible_source_type_short_names.contains(name);
         }
-        if receiver_short != symbol_type {
-            return symbol.to_string();
+        self.current_module_name
+            .as_deref()
+            .is_some_and(|module_full_path| {
+                self.source_type_identities
+                    .contains(&format!("{module_full_path}.{name}"))
+            })
+    }
+
+    /// Resolve an owner-qualified compiler carrier using source provenance.
+    ///
+    /// The ordinary catalog covers opaque/substrate carriers such as
+    /// `stream.Sink`. Lifecycle records are source-defined and therefore need
+    /// an exact owner mapping as well. In both cases a colliding user package
+    /// declaration wins unless the module graph proves the declaration came
+    /// from canonical `std.*`.
+    fn qualified_source_builtin(&self, name: &str) -> Option<BuiltinType> {
+        if !name.contains('.') {
+            return hew_types::lookup_builtin_type(name)
+                .filter(|builtin| !builtin.requires_source_import());
         }
-        let qualified = format!("{receiver_name}::{method}");
-        if self.fn_registry.contains_key(&qualified) {
-            qualified
+
+        // Parser/checker compatibility spellings for the core channel/stream
+        // carriers omit the leading `std.`.  While lowering a canonical stdlib
+        // module, project only those fixed catalog identities to their exact
+        // source declarations, and require that declaration provenance to be
+        // present. This is not a module-leaf retry: arbitrary `stream.Sink`
+        // source outside `std.*` remains a user nominal.
+        let canonical_compat = self
+            .current_module_name
+            .as_deref()
+            .filter(|module| module.starts_with("std."))
+            .and(match name {
+                "stream.Stream" => Some(("std.stream.Stream", BuiltinType::Stream)),
+                "stream.Sink" => Some(("std.stream.Sink", BuiltinType::Sink)),
+                "channel.Sender" => Some(("std.channel.Sender", BuiltinType::Sender)),
+                "channel.Receiver" => Some(("std.channel.Receiver", BuiltinType::Receiver)),
+                _ => None,
+            });
+        if let Some((canonical, builtin)) = canonical_compat {
+            if self
+                .canonical_std_source_type_identities
+                .contains(canonical)
+            {
+                return Some(builtin);
+            }
+        }
+
+        let owner = name.rsplit_once('.').map(|(owner, _)| owner);
+        let current_std_owner = self.current_module_name.as_deref().is_some_and(|module| {
+            owner == Some(module)
+                && self
+                    .canonical_std_source_type_identities
+                    .iter()
+                    .any(|identity| identity.starts_with(&format!("{module}.")))
+        });
+        let canonical_std_owner =
+            current_std_owner || self.canonical_std_source_type_identities.contains(name);
+
+        // The catalog still contains legacy leaf aliases such as
+        // `channel.Sender`.  They describe ABI, not source ownership: a user
+        // module named `channel` is not thereby the shipped std module.  A
+        // qualified source spelling becomes a builtin only after an exact
+        // canonical-stdlib provenance check; do not retry by its final path
+        // segment or by a catalog alias.
+        if !canonical_std_owner {
+            return None;
+        }
+        if let Some(builtin) = hew_types::lookup_builtin_type(name).or_else(|| {
+            // Lifecycle declarations are source-owned.  Their old short-owner
+            // compatibility spellings (`failure.CrashNotification`) remain
+            // readable as ordinary nominal identities, but do not acquire
+            // compiler representation authority.  Only the exact canonical
+            // `std.failure` / `std.link_monitor` declaration identity can
+            // carry that authority across this boundary.
+            (name.starts_with("std.failure.") || name.starts_with("std.link_monitor."))
+                .then(|| hew_types::lookup_source_owned_lifecycle_type(name))
+                .flatten()
+                // Some bundled declarations deliberately retain their source
+                // owner in checker/HIR facts while the runtime catalog's canonical
+                // spelling is a leaf. Keep this mapping exact: a generic leaf
+                // retry would let compatibility spellings rewrite a different
+                // source-owned declaration (for example `failure.*`).
+                .or_else(|| {
+                    // One shipped declaration, two canonical spellings: the
+                    // shipped `std/concurrency/lambda_actor.hew` source is
+                    // reachable both as a directory-module peer (a direct
+                    // `hew check` of the file lowers it as `std.concurrency`)
+                    // and as the file module every user import resolves
+                    // (`import std::concurrency::lambda_actor` →
+                    // `std.concurrency.lambda_actor`). Matching only the
+                    // former stamped the builtin discriminator on the direct
+                    // path but not through an import, so the same impl block
+                    // was metadata-only one way and a lowered user impl the
+                    // other — the root-vs-import provenance seam the stdlib
+                    // corpus sweep pins. Both spellings stay gated on the
+                    // canonical-source proof above; a user lookalike module
+                    // acquires neither.
+                    (canonical_std_owner
+                        && (name == "std.concurrency.LambdaActorHandle"
+                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
+                        .then_some(BuiltinType::LambdaActorHandle)
+                })
+        }) {
+            return Some(builtin);
+        }
+        None
+    }
+
+    /// Retain the exact declaration identity for source-owned lifecycle
+    /// carriers while also attaching their runtime representation class.
+    /// Ordinary compiler carriers continue to use the catalog's canonical
+    /// presentation name. A lifecycle record needs both facts: its qualified
+    /// source name selects the nominal layout, while `builtin` selects the ABI.
+    fn resolved_source_builtin_ty(
+        source_name: &str,
+        builtin: BuiltinType,
+        args: Vec<ResolvedTy>,
+    ) -> ResolvedTy {
+        let name = if source_name.contains('.')
+            && hew_types::lookup_source_owned_lifecycle_type(source_name) == Some(builtin)
+        {
+            source_name
         } else {
-            symbol.to_string()
+            builtin.canonical_name()
+        };
+        ResolvedTy::named_builtin(name, builtin, args)
+    }
+
+    /// Project a checker-owned implementation declaration onto the one HIR
+    /// function symbol that was registered to emit its body.  The declaration
+    /// id is authoritative; a surface spelling such as `Foo::apply` is only a
+    /// compatibility presentation and must never be used to rediscover an
+    /// imported implementation.
+    ///
+    /// The projection is populated only when HIR materialises the exact body.
+    /// Registry presence is deliberately insufficient: the checker retains
+    /// compatibility aliases for methods HIR can skip, and a same-spelling
+    /// method may be owned by a different flattened-file or package module.
+    /// A caller that is lowered before its selected body is emitted must remain
+    /// unresolved until lowering order establishes that body evidence.
+    fn registered_impl_method_symbol(&self, declaration: &hew_types::DefId) -> Option<String> {
+        self.impl_method_body_symbols
+            .get(declaration)
+            .cloned()
+            .or_else(|| self.impl_body_plan.symbols.get(declaration).cloned())
+    }
+
+    /// Verify that actual emission fulfils the declaration-keyed body plan.
+    /// This remains a release-mode boundary diagnostic: an optimised compiler
+    /// must fail closed rather than publish a wrong `DefId -> symbol` map.
+    fn validate_impl_body_plan(
+        &mut self,
+        declaration: &hew_types::DefId,
+        symbol: &str,
+        span: &Span,
+    ) -> bool {
+        let expected = self.impl_body_plan.symbols.get(declaration).cloned();
+        if expected.as_deref() == Some(symbol) {
+            return true;
         }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: format!("impl body `{}`", declaration.full_path()),
+                reason: expected.map_or_else(
+                    || "no pre-lowering emitted-body plan".to_string(),
+                    |expected| format!("planned symbol `{expected}`, emitted `{symbol}`"),
+                ),
+            },
+            span.clone(),
+            "implementation body emission diverged from the declaration-keyed body plan",
+        ));
+        false
+    }
+
+    /// The single eligibility authority for imported impl bodies.  The
+    /// pre-lowering body plan and the actual imported-module emitter both use
+    /// this result, so a first-pass signature can never masquerade as an
+    /// executable body for a method this gate skips.
+    fn imported_impl_skip_methods(
+        &self,
+        impl_decl: &hew_parser::ast::ImplDecl,
+        source_module: &str,
+        same_module_fn_rewrites: &HashMap<String, String>,
+    ) -> HashSet<String> {
+        let TypeExpr::Named {
+            name: self_type_name,
+            ..
+        } = &impl_decl.target_type.0
+        else {
+            return impl_decl
+                .methods
+                .iter()
+                .map(|method| method.name.clone())
+                .collect();
+        };
+        let impl_generic_params: HashSet<String> = impl_decl
+            .type_params
+            .as_ref()
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+        let mut skip_methods: HashSet<String> = HashSet::new();
+        for method in &impl_decl.methods {
+            let callable_params: HashSet<&str> = method
+                .params
+                .iter()
+                .filter(|param| matches!(&param.ty.0, TypeExpr::Function { .. }))
+                .map(|param| param.name.as_str())
+                .collect();
+            let body_unresolvable =
+                collect_all_bare_call_names(&method.body)
+                    .into_iter()
+                    .any(|callee| {
+                        !is_builtin_enum_variant_bare_name(&callee)
+                            && !same_module_fn_rewrites.contains_key(&callee)
+                            && !self.fn_registry.contains_key(&callee)
+                            && !callable_params.contains(callee.as_str())
+                            && !stdlib_catalog::is_overloaded_builtin(&callee)
+                    });
+            let mut method_generic_params = impl_generic_params.clone();
+            if let Some(tps) = &method.type_params {
+                method_generic_params.extend(tps.iter().map(|tp| tp.name.clone()));
+            }
+            let is_known_registered_type = |name: &str| {
+                self.enum_variants_by_name.contains_key(name)
+                    || self.type_classes.contains_key(name)
+                    || self.record_registry.contains_key(name)
+                    || self
+                        .source_type_identities
+                        .contains(&format!("{source_module}.{name}"))
+                    || name.rsplit_once('.').is_some_and(|(binding, item)| {
+                        self.module_import_bindings
+                            .get(&(Some(source_module.to_string()), binding.to_string()))
+                            .is_some_and(|owner| {
+                                self.source_type_identities
+                                    .contains(&format!("{owner}.{item}"))
+                            })
+                    })
+            };
+            let sig_unresolvable = method_signature_type_exprs(method).any(|ty| {
+                !imported_impl_signature_type_is_safe(
+                    ty,
+                    self_type_name,
+                    &method_generic_params,
+                    &is_known_registered_type,
+                )
+            });
+            if body_unresolvable || sig_unresolvable {
+                skip_methods.insert(method.name.clone());
+            }
+        }
+        loop {
+            let mut grew = false;
+            for method in &impl_decl.methods {
+                if skip_methods.contains(&method.name) {
+                    continue;
+                }
+                if collect_all_method_call_names(&method.body)
+                    .iter()
+                    .any(|callee| skip_methods.contains(callee))
+                {
+                    skip_methods.insert(method.name.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        skip_methods
+    }
+
+    /// Allocate the direct-body identity for a trait default materialised in a
+    /// concrete impl. The trait method `DefId` remains the static-dispatch key;
+    /// this synthetic ID names the distinct body HIR emits for one selected
+    /// `(trait, self-type, method)` tuple.
+    ///
+    /// This is intentionally constructed only at the default-body synthesis
+    /// boundary. It uses the carried declaration/type structures directly and
+    /// never parses a linker symbol or leaf method spelling back into an owner.
+    fn synthetic_default_impl_body_declaration(
+        declaring_trait: &hew_types::DefId,
+        self_ty: Option<&ResolvedTy>,
+        method: &str,
+    ) -> Option<hew_types::DefId> {
+        let self_ty = self_ty?;
+        let instance = crate::dispatch::receiver_self_type_for_impl_lookup_instance(self_ty)?;
+        Some(hew_types::default_impl_method_declaration(
+            declaring_trait,
+            &instance,
+            method,
+        ))
     }
 
     /// Decide whether a `Named` type reference resolves to a `#[opaque]`
@@ -19090,13 +23154,21 @@ impl LowerCtx {
                     "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
                     "bytes" => ResolvedTy::Bytes,
-                    "CancellationToken" if args.is_empty() => ResolvedTy::CancellationToken,
-                    "Unit" | "()" => ResolvedTy::Unit,
+                    "CancellationToken" => self
+                        .resolve_early_source_type_ref(name, args)
+                        .unwrap_or(ResolvedTy::CancellationToken),
+                    "Unit" => self
+                        .resolve_early_source_type_ref(name, args)
+                        .unwrap_or(ResolvedTy::Unit),
+                    "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
                     // compile error. Use `fork name = call(...)` to obtain a task
                     // handle. (TI-5 structural enforcement.)
                     "Task" => {
+                        if let Some(source_ty) = self.resolve_early_source_type_ref(name, args) {
+                            return source_ty;
+                        }
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::TaskNotNameable,
                             ty.1.clone(),
@@ -19317,28 +23389,34 @@ impl LowerCtx {
         self.register_option_layout(operand_ty, span, "checked numeric method");
     }
 
-    /// Register the concrete `HashMapIter$$<K, V>` record layout for a for-in
-    /// site, mirroring `register_vec_iter_layout`. Skips abstract instantiations
-    /// (a type param leaks `Vec<K>`/`Vec<V>` to the MIR boundary as
-    /// `UnknownType`); the concrete layout for each instantiation is registered
-    /// here once the enclosing fn is substituted, and `layout_mono` seeds the
-    /// decl so the substituted walk also discovers it. Field shape comes from
-    /// the single `hashmap_iter_field_shape` authority.
-    fn register_hashmap_iter_layout(
+    /// Register a concrete compiler-owned cursor layout from the typed catalog.
+    /// Abstract instantiations are deferred to `layout_mono`, which consumes the
+    /// same catalog after substituting the enclosing function.
+    fn register_synthetic_cursor_layout(
         &mut self,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
+        builtin: BuiltinType,
+        type_args: &[ResolvedTy],
         span: &Span,
     ) {
-        if self.contains_abstract_type_param(key_ty) || self.contains_abstract_type_param(val_ty) {
+        if type_args
+            .iter()
+            .any(|ty| self.contains_abstract_type_param(ty))
+        {
             return;
         }
-        let key = RecordMonoKey {
-            origin: SYNTHETIC_HASHMAP_ITER_ITEM,
-            origin_name: "HashMapIter".to_string(),
-            type_args: vec![key_ty.clone(), val_ty.clone()],
+        let Some((spec, fields)) = synthetic_cursor_layout(builtin, type_args) else {
+            debug_assert!(
+                false,
+                "invalid synthetic cursor layout request: {builtin:?}<{type_args:?}>"
+            );
+            return;
         };
-        let fields = hashmap_iter_field_shape(key_ty, val_ty);
+        let key = RecordMonoKey {
+            origin: spec.origin,
+            origin_name: builtin.canonical_name().to_string(),
+            type_args: type_args.to_vec(),
+            symbol_class: crate::mono::SymbolClass::SyntheticRecord,
+        };
         if self
             .record_layout_registry
             .insert(key, fields, span.clone())
@@ -19350,45 +23428,11 @@ impl LowerCtx {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::RecordLayoutCapExceeded { cap },
                 span.clone(),
-                "too many distinct HashMapIter<K, V> instantiations; the compiler refuses to \
-                 monomorphise beyond the configured record-layout cap",
-            ));
-        }
-    }
-
-    fn register_vec_iter_layout(&mut self, elem_ty: &ResolvedTy, span: &Span) {
-        // #1929 Stage 2: under a generic body the element is a declared type
-        // parameter, so registering an ABSTRACT `VecIter$$<T>` layout here would
-        // leak a `Vec<T>` field to the MIR value-class boundary (`UnknownType`).
-        // Skip it — exactly as the user-generic-record path (`record_record_layout`)
-        // fails closed on abstract args. The concrete `VecIter$$<elem>` for each
-        // instantiation is registered by the post-function-mono layout walk
-        // (`crate::layout_mono::run_layout_mono_pass`, which seeds `VecIter` into
-        // its record-decl table) once the enclosing fn is substituted. A concrete
-        // element never takes this branch, so the concrete for-in path is
-        // byte-identical.
-        if self.contains_abstract_type_param(elem_ty) {
-            return;
-        }
-        let key = RecordMonoKey {
-            origin: SYNTHETIC_VEC_ITER_ITEM,
-            origin_name: "VecIter".to_string(),
-            type_args: vec![elem_ty.clone()],
-        };
-        let fields = vec_iter_field_shape(elem_ty);
-        if self
-            .record_layout_registry
-            .insert(key, fields, span.clone())
-            .is_err()
-            && !self.record_layout_cap_diag_emitted
-        {
-            self.record_layout_cap_diag_emitted = true;
-            let cap = self.record_layout_registry.cap();
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::RecordLayoutCapExceeded { cap },
-                span.clone(),
-                "too many distinct VecIter<T> instantiations; the compiler refuses to \
-                 monomorphise beyond the configured record-layout cap",
+                format!(
+                    "too many distinct {} instantiations; the compiler refuses to \
+                     monomorphise beyond the configured record-layout cap",
+                    builtin.canonical_name()
+                ),
             ));
         }
     }
@@ -19403,21 +23447,19 @@ impl LowerCtx {
     }
 
     fn resolved_vec_iter_ty(elem_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "VecIter".to_string(),
-            args: vec![elem_ty],
-            builtin: None,
-            is_opaque: false,
-        }
+        ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![elem_ty])
+    }
+
+    fn resolved_hashmap_iter_ty(key_ty: ResolvedTy, val_ty: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "HashMapIter",
+            BuiltinType::HashMapIter,
+            vec![key_ty, val_ty],
+        )
     }
 
     fn resolved_option_ty(elem_ty: ResolvedTy) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![elem_ty],
-            builtin: None,
-            is_opaque: false,
-        }
+        ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![elem_ty])
     }
 
     fn make_expr(
@@ -19459,11 +23501,10 @@ impl LowerCtx {
         matches!(
             ty,
             ResolvedTy::Named {
-                name,
                 args,
-                builtin: None,
+                builtin: Some(BuiltinType::VecIter),
                 ..
-            } if name == "VecIter" && args.len() == 1
+            } if args.len() == 1
         )
     }
 
@@ -19521,6 +23562,9 @@ impl LowerCtx {
         self.make_expr(
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(vec_expr),
+                target: hew_types::CallTarget::RuntimeCollection(
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
+                ),
                 impl_id: ImplId(u32::MAX),
                 method_name: "len".to_string(),
                 target_symbol: "hew_vec_len".to_string(),
@@ -19537,9 +23581,44 @@ impl LowerCtx {
         )
     }
 
+    /// Build the iterator-only clone-out read used by `VecIter::next`.
+    ///
+    /// This deliberately does not use [`HirExprKind::Index`]: ordinary
+    /// `xs[i]` preserves its established element-class semantics, including
+    /// borrowed nested-collection handles. An iterator yield must instead be
+    /// an independent owner because the cursor keeps and later releases its
+    /// snapshot. `Vec::get` is the existing descriptor-backed clone choke and
+    /// returns the owned value directly in `Option<T>`.
+    fn make_vec_iter_get_clone_call(
+        &mut self,
+        vec_expr: HirExpr,
+        index: HirExpr,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        self.make_expr(
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(vec_expr),
+                target: hew_types::CallTarget::RuntimeCollection(
+                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
+                ),
+                impl_id: ImplId(u32::MAX),
+                method_name: "get".to_string(),
+                target_symbol: "hew_vec_get_clone".to_string(),
+                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
+                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
+                args: vec![index],
+                ret_ty: option_ty.clone(),
+            },
+            option_ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
     fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
-            name,
             args,
             builtin: Some(BuiltinType::Option),
             ..
@@ -19547,7 +23626,7 @@ impl LowerCtx {
         else {
             return None;
         };
-        if name == "Option" && args.len() == 1 {
+        if args.len() == 1 {
             Some(args[0].clone())
         } else {
             None
@@ -19632,7 +23711,7 @@ impl LowerCtx {
             );
             return None;
         };
-        Some((elem_ty, HirVarSelfMethodTarget::Direct { callee }))
+        Some((elem_ty, HirVarSelfMethodTarget::Direct))
     }
 
     fn for_iter_next_call_for_ty(
@@ -19641,13 +23720,12 @@ impl LowerCtx {
         span: &Span,
     ) -> Option<(ResolvedTy, ForIterNextCall)> {
         if let ResolvedTy::Named {
-            name,
             args,
-            builtin: None,
+            builtin: Some(BuiltinType::VecIter),
             ..
         } = iter_ty
         {
-            if name == "VecIter" && args.len() == 1 {
+            if args.len() == 1 {
                 return Some((args[0].clone(), ForIterNextCall::BuiltinVecIter));
             }
         }
@@ -19680,6 +23758,7 @@ impl LowerCtx {
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
         };
+        let target = self.registered_symbol_target(&callee_name);
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -19700,6 +23779,7 @@ impl LowerCtx {
             value_class: ValueClass::of_ty(ret_ty, &self.type_classes),
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
+                target,
                 callee: Box::new(callee),
                 args: vec![receiver],
             },
@@ -19833,7 +23913,7 @@ impl LowerCtx {
                 },
                 clone_span,
             );
-            let clone_hir = self.lower_expr(&clone_call, IntentKind::Consume);
+            let clone_hir = self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume);
             let iter_expr = self.make_vec_iter_init(clone_hir, elem_ty, span);
             return (iter_expr.kind, iter_expr.ty);
         }
@@ -19870,18 +23950,17 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
-        let iter_ty = ResolvedTy::Named {
-            name: "HashMapIter".to_string(),
-            args: vec![key_ty.clone(), val_ty.clone()],
-            builtin: None,
-            is_opaque: false,
-        };
-        self.register_hashmap_iter_layout(key_ty, val_ty, &span);
+        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
+        self.register_synthetic_cursor_layout(
+            BuiltinType::HashMapIter,
+            &[key_ty.clone(), val_ty.clone()],
+            &span,
+        );
         self.register_option_layout(&elem_ty, &span, "HashMapIter::next");
         if Self::for_in_iterable_is_place(&receiver.0) {
             // Place source: re-read directly per projection (single owner, drop-safe).
             let init = self.make_hashmap_iter_init(
-                receiver.0.clone(),
+                receiver.clone(),
                 key_ty,
                 val_ty,
                 iter_ty.clone(),
@@ -19907,7 +23986,7 @@ impl LowerCtx {
             span: span.clone(),
         };
         let tail = self.make_hashmap_iter_init(
-            Expr::Identifier(temp_name),
+            (Expr::Identifier(temp_name), span.clone()),
             key_ty,
             val_ty,
             iter_ty.clone(),
@@ -19931,20 +24010,22 @@ impl LowerCtx {
     /// `StructInit` from a projection receiver. `keys()`/`values()` are spanned at
     /// the call span's start/end offsets, matching the checker's
     /// `BuiltinHashMapIntoIter` recording so the span-keyed projection facts
-    /// resolve. The receiver is either re-read (place) or the single-eval temp.
+    /// resolve. The receiver keeps its own original span and is either re-read
+    /// (place) or the single-eval temp.
     fn make_hashmap_iter_init(
         &mut self,
-        receiver: Expr,
+        receiver: Spanned<Expr>,
         key_ty: &ResolvedTy,
         val_ty: &ResolvedTy,
         iter_ty: ResolvedTy,
         span: &Span,
     ) -> HirExpr {
+        let receiver_is_place = Self::for_in_iterable_is_place(&receiver.0);
         let keys_span = span.start..span.start;
         let values_span = span.end..span.end;
         let keys_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), keys_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "keys".to_string(),
                 args: Vec::new(),
             },
@@ -19952,14 +24033,18 @@ impl LowerCtx {
         );
         let values_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver, values_span.clone())),
+                receiver: Box::new(receiver),
                 method: "values".to_string(),
                 args: Vec::new(),
             },
             values_span,
         );
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
+        let keys_hir = if receiver_is_place {
+            self.lower_expr(&keys_call, IntentKind::Consume)
+        } else {
+            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
+        };
+        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, span.clone());
         self.make_expr(
             HirExprKind::StructInit {
@@ -19984,7 +24069,11 @@ impl LowerCtx {
         elem_ty: ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.register_vec_iter_layout(&elem_ty, &span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::VecIter,
+            std::slice::from_ref(&elem_ty),
+            &span,
+        );
         let idx = self.make_i64_literal(0, span.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         self.make_expr(
@@ -20056,9 +24145,10 @@ impl LowerCtx {
     /// Synthesizes a `HashMapIter<K, V> { ks: src.keys(), vs: src.values(), idx: 0 }`
     /// constructor as AST and lowers it through the normal `StructInit` path so
     /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
-    /// record. `receiver` is the projection receiver expression — the iterable
-    /// AST itself for a place source (re-read per projection, drop-safe), or an
-    /// `Expr::Identifier` for the single-eval temp of a non-place rvalue source.
+    /// record. `receiver` is the spanned projection receiver — the iterable AST
+    /// with its original span for a place source (re-read per projection,
+    /// drop-safe), or an `Expr::Identifier` for the single-eval temp of a
+    /// non-place rvalue source.
     /// The `keys()`/`values()` calls are spanned at two synthetic zero-width
     /// spans (`iterable.start..start`, `iterable.end..end`) the checker recorded
     /// the `keys`/`values` resolved-call facts at (`resolved_calls` is keyed by
@@ -20070,27 +24160,29 @@ impl LowerCtx {
     fn lower_hashmap_for_in_init(
         &mut self,
         iterable: &Spanned<Expr>,
-        receiver: &Expr,
+        receiver: &Spanned<Expr>,
         key_ty: ResolvedTy,
         val_ty: ResolvedTy,
     ) -> (HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall) {
         let iterable_span = &iterable.1;
         let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
-        let iter_ty = ResolvedTy::Named {
-            name: "HashMapIter".to_string(),
-            args: vec![key_ty.clone(), val_ty.clone()],
-            builtin: None,
-            is_opaque: false,
-        };
+        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
         // Register the concrete cursor layout and the `Option<(K, V)>` next
         // payload layout so MIR's field-order + value-class lookups resolve.
-        self.register_hashmap_iter_layout(&key_ty, &val_ty, iterable_span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::HashMapIter,
+            &[key_ty.clone(), val_ty.clone()],
+            iterable_span,
+        );
         self.register_option_layout(&elem_ty, iterable_span, "HashMapIter::next");
         // `keys()` and `values()` are taken from the single-eval `src` temp
         // (NOT a re-lowered clone of the iterable AST — that would evaluate a
         // side-effectful source twice). Each call is spanned at its own
         // synthetic zero-width span: `keys()` at `iterable.start..start`,
-        // `values()` at `iterable.end..end`. The derivation MUST match
+        // `values()` at `iterable.end..end`. Their receiver keeps its original
+        // iterable span; otherwise a field/tuple projection reads the
+        // projection's `Vec` result type from `expr_types` instead of the
+        // receiver's `HashMap` type. The call-span derivation MUST match
         // `Checker::hashmap_for_in_keys_span`/`..values_span` (hew-types)
         // byte-for-byte — `resolved_calls`/`expr_types` are span-keyed, so a
         // drift here would miss the checker's facts and trip the HIR boundary's
@@ -20107,7 +24199,7 @@ impl LowerCtx {
         let values_span = iterable_span.end..iterable_span.end;
         let keys_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), keys_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "keys".to_string(),
                 args: Vec::new(),
             },
@@ -20115,7 +24207,7 @@ impl LowerCtx {
         );
         let values_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), values_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "values".to_string(),
                 args: Vec::new(),
             },
@@ -20123,8 +24215,12 @@ impl LowerCtx {
         );
         // The projections produce fresh owned Vecs; the StructInit consumes
         // them into the cursor.
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
+        let keys_hir = if Self::for_in_iterable_is_place(&iterable.0) {
+            self.lower_expr(&keys_call, IntentKind::Consume)
+        } else {
+            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
+        };
+        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, iterable_span.clone());
         // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
         // `type_args` so MIR mangles the concrete layout), mirroring
@@ -20148,9 +24244,7 @@ impl LowerCtx {
         let next_call = self
             .generic_iterator_next_shape(&iter_ty, iterable_span)
             .map_or(
-                ForIterNextCall::VarSelf(HirVarSelfMethodTarget::Direct {
-                    callee: crate::node::HirImplBlock::method_symbol("HashMapIter", "next"),
-                }),
+                ForIterNextCall::VarSelf(HirVarSelfMethodTarget::Direct),
                 |(_elem, target)| ForIterNextCall::VarSelf(target),
             );
         (iter_init, iter_ty, elem_ty, next_call)
@@ -20167,10 +24261,14 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         self.register_option_layout(elem_ty, &span, "VecIter::next");
-        self.register_vec_iter_layout(elem_ty, &span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::VecIter,
+            std::slice::from_ref(elem_ty),
+            &span,
+        );
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
+        let lowered_receiver = self.lower_synthetic_operand(receiver, IntentKind::Modify);
         let HirExprKind::BindingRef {
             name: receiver_name,
             resolved: ResolvedRef::Binding(receiver_binding),
@@ -20276,19 +24374,16 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr = self.make_expr(
-            HirExprKind::Index {
-                container: Box::new(vec_read_for_get),
-                index: Box::new(idx_read_for_get),
-            },
-            elem_ty.clone(),
-            IntentKind::Read,
+        let value_expr = self.make_vec_iter_get_clone_call(
+            vec_read_for_get,
+            idx_read_for_get,
+            elem_ty,
             span.clone(),
         );
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
-            elem_ty.clone(),
+            option_ty.clone(),
             false,
             span.clone(),
         );
@@ -20353,14 +24448,17 @@ impl LowerCtx {
         let value_ref = self.make_binding_ref(
             value_binding_name,
             value_binding_id,
-            elem_ty.clone(),
-            IntentKind::Read,
+            option_ty.clone(),
+            // Transfer the freshly materialised Option<T> into the synthetic
+            // `else` result. A Read would leave the intermediate binding live
+            // in MIR's drop ledger after its bits move to the match scrutinee,
+            // releasing the Some payload before the loop body can own it.
+            IntentKind::Consume,
             span.clone(),
         );
-        let some_expr = self.make_option_ctor("Some", Some(value_ref), elem_ty, span.clone());
         let else_block = self.make_unit_block(
             vec![value_stmt, assign_stmt],
-            Some(some_expr),
+            Some(value_ref),
             option_ty.clone(),
             span.clone(),
         );
@@ -20584,7 +24682,8 @@ impl LowerCtx {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "for-over-Vec desugars directly to existing Loop/Match HIR nodes"
+        clippy::if_not_else,
+        reason = "the desugar keeps diagnostic recovery before the executable iterator branch"
     )]
     fn lower_for_iter_desugar(
         &mut self,
@@ -20618,18 +24717,55 @@ impl LowerCtx {
         //
         // The intent field of the BindingRef is what the MIR dataflow checker reads
         // to decide Consumed vs Live for the source collection binding.
+        let prior_occurrence_sites: HashSet<SiteId> = self
+            .produced_value_source_sites
+            .values()
+            .flatten()
+            .copied()
+            .collect();
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
+        let place_projection_rewrite = Self::for_in_iterable_is_place(&iterable.0)
+            && matches!(
+                lowered_iterable.ty,
+                ResolvedTy::Named {
+                    builtin: Some(BuiltinType::HashMap | BuiltinType::HashSet),
+                    ..
+                }
+            );
+        if place_projection_rewrite {
+            // This first lowering exists only to inspect the checker-resolved
+            // collection type; the projection rewrite below performs the real
+            // reads. Remove exactly the newly allocated inspection occurrences,
+            // then retain one authored occurrence under the first projection.
+            let discarded: HashSet<SiteId> = self
+                .produced_value_source_sites
+                .values()
+                .flatten()
+                .copied()
+                .filter(|site| !prior_occurrence_sites.contains(site))
+                .collect();
+            for sites in self.produced_value_source_sites.values_mut() {
+                sites.retain(|site| !discarded.contains(site));
+            }
+            self.produced_value_source_sites
+                .retain(|_, sites| !sites.is_empty());
+            self.produced_value_fact_sites
+                .retain(|site, _| !discarded.contains(site));
+            self.generated_produced_value_facts
+                .retain(|site, _| !discarded.contains(site));
+            self.produced_value_fact_keys
+                .retain(|site, _| !discarded.contains(site));
+        }
         // Statements that must run before the iterator-cursor `Let` in the
         // for-in's outer block. The HashMap/HashSet arms push a single-eval
         // source temp here so a side-effectful iterable is evaluated once.
         let mut source_prelude: Vec<HirStmt> = Vec::new();
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
             ResolvedTy::Named {
-                name,
                 args,
                 builtin: Some(BuiltinType::Vec),
                 ..
-            } if name == "Vec" && args.len() == 1 => {
+            } if args.len() == 1 => {
                 // Vec is a refcounted heap handle: sharing it (CowShare) leaves the
                 // source binding Live, so the collection is usable after the loop.
                 // Use Capture intent to signal "share, not move" to the MIR; the MIR
@@ -20660,17 +24796,51 @@ impl LowerCtx {
                 // the prelude in outer-to-inner (original execution) order — until
                 // the tail is no longer a `Block`, so an arbitrarily block-wrapped
                 // literal source bottoms out at the same bare-`BindingRef` shape a
-                // named binding takes.
+                // named binding takes. Keep each consumed Block site as a
+                // transparent `SubsumedValue` wrapper: checker facts and their
+                // nested identity edges remain attached to live HIR expressions,
+                // while MIR evaluates only the surviving tail.
                 let elem_ty = args[0].clone();
+                let mut consumed_blocks = Vec::new();
                 while let HirExprKind::Block(block) = lowered_iterable.kind {
                     let Some(tail) = block.tail else {
                         lowered_iterable.kind = HirExprKind::Block(block);
                         break;
                     };
                     source_prelude.extend(block.statements);
+                    consumed_blocks.push((
+                        lowered_iterable.site,
+                        lowered_iterable.span,
+                        lowered_iterable.intent,
+                    ));
                     lowered_iterable = *tail;
                 }
                 lowered_iterable.intent = IntentKind::Capture;
+                let synthetic_array_tail = matches!(
+                    &lowered_iterable.kind,
+                    HirExprKind::BindingRef { name, .. }
+                        if name.starts_with("__hew_array_") || name.starts_with("__hew_repeat_")
+                ) && !self
+                    .produced_value_fact_sites
+                    .contains_key(&lowered_iterable.site);
+                if synthetic_array_tail {
+                    let (array_site, _, _) = consumed_blocks
+                        .pop()
+                        .expect("array desugar tail must retain its synthetic block site");
+                    lowered_iterable.site = array_site;
+                    if let Some(fact) = self.produced_value_fact_sites.get_mut(&array_site) {
+                        fact.producer = HirProducedValueProducer::BindingRef;
+                    }
+                }
+                for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
+                    lowered_iterable = self.subsumed_value(
+                        site,
+                        &block_span,
+                        block_intent,
+                        lowered_iterable,
+                        HirProducedValueProducer::Block,
+                    );
+                }
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
@@ -20704,13 +24874,13 @@ impl LowerCtx {
                 let key_ty = args[0].clone();
                 let val_ty = args[1].clone();
                 if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_hashmap_for_in_init(iterable, &iterable.0, key_ty, val_ty)
+                    self.lower_hashmap_for_in_init(iterable, iterable, key_ty, val_ty)
                 } else {
                     let source_ty = lowered_iterable.ty.clone();
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    let receiver = Expr::Identifier(src_name);
+                    let receiver = (Expr::Identifier(src_name), iterable.1.clone());
                     self.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
                 }
             }
@@ -20735,26 +24905,33 @@ impl LowerCtx {
                 // zero-width, matching `Checker::hashset_for_in_to_vec_span`
                 // byte-for-byte), NOT the iterable's real span — that span keeps
                 // the set's true type so non-identifier sources route here, not
-                // to the Vec arm.
+                // to the Vec arm. Only the CALL uses the synthetic span: its
+                // receiver keeps the real iterable span so a field/tuple
+                // projection reads its HashSet type rather than the call's Vec
+                // result type.
                 let to_vec_span = iterable.1.start..iterable.1.start;
                 let to_vec_receiver = if Self::for_in_iterable_is_place(&iterable.0) {
-                    iterable.0.clone()
+                    iterable.clone()
                 } else {
                     let source_ty = lowered_iterable.ty.clone();
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    Expr::Identifier(src_name)
+                    (Expr::Identifier(src_name), iterable.1.clone())
                 };
                 let to_vec_call = (
                     Expr::MethodCall {
-                        receiver: Box::new((to_vec_receiver, to_vec_span.clone())),
+                        receiver: Box::new(to_vec_receiver),
                         method: "to_vec".to_string(),
                         args: Vec::new(),
                     },
                     to_vec_span,
                 );
-                let vec_hir = self.lower_expr(&to_vec_call, IntentKind::Consume);
+                let vec_hir = if Self::for_in_iterable_is_place(&iterable.0) {
+                    self.lower_expr(&to_vec_call, IntentKind::Consume)
+                } else {
+                    self.lower_synthetic_checker_root(&to_vec_call, IntentKind::Consume)
+                };
                 let iter_init =
                     self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
                 (
@@ -20765,11 +24942,10 @@ impl LowerCtx {
                 )
             }
             ResolvedTy::Named {
-                name,
                 args,
-                builtin: None,
+                builtin: Some(BuiltinType::VecIter),
                 ..
-            } if name == "VecIter" && args.len() == 1 => {
+            } if args.len() == 1 => {
                 // VecIter is already an iterator object; consuming it drives
                 // the cursor forward and the source binding is fully drained.
                 lowered_iterable.intent = IntentKind::Consume;
@@ -20905,7 +25081,7 @@ impl LowerCtx {
         self.push_scope();
         let block_scope = self.ids.scope();
         let iter_name = format!("__hew_for_iter_{}", self.ids.binding().0);
-        let iter_binding = self.bind(iter_name.clone(), iter_ty, true, iterable.1.clone());
+        let iter_binding = self.bind(iter_name.clone(), iter_ty.clone(), true, iterable.1.clone());
         let iter_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(iter_binding.clone(), Some(iter_init)),
@@ -20920,42 +25096,107 @@ impl LowerCtx {
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
             }
             ForIterNextCall::VarSelf(target) => {
-                let receiver = self.make_binding_ref(
-                    iter_binding.name.clone(),
-                    iter_binding.id,
-                    iter_binding.ty.clone(),
-                    IntentKind::Consume,
-                    iterable.1.clone(),
-                );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
-                let next_expr = self.make_expr(
-                    HirExprKind::VarSelfMethodCall {
-                        receiver: Box::new(receiver),
-                        target: target.clone(),
-                        args: Vec::new(),
-                        ret_ty: option_ty.clone(),
-                        receiver_ty: iter_binding.ty.clone(),
-                    },
-                    option_ty,
-                    IntentKind::Read,
-                    iterable.1.clone(),
-                );
-                // Register the cursor's `<Iter>::next` monomorphisation at this
-                // call site so MIR finds a concrete body (the generic
-                // `into_iter` path does the same for its into_iter callee). The
-                // synthetic-cursor for-in paths (`HashMapIter`) reach MIR only
-                // through this VarSelf shape, so without the mono the next-call
-                // dispatch fails closed with "no MIR body in module_fn_names".
-                if let HirVarSelfMethodTarget::Direct { callee } = &target {
-                    self.record_var_self_direct_monomorphisation(
-                        callee,
-                        &iter_binding.ty,
-                        &iterable.1,
-                        next_expr.site,
+                let (call_target, target_label) = match &target {
+                    HirVarSelfMethodTarget::Direct => {
+                        let symbol = match &iter_ty {
+                            ResolvedTy::Named {
+                                builtin:
+                                    Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
+                                ..
+                            } => crate::node::HirImplBlock::method_symbol(
+                                injected_builtin_impl_symbol_owner(builtin.canonical_name()),
+                                "next",
+                            ),
+                            ResolvedTy::Named { name, .. } => {
+                                crate::node::HirImplBlock::method_symbol(name, "next")
+                            }
+                            _ => String::new(),
+                        };
+                        (self.registered_symbol_target(&symbol), symbol)
+                    }
+                    HirVarSelfMethodTarget::StaticTrait {
+                        declaring_trait,
+                        method_name,
+                        ..
+                    } => {
+                        let label = format!("{declaring_trait}::{method_name}");
+                        let call_target = self
+                            .trait_method_identity(declaring_trait, method_name)
+                            .map_or_else(
+                                || CallTarget::Unsupported {
+                                    reason: format!(
+                                        "synthetic static-trait call `{label}` has no checker-owned target"
+                                    ),
+                                },
+                                |(trait_id, method_id)| {
+                                    CallTarget::static_trait(trait_id, method_id)
+                                },
+                            );
+                        (call_target, label)
+                    }
+                };
+                if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
+                    self.make_expr(
+                        HirExprKind::Unsupported(
+                            "synthetic iterator var-self call has no checker target".to_string(),
+                        ),
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    )
+                } else {
+                    let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+                    let lowered_receiver =
+                        self.lower_synthetic_operand(&next_receiver, IntentKind::Consume);
+                    if matches!(target, HirVarSelfMethodTarget::Direct) {
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            &iter_ty,
+                            &iterable.1,
+                            lowered_receiver.site,
+                        );
+                    }
+                    let builtin_cursor = matches!(
+                        iter_ty,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::VecIter | BuiltinType::HashMapIter),
+                            ..
+                        }
                     );
+                    let next = self.make_expr(
+                        HirExprKind::VarSelfMethodCall {
+                            receiver: Box::new(lowered_receiver),
+                            call_target,
+                            target,
+                            args: Vec::new(),
+                            ret_ty: option_ty.clone(),
+                            receiver_ty: iter_ty,
+                        },
+                        option_ty,
+                        IntentKind::Read,
+                        iterable.1.clone(),
+                    );
+                    // This call root is compiler-generated and therefore has
+                    // no authored checker span. Keep its fact in the disjoint
+                    // generated-site domain. The closed builtin cursors clone
+                    // or move an independently owned element into the returned
+                    // Option; user/static iterators remain provisional until
+                    // the declaration-keyed verifier resolves their return
+                    // summary.
+                    let ownership = if next.value_class == ValueClass::BitCopy {
+                        hew_types::ProducedValueOwnership::NoOwner
+                    } else if builtin_cursor {
+                        hew_types::ProducedValueOwnership::owned(
+                            hew_types::ProducedValueAcquisition::Fresh,
+                        )
+                    } else {
+                        hew_types::ProducedValueOwnership::Unknown
+                    };
+                    self.record_generated_produced_value_fact(&next, ownership);
+                    next
                 }
-                next_expr
             }
             ForIterNextCall::ChannelRecv => {
                 // Borrow the receiver binding (Read) so the loop binding remains
@@ -21077,11 +25318,13 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
+        let some_arm_scope = self.ids.scope();
         let match_expr = self.make_expr(
             HirExprKind::Match {
                 scrutinee: Box::new(next_expr),
                 arms: vec![
                     HirMatchArm {
+                        scope: Some(some_arm_scope),
                         predicate: HirMatchArmPredicate::EnumVariant {
                             variant_match: hew_types::VariantMatch {
                                 type_name: "Option".to_string(),
@@ -21097,6 +25340,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: HirMatchArmPredicate::EnumVariant {
                             variant_match: hew_types::VariantMatch {
                                 type_name: "Option".to_string(),
@@ -21167,6 +25411,30 @@ impl LowerCtx {
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
     /// other rewrite variants are rejected as unsupported (they targeted the legacy
     /// codegen pipeline, not the Rust MIR pipeline).
+    /// Replace a presentation-only machine leaf with the checker-proven
+    /// declaration owner carried by `MachineMethodKind`. Machine method
+    /// dispatch is resolved before HIR lowering, so this is not a leaf-name
+    /// lookup: the call-site fact already selected the exact declaration.
+    ///
+    /// This keeps the receiver and generated event companion on the same
+    /// nominal identity that machine-mono and MIR layout classification use.
+    /// In particular, an imported `lifecycle.Lifecycle<i64>` must not leave a
+    /// bare `Lifecycle` / `LifecycleEvent` type on the runtime call boundary.
+    fn canonicalize_machine_runtime_ty(&self, expr: &mut HirExpr, canonical_name: &str) {
+        let ResolvedTy::Named { name, args, .. } = &expr.ty else {
+            return;
+        };
+        if name == canonical_name {
+            return;
+        }
+        let canonical_leaf = hew_types::short_name(canonical_name);
+        if name != canonical_leaf || name.contains('.') {
+            return;
+        }
+        expr.ty = ResolvedTy::named_user(canonical_name.to_string(), args.clone());
+        expr.value_class = ValueClass::of_ty(&expr.ty, &self.type_classes);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -21189,13 +25457,42 @@ impl LowerCtx {
         // emits the pool ABI — the synthetic callee is never resolved.
         let pool_key = self.mk_key(&span);
         if let Some(accessor) = self.pool_accessor_sites_checker.get(&pool_key).cloned() {
+            let Some(ty) = self.expr_types.get(&pool_key) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("supervisor pool accessor `{method}`"),
+                        reason: "missing checker expression type".to_string(),
+                    },
+                    span.clone(),
+                    "a supervisor pool accessor must carry its checker-resolved return type; generic machine payloads cannot default to i64",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "supervisor pool accessor `{method}` is missing its return type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            };
+            let result_ty = match ResolvedTy::from_ty(ty) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: format!("supervisor pool accessor `{method}`"),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "a supervisor pool accessor must carry its checker-resolved return type; generic machine payloads cannot default to i64",
+                    ));
+                    return (
+                        HirExprKind::Unsupported(format!(
+                            "supervisor pool accessor `{method}` has an unresolved return type"
+                        )),
+                        ResolvedTy::Unit,
+                    );
+                }
+            };
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let result_ty = ResolvedTy::from_ty(
-                self.expr_types
-                    .get(&pool_key)
-                    .unwrap_or(&hew_types::Ty::Error),
-            )
-            .unwrap_or(ResolvedTy::I64);
             let mut call_args = vec![lowered_receiver];
             for arg in args {
                 let (expr, sp) = arg.expr();
@@ -21225,6 +25522,12 @@ impl LowerCtx {
             };
             return (
                 HirExprKind::Call {
+                    target: CallTarget::Runtime(match accessor.kind {
+                        hew_types::PoolAccessorKind::Len => {
+                            hew_types::runtime_call::RuntimeCallFamily::SupervisorPoolLen
+                        }
+                        _ => hew_types::runtime_call::RuntimeCallFamily::SupervisorPoolChildGet,
+                    }),
                     callee: Box::new(callee),
                     args: call_args,
                 },
@@ -21456,30 +25759,24 @@ impl LowerCtx {
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .map(|arg| {
-                    // A channel handle (`Sender<T>`/`Receiver<T>`) crossing an
-                    // actor message boundary transfers ownership to the
-                    // receiving handler — the mailbox copies the handle
-                    // pointer, not the channel. Lower such args with
-                    // `IntentKind::Consume` so the move-checker marks the
-                    // caller binding consumed: a later use (`rx.close()`, a
-                    // second send) would race the new owner and double-close
-                    // the underlying channel. Every other arg keeps `Read` —
-                    // the existing boundary copy/clone semantics.
+                    // A single-owner value crossing an actor message boundary
+                    // transfers ownership to the receiving handler — the
+                    // mailbox copies the handle/resource, not the underlying
+                    // thing it owns. Lower such args with `IntentKind::Consume`
+                    // so the move-checker marks the caller binding consumed: a
+                    // later use (`rx.close()`, `s.detach()`, a second send)
+                    // would race the new owner and free the value twice. Every
+                    // other arg keeps `Read` — CoW boundary copy semantics.
                     //
-                    // The predicate is RECURSIVE: a direct `Sender<T>` /
-                    // `Receiver<T>` arg AND any arg whose type transitively
-                    // carries a handle (e.g. a tuple `(Receiver<T>, string)`)
-                    // both transfer the handle pointer. Without the recursive
-                    // check a nested-handle arg is lowered as `Read` (CowShare
-                    // in MIR), the caller binding stays live, and a subsequent
-                    // `rx.close()` silently double-closes the channel.
+                    // The predicate is RECURSIVE: a direct handle/resource arg
+                    // AND any arg whose type transitively carries one (e.g. a
+                    // tuple `(Receiver<T>, string)`) both transfer the owned
+                    // pointer. Without the recursive check a nested-handle arg
+                    // is lowered as `Read` (CowShare in MIR), the caller
+                    // binding stays live, and a subsequent close silently
+                    // double-frees.
                     let spanned = arg.expr();
-                    let intent = if self.checked_span_contains_channel_handle(&spanned.1) {
-                        IntentKind::Consume
-                    } else {
-                        IntentKind::Read
-                    };
-                    self.lower_expr(spanned, intent)
+                    self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
                 })
                 .collect();
             return match dispatch {
@@ -21515,6 +25812,7 @@ impl LowerCtx {
                                 method_id,
                                 args: lowered_args,
                                 reply_ty: reply_ty.clone(),
+                                source_anchor: None,
                                 deadline_ns: None,
                             },
                             reply_ty,
@@ -21605,7 +25903,9 @@ impl LowerCtx {
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             return match dispatch {
                 hew_types::MachineMethodKind::Step { machine_name } => {
-                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         value_class: ValueClass::PersistentShare,
@@ -21616,24 +25916,34 @@ impl LowerCtx {
                         ),
                         span: span.clone(),
                     });
+                    self.canonicalize_machine_runtime_ty(
+                        &mut event,
+                        &format!("{machine_name}Event"),
+                    );
                     (
                         HirExprKind::MachineStep {
                             machine_name,
-                            receiver: Box::new(lowered_receiver),
+                            receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
                         ResolvedTy::Unit,
                     )
                 }
-                hew_types::MachineMethodKind::StateName { machine_name } => (
-                    HirExprKind::MachineStateName {
-                        machine_name,
-                        receiver: Box::new(lowered_receiver),
-                    },
-                    ResolvedTy::String,
-                ),
+                hew_types::MachineMethodKind::StateName { machine_name } => {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    (
+                        HirExprKind::MachineStateName {
+                            machine_name,
+                            receiver: Box::new(receiver),
+                        },
+                        ResolvedTy::String,
+                    )
+                }
                 hew_types::MachineMethodKind::TakeEmits { machine_name } => {
-                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         value_class: ValueClass::PersistentShare,
@@ -21644,10 +25954,14 @@ impl LowerCtx {
                         ),
                         span: span.clone(),
                     });
+                    self.canonicalize_machine_runtime_ty(
+                        &mut event,
+                        &format!("{machine_name}Event"),
+                    );
                     (
                         HirExprKind::MachineTakeEmits {
                             machine_name,
-                            receiver: Box::new(lowered_receiver),
+                            receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
                         ResolvedTy::I64,
@@ -21661,7 +25975,14 @@ impl LowerCtx {
         // `method_call_rewrites` entry (a direct-call rewrite would
         // collapse the dispatch indirection that the vtable provides).
         if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let preserves_receiver = dyn_call.signature.returns_receiver_identity
+                && self.method_call_preserves_receiver_identity.contains(&key);
+            let receiver_intent = self.method_receiver_intent(
+                &key,
+                dyn_call.signature.consumes_receiver,
+                preserves_receiver,
+            );
+            let lowered_receiver = self.lower_expr(receiver, receiver_intent);
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             // Result type comes from the checker's expr_types side-table
             // (the call's full span). Fail-closed if absent or poisoned.
@@ -21675,12 +25996,21 @@ impl LowerCtx {
                         .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                 })
                 .unwrap_or(ResolvedTy::Unit);
+            if !self.ensure_executable_target(&dyn_call.target, "dynamic trait call", &span) {
+                return (
+                    HirExprKind::Unsupported(
+                        "dynamic trait call has no checker target".to_string(),
+                    ),
+                    ret_ty,
+                );
+            }
             // W4.047 P1.2: prove the typed handoff agrees at this fail-open
             // dyn-method-return site (no behaviour change).
             self.assert_resolved_ty_totality(&span);
             return (
                 HirExprKind::CallDynMethod {
                     receiver: Box::new(lowered_receiver),
+                    target: dyn_call.target,
                     trait_name: dyn_call.trait_name,
                     method_name: dyn_call.method_name,
                     slot: dyn_call.slot,
@@ -21714,6 +26044,26 @@ impl LowerCtx {
                 );
             }
         }
+        // A checker-selected typed runtime endpoint is already a complete
+        // executable dispatch decision.  It intentionally wins over the
+        // declaration-level resolver verdict that was also recorded while
+        // validating the source method surface: active transport `attach`, for
+        // example, has a source trait implementation solely for type checking,
+        // while its actual call ABI is the runtime family that synthesises
+        // concrete actor protocol IDs.  Trying to project that source stub into
+        // an imported HIR body both loses the runtime ABI and rejects valid
+        // imported handles when the trait declaration has no materialised
+        // body.  Keep this precedence structural (the typed `CallTarget`), not
+        // symbol- or receiver-name based, so every future runtime override has
+        // the same semantics.
+        let rewrite = self.method_call_rewrites.get(&key).cloned();
+        let runtime_rewrite_selected = matches!(
+            &rewrite,
+            Some(MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Runtime(_),
+                ..
+            })
+        );
         // Look up the checker's `resolved_calls` verdict unconditionally so any
         // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
         // bugs, `expr_types` side-table inconsistency, missing impl registration)
@@ -21730,91 +26080,105 @@ impl LowerCtx {
         // The legacy `method_call_rewrites` entries for that overlap are
         // removed in the C3 commit that retires the per-V allowlists, so the
         // precedence is exercised by construction once dual-emit retires.
-        if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
-            // The checker's `expr_types` is the authoritative source for
-            // the call-site result type (LESSONS `checker-authority`).
-            // A missing or non-convertible entry is a checker boundary
-            // violation — we record it eagerly so the gap is visible
-            // long before the consumer is wired.
-            let ret_ty = match self
-                .expr_types
-                .get(&key)
-                .cloned()
-                .map(|ty| ResolvedTy::from_ty(&ty))
-            {
-                Some(Ok(ty)) => Some(ty),
-                Some(Err(err)) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "checker-resolved method call has poisoned result type",
-                    ));
-                    None
-                }
-                None => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: "missing expr_types entry for call site".to_string(),
-                        },
-                        span.clone(),
-                        "checker recorded a ResolvedCall for this site but no \
+        if !runtime_rewrite_selected {
+            if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
+                // The checker's `expr_types` is the authoritative source for
+                // the call-site result type (LESSONS `checker-authority`).
+                // A missing or non-convertible entry is a checker boundary
+                // violation — we record it eagerly so the gap is visible
+                // long before the consumer is wired.
+                let ret_ty = match self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .map(|ty| ResolvedTy::from_ty(&ty))
+                {
+                    Some(Ok(ty)) => Some(ty),
+                    Some(Err(err)) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-resolved method call has poisoned result type",
+                        ));
+                        None
+                    }
+                    None => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: "missing expr_types entry for call site".to_string(),
+                            },
+                            span.clone(),
+                            "checker recorded a ResolvedCall for this site but no \
                          expr_types entry — the side-tables are inconsistent",
-                    ));
-                    None
-                }
-            };
-            #[allow(
-                clippy::items_after_statements,
-                reason = "the activation gate lives next to the guard it controls; \
+                        ));
+                        None
+                    }
+                };
+                #[allow(
+                    clippy::items_after_statements,
+                    reason = "the activation gate lives next to the guard it controls; \
                           promoting to a module-level const would scatter the \
                           deferral rationale across the file"
-            )]
-            const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
-            if RESOLVED_IMPL_CALL_ACTIVATED {
-                // Only emit when the resolver verdict survived boundary
-                // conversion; otherwise fall through to the legacy
-                // `method_call_rewrites` arm below.
-                if let Some(ret_ty) = ret_ty {
-                    // Register any enum instantiation that surfaces as the
-                    // return type (e.g. `HashMap::get -> Option<V>`,
-                    // `HashMap::remove -> Option<V>`). Without this the
-                    // module-level `enum_layouts` table lacks the matching
-                    // key for `Named { name: "Option", .. }`, MIR records
-                    // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                    // the call site, and the totality gate fires
-                    // (`DecisionMapTotal { offending_sites: [...] }`).
-                    // This mirrors the legacy `RewriteToFunction` arm
-                    // below — the new resolver-authority path inherits
-                    // the same boundary obligation.
-                    self.try_register_enum_instantiation(&span);
-                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-                    return (
-                        HirExprKind::ResolvedImplCall {
-                            receiver: Box::new(lowered_receiver),
-                            impl_id: resolved.impl_id,
-                            method_name: resolved.method_name,
-                            target_symbol: resolved.target.symbol_name,
-                            target_family: resolved.target.family,
-                            type_args: resolved.type_args,
-                            args: lowered_args,
-                            ret_ty: ret_ty.clone(),
-                        },
-                        ret_ty,
-                    );
+                )]
+                const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
+                if RESOLVED_IMPL_CALL_ACTIVATED {
+                    // Only emit when the resolver verdict survived boundary
+                    // conversion; otherwise fall through to the legacy
+                    // `method_call_rewrites` arm below.
+                    if let Some(ret_ty) = ret_ty {
+                        if !self.ensure_executable_target(
+                            &resolved.target,
+                            "resolved impl call",
+                            &span,
+                        ) {
+                            return (
+                                HirExprKind::Unsupported(
+                                    "resolved impl call has no checker target".to_string(),
+                                ),
+                                ret_ty,
+                            );
+                        }
+                        // Register any enum instantiation that surfaces as the
+                        // return type (e.g. `HashMap::get -> Option<V>`,
+                        // `HashMap::remove -> Option<V>`). Without this the
+                        // module-level `enum_layouts` table lacks the matching
+                        // key for `Named { name: "Option", .. }`, MIR records
+                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
+                        // the call site, and the totality gate fires
+                        // (`DecisionMapTotal { offending_sites: [...] }`).
+                        // This mirrors the legacy `RewriteToFunction` arm
+                        // below — the new resolver-authority path inherits
+                        // the same boundary obligation.
+                        self.try_register_enum_instantiation(&span);
+                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
+                        return (
+                            HirExprKind::ResolvedImplCall {
+                                receiver: Box::new(lowered_receiver),
+                                target: resolved.target,
+                                impl_id: resolved.impl_id,
+                                method_name: resolved.method_name,
+                                target_symbol: resolved.method_target.symbol_name,
+                                target_family: resolved.method_target.family,
+                                type_args: resolved.type_args,
+                                args: lowered_args,
+                                ret_ty: ret_ty.clone(),
+                            },
+                            ret_ty,
+                        );
+                    }
                 }
+                // Dormant path: the lookup ran (and diagnostics fired if the
+                // boundary failed), but emission is deferred. Fall through to
+                // the legacy `method_call_rewrites` branch below so live sites
+                // keep their current dispatch behaviour.
+                let _ = resolved;
             }
-            // Dormant path: the lookup ran (and diagnostics fired if the
-            // boundary failed), but emission is deferred. Fall through to
-            // the legacy `method_call_rewrites` branch below so live sites
-            // keep their current dispatch behaviour.
-            let _ = resolved;
         }
-        let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
                 let result_ty = self
@@ -21891,7 +26255,9 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
+                    .map_or(ResolvedTy::Unit, |ty| {
+                        self.qualify_current_module_record_ty(ty)
+                    });
                 let reply_ty = match &ret_ty {
                     ResolvedTy::Named {
                         builtin: Some(BuiltinType::Result),
@@ -21931,11 +26297,21 @@ impl LowerCtx {
                 )
             }
             Some(MethodCallRewrite::RewriteToFunction {
+                target,
                 c_symbol,
                 descriptor,
                 consumes_receiver,
+                returns_receiver_identity,
                 ..
             }) => {
+                if !self.ensure_executable_target(&target, &c_symbol, &span) {
+                    return (
+                        HirExprKind::Unsupported(
+                            "method call has no checker declaration target".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                }
                 // S5: a method-call rewrite that lands on a builtin-generic
                 // enum result type (e.g. `Result<(), SendError>` for
                 // `RemotePid<T>::send`) needs the per-instantiation enum
@@ -21960,7 +26336,39 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
+                    .map_or(ResolvedTy::Unit, |ty| {
+                        self.qualify_current_module_record_ty(ty)
+                    });
+                let c_symbol = match &target {
+                    CallTarget::ImplMethod(declaration) => {
+                        let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CallableUnsupportedInMir {
+                                    name: declaration.full_path().to_string(),
+                                },
+                                span.clone(),
+                                "checker selected an implementation declaration whose HIR body \
+                                 was not registered; direct method dispatch cannot be lowered",
+                            ));
+                            return (
+                                HirExprKind::Unsupported(
+                                    "implementation call has no registered HIR body".to_string(),
+                                ),
+                                ret_ty,
+                            );
+                        };
+                        symbol
+                    }
+                    _ => c_symbol,
+                };
+                if !self.ensure_executable_target(&target, "static trait call", &span) {
+                    return (
+                        HirExprKind::Unsupported(
+                            "static trait call has no checker target".to_string(),
+                        ),
+                        ret_ty,
+                    );
+                }
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
                 // receiver-method-rewrite return site (no behaviour change).
                 self.assert_resolved_ty_totality(&span);
@@ -21977,7 +26385,8 @@ impl LowerCtx {
                     return (
                         HirExprKind::VarSelfMethodCall {
                             receiver: Box::new(lowered_receiver),
-                            target: HirVarSelfMethodTarget::Direct { callee: c_symbol },
+                            call_target: target,
+                            target: HirVarSelfMethodTarget::Direct,
                             args: lowered_args,
                             ret_ty: ret_ty.clone(),
                             receiver_ty,
@@ -21995,14 +26404,17 @@ impl LowerCtx {
                 // underlying resource (LESSONS: raii-null-after-move,
                 // cleanup-all-exits). Borrowing methods (`send`/`recv`) keep
                 // `IntentKind::Read`.
-                let receiver_intent = if consumes_receiver {
-                    IntentKind::Consume
-                } else {
-                    IntentKind::Read
-                };
+                let preserves_receiver = returns_receiver_identity
+                    && self.method_call_preserves_receiver_identity.contains(&key);
+                let receiver_intent =
+                    self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
                 let lowered_receiver = self.lower_expr(receiver, receiver_intent);
-                let c_symbol =
-                    self.qualify_imported_impl_method_symbol(&c_symbol, &lowered_receiver.ty);
+                // `c_symbol` is either projected from the exact selected impl
+                // declaration above or carried by a typed runtime/user target.
+                // Never rediscover an imported owner from receiver/name leaf
+                // equality: same-named types in sibling modules can both have
+                // registered methods, making that fallback select a real but
+                // wrong body.
                 // Slice 2: a by-value direct-dot call to a generic impl method
                 // on a concrete generic receiver (e.g. `p.first()` where
                 // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
@@ -22068,6 +26480,7 @@ impl LowerCtx {
                 };
                 (
                     HirExprKind::Call {
+                        target,
                         callee: Box::new(callee),
                         args: lowered_args,
                     },
@@ -22148,13 +26561,16 @@ impl LowerCtx {
                 };
                 (
                     HirExprKind::Call {
+                        target: self.registered_symbol_target(symbol),
                         callee: Box::new(callee),
                         args: lowered_args,
                     },
                     ret_ty,
                 )
             }
-            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }) => {
+            Some(MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target, c_symbol, ..
+            }) => {
                 // Module-qualified direct call: the receiver expression is the
                 // module identifier, not a value. Lower the args only — do NOT
                 // prepend the receiver (LESSONS `module-qualified-rewrite-authority`).
@@ -22162,6 +26578,7 @@ impl LowerCtx {
                 // same helper from `lower_regular_call`.
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 let (call_kind, ret_ty) = self.lower_module_qualified_direct_call_lowered(
+                    target,
                     &c_symbol,
                     lowered_args,
                     &span,
@@ -22215,11 +26632,14 @@ impl LowerCtx {
                 )
             }
             Some(MethodCallRewrite::StaticTraitDispatch {
+                target,
                 receiver_type_param,
                 bound_trait,
                 declaring_trait,
                 method_name,
                 requires_mutable_receiver,
+                consumes_receiver,
+                returns_receiver_identity,
             }) => {
                 let ret_ty = self
                     .expr_types
@@ -22252,24 +26672,35 @@ impl LowerCtx {
                 // concrete call.
                 if receiver_type_param == "Self" {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
-                        if let Some((self_type_name, _type_args)) =
-                            crate::dispatch::receiver_self_type_for_impl_lookup(&self_ty)
+                        if let Some(self_type) =
+                            crate::dispatch::receiver_self_type_for_impl_lookup_instance(&self_ty)
                         {
                             let c_symbol = crate::node::HirImplBlock::method_symbol(
-                                &self_type_name,
+                                self_type.nominal.declaration().full_path(),
                                 &method_name,
                             );
+                            let concrete_target = self.registered_symbol_target(&c_symbol);
+                            if !self.ensure_executable_target(&concrete_target, &c_symbol, &span) {
+                                return (
+                                    HirExprKind::Unsupported(format!(
+                                        "trait default call `{c_symbol}` has no concrete target"
+                                    )),
+                                    ret_ty,
+                                );
+                            }
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,
                                 // receiver type will be the concrete self type
                                 &self_ty, &span, site,
                             );
-                            let receiver_intent = if requires_mutable_receiver {
-                                IntentKind::Consume
-                            } else {
-                                IntentKind::Read
-                            };
+                            let preserves_receiver = returns_receiver_identity
+                                && self.method_call_preserves_receiver_identity.contains(&key);
+                            let receiver_intent = self.method_receiver_intent(
+                                &key,
+                                requires_mutable_receiver || consumes_receiver,
+                                preserves_receiver,
+                            );
                             let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                             let mut lowered_args = vec![lowered_receiver];
                             for arg in args {
@@ -22300,6 +26731,7 @@ impl LowerCtx {
                             };
                             return (
                                 HirExprKind::Call {
+                                    target: concrete_target,
                                     callee: Box::new(callee),
                                     args: lowered_args,
                                 },
@@ -22316,6 +26748,7 @@ impl LowerCtx {
                     return (
                         HirExprKind::VarSelfMethodCall {
                             receiver: Box::new(lowered_receiver),
+                            call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
                                 receiver_type_param,
                                 bound_trait,
@@ -22332,17 +26765,23 @@ impl LowerCtx {
                 // Static trait dispatch: emit `CallTraitMethodStatic` carrying
                 // the structured metadata. MIR resolves the concrete callee from
                 // the monomorphization substitution map.
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let preserves_receiver = returns_receiver_identity
+                    && self.method_call_preserves_receiver_identity.contains(&key);
+                let receiver_intent =
+                    self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
+                let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 (
-                    Self::make_static_trait_dispatch_call(
+                    self.make_static_trait_dispatch_call(
                         lowered_receiver,
+                        target,
                         receiver_type_param,
                         bound_trait,
                         declaring_trait,
                         method_name,
                         lowered_args,
                         ret_ty.clone(),
+                        &span,
                     ),
                     ret_ty,
                 )
@@ -22383,12 +26822,17 @@ impl LowerCtx {
             Some(MethodCallRewrite::CopyCloneNoop) => {
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 let ty = lowered_receiver.ty.clone();
-                (lowered_receiver.kind, ty)
+                (
+                    HirExprKind::SubsumedValue {
+                        source: Box::new(lowered_receiver),
+                        producer: HirProducedValueProducer::CopyCloneNoop,
+                    },
+                    ty,
+                )
             }
             None => {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
-                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                         let name = format!("{module_name}.{method}");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ImportMissing {
@@ -22399,10 +26843,28 @@ impl LowerCtx {
                             stdlib_catalog::missing_import_hint(module),
                         ));
                         return (
-                            HirExprKind::Call {
-                                callee: Box::new(self.unresolved_module_object(&name, span)),
-                                args: lowered_args,
+                            // This source call was rejected by the checker/import
+                            // boundary. Do not materialize a callable HIR node with
+                            // a synthetic target: downstream MIR intentionally does
+                            // not recover target identity from an unresolved callee.
+                            HirExprKind::Unsupported(format!("unresolved module call `{name}`")),
+                            ResolvedTy::Unit,
+                        );
+                    }
+                    if self.user_modules.contains(module_name) {
+                        let name = format!("{module_name}.{method}");
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name,
+                                reason: "missing module-qualified call rewrite".to_string(),
                             },
+                            span.clone(),
+                            "checker admitted a user module-qualified call without its canonical rewrite target",
+                        ));
+                        return (
+                            HirExprKind::Unsupported(format!(
+                                "module call `{module_name}.{method}` has no rewrite entry"
+                            )),
                             ResolvedTy::Unit,
                         );
                     }
@@ -22522,38 +26984,54 @@ impl LowerCtx {
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
-    /// Look up an enum variant constructor by surface name (bare or
-    /// qualified). Returns `(type_name, variant_idx, &HirVariantKind)` when
-    /// `name` resolves to a registered enum variant. `None` for unknown
-    /// names, machine-state names (whose layout lives in machine descriptors
-    /// rather than `enum_variants_by_name`), and registry hits that point at
-    /// an enum which somehow has no recorded variant at that index (should
-    /// never happen — same-source ordering invariant).
-    fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
-        // Direct lookup first.
-        if let Some((type_name, idx)) = self.machine_ctor_registry.get(name) {
-            let variants = self.enum_variants_by_name.get(type_name)?;
-            let variant = variants.get(*idx)?;
-            return Some((type_name.clone(), *idx, &variant.kind));
+    /// Look up a tagged-union constructor using canonical owner identity.
+    ///
+    /// Imported declarations are registered only under module-qualified keys.
+    /// The checker-selected result/scrutinee type therefore wins over surface
+    /// spelling, then import aliases and the module currently being lowered are
+    /// considered. Direct lookup is last and is intentionally limited by the
+    /// registry producer to root-local and builtin short keys. This prevents
+    /// two imported modules that both declare `Shape::Box` from overwriting one
+    /// another through a process-global short key.
+    fn lookup_variant_ctor(
+        &self,
+        name: &str,
+        owner_ty: Option<&ResolvedTy>,
+    ) -> Option<(String, usize, &HirVariantKind)> {
+        let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+        let mut candidates = Vec::with_capacity(5);
+        if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
+            candidates.push(format!("{owner}::{variant_name}"));
+            if !owner.contains('.') {
+                if let Some(module) = self.current_module_name.as_deref() {
+                    candidates.push(format!("{module}.{owner}::{variant_name}"));
+                }
+            }
         }
-        // Import-alias fallback: `Geo::Box` where "Geo" is an alias for
-        // "shapes.Shape".  The `machine_ctor_registry` has "shapes.Shape::Box"
-        // but not "Geo::Box".  Resolve the prefix through the alias table and
-        // retry with the canonical qualified key.
-        if let Some(sep) = name.find("::") {
-            let prefix = &name[..sep];
-            let variant_suffix = &name[sep..]; // includes the "::"
+        if let Some((prefix, variant)) = name.rsplit_once("::") {
             if let Some(canonical_prefix) = self
                 .import_type_name_aliases
                 .get(&(self.current_module_name.clone(), prefix.to_string()))
             {
-                let canonical_key = format!("{canonical_prefix}{variant_suffix}");
-                if let Some((type_name, idx)) = self.machine_ctor_registry.get(&canonical_key) {
-                    let variants = self.enum_variants_by_name.get(type_name)?;
-                    let variant = variants.get(*idx)?;
-                    return Some((type_name.clone(), *idx, &variant.kind));
-                }
+                candidates.push(format!("{canonical_prefix}::{variant}"));
             }
+            if let Some(module) = self.current_module_name.as_deref() {
+                candidates.push(format!("{module}.{name}"));
+            }
+        }
+        candidates.push(name.to_string());
+
+        for candidate in candidates {
+            let Some((type_name, idx)) = self.machine_ctor_registry.get(&candidate) else {
+                continue;
+            };
+            let Some(variants) = self.enum_variants_by_name.get(type_name) else {
+                continue;
+            };
+            let Some(variant) = variants.get(*idx) else {
+                continue;
+            };
+            return Some((type_name.clone(), *idx, &variant.kind));
         }
         None
     }
@@ -22561,15 +27039,10 @@ impl LowerCtx {
     fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {
         match ty {
             ResolvedTy::Named {
-                name,
                 args,
-                builtin,
+                builtin: Some(BuiltinType::Option),
                 ..
-            } if args.len() == 1
-                && (name == "Option" || *builtin == Some(hew_types::BuiltinType::Option)) =>
-            {
-                Some(&args[0])
-            }
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -22577,15 +27050,10 @@ impl LowerCtx {
     fn resolved_result_parts(ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
         match ty {
             ResolvedTy::Named {
-                name,
                 args,
-                builtin,
+                builtin: Some(BuiltinType::Result),
                 ..
-            } if args.len() == 2
-                && (name == "Result" || *builtin == Some(hew_types::BuiltinType::Result)) =>
-            {
-                Some((&args[0], &args[1]))
-            }
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -22615,10 +27083,11 @@ impl LowerCtx {
 
     fn builtin_variant_predicate(
         &mut self,
-        type_name: &str,
+        builtin: BuiltinType,
         variant_name: &str,
         span: &std::ops::Range<usize>,
     ) -> Option<(HirMatchArmPredicate, usize)> {
+        let type_name = builtin.canonical_name();
         let qualified = format!("{type_name}::{variant_name}");
         let Some((registered_type, variant_idx)) =
             self.machine_ctor_registry.get(&qualified).cloned()
@@ -22771,23 +27240,24 @@ impl LowerCtx {
         self.try_register_enum_instantiation_ty(&scrutinee.ty, &span);
 
         let variant = |this: &mut Self,
-                       type_name: &str,
+                       builtin: BuiltinType,
                        variant_name: &str|
          -> Option<HirMatchArmPredicate> {
-            this.builtin_variant_predicate(type_name, variant_name, &span)
+            this.builtin_variant_predicate(builtin, variant_name, &span)
                 .map(|(predicate, _)| predicate)
         };
 
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
-                let Some(some) = variant(self, "Option", "Some") else {
+                let Some(some) = variant(self, BuiltinType::Option, "Some") else {
                     return self.unsupported_postfix_try(&span, "Option::Some predicate");
                 };
-                let Some(none) = variant(self, "Option", "None") else {
+                let Some(none) = variant(self, BuiltinType::Option, "None") else {
                     return self.unsupported_postfix_try(&span, "Option::None predicate");
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: some,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22797,6 +27267,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: none,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22808,14 +27279,15 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::OptionIsNone => {
-                let Some(some) = variant(self, "Option", "Some") else {
+                let Some(some) = variant(self, BuiltinType::Option, "Some") else {
                     return self.unsupported_postfix_try(&span, "Option::Some predicate");
                 };
-                let Some(none) = variant(self, "Option", "None") else {
+                let Some(none) = variant(self, BuiltinType::Option, "None") else {
                     return self.unsupported_postfix_try(&span, "Option::None predicate");
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: some,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22825,6 +27297,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: none,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22836,14 +27309,15 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::ResultIsOk => {
-                let Some(ok) = variant(self, "Result", "Ok") else {
+                let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
                     return self.unsupported_postfix_try(&span, "Result::Ok predicate");
                 };
-                let Some(err) = variant(self, "Result", "Err") else {
+                let Some(err) = variant(self, BuiltinType::Result, "Err") else {
                     return self.unsupported_postfix_try(&span, "Result::Err predicate");
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: ok,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22853,6 +27327,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: err,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22864,14 +27339,15 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::ResultIsErr => {
-                let Some(ok) = variant(self, "Result", "Ok") else {
+                let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
                     return self.unsupported_postfix_try(&span, "Result::Ok predicate");
                 };
-                let Some(err) = variant(self, "Result", "Err") else {
+                let Some(err) = variant(self, BuiltinType::Result, "Err") else {
                     return self.unsupported_postfix_try(&span, "Result::Err predicate");
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: ok,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22881,6 +27357,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: err,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22892,17 +27369,16 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::OptionUnwrap | OptionResultMethod::ResultUnwrap => {
-                let (type_name, variant_name, empty_variant, binding_name, panic_msg) = match method
-                {
+                let (builtin, variant_name, empty_variant, binding_name, panic_msg) = match method {
                     OptionResultMethod::OptionUnwrap => (
-                        "Option",
+                        BuiltinType::Option,
                         "Some",
                         "None",
                         "__option_unwrap_value",
                         "called 'unwrap()' on a 'None' value",
                     ),
                     OptionResultMethod::ResultUnwrap => (
-                        "Result",
+                        BuiltinType::Result,
                         "Ok",
                         "Err",
                         "__result_unwrap_value",
@@ -22910,13 +27386,14 @@ impl LowerCtx {
                     ),
                     _ => unreachable!("handled by outer match"),
                 };
-                let Some(payload_predicate) = variant(self, type_name, variant_name) else {
+                let type_name = builtin.canonical_name();
+                let Some(payload_predicate) = variant(self, builtin, variant_name) else {
                     return self.unsupported_postfix_try(
                         &span,
                         format!("{type_name}::{variant_name} predicate"),
                     );
                 };
-                let Some(empty_predicate) = variant(self, type_name, empty_variant) else {
+                let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
                         format!("{type_name}::{empty_variant} predicate"),
@@ -22928,10 +27405,15 @@ impl LowerCtx {
                 // failure arm never produces a value of `ret_ty`.
                 let panic_msg_expr =
                     self.build_string_literal_expr(panic_msg.to_string(), span.clone());
+                self.record_generated_produced_value_fact(
+                    &panic_msg_expr,
+                    hew_types::ProducedValueOwnership::Borrowed,
+                );
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 vec![
                     HirMatchArm {
+                        scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
                             binding: payload_binding,
@@ -22951,6 +27433,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: empty_predicate,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22962,22 +27445,26 @@ impl LowerCtx {
                 ]
             }
             OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
-                let (type_name, payload_variant, empty_variant, binding_name) = match method {
-                    OptionResultMethod::OptionUnwrapOr => {
-                        ("Option", "Some", "None", "__option_unwrap_or_value")
-                    }
+                let (builtin, payload_variant, empty_variant, binding_name) = match method {
+                    OptionResultMethod::OptionUnwrapOr => (
+                        BuiltinType::Option,
+                        "Some",
+                        "None",
+                        "__option_unwrap_or_value",
+                    ),
                     OptionResultMethod::ResultUnwrapOr => {
-                        ("Result", "Ok", "Err", "__result_unwrap_or_value")
+                        (BuiltinType::Result, "Ok", "Err", "__result_unwrap_or_value")
                     }
                     _ => unreachable!("handled by outer match"),
                 };
-                let Some(payload_predicate) = variant(self, type_name, payload_variant) else {
+                let type_name = builtin.canonical_name();
+                let Some(payload_predicate) = variant(self, builtin, payload_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
                         format!("{type_name}::{payload_variant} predicate"),
                     );
                 };
-                let Some(empty_predicate) = variant(self, type_name, empty_variant) else {
+                let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
                     return self.unsupported_postfix_try(
                         &span,
                         format!("{type_name}::{empty_variant} predicate"),
@@ -22987,6 +27474,7 @@ impl LowerCtx {
                 let fallback = self.lower_expr(args[0].expr(), IntentKind::Consume);
                 vec![
                     HirMatchArm {
+                        scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
                             binding: payload_binding,
@@ -23006,6 +27494,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: empty_predicate,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -23115,7 +27604,8 @@ impl LowerCtx {
             );
             return value;
         }
-        let Some((_, ok_idx)) = self.builtin_variant_predicate("Result", "Ok", span) else {
+        let Some((_, ok_idx)) = self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
+        else {
             // `builtin_variant_predicate` already recorded a diagnostic.
             return value;
         };
@@ -23182,10 +27672,13 @@ impl LowerCtx {
         return_ty: ResolvedTy,
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((ok_predicate, _)) = self.builtin_variant_predicate("Result", "Ok", span) else {
+        let Some((ok_predicate, _)) =
+            self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
+        else {
             return self.unsupported_postfix_try(span, "`?` Result::Ok predicate");
         };
-        let Some((err_predicate, err_idx)) = self.builtin_variant_predicate("Result", "Err", span)
+        let Some((err_predicate, err_idx)) =
+            self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
         else {
             return self.unsupported_postfix_try(span, "`?` Result::Err predicate");
         };
@@ -23208,6 +27701,7 @@ impl LowerCtx {
 
         let arms = vec![
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: ok_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: ok_binding,
@@ -23222,6 +27716,7 @@ impl LowerCtx {
                 span: span.clone(),
             },
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: err_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: err_binding,
@@ -23253,12 +27748,13 @@ impl LowerCtx {
         return_ty: ResolvedTy,
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((some_predicate, _)) = self.builtin_variant_predicate("Option", "Some", span)
+        let Some((some_predicate, _)) =
+            self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
             return self.unsupported_postfix_try(span, "`?` Option::Some predicate");
         };
         let Some((none_predicate, none_idx)) =
-            self.builtin_variant_predicate("Option", "None", span)
+            self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
             return self.unsupported_postfix_try(span, "`?` Option::None predicate");
         };
@@ -23271,6 +27767,7 @@ impl LowerCtx {
 
         let arms = vec![
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: some_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: some_binding,
@@ -23285,6 +27782,7 @@ impl LowerCtx {
                 span: span.clone(),
             },
             HirMatchArm {
+                scope: None,
                 predicate: none_predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
@@ -23426,7 +27924,10 @@ impl LowerCtx {
         args: Vec<HirExpr>,
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((type_name, variant_idx, variant_kind)) = self.lookup_variant_ctor(name) else {
+        let checker_ctor_ty = self.checker_expr_ty_if_present(span);
+        let Some((type_name, variant_idx, variant_kind)) =
+            self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
+        else {
             unreachable!("lower_variant_ctor_tuple_call called without registry hit");
         };
         let HirVariantKind::Tuple(field_tys) = variant_kind else {
@@ -23573,6 +28074,7 @@ impl LowerCtx {
     fn try_lower_machine_self_field_access(
         &mut self,
         field: &str,
+        receiver_span: &Span,
         span: &std::ops::Range<usize>,
         site: SiteId,
         intent: IntentKind,
@@ -23617,6 +28119,22 @@ impl LowerCtx {
         {
             let field_ty = hir_field.ty.clone();
             let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
+            let receiver_ty = self
+                .resolved_expr_types
+                .get(&self.mk_key(receiver_span))
+                .cloned()
+                .unwrap_or(ResolvedTy::Unit);
+            let source_anchor = self
+                .produced_value_ownership
+                .contains_key(&self.mk_key(receiver_span))
+                .then(|| {
+                    self.produced_value_source_anchor(
+                        receiver_span,
+                        receiver_ty,
+                        IntentKind::Read,
+                        HirProducedValueProducer::BindingRef,
+                    )
+                });
             Some(HirExpr {
                 node: self.ids.node(),
                 site,
@@ -23628,6 +28146,7 @@ impl LowerCtx {
                     state_idx: src_state_idx,
                     field_idx,
                     field_name: field.to_string(),
+                    source_anchor,
                 },
                 span: span.clone(),
             })
@@ -23665,6 +28184,7 @@ impl LowerCtx {
     fn try_lower_machine_event_field_access(
         &mut self,
         field: &str,
+        receiver_span: &Span,
         span: &std::ops::Range<usize>,
         site: SiteId,
         intent: IntentKind,
@@ -23678,6 +28198,22 @@ impl LowerCtx {
         {
             let field_ty = hir_field.ty.clone();
             let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
+            let receiver_ty = self
+                .resolved_expr_types
+                .get(&self.mk_key(receiver_span))
+                .cloned()
+                .unwrap_or(ResolvedTy::Unit);
+            let source_anchor = self
+                .produced_value_ownership
+                .contains_key(&self.mk_key(receiver_span))
+                .then(|| {
+                    self.produced_value_source_anchor(
+                        receiver_span,
+                        receiver_ty,
+                        IntentKind::Read,
+                        HirProducedValueProducer::BindingRef,
+                    )
+                });
             return Some(HirExpr {
                 node: self.ids.node(),
                 site,
@@ -23689,6 +28225,7 @@ impl LowerCtx {
                     event_idx,
                     field_idx,
                     field_name: field.to_string(),
+                    source_anchor,
                 },
                 span: span.clone(),
             });
@@ -23732,21 +28269,18 @@ impl LowerCtx {
     }
 
     fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
-        let Some(machine_name) = self.current_machine_name.clone() else {
+        let Some(machine_ty) = self.current_machine_self_ty.clone() else {
             return;
         };
-        let machine_ty = ResolvedTy::Named {
-            name: machine_name.clone(),
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
+        let ResolvedTy::Named {
+            name: machine_name,
+            args,
+            ..
+        } = &machine_ty
+        else {
+            unreachable!("machine context self type must be a named type");
         };
-        let event_ty = ResolvedTy::Named {
-            name: format!("{machine_name}Event"),
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
-        };
+        let event_ty = ResolvedTy::named_user(format!("{machine_name}Event"), args.clone());
         let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
         let _event = self.bind("event".to_string(), event_ty, false, span);
     }
@@ -23860,7 +28394,7 @@ impl LowerCtx {
                 let is_to_string = *to_string;
                 *slot = Some(deadline_ns);
                 let io_error_ty = ResolvedTy::Named {
-                    name: "NetError".to_string(),
+                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
@@ -23898,7 +28432,7 @@ impl LowerCtx {
             {
                 *slot = Some(deadline_ns);
                 let io_error_ty = ResolvedTy::Named {
-                    name: "NetError".to_string(),
+                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
@@ -23935,15 +28469,12 @@ impl LowerCtx {
                     .get(&inner_key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty = ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: vec![],
-                    builtin: Some(BuiltinType::TimeoutError),
-                    is_opaque: false,
-                };
+                let timeout_error_ty =
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError");
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
-                    args: vec![option_ty, timeout_error_ty],
+                    args: vec![option_ty.clone(), timeout_error_ty],
                     builtin: Some(BuiltinType::Result),
                     is_opaque: false,
                 };
@@ -23955,7 +28486,13 @@ impl LowerCtx {
                 // span in the checker's type map, which holds the pre-deadline
                 // plain type — so call _ty directly instead.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                return HirExpr {
+                let source_anchor = self.produced_value_source_anchor(
+                    &await_inner.1,
+                    option_ty,
+                    intent,
+                    HirProducedValueProducer::ChannelRecvAwait,
+                );
+                let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     value_class,
@@ -23964,9 +28501,12 @@ impl LowerCtx {
                     kind: HirExprKind::ChannelRecvAwait {
                         receiver: Box::new(recv_expr),
                         deadline_ns: Some(deadline_ns),
+                        source_anchor,
                     },
-                    span: span.clone(),
+                    span: inner.1.clone(),
                 };
+                self.record_produced_value_fact(&inner.1, &source);
+                return source;
             }
             self.unsupported(
                 span.clone(),
@@ -23986,22 +28526,25 @@ impl LowerCtx {
                     .get(&inner_key)
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty = ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: vec![],
-                    builtin: Some(BuiltinType::TimeoutError),
-                    is_opaque: false,
-                };
+                let timeout_error_ty =
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError");
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
-                    args: vec![option_ty, timeout_error_ty],
+                    args: vec![option_ty.clone(), timeout_error_ty],
                     builtin: Some(BuiltinType::Result),
                     is_opaque: false,
                 };
                 let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                 // Same registration as ChannelRecvAwait above.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                return HirExpr {
+                let source_anchor = self.produced_value_source_anchor(
+                    &await_inner.1,
+                    option_ty,
+                    intent,
+                    HirProducedValueProducer::StreamRecvAwait,
+                );
+                let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     value_class,
@@ -24010,9 +28553,12 @@ impl LowerCtx {
                     kind: HirExprKind::StreamRecvAwait {
                         stream: Box::new(stream_expr),
                         deadline_ns: Some(deadline_ns),
+                        source_anchor,
                     },
-                    span: span.clone(),
+                    span: inner.1.clone(),
                 };
+                self.record_produced_value_fact(&inner.1, &source);
+                return source;
             }
             self.unsupported(
                 span.clone(),
@@ -24203,7 +28749,7 @@ impl LowerCtx {
                     }
                 }
                 PatternKind::VariantCtor => {
-                    let Some(vm) = resolution.variant_match.clone() else {
+                    let Some(mut vm) = resolution.variant_match.clone() else {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
                             pattern_span.clone(),
@@ -24218,8 +28764,8 @@ impl LowerCtx {
                     // from `Item::TypeDecl` body order. The index matches
                     // `EnumLayout.variants` ordering so MIR/codegen don't
                     // re-derive it.
-                    let qualified = format!("{}::{}", vm.type_name, vm.variant_name);
-                    let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                    let Some((registered_type, idx_usize, _)) =
+                        self.lookup_variant_ctor(&vm.variant_name, Some(&scrutinee_hir.ty))
                     else {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
@@ -24230,6 +28776,7 @@ impl LowerCtx {
                         rejected = true;
                         continue;
                     };
+                    vm.type_name = registered_type;
                     let idx = u32::try_from(idx_usize)
                         .expect("variant index exceeds u32::MAX — impossible in Hew");
                     HirMatchArmPredicate::EnumVariant {
@@ -24368,7 +28915,7 @@ impl LowerCtx {
             let mut binding_error = false;
             for payload in &resolution.payload_bindings {
                 let ty = match ResolvedTy::from_ty(&payload.ty) {
-                    Ok(ty) => ty,
+                    Ok(ty) => self.qualify_current_module_record_ty(ty),
                     Err(err) => {
                         self.unsupported(
                             pattern_span.clone(),
@@ -24439,6 +28986,9 @@ impl LowerCtx {
                 || !resolution.payload_variant_patterns.is_empty()
                 || has_payload_aggregate_subpatterns
                 || matches!(predicate, HirMatchArmPredicate::Binding { .. });
+            let arm_scope = needs_scope.then(|| self.ids.scope());
+            let previous_scope_id =
+                arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             if needs_scope {
                 self.push_scope();
             }
@@ -24502,6 +29052,9 @@ impl LowerCtx {
             }
             if binding_error {
                 let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24515,6 +29068,9 @@ impl LowerCtx {
                     "guarded match arm with nested aggregate payload destructure",
                     "match-expression-substrate",
                 );
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24538,6 +29094,9 @@ impl LowerCtx {
             }
             if pvp_error {
                 let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24575,6 +29134,9 @@ impl LowerCtx {
                 };
             }
 
+            if let Some(previous) = previous_scope_id {
+                self.current_scope_id = previous;
+            }
             if needs_scope {
                 self.pop_scope();
             }
@@ -24590,6 +29152,7 @@ impl LowerCtx {
             }
 
             hir_arms.push(HirMatchArm {
+                scope: arm_scope,
                 predicate,
                 bindings,
                 payload_predicates,
@@ -24648,7 +29211,7 @@ impl LowerCtx {
         pattern_span: &Span,
     ) -> Option<HirPayloadVariantPredicate> {
         let payload_ty = match ResolvedTy::from_ty(&pvp.payload_ty) {
-            Ok(ty) => ty,
+            Ok(ty) => self.qualify_current_module_record_ty(ty),
             Err(err) => {
                 self.unsupported(
                     pattern_span.clone(),
@@ -24662,11 +29225,9 @@ impl LowerCtx {
         // so MIR/codegen find its mangled layout (no-op for monomorphic
         // enums; the scrutinee registration only covers the outer type).
         self.try_register_enum_instantiation_ty(&payload_ty, pattern_span);
-        let qualified = format!(
-            "{}::{}",
-            pvp.variant_match.type_name, pvp.variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((registered_type, idx_usize, _)) =
+            self.lookup_variant_ctor(&pvp.variant_match.variant_name, Some(&payload_ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "nested match-arm variant not registered in machine/enum ctor registry",
@@ -24687,7 +29248,7 @@ impl LowerCtx {
         let mut bindings = Vec::with_capacity(pvp.bindings.len());
         for payload in &pvp.bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -24725,7 +29286,10 @@ impl LowerCtx {
         Some(HirPayloadVariantPredicate {
             field_idx,
             payload_ty,
-            variant_match: pvp.variant_match.clone(),
+            variant_match: hew_types::VariantMatch {
+                type_name: registered_type,
+                variant_name: pvp.variant_match.variant_name.clone(),
+            },
             variant_idx,
             bindings,
             nested,
@@ -24806,6 +29370,7 @@ impl LowerCtx {
                             // `T` via `hew_task_get_result`).
                             let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
                             let call_site = call_hir.site;
+                            let source_anchor = Self::source_anchor_from_lowered(&call_hir);
                             let explicit_type_args = match &child_expr.0 {
                                 Expr::Call {
                                     type_args: Some(type_args),
@@ -24817,39 +29382,74 @@ impl LowerCtx {
 
                             let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
 
-                            // Destructure call_hir.kind once to extract callee + args.
-                            let HirExprKind::Call { callee, args } = call_hir.kind else {
-                                unreachable!("just verified Call shape above")
-                            };
-
-                            // Re-wrap as a SpawnedCall node with Task<T> type.
-                            let spawned_site = self.ids.site();
-                            let type_args = self
-                                .call_site_type_args
-                                .get(&call_site)
-                                .cloned()
-                                .or_else(|| {
-                                    explicit_type_args.map(|args| {
-                                        args.iter().map(|arg| self.lower_type(arg)).collect()
-                                    })
-                                });
-                            if let Some(type_args) = type_args {
-                                self.call_site_type_args.insert(spawned_site, type_args);
-                            }
-
-                            let spawned = HirExpr {
-                                node: self.ids.node(),
-                                site: spawned_site,
-                                value_class: ValueClass::Linear, // Task handles are linear (consume-once).
-                                ty: task_ty.clone(),
-                                intent: IntentKind::Consume,
-                                kind: HirExprKind::SpawnedCall {
-                                    callee,
-                                    args,
-                                    task_ty: task_ty.clone(),
-                                    bound: true,
-                                },
-                                span: child_expr.1.clone(),
+                            // A source `Expr::Call` can still lower to an
+                            // unsupported sentinel when its checker target is
+                            // missing or non-executable.  Do not assume the
+                            // surface shape makes executable HIR: retain the
+                            // gate diagnostic and emit an unsupported value
+                            // rather than panicking or synthesising a spawn.
+                            let spawned = match call_hir.kind {
+                                HirExprKind::Call { callee, args, .. } => {
+                                    let spawned_site = self.ids.site();
+                                    let type_args =
+                                        self.call_site_type_args.get(&call_site).cloned().or_else(
+                                            || {
+                                                explicit_type_args.map(|args| {
+                                                    args.iter()
+                                                        .map(|arg| self.lower_type(arg))
+                                                        .collect()
+                                                })
+                                            },
+                                        );
+                                    if let Some(type_args) = type_args {
+                                        self.call_site_type_args.insert(spawned_site, type_args);
+                                    }
+                                    HirExpr {
+                                        node: self.ids.node(),
+                                        site: spawned_site,
+                                        value_class: ValueClass::Linear,
+                                        ty: task_ty.clone(),
+                                        intent: IntentKind::Consume,
+                                        kind: HirExprKind::SpawnedCall {
+                                            callee,
+                                            args,
+                                            task_ty: task_ty.clone(),
+                                            source_anchor,
+                                            bound: true,
+                                        },
+                                        span: child_expr.1.clone(),
+                                    }
+                                }
+                                HirExprKind::Unsupported(reason) => {
+                                    self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: "fork child".to_string(),
+                                            reason: format!(
+                                                "fork child call lowered to unsupported target: {reason}"
+                                            ),
+                                        },
+                                        child_expr.1.clone(),
+                                        "fork child requires an executable checker-approved call target",
+                                    ));
+                                    self.unsupported_expr(
+                                        child_expr.1.clone(),
+                                        "fork child call has unsupported checker target",
+                                    )
+                                }
+                                _ => {
+                                    self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::CheckerBoundaryViolation {
+                                            name: "fork child".to_string(),
+                                            reason: "fork child call lowered to a non-call HIR shape".to_string(),
+                                        },
+                                        child_expr.1.clone(),
+                                        "fork child requires an executable checker-approved call target",
+                                    ));
+                                    self.unsupported_expr(
+                                        child_expr.1.clone(),
+                                        "fork child call lowered to non-call expression",
+                                    )
+                                }
                             };
 
                             // Bind the name with Task<T> type in the current scope.
@@ -24932,6 +29532,7 @@ impl LowerCtx {
         // time would break the TI-1/TI-2/TI-4 canonical invariants.
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
         let call_site = call_hir.site;
+        let source_anchor = Self::source_anchor_from_lowered(&call_hir);
         let explicit_type_args = match &expr.0 {
             Expr::Call {
                 type_args: Some(type_args),
@@ -24943,7 +29544,7 @@ impl LowerCtx {
 
         let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
 
-        let HirExprKind::Call { callee, args } = call_hir.kind else {
+        let HirExprKind::Call { callee, args, .. } = call_hir.kind else {
             // Should not happen: caller verified the expression is a Call.
             return self.unsupported_expr(span, "lower_spawned_call on non-call");
         };
@@ -24970,6 +29571,7 @@ impl LowerCtx {
                 callee,
                 args,
                 task_ty,
+                source_anchor,
                 bound: false,
             },
             span,
@@ -24996,13 +29598,11 @@ impl LowerCtx {
     ) {
         match &function.0 {
             Expr::Identifier(name) => {
-                // FC-P1-A1 (revision pass 2, Finding 2): parser emits
-                // `Expr::Identifier("mod::worker")` for module-qualified
-                // calls; fn_registry is keyed on bare names. Strip the
-                // prefix so cross-module spawns don't false-reject.
-                let lookup_name = name.rsplit("::").next().unwrap_or(name.as_str());
-                // Direct function call: check it's in fn_registry
-                if !self.fn_registry.contains_key(lookup_name) {
+                // The checker already selected the exact source declaration
+                // for this call. `fn_registry` is a linker-symbol index and
+                // therefore cannot answer whether a lexical `mod::worker`
+                // denotes a direct spawnable function without leaf recovery.
+                if !matches!(self.ordinary_call_target(span), Some(CallTarget::User(_))) {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TaskSpawnCalleeUnsupported {
                             site: self.ids.site(),
@@ -25216,7 +29816,7 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(arg, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -25390,7 +29990,10 @@ fn collect_captures_walk(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
         HirExprKind::StreamRecvAwait { stream, .. } => {
@@ -25543,7 +30146,7 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -25726,7 +30329,10 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -25849,21 +30455,31 @@ fn collect_captures_walk_block(
     captures: &mut Vec<HirLambdaCapture>,
     self_id: Option<BindingId>,
 ) {
+    // A lambda captures only bindings from an enclosing frame.  Keep a
+    // lexical exclusion set for this block: each `let` initializer still sees
+    // the outer scope, then its newly declared binding becomes local for the
+    // remaining statements and tail.  Nested blocks receive a clone through
+    // their recursive call, so shadowing never leaks back out.
+    let mut locally_bound = param_ids.clone();
     for stmt in &block.statements {
         match &stmt.kind {
-            HirStmtKind::Let(_, Some(value)) => {
-                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            HirStmtKind::Let(binding, Some(value)) => {
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                locally_bound.insert(binding.id);
+            }
+            HirStmtKind::Let(binding, None) => {
+                locally_bound.insert(binding.id);
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
-                collect_captures_walk(expr, param_ids, seen, captures, self_id);
+                collect_captures_walk(expr, &locally_bound, seen, captures, self_id);
             }
             HirStmtKind::Assign { target, value } => {
-                collect_captures_walk(target, param_ids, seen, captures, self_id);
-                collect_captures_walk(value, param_ids, seen, captures, self_id);
+                collect_captures_walk(target, &locally_bound, seen, captures, self_id);
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
             }
-            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
-                collect_captures_walk(body, param_ids, seen, captures, self_id);
+                collect_captures_walk(body, &locally_bound, seen, captures, self_id);
             }
             HirStmtKind::LetElse {
                 scrutinee,
@@ -25871,18 +30487,19 @@ fn collect_captures_walk_block(
                 else_body,
                 ..
             } => {
-                collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+                collect_captures_walk(scrutinee, &locally_bound, seen, captures, self_id);
                 for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
-                        collect_captures_walk(value, param_ids, seen, captures, self_id);
+                    if let HirStmtKind::Let(binding, Some(value)) = &prelude_stmt.kind {
+                        collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                        locally_bound.insert(binding.id);
                     }
                 }
-                collect_captures_walk_block(else_body, param_ids, seen, captures, self_id);
+                collect_captures_walk_block(else_body, &locally_bound, seen, captures, self_id);
             }
         }
     }
     if let Some(tail) = &block.tail {
-        collect_captures_walk(tail, param_ids, seen, captures, self_id);
+        collect_captures_walk(tail, &locally_bound, seen, captures, self_id);
     }
 }
 
@@ -26323,7 +30940,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 collect_hir_emitted_events_walk(elem, event_names, out);
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_hir_emitted_events_walk(callee, event_names, out);
             for a in args {
                 collect_hir_emitted_events_walk(a, event_names, out);
@@ -26468,7 +31085,10 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -26819,7 +31439,7 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
                     iterable.1.clone(),
                     "Blocking channel receive / stream receive operations via \
                      `for await` lower to native-only suspending recv substrate \
-                     on wasm32. WASM-TODO(#1451)."
+                     on wasm32. WASM-TODO(suspending-receive): add the cooperative receive continuation."
                         .to_string(),
                 ));
             }
@@ -27122,11 +31742,14 @@ struct SupervisorRegistry {
     /// Sup(args)`): a config supervisor admits exactly its config arg; a
     /// no-config supervisor admits none.
     root: std::collections::HashMap<String, bool>,
-    /// Supervisor names declared in each imported module, keyed by the
-    /// module's short name (last path segment), mapped to the same
-    /// has-config-param flag. Consulted for module-qualified spawn targets
-    /// (`spawn module.Sup(args)`).
+    /// Supervisor names declared in each imported module, keyed by its full
+    /// declaration owner. Lexical import bindings are resolved through the
+    /// checker-published table below before consulting this map.
     by_module: std::collections::HashMap<String, std::collections::HashMap<String, bool>>,
+    /// Exact owner selected for each lexical whole-module import binding.
+    /// This is semantic authority for `spawn alias.Supervisor(...)`; the
+    /// module leaf is never used as a lookup fallback.
+    module_bindings: HashMap<(Option<String>, String), String>,
 }
 
 impl SupervisorRegistry {
@@ -27139,13 +31762,34 @@ impl SupervisorRegistry {
                 .values()
                 .all(std::collections::HashMap::is_empty)
     }
+
+    fn resolve_module_binding<'a>(
+        &'a self,
+        current_module: Option<&str>,
+        lexical_binding: &'a str,
+    ) -> Option<&'a str> {
+        self.module_bindings
+            .get(&(
+                current_module.map(str::to_string),
+                lexical_binding.to_string(),
+            ))
+            .map(String::as_str)
+            .or_else(|| {
+                self.by_module
+                    .contains_key(lexical_binding)
+                    .then_some(lexical_binding)
+            })
+    }
 }
 
 /// Collect supervisor declarations from the root program AND every module in
 /// the program's `module_graph` (when present). Module-graph coverage is
 /// required to reject `spawn other.MyServiceSup(args)` for supervisors
 /// declared in imported modules.
-fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
+fn collect_supervisor_registry(
+    program: &Program,
+    module_bindings: HashMap<(Option<String>, String), String>,
+) -> SupervisorRegistry {
     let mut root: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (item, _) in &program.items {
         if let Item::Supervisor(decl) = item {
@@ -27159,11 +31803,11 @@ fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map_or("", String::as_str);
-            if module_short.is_empty() {
+            let module_owner = mod_id.path.join(".");
+            if module_owner.is_empty() {
                 continue;
             }
-            let entry = by_module.entry(module_short.to_string()).or_default();
+            let entry = by_module.entry(module_owner).or_default();
             for (item, _) in &module.items {
                 if let Item::Supervisor(decl) = item {
                     entry.insert(decl.name.clone(), !decl.params.is_empty());
@@ -27171,11 +31815,15 @@ fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
             }
         }
     }
-    SupervisorRegistry { root, by_module }
+    SupervisorRegistry {
+        root,
+        by_module,
+        module_bindings,
+    }
 }
 
 fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
-    let registry = collect_supervisor_registry(program);
+    let registry = collect_supervisor_registry(program, ctx.module_import_bindings.clone());
     if registry.is_empty() {
         // No supervisors declared anywhere → no spawn site can target one;
         // skip the walk entirely.
@@ -27193,7 +31841,7 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
     // walkers must visit every body-bearing position in every module they're
     // logically scoped to, not just the root program).
     //
-    // `current_module = Some(short_name)` scopes the bare-identifier lookup
+    // `current_module = Some(full_owner)` scopes the bare-identifier lookup
     // to that module's own supervisor set. Bare identifiers in module bodies
     // resolve under the module's local scope (cf. checker's resolution
     // rules — root names are NOT auto-imported into modules; a module wanting
@@ -27210,9 +31858,14 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map(String::as_str);
+            let module_owner = mod_id.path.join(".");
             for (item, _) in &module.items {
-                scan_item_for_supervisor_spawn(item, module_short, &registry, &mut ctx.diagnostics);
+                scan_item_for_supervisor_spawn(
+                    item,
+                    Some(&module_owner),
+                    &registry,
+                    &mut ctx.diagnostics,
+                );
             }
         }
     }
@@ -27525,14 +32178,12 @@ fn check_fork_child_shape(
     // Check if it's a direct function or a lambda
     match &function.0 {
         Expr::Identifier(name) => {
-            // FC-P1-A1 (revision pass 2, Finding 2): parser emits
-            // module-qualified calls as `Expr::Identifier("mod::worker")`
-            // (see hew-parser/src/parser.rs:5334-5356), but `fn_registry`
-            // is keyed on the bare function name. Use the last `::` segment
-            // for the registry lookup so cross-module spawns are accepted.
-            let lookup_name = name.rsplit("::").next().unwrap_or(name.as_str());
-            // Check if it's a direct module function
-            if !ctx.fn_registry.contains_key(lookup_name) {
+            // The call's checker-selected target carries the exact owner;
+            // never strip `mod::` to probe a leaf-keyed linker registry.
+            if !matches!(
+                ctx.ordinary_call_target(&child.1),
+                Some(CallTarget::User(_))
+            ) {
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TaskSpawnCalleeUnsupported {
                         site: ctx.ids.site(),
@@ -27673,20 +32324,36 @@ fn check_fork_block_shape(
     // Check the single statement/expression is a direct function call
     let call_expr = if stmt_count == 1 {
         match &body.stmts[0].0 {
-            Stmt::Expression(e) => Some(&e.0),
+            Stmt::Expression(e) => Some(e),
             _ => None,
         }
     } else {
-        body.trailing_expr.as_ref().map(|e| &e.0)
+        body.trailing_expr.as_deref()
     };
 
-    if let Some(Expr::Call { function, .. }) = call_expr {
+    if let Some(call_expr) = call_expr {
+        let Expr::Call { function, .. } = &call_expr.0 else {
+            ctx.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ForkBlockBodyUnsupported {
+                    site: ctx.ids.site(),
+                    reason: "not a call expression".to_string(),
+                },
+                span.clone(),
+                "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
+                 other expression forms are not yet supported"
+                    .to_string(),
+            ));
+            return;
+        };
         // Must be a direct function identifier
         if let Expr::Identifier(name) = &function.0 {
-            // FC-P1-A1 (revision pass 2, Finding 2): strip `mod::` prefix
-            // for fn_registry lookup so module-qualified callees resolve.
-            let lookup_name = name.rsplit("::").next().unwrap_or(name.as_str());
-            if !ctx.fn_registry.contains_key(lookup_name) {
+            // The checker target is declaration authority. `fn_registry` is
+            // keyed by emitted symbols, so suffix matching here can accept a
+            // same-leaf function from the wrong module.
+            if !matches!(
+                ctx.ordinary_call_target(&call_expr.1),
+                Some(CallTarget::User(_))
+            ) {
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ForkBlockBodyUnsupported {
                         site: ctx.ids.site(),
@@ -28590,7 +33257,7 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(operand, callable, diagnostics);
             }
         }
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             // Site 4194 + 4236 predicates fire on the callee's resolution.
             // Recurse first so any nested invalid call inside `callee` or
             // `args` still surfaces, then apply the gate to this site.
@@ -28835,7 +33502,10 @@ fn scan_expr_for_call_shape(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
         }
         HirExprKind::MachineEmit { fields, .. } => {
@@ -29091,10 +33761,13 @@ fn scan_expr_for_supervisor_spawn(
                 }
                 Expr::FieldAccess { object, field } => {
                     if let Expr::Identifier(module) = &object.0 {
-                        registry.by_module.get(module).and_then(|set| {
-                            set.get_key_value(field)
-                                .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
-                        })
+                        registry
+                            .resolve_module_binding(current_module, module)
+                            .and_then(|owner| registry.by_module.get(owner))
+                            .and_then(|set| {
+                                set.get_key_value(field)
+                                    .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
+                            })
                     } else {
                         // Non-`Identifier` object (e.g. `foo().Sup`) is not a
                         // module-qualified spawn; the checker would already
@@ -29763,9 +34436,11 @@ fn check_vec_index_element_type(
         return;
     };
     let elem_ty = match &resolved {
-        ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
-            args[0].clone()
-        }
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::Vec),
+            ..
+        } if !args.is_empty() => args[0].clone(),
         // Not a Vec<T>: this might be a user-defined type with an `at` method
         // (the HIR lower handles that path) or an array literal (separate
         // lowering). The gate only governs Vec<T> runtime ABI dispatch.
@@ -29881,6 +34556,859 @@ mod tests {
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
 
+    #[test]
+    fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.current_module_name = Some("app".to_string());
+        for (lang_item, trait_name, method_name, prelude_owner) in [
+            (
+                hew_types::LangItem::IteratorNext,
+                "Iterator",
+                "next",
+                "std.builtins.Iterator",
+            ),
+            (
+                hew_types::LangItem::DisplayFmt,
+                "Display",
+                "fmt",
+                "std.builtins.Display",
+            ),
+        ] {
+            let prelude_trait = hew_types::DefId::new(prelude_owner);
+            let prelude_method = hew_types::DefId::new(format!("{prelude_owner}::{method_name}"));
+            ctx.lang_items.insert(
+                lang_item.key(),
+                hew_types::LangItemBinding {
+                    trait_name: trait_name.to_string(),
+                    trait_id: prelude_trait,
+                    method_name: Some(method_name.to_string()),
+                    method_id: Some(prelude_method),
+                },
+            );
+
+            let local_trait = hew_types::DefId::new(format!("app.{trait_name}"));
+            let local_method = hew_types::DefId::new(format!("app.{trait_name}::{method_name}"));
+            ctx.trait_method_ids.insert(
+                format!("app.{trait_name}::{method_name}"),
+                (local_trait.clone(), local_method.clone()),
+            );
+            assert_eq!(
+                ctx.trait_method_identity(trait_name, method_name),
+                Some((local_trait, local_method)),
+                "a local same-leaf {trait_name} must not be replaced by the prelude lang item"
+            );
+            ctx.trait_method_ids
+                .remove(&format!("app.{trait_name}::{method_name}"));
+
+            let imported_trait = hew_types::DefId::new(format!("vendor.{trait_name}"));
+            let imported_method =
+                hew_types::DefId::new(format!("vendor.{trait_name}::{method_name}"));
+            ctx.trait_method_ids_by_binding.insert(
+                (
+                    Some("app".to_string()),
+                    trait_name.to_string(),
+                    method_name.to_string(),
+                ),
+                (imported_trait.clone(), imported_method.clone()),
+            );
+            assert_eq!(
+                ctx.trait_method_identity(trait_name, method_name),
+                Some((imported_trait, imported_method)),
+                "an imported same-leaf {trait_name} must not be replaced by the prelude lang item"
+            );
+            ctx.trait_method_ids_by_binding.remove(&(
+                Some("app".to_string()),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ));
+        }
+    }
+
+    #[test]
+    fn conflicting_impl_body_plan_is_a_checker_boundary_diagnostic_not_a_panic() {
+        // The checker normally assigns distinct declarations. Corrupt just
+        // that handoff to model an upstream collision: the HIR plan must fail
+        // closed in release builds rather than assert while lowering either
+        // otherwise-valid body.
+        let parsed = hew_parser::parse(
+            r"
+type Alpha { value: i64 }
+type Beta { value: i64 }
+
+impl Alpha {
+    fn run(self) -> i64 { self.value }
+}
+
+impl Beta {
+    fn run(self) -> i64 { self.value }
+}
+
+fn main() {}
+",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut type_output = checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        let alpha = type_output
+            .impl_method_declaration_ids
+            .get("Alpha::run")
+            .cloned()
+            .expect("checker must publish Alpha's implementation declaration");
+        type_output
+            .impl_method_declaration_ids
+            .insert("Beta::run".to_string(), alpha);
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    &diagnostic.kind,
+                    HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                        if reason.contains("conflicting pre-lowering symbols")
+                )
+            }),
+            "duplicate impl-body declarations must report a structured boundary violation: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered.into_result().is_err(),
+            "a conflicting pre-lowering body plan must remain fatal"
+        );
+    }
+
+    #[test]
+    fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let left = hew_types::DefId::new(
+            "left.render.Result::<impl inherent for left.render.Result>::echo",
+        );
+        let right = hew_types::DefId::new(
+            "right.render.Result::<impl inherent for right.render.Result>::echo",
+        );
+        ctx.impl_method_body_symbols
+            .insert(left.clone(), "left.render.Result::echo".to_string());
+        ctx.fn_registry.insert(
+            "right.render.Result::echo".to_string(),
+            FnEntry {
+                id: ItemId(1),
+                return_ty: ResolvedTy::I64,
+                param_tys: Vec::new(),
+                linkage: None,
+                type_params: Vec::new(),
+                builtin_family: None,
+            },
+        );
+
+        assert_eq!(
+            ctx.registered_impl_method_symbol(&left).as_deref(),
+            Some("left.render.Result::echo")
+        );
+        assert_eq!(
+            ctx.registered_impl_method_symbol(&right),
+            None,
+            "a real same-leaf registry entry cannot substitute for the selected declaration body"
+        );
+    }
+
+    #[test]
+    fn imported_opaque_identity_precedes_short_builtin_fallback() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names.extend([
+            "Receiver".to_string(),
+            "Connection".to_string(),
+            "foo.Receiver".to_string(),
+            "foo.Connection".to_string(),
+            "net.Connection".to_string(),
+        ]);
+
+        for qualified in ["foo.Receiver", "foo.Connection", "net.Connection"] {
+            assert_eq!(
+                ctx.resolve_named_type_ref(qualified, Vec::new()),
+                ResolvedTy::named_opaque(qualified.to_string(), Vec::new()),
+                "qualified opaque identity must be preserved exactly"
+            );
+        }
+
+        ctx.canonical_std_source_type_identities.extend([
+            "std.channel.Receiver".to_string(),
+            "std.stream.Stream".to_string(),
+            "std.stream.Sink".to_string(),
+            "std.link_monitor.MonitorRef".to_string(),
+        ]);
+        for (qualified, builtin) in [
+            ("std.channel.Receiver", BuiltinType::Receiver),
+            ("std.stream.Stream", BuiltinType::Stream),
+            ("std.stream.Sink", BuiltinType::Sink),
+            ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
+        ] {
+            let expected_name = if builtin == BuiltinType::MonitorRef {
+                qualified
+            } else {
+                builtin.canonical_name()
+            };
+            assert_eq!(
+                ctx.resolve_named_type_ref(qualified, Vec::new()),
+                ResolvedTy::named_builtin(expected_name, builtin, Vec::new()),
+                "an exact canonical std carrier `{qualified}` must retain declaration and builtin identity"
+            );
+        }
+
+        for qualified in [
+            "channel.Sender",
+            "channel.Receiver",
+            "stream.Stream",
+            "stream.Sink",
+            "duplex.Duplex",
+            "link_monitor.MonitorRef",
+        ] {
+            assert_eq!(
+                ctx.resolve_named_type_ref(qualified, Vec::new()),
+                ResolvedTy::named_user(qualified.to_string(), Vec::new()),
+                "a user module with the std leaf spelling `{qualified}` must not inherit builtin ABI identity"
+            );
+        }
+
+        ctx.import_type_name_aliases
+            .insert((None, "Receiver".to_string()), "foo.Receiver".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Receiver", Vec::new()),
+            ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
+            "an unrenamed named import must resolve through its published source identity"
+        );
+
+        ctx.import_type_name_aliases.clear();
+        ctx.root_opaque_type_short_names
+            .insert("Receiver".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Receiver", Vec::new()),
+            ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
+            "a flattened file-import declaration must outrank the bare builtin"
+        );
+
+        ctx.root_opaque_type_short_names.clear();
+        ctx.current_module_name = Some("std.channel".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "Receiver".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_builtin(
+                BuiltinType::Receiver.canonical_name(),
+                BuiltinType::Receiver,
+                Vec::new(),
+            ),
+            "a checker-authored bare std handle must recover its exact builtin identity"
+        );
+
+        ctx.current_module_name = Some("std.net.http".to_string());
+        ctx.opaque_type_short_names
+            .insert("http.ResponseHandle".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "http.ResponseHandle".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_opaque("http.ResponseHandle".to_string(), Vec::new()),
+            "a checker-authored qualified opaque identity must recover its declaration discriminator"
+        );
+    }
+
+    #[test]
+    fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.canonical_std_source_type_identities
+            .insert("std.stream.Sink".to_string());
+        ctx.current_module_name = Some("std.net.http".to_string());
+        let checker_result = ResolvedTy::named_builtin(
+            "Result",
+            BuiltinType::Result,
+            vec![
+                ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+                ResolvedTy::String,
+            ],
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(checker_result),
+            ResolvedTy::named_builtin(
+                "Result",
+                BuiltinType::Result,
+                vec![
+                    ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String],),
+                    ResolvedTy::String,
+                ],
+            )
+        );
+
+        ctx.current_module_name = Some("std.stream".to_string());
+        ctx.canonical_std_source_type_identities
+            .insert("std.stream.Stream".to_string());
+        let exact_nested = ResolvedTy::named_builtin(
+            "Result",
+            BuiltinType::Result,
+            vec![
+                ResolvedTy::Tuple(vec![
+                    ResolvedTy::Named {
+                        name: "std.stream.Sink".to_string(),
+                        args: vec![ResolvedTy::String],
+                        builtin: Some(BuiltinType::Sink),
+                        is_opaque: false,
+                    },
+                    ResolvedTy::Named {
+                        name: "std.stream.Stream".to_string(),
+                        args: vec![ResolvedTy::String],
+                        builtin: Some(BuiltinType::Stream),
+                        is_opaque: false,
+                    },
+                ]),
+                ResolvedTy::String,
+            ],
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(exact_nested),
+            ResolvedTy::named_builtin(
+                "Result",
+                BuiltinType::Result,
+                vec![
+                    ResolvedTy::Tuple(vec![
+                        ResolvedTy::named_builtin(
+                            "Sink",
+                            BuiltinType::Sink,
+                            vec![ResolvedTy::String],
+                        ),
+                        ResolvedTy::named_builtin(
+                            "Stream",
+                            BuiltinType::Stream,
+                            vec![ResolvedTy::String],
+                        ),
+                    ]),
+                    ResolvedTy::String,
+                ],
+            ),
+            "nested checker facts must normalize to the function signature's carrier ABI"
+        );
+
+        ctx.current_module_name = Some("acme.http".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "stream.Sink",
+                vec![ResolvedTy::String],
+            )),
+            ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+            "a user `stream.Sink` collision must not inherit std carrier identity"
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::Named {
+                name: "stream.Sink".to_string(),
+                args: vec![ResolvedTy::String],
+                builtin: Some(BuiltinType::Sink),
+                is_opaque: false,
+            }),
+            ResolvedTy::named_user("stream.Sink".to_string(), vec![ResolvedTy::String]),
+            "even a stale checker builtin bit cannot grant a user same-leaf carrier ABI"
+        );
+    }
+
+    #[test]
+    fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let args = vec![ResolvedTy::I64];
+
+        ctx.current_module_name = Some("std.stream".to_string());
+        ctx.canonical_std_source_type_identities
+            .insert("std.stream.Sink".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Sink", args.clone()),
+            ResolvedTy::named_builtin("Sink", BuiltinType::Sink, args.clone()),
+            "the canonical std.stream declaration must recover compiler carrier identity"
+        );
+
+        ctx.current_module_name = Some("acme.stream".to_string());
+        ctx.source_type_identities
+            .insert("acme.stream.Sink".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Sink", args.clone()),
+            ResolvedTy::named_user("acme.stream.Sink", args.clone()),
+            "an acme package's authored Sink<T> must remain a user nominal"
+        );
+        assert_eq!(
+            ctx.resolve_named_type_ref("acme.stream.Sink", args.clone()),
+            ResolvedTy::named_user("acme.stream.Sink", args.clone()),
+            "a qualified import of the acme carrier collision must remain user-owned"
+        );
+
+        // A path spelling is not provenance. A user package may be named
+        // `std.stream`; it acquires the carrier ABI only when its concrete
+        // source was harvested as a canonical stdlib source above.
+        let mut untrusted_std = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        untrusted_std.current_module_name = Some("std.stream".to_string());
+        untrusted_std
+            .source_type_identities
+            .insert("std.stream.Sink".to_string());
+        assert_eq!(
+            untrusted_std.resolve_named_type_ref("Sink", args.clone()),
+            ResolvedTy::named_user("std.stream.Sink", args.clone()),
+            "a user module named std.stream is not canonical stdlib provenance"
+        );
+
+        ctx.current_module_name = None;
+        ctx.canonical_std_source_type_identities
+            .insert("std.failure.CrashInfo".to_string());
+        ctx.import_type_name_aliases.insert(
+            (None, "CrashInfo".to_string()),
+            "std.failure.CrashInfo".to_string(),
+        );
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
+            ResolvedTy::named_builtin("std.failure.CrashInfo", BuiltinType::CrashInfo, Vec::new(),),
+            "an imported std lifecycle payload must not be stolen by the global record registry"
+        );
+    }
+
+    #[test]
+    fn depth_two_source_owners_qualify_same_leaf_types_without_leaf_fallback() {
+        let mut std_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        std_ctx.current_module_name = Some("std.net".to_string());
+        std_ctx
+            .source_type_identities
+            .insert("std.net.Connection".to_string());
+        std_ctx
+            .opaque_type_short_names
+            .insert("std.net.Connection".to_string());
+
+        assert_eq!(
+            std_ctx.resolve_named_type_ref("Connection", Vec::new()),
+            ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+            "a bare std.net declaration must retain its full source owner"
+        );
+
+        let mut root_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        root_ctx
+            .opaque_type_short_names
+            .insert("std.net.Connection".to_string());
+        assert_eq!(
+            root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "std.net.Connection".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+            "checker-authored closure capture facts must recover an imported opaque identity"
+        );
+        assert_eq!(
+            root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "acme.net.Connection".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_user("acme.net.Connection".to_string(), Vec::new()),
+            "a same-leaf user closure capture must not inherit std.net opacity"
+        );
+        assert_eq!(
+            std_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "Connection".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+            "checker facts that lose the opaque bit must recover std.net, never net"
+        );
+
+        let mut user_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        user_ctx.current_module_name = Some("acme.net".to_string());
+        user_ctx
+            .source_type_identities
+            .insert("acme.net.Connection".to_string());
+
+        for resolved in [
+            user_ctx.resolve_named_type_ref("Connection", Vec::new()),
+            user_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "Connection".to_string(),
+                Vec::new(),
+            )),
+        ] {
+            assert_eq!(
+                resolved,
+                ResolvedTy::named_user("acme.net.Connection".to_string(), Vec::new()),
+                "a user depth-two owner sharing std.net's leaf must stay distinct"
+            );
+        }
+    }
+
+    #[test]
+    fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.current_module_name = Some("std.net.tls".to_string());
+        ctx.module_import_bindings.insert(
+            (Some("std.net.tls".to_string()), "net".to_string()),
+            "std.net".to_string(),
+        );
+        ctx.canonical_std_source_type_identities
+            .insert("std.net.NetError".to_string());
+
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "net.NetError",
+                Vec::new(),
+            )),
+            ResolvedTy::named_user("std.net.NetError", Vec::new()),
+            "a checker-produced lexical module binding must agree with the exact std declaration identity"
+        );
+    }
+
+    #[test]
+    fn imported_const_key_uses_the_checker_module_owner() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.module_import_bindings.insert(
+            (None, "codec".to_string()),
+            "std.net.http.codec".to_string(),
+        );
+
+        assert_eq!(
+            ctx.imported_module_member_key("codec", "MAX_READS"),
+            "std.net.http.codec.MAX_READS"
+        );
+    }
+
+    #[test]
+    fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let args = vec![ResolvedTy::named_user("Echo", Vec::new())];
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(
+                ResolvedTy::named_user("RemotePid", args.clone(),)
+            ),
+            ResolvedTy::named_user("RemotePid", args.clone()),
+            "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_builtin(
+                "RemotePid",
+                BuiltinType::RemotePid,
+                args.clone(),
+            )),
+            ResolvedTy::named_builtin("RemotePid", BuiltinType::RemotePid, args.clone()),
+            "a checker-authored compiler actor carrier retains its value class"
+        );
+
+        ctx.root_visible_source_type_short_names
+            .insert("RemotePid".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(
+                ResolvedTy::named_user("RemotePid", args.clone(),)
+            ),
+            ResolvedTy::named_user("RemotePid", args.clone()),
+            "a root source declaration wins over the compiler carrier spelling"
+        );
+
+        ctx.root_visible_source_type_short_names.clear();
+        ctx.import_type_name_aliases.insert(
+            (None, "RemotePid".to_string()),
+            "peer.RemotePid".to_string(),
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user("RemotePid", args.clone())),
+            ResolvedTy::named_user("peer.RemotePid", args),
+            "an imported foreign RemotePid remains a user nominal"
+        );
+    }
+
+    #[test]
+    fn imported_crash_notification_keeps_source_identity_after_record_registration() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.canonical_std_source_type_identities
+            .insert("failure.CrashNotification".to_string());
+        ctx.record_registry.insert(
+            "CrashNotification".to_string(),
+            RecordEntry {
+                id: ItemId(1),
+                type_params: Vec::new(),
+                fields: Vec::new(),
+            },
+        );
+        ctx.import_type_name_aliases.insert(
+            (None, "CrashNotification".to_string()),
+            "failure.CrashNotification".to_string(),
+        );
+
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
+            ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+            "a published lifecycle import must retain its owner-qualified source identity"
+        );
+
+        // Without the checker-published import binding, a globally registered
+        // std declaration is layout metadata only and must not grant the bare
+        // spelling lifecycle authority.
+        ctx.import_type_name_aliases.clear();
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
+            ResolvedTy::named_user("CrashNotification", Vec::new()),
+            "a global std record must not make its bare lifecycle name implicit"
+        );
+
+        // An authored root declaration likewise remains an ordinary nominal.
+        ctx.root_visible_source_type_short_names
+            .insert("CrashNotification".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
+            ResolvedTy::named_user("CrashNotification", Vec::new()),
+            "a user-authored same-spelling record must not acquire the lifecycle ABI"
+        );
+    }
+
+    #[test]
+    fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
+        let tc_output = TypeCheckOutput {
+            import_type_name_aliases: HashMap::from([(
+                (None, "f.CrashNotification".to_string()),
+                "failure.CrashNotification".to_string(),
+            )]),
+            ..TypeCheckOutput::default()
+        };
+        let ctx = LowerCtx::new(
+            &tc_output,
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+
+        assert_eq!(
+            ctx.resolve_named_type_ref("f.CrashNotification", Vec::new()),
+            ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+            "HIR must consume the checker's exact qualified lifecycle identity"
+        );
+
+        let unproven = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        assert_eq!(
+            unproven.resolve_named_type_ref("f.CrashNotification", Vec::new()),
+            ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+            "module spelling without a checker fact must remain an ordinary nominal"
+        );
+    }
+
+    #[test]
+    fn nested_imported_opaque_identity_keeps_only_full_module_owner() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse("#[opaque] type Handle {}");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let root_id = ModuleId::root();
+        let nested_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: nested_id.clone(),
+                items: parsed.program.items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![nested_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: Vec::new(),
+            module_doc: None,
+        };
+
+        let mut opaque = HashSet::new();
+        let mut non_opaque = HashSet::new();
+        collect_opaque_type_short_names(&program, &mut opaque, &mut non_opaque);
+
+        assert!(opaque.contains("a.b.Handle"));
+        assert!(
+            !opaque.contains("b.Handle"),
+            "a nested module leaf is not declaration authority for opaque identity"
+        );
+        assert!(opaque.contains("Handle"));
+
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names = opaque;
+        assert_eq!(
+            ctx.resolve_named_type_ref("a.b.Handle", Vec::new()),
+            ResolvedTy::named_opaque("a.b.Handle".to_string(), Vec::new()),
+        );
+    }
+
+    fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
+        (
+            TypeExpr::Named {
+                name: name.to_string(),
+                type_args: (!args.is_empty()).then_some(args),
+            },
+            0..0,
+        )
+    }
+
+    #[test]
+    fn source_identity_precedes_task_unit_and_cancellation_early_arms() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.root_visible_source_type_short_names.extend([
+            "Task".to_string(),
+            "Unit".to_string(),
+            "CancellationToken".to_string(),
+        ]);
+        ctx.root_opaque_type_short_names
+            .insert("CancellationToken".to_string());
+
+        let i64_arg = || vec![named_type_ref("i64", Vec::new())];
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Task", i64_arg())),
+            ResolvedTy::named_user("Task".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Unit", i64_arg())),
+            ResolvedTy::named_user("Unit".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::named_opaque("CancellationToken".to_string(), Vec::new())
+        );
+        assert!(
+            !ctx.diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
+            "a source-declared Task<T> must not trigger the compiler Task diagnostic"
+        );
+
+        ctx.root_visible_source_type_short_names.clear();
+        ctx.root_opaque_type_short_names.clear();
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Unit", Vec::new())),
+            ResolvedTy::Unit
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::CancellationToken
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Task", i64_arg())),
+            ResolvedTy::Unit
+        );
+        assert!(
+            ctx.diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
+            "only the genuine compiler Task spelling must be rejected"
+        );
+    }
+
+    #[test]
+    fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
+        let tc_output = TypeCheckOutput {
+            import_type_name_aliases: HashMap::from([
+                ((None, "Task".to_string()), "foo.Task".to_string()),
+                ((None, "Unit".to_string()), "foo.Unit".to_string()),
+                (
+                    (None, "CancellationToken".to_string()),
+                    "foo.CancellationToken".to_string(),
+                ),
+            ]),
+            ..TypeCheckOutput::default()
+        };
+        let mut ctx = LowerCtx::new(
+            &tc_output,
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names
+            .insert("foo.CancellationToken".to_string());
+
+        assert_eq!(
+            ctx.lower_type(&named_type_ref(
+                "Task",
+                vec![named_type_ref("i64", Vec::new())],
+            )),
+            ResolvedTy::named_user("foo.Task".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref(
+                "Unit",
+                vec![named_type_ref("i64", Vec::new())],
+            )),
+            ResolvedTy::named_user("foo.Unit".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::named_opaque("foo.CancellationToken".to_string(), Vec::new())
+        );
+    }
+
     /// Every synthetic-builtin sentinel `ItemId` minted into the
     /// `u32::MAX / 2` band is pairwise distinct. A collision is SILENT —
     /// two `FnEntry` rows simply overwrite each other in `fn_registry`
@@ -29955,6 +35483,449 @@ mod tests {
         (parsed.program, tco, lowered)
     }
 
+    #[test]
+    fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
+        use hew_parser::ast::Program;
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse(
+            r#"
+            #[resource]
+            #[opaque]
+            pub type FileReadStream {}
+
+            impl FileReadStream {
+                fn close(consuming self) {
+                    unsafe { hew_file_read_stream_close(self) };
+                }
+            }
+
+            extern "C" {
+                fn hew_file_read_stream_open(path: string) -> FileReadStream;
+                fn hew_file_read_stream_close(consume stream: FileReadStream);
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+
+        let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
+        let root_id = ModuleId::root();
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: module_id.clone(),
+                items: parsed.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add std.fs test module");
+        graph.topo_order = vec![module_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let candidate = output
+            .opaque_resource_candidates
+            .candidates
+            .get("std.fs.FileReadStream")
+            .expect("checker must admit the exact generated lifecycle")
+            .clone();
+
+        let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics: {:#?}\nitems: {:#?}",
+            lowered.diagnostics,
+            lowered.module.items
+        );
+        let lifecycle = lowered
+            .module
+            .type_classes
+            .opaque_resource_lifecycle(&candidate.resource_declaration)
+            .expect("HIR must carry the checker-admitted lifecycle");
+        assert_eq!(
+            lifecycle.resource_declaration,
+            candidate.resource_declaration
+        );
+        assert_eq!(lifecycle.close_declaration, candidate.close_declaration);
+        assert_eq!(lifecycle.release_declaration, candidate.release_declaration);
+        assert_eq!(lifecycle.release_symbol, "hew_file_read_stream_close");
+        assert!(lifecycle.close_symbol.ends_with("FileReadStream::close"));
+    }
+
+    #[test]
+    fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
+        let (_program, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            #[resource]
+            type Connection { label: string }
+
+            impl Connection {
+                fn close(consuming self) {}
+            }
+
+            fn main() {}
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "valid exact lifecycle should lower cleanly: {:#?}",
+            lowered.diagnostics
+        );
+        let resource_declaration = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::TypeDecl(decl) if decl.name == "Connection" => {
+                    Some(decl.declaration.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let expected_close = tco
+            .impl_method_declaration_ids
+            .get("Connection::close")
+            .expect("checker close identity");
+        let lifecycle = lowered
+            .module
+            .type_classes
+            .lifecycle_registry()
+            .resource_record(&resource_declaration)
+            .expect("HIR lifecycle admission");
+        assert_eq!(&lifecycle.close_declaration, expected_close);
+
+        let mut items = lowered.module.items.clone();
+        items.retain(|item| {
+            !matches!(item, HirItem::Function(function) if &function.declaration == expected_close)
+        });
+        let mut table = crate::TypeClassTable::default();
+        let mut diagnostics = Vec::new();
+        admit_resource_record_lifecycles(&items, &mut table, &mut diagnostics);
+        assert!(table
+            .lifecycle_registry()
+            .resource_record(&resource_declaration)
+            .is_none());
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                if reason.contains("exact emitted body")
+        )));
+    }
+
+    #[test]
+    fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
+        use hew_parser::ast::Program;
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse(
+            r#"
+            #[resource]
+            #[opaque]
+            pub type FileReadStream {}
+
+            impl FileReadStream {
+                fn close(consuming self) {
+                    unsafe { hew_file_read_stream_close(self) };
+                    if true { unsafe { hew_file_read_stream_close(self) }; }
+                }
+            }
+
+            extern "C" {
+                fn hew_file_read_stream_open(path: string) -> FileReadStream;
+                fn hew_file_read_stream_close(consume stream: FileReadStream);
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+
+        let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
+        let root_id = ModuleId::root();
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: module_id.clone(),
+                items: parsed.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add std.fs test module");
+        graph.topo_order = vec![module_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let candidate = output
+            .opaque_resource_candidates
+            .candidates
+            .get("std.fs.FileReadStream")
+            .expect("checker candidate")
+            .clone();
+        let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
+        assert!(lowered.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::OpaqueResourceCloseMismatch { .. }
+        )));
+        assert!(
+            lowered
+                .module
+                .type_classes
+                .opaque_resource_lifecycle(&candidate.resource_declaration)
+                .is_none(),
+            "a conditional duplicate release must not earn automatic close authority"
+        );
+    }
+
+    #[test]
+    fn checker_produced_value_facts_project_to_stable_hir_sites() {
+        let (_, checked, lowered) = parse_typecheck_and_lower(
+            r#"
+            fn make() -> string { "owned" }
+            fn main() { let value = make(); }
+            "#,
+        );
+        assert!(
+            lowered.module.produced_value_facts.len() >= checked.produced_value_ownership.len(),
+            "root checker rows plus checker-validated injected builtin rows must survive"
+        );
+        let main = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
+            panic!("expected make() binding, got {:#?}", main.body.statements);
+        };
+        let fact = lowered
+            .module
+            .produced_value_facts
+            .get(&call.site)
+            .expect("direct call must retain its checker result fact");
+        assert_eq!(fact.producer, crate::node::HirProducedValueProducer::Call);
+        assert!(crate::verify_hir(&lowered.module).is_empty());
+
+        let mut stale = lowered.module.clone();
+        stale
+            .produced_value_facts
+            .get_mut(&call.site)
+            .expect("call fact")
+            .producer = crate::node::HirProducedValueProducer::Literal;
+        assert!(
+            crate::verify_hir(&stale).iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { .. }
+            )),
+            "a fact that survives a transform with a stale producer class must fail verification"
+        );
+    }
+
+    #[test]
+    fn missing_checker_relation_row_fails_closed_instead_of_becoming_a_leaf() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn make() -> string { "owned" }
+            fn main() { let value = make(); }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let removed = output
+            .produced_value_dependencies
+            .keys()
+            .next()
+            .cloned()
+            .expect("checker output must contain explicit relation rows");
+        output.produced_value_dependencies.remove(&removed);
+
+        let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "produced value dependency"
+                        && reason.contains("omitted this expression's closed relation row")
+            )),
+            "missing checker dependency row must be a boundary violation: {:#?}",
+            lowered.diagnostics
+        );
+        assert!(
+            lowered
+                .module
+                .produced_value_facts
+                .values()
+                .any(|fact| matches!(fact.ownership, hew_types::ProducedValueOwnership::Unknown)),
+            "the malformed row must be carried as Unknown rather than inferred as a leaf"
+        );
+    }
+
+    #[test]
+    fn duplicated_checker_span_candidates_are_not_last_write_coalesced() {
+        let key = SpanKey {
+            start: 7,
+            end: 11,
+            module_idx: 0,
+        };
+        let carrier = PendingProducedValueCarrier {
+            facts: HashMap::new(),
+            generated_facts: HashMap::new(),
+            fact_keys: HashMap::new(),
+            source_sites: HashMap::from([(key.clone(), vec![SiteId(41), SiteId(42)])]),
+            ownership: HashMap::new(),
+        };
+        let parents = HashMap::from([
+            (SiteId(40), None),
+            (SiteId(41), Some(SiteId(40))),
+            (SiteId(42), Some(SiteId(40))),
+        ]);
+        let error = carrier
+            .source_site(&key, SiteId(40), &parents)
+            .expect_err("one checker span mapped to two occurrence roles must be rejected");
+        assert!(
+            error.contains("ambiguous candidates"),
+            "ambiguity must be reported rather than selecting the last site: {error}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the test keeps static-discard, static-capture, and dynamic dispatch evidence together"
+    )]
+    fn receiver_ownership_metadata_controls_static_and_dynamic_dispatch_intent() {
+        let (_, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            #[resource]
+            type Builder { value: i64 }
+
+            impl Builder {
+                fn close(consuming self) {}
+            }
+
+            trait Fluent {
+                #[returns_receiver]
+                fn touch(consuming self) -> Self;
+            }
+
+            impl Fluent for Builder {
+                #[returns_receiver]
+                fn touch(consuming self) -> Builder { self }
+            }
+
+            trait Finish {
+                fn finish(consuming self) -> i64;
+            }
+
+            impl Finish for Builder {
+                fn finish(consuming self) -> i64 { self.value }
+            }
+
+            fn touch_twice<T: Fluent>(value: T) {
+                value.touch();
+                value.touch();
+            }
+
+            fn transfer<T: Fluent>(value: T) -> T {
+                value.touch()
+            }
+
+            fn finish_dyn(value: dyn Finish) -> i64 {
+                value.finish()
+            }
+            ",
+        );
+        assert!(
+            tco.method_call_rewrites.values().any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::StaticTraitDispatch {
+                    consumes_receiver: true,
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )),
+            "static dispatch must carry both receiver-ownership axes"
+        );
+        assert!(
+            tco.dyn_trait_method_calls
+                .values()
+                .any(|call| call.signature.consumes_receiver),
+            "dynamic dispatch must carry consuming-receiver metadata in its FnSig"
+        );
+
+        let touch_twice = function_named(&lowered, "touch_twice");
+        for statement in &touch_twice.body.statements {
+            let HirStmtKind::Expr(call) = &statement.kind else {
+                panic!(
+                    "expected identity call statement, got {:#?}",
+                    statement.kind
+                );
+            };
+            let HirExprKind::CallTraitMethodStatic { receiver, .. } = &call.kind else {
+                panic!("expected static trait dispatch, got {:#?}", call.kind);
+            };
+            assert_eq!(
+                receiver.intent,
+                IntentKind::Read,
+                "a discarded exact receiver result preserves the original owner"
+            );
+        }
+
+        let transfer = function_named(&lowered, "transfer");
+        let transfer_call = transfer
+            .body
+            .tail
+            .as_deref()
+            .expect("transfer must have a trailing call");
+        let HirExprKind::CallTraitMethodStatic { receiver, .. } = &transfer_call.kind else {
+            panic!(
+                "expected static trait dispatch in transfer, got {:#?}",
+                transfer_call.kind
+            );
+        };
+        assert_eq!(
+            receiver.intent,
+            IntentKind::Consume,
+            "a captured exact receiver result transfers the original owner"
+        );
+
+        let finish_dyn = function_named(&lowered, "finish_dyn");
+        let finish_call = finish_dyn
+            .body
+            .tail
+            .as_deref()
+            .expect("finish_dyn must have a trailing call");
+        let HirExprKind::CallDynMethod {
+            receiver,
+            signature,
+            ..
+        } = &finish_call.kind
+        else {
+            panic!(
+                "expected dynamic trait dispatch in finish_dyn, got {:#?}",
+                finish_call.kind
+            );
+        };
+        assert!(signature.consumes_receiver);
+        assert_eq!(receiver.intent, IntentKind::Consume);
+    }
+
     fn main_function_body(output: &LowerOutput) -> &HirBlock {
         let Some(HirItem::Function(function)) =
             output.module.items.iter().find(
@@ -29988,6 +35959,59 @@ mod tests {
             builtin: None,
             is_opaque: false,
         }
+    }
+
+    #[test]
+    fn tcp_borrow_contract_rejects_spoofed_and_unclassified_resource_params() {
+        // A resource may cross an extern boundary without `consume` only when
+        // the source declaration is std.net's audited nominal. In particular,
+        // neither the familiar TCP spelling nor a scalar-compatible Foo ABI
+        // lets a root module forge Connection's borrow privilege.
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r#"
+            #[resource]
+            #[opaque]
+            type Handle {}
+
+            impl Handle {
+                fn close(handle: Handle) {}
+            }
+
+            extern "C" {
+                fn hew_tcp_read(handle: Handle);
+                fn hew_tcp_unclassified(handle: Handle);
+            }
+            "#,
+        );
+
+        let boundary_diagnostics: Vec<_> = lowered
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    HirDiagnosticKind::ResourceBoundaryParamMustConsume { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            boundary_diagnostics.len(),
+            2,
+            "both a spoofed TCP spelling and an unclassified resource parameter must be rejected: {:#?}",
+            lowered.diagnostics
+        );
+        let rejected: Vec<_> = boundary_diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                HirDiagnosticKind::ResourceBoundaryParamMustConsume { func, .. } => Some(func),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rejected,
+            vec!["hew_tcp_read", "hew_tcp_unclassified"],
+            "the generated borrow row must not be inherited by a root `Handle`: {boundary_diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -30188,13 +36212,15 @@ mod tests {
         );
     }
 
-    /// HIR's recursive channel-handle predicate is the consume-decision mirror
-    /// of codegen's xnode-codec-skip predicate. It must dispatch on the typed
-    /// `builtin` discriminant alone so user `record Sender` / `record Receiver`
-    /// messages keep ordinary actor-send treatment while real builtin handles
-    /// still transfer ownership across actor sends.
-    #[test]
-    fn channel_handle_consume_gate_uses_builtin_discriminant_not_shadowed_name() {
+    /// HIR's recursive mailbox-transfer predicate is the consume-decision half
+    /// of the actor ownership axis. These cases fix the four independently
+    /// failable properties of that walk: what it must NOT capture, which
+    /// references stay shareable, which handles own a release, and how far it
+    /// descends into an aggregate.
+    mod mailbox_transfer_gate {
+        use super::*;
+        use crate::value_class::TypeClassTable;
+
         fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
             ResolvedTy::Named {
                 name: name.to_string(),
@@ -30213,62 +36239,489 @@ mod tests {
             }
         }
 
-        for shadow in ["Sender", "Receiver"] {
-            let user_ty = named_record_ty(shadow);
-            assert!(
-                !resolved_ty_contains_channel_handle(&user_ty),
-                "user type `{shadow}` (builtin: None) must not be consumed as a \
-                 channel-handle transfer"
+        /// Marker table and structural member sets exactly as the type-decl
+        /// pre-pass records them: `Holder` wraps a resource, `Outer` wraps
+        /// `Holder`, and `Node` is self-referential through a `Vec`.
+        fn tables() -> (TypeClassTable, HashMap<String, Vec<ResolvedTy>>) {
+            let mut classes = TypeClassTable::default();
+            classes.insert("Socket".to_string(), (ResourceMarker::Resource, None));
+            classes.insert("Ticket".to_string(), (ResourceMarker::Linear, None));
+            classes.insert("Message".to_string(), (ResourceMarker::None, None));
+            classes.insert("Holder".to_string(), (ResourceMarker::None, None));
+            classes.insert("Outer".to_string(), (ResourceMarker::None, None));
+            classes.insert("Node".to_string(), (ResourceMarker::None, None));
+
+            let mut members: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
+            members.insert("Socket".to_string(), vec![ResolvedTy::I64]);
+            members.insert("Message".to_string(), vec![ResolvedTy::String]);
+            members.insert("Holder".to_string(), vec![named_record_ty("Socket")]);
+            members.insert(
+                "Outer".to_string(),
+                vec![named_record_ty("Holder"), ResolvedTy::I64],
             );
-            assert!(
-                !resolved_ty_contains_channel_handle(&named_record_ty(&format!(
-                    "channel.{shadow}"
-                ))),
-                "module-qualified user `{shadow}` is still builtin: None"
+            members.insert(
+                "Node".to_string(),
+                vec![ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![named_record_ty("Node")],
+                    builtin: Some(BuiltinType::Vec),
+                    is_opaque: false,
+                }],
             );
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, user_ty.clone(),]
+            (classes, members)
+        }
+
+        fn transfers(ty: &ResolvedTy) -> bool {
+            let (classes, members) = tables();
+            resolved_ty_transfers_ownership_to_mailbox(ty, &classes, &members)
+        }
+
+        #[test]
+        fn user_shadow_types_and_cow_values_are_not_transfers() {
+            for shadow in ["Sender", "Receiver"] {
+                let user_ty = named_record_ty(shadow);
+                assert!(
+                    !transfers(&user_ty),
+                    "user type `{shadow}` (builtin: None) must not be consumed as \
+                     a mailbox ownership transfer"
+                );
+                assert!(
+                    !transfers(&named_record_ty(&format!("mypkg.{shadow}"))),
+                    "a user module's `{shadow}` is not the stdlib declaration"
+                );
+                assert!(!transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    user_ty.clone(),
+                ])));
+                assert!(!transfers(&user_generic_over(user_ty.clone())));
+                assert!(!transfers(&ResolvedTy::Array(Box::new(user_ty.clone()), 2)));
+                assert!(!transfers(&ResolvedTy::Slice(Box::new(user_ty))));
+            }
+
+            assert!(!transfers(&named_record_ty("Message")));
+            assert!(!transfers(&named_record_ty("Unregistered")));
+            assert!(!transfers(&ResolvedTy::String));
+            assert!(!transfers(&ResolvedTy::I64));
+            assert!(!transfers(&ResolvedTy::Tuple(vec![
+                ResolvedTy::String,
+                ResolvedTy::I64,
+            ])));
+        }
+
+        #[test]
+        fn non_owning_actor_references_are_not_transfers() {
+            // `LocalPid` and its raw runtime word carry the `Resource` marker
+            // for drop elaboration but free nothing, and supervisors
+            // legitimately hand one child's pid to several peers.
+            assert!(!transfers(&builtin_handle(
+                "LocalPid",
+                BuiltinType::LocalPid
             )));
-            assert!(!resolved_ty_contains_channel_handle(&user_generic_over(
-                user_ty.clone()
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(user_ty.clone()),
-                2
-            )));
-            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(user_ty)
+            assert!(!transfers(&builtin_handle(
+                "HewActor",
+                BuiltinType::HewActor
             )));
         }
 
-        assert!(!resolved_ty_contains_channel_handle(&named_record_ty(
-            "Message"
-        )));
+        #[test]
+        fn owning_builtin_handles_transfer_directly_and_nested() {
+            // The lambda wrappers and the monitor registration are here BECAUSE
+            // they look like references but own a release.
+            for (name, kind) in [
+                ("Sender", BuiltinType::Sender),
+                ("Receiver", BuiltinType::Receiver),
+                ("Stream", BuiltinType::Stream),
+                ("Sink", BuiltinType::Sink),
+                ("Duplex", BuiltinType::Duplex),
+                ("LambdaPid", BuiltinType::LambdaPid),
+                ("LambdaActorHandle", BuiltinType::LambdaActorHandle),
+                ("BoxedActor", BuiltinType::BoxedActor),
+                ("MonitorRef", BuiltinType::MonitorRef),
+            ] {
+                let handle = builtin_handle(name, kind);
+                assert!(
+                    transfers(&handle),
+                    "builtin `{name}` must be consumed as a mailbox ownership transfer"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    handle.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(handle.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(handle.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(handle))));
+            }
+        }
 
-        for (name, kind) in [
-            ("Sender", BuiltinType::Sender),
-            ("Receiver", BuiltinType::Receiver),
-        ] {
-            let handle = builtin_handle(name, kind);
-            assert!(
-                resolved_ty_contains_channel_handle(&handle),
-                "builtin `{name}` (builtin: Some(_)) must still be consumed as \
-                 a channel-handle transfer"
-            );
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
-                vec![ResolvedTy::I64, handle.clone(),]
-            )));
-            assert!(resolved_ty_contains_channel_handle(&user_generic_over(
-                handle.clone()
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Array(
-                Box::new(handle.clone()),
-                2
-            )));
-            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
-                Box::new(handle)
+        #[test]
+        fn stdlib_declaration_paths_resolve_but_bare_leaf_names_do_not() {
+            // A source-declared lifecycle type reaches declared positions
+            // spelled by its qualified path with NO builtin tag attached (an
+            // actor state field declared `handle: MonitorRef` resolves to
+            // `std.link_monitor.MonitorRef`), so the tag test alone misses it.
+            assert!(transfers(&named_record_ty("std.link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("link_monitor.MonitorRef")));
+            assert!(transfers(&named_record_ty("std.channel.Sender")));
+            assert!(transfers(&named_record_ty("channel.Receiver")));
+            // Resolution is by declaration PATH, never by leaf name.
+            assert!(!transfers(&named_record_ty("MonitorRef")));
+            assert!(!transfers(&named_record_ty(
+                "mypkg.link_monitor.MonitorRef"
             )));
         }
+
+        #[test]
+        fn nominal_markers_and_named_member_containment_transfer() {
+            for nominal in ["Socket", "Ticket"] {
+                let ty = named_record_ty(nominal);
+                assert!(
+                    transfers(&ty),
+                    "`{nominal}` carries a single-owner marker and must be consumed"
+                );
+                assert!(transfers(&ResolvedTy::Tuple(vec![
+                    ResolvedTy::I64,
+                    ty.clone(),
+                ])));
+                assert!(transfers(&user_generic_over(ty.clone())));
+                assert!(transfers(&ResolvedTy::Array(Box::new(ty.clone()), 2)));
+                assert!(transfers(&ResolvedTy::Slice(Box::new(ty))));
+            }
+
+            // A plain record wrapping a resource transfers it, at depth 1 and 2.
+            assert!(transfers(&named_record_ty("Holder")));
+            assert!(transfers(&named_record_ty("Outer")));
+        }
+
+        #[test]
+        fn recursive_member_graphs_terminate_without_transferring() {
+            assert!(!transfers(&named_record_ty("Node")));
+        }
+    }
+
+    /// Runtime-facing collection, channel, generator, PID, and Option/Result
+    /// lowering must read the checker-owned builtin discriminator.  A builtin
+    /// may arrive under a presentation name other than its catalog spelling;
+    /// conversely, a user source declaration named `Vec`, `Receiver`, etc.
+    /// must never select the runtime lowering path.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the table-driven builtin boundary regression intentionally covers every runtime-facing builtin family"
+    )]
+    fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
+        fn named(name: &str, builtin: Option<BuiltinType>, args: Vec<ResolvedTy>) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: name.to_string(),
+                args,
+                builtin,
+                is_opaque: false,
+            }
+        }
+
+        let renamed_map = named(
+            "RenamedMap",
+            Some(BuiltinType::HashMap),
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        );
+        let user_map = named("HashMap", None, vec![ResolvedTy::String, ResolvedTy::I64]);
+        assert!(LowerCtx::is_hashmap_ty(&renamed_map));
+        assert!(!LowerCtx::is_hashmap_ty(&user_map));
+
+        let renamed_option = named(
+            "MaybeValue",
+            Some(BuiltinType::Option),
+            vec![ResolvedTy::I64],
+        );
+        let user_option = named("Option", None, vec![ResolvedTy::I64]);
+        assert_eq!(
+            LowerCtx::resolved_option_inner(&renamed_option),
+            Some(&ResolvedTy::I64)
+        );
+        assert_eq!(LowerCtx::resolved_option_inner(&user_option), None);
+
+        let renamed_result = named(
+            "Outcome",
+            Some(BuiltinType::Result),
+            vec![ResolvedTy::I64, ResolvedTy::String],
+        );
+        let user_result = named("Result", None, vec![ResolvedTy::I64, ResolvedTy::String]);
+        assert_eq!(
+            LowerCtx::resolved_result_parts(&renamed_result),
+            Some((&ResolvedTy::I64, &ResolvedTy::String))
+        );
+        assert_eq!(LowerCtx::resolved_result_parts(&user_result), None);
+
+        let renamed_generator = named(
+            "Producer",
+            Some(BuiltinType::Generator),
+            vec![ResolvedTy::I64, ResolvedTy::String],
+        );
+        let user_generator = named("Generator", None, vec![ResolvedTy::I64, ResolvedTy::String]);
+        assert_eq!(
+            LowerCtx::generator_yield_return_parts(&renamed_generator),
+            Some((ResolvedTy::I64, ResolvedTy::String))
+        );
+        assert_eq!(
+            LowerCtx::generator_yield_return_parts(&user_generator),
+            None
+        );
+
+        let actor = named("bank.Account", None, Vec::new());
+        let renamed_pid = named(
+            "WorkerHandle",
+            Some(BuiltinType::LocalPid),
+            vec![actor.clone()],
+        );
+        let user_pid = named("LocalPid", None, vec![actor]);
+        assert_eq!(
+            LowerCtx::local_pid_actor_identity(&renamed_pid),
+            Some("bank.Account")
+        );
+        assert_eq!(LowerCtx::local_pid_actor_identity(&user_pid), None);
+
+        let mut vec_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        vec_ctx.expr_types.insert(
+            SpanKey::in_module(&(0..0), 0),
+            Ty::Named {
+                name: "RenamedList".to_string(),
+                args: vec![Ty::I64],
+                builtin: Some(BuiltinType::Vec),
+            },
+        );
+        assert_eq!(
+            vec_ctx.array_literal_vec_ty(&(0..0)).map(|(_, elem)| elem),
+            Some(ResolvedTy::I64),
+            "a renamed builtin Vec<T> still owns array literal lowering"
+        );
+
+        let mut user_vec_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        user_vec_ctx.expr_types.insert(
+            SpanKey::in_module(&(0..0), 0),
+            Ty::Named {
+                name: "Vec".to_string(),
+                args: vec![Ty::I64],
+                builtin: None,
+            },
+        );
+        let stored_user_vec_ty = user_vec_ctx
+            .expr_types
+            .get(&SpanKey::in_module(&(0..0), 0))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .map(|ty| user_vec_ctx.qualify_current_module_record_ty(ty));
+        assert!(
+            matches!(
+                stored_user_vec_ty,
+                Some(ResolvedTy::Named { builtin: None, .. })
+            ),
+            "checker/HIR qualification must preserve a user Vec<T>, got {stored_user_vec_ty:?}"
+        );
+        let user_vec_literal_ty = user_vec_ctx.array_literal_vec_ty(&(0..0));
+        assert!(
+            user_vec_literal_ty.is_none(),
+            "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
+        );
+
+        let mut map_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        map_ctx.expr_types.insert(
+            SpanKey::in_module(&(0..0), 0),
+            Ty::Named {
+                name: "RenamedMap".to_string(),
+                args: vec![Ty::String, Ty::I64],
+                builtin: Some(BuiltinType::HashMap),
+            },
+        );
+        assert_eq!(
+            map_ctx.map_literal_hashmap_ty(&(0..0)),
+            Some((
+                named(
+                    "RenamedMap",
+                    Some(BuiltinType::HashMap),
+                    vec![ResolvedTy::String, ResolvedTy::I64],
+                ),
+                ResolvedTy::String,
+                ResolvedTy::I64,
+            )),
+            "a renamed builtin HashMap<K, V> still owns map literal lowering"
+        );
+        let mut user_map_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        user_map_ctx.expr_types.insert(
+            SpanKey::in_module(&(0..0), 0),
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![Ty::String, Ty::I64],
+                builtin: None,
+            },
+        );
+        assert!(
+            user_map_ctx.map_literal_hashmap_ty(&(0..0)).is_none(),
+            "a user HashMap<K, V> must not acquire map literal runtime lowering"
+        );
+
+        let mut select_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let renamed_receiver = select_ctx.make_expr(
+            HirExprKind::Unsupported("test receiver".to_string()),
+            named("Inbox", Some(BuiltinType::Receiver), vec![ResolvedTy::I64]),
+            IntentKind::Read,
+            0..0,
+        );
+        assert_eq!(
+            select_ctx.select_arm_binding_ty(
+                &HirSelectArmKind::ChannelRecv {
+                    receiver: Box::new(renamed_receiver),
+                },
+                &(0..0),
+            ),
+            Some(LowerCtx::resolved_option_ty(ResolvedTy::I64)),
+            "a renamed builtin Receiver<T> retains channel receive binding shape"
+        );
+        let user_receiver = select_ctx.make_expr(
+            HirExprKind::Unsupported("test receiver".to_string()),
+            named("Receiver", None, vec![ResolvedTy::I64]),
+            IntentKind::Read,
+            0..0,
+        );
+        assert_eq!(
+            select_ctx.select_arm_binding_ty(
+                &HirSelectArmKind::ChannelRecv {
+                    receiver: Box::new(user_receiver),
+                },
+                &(0..0),
+            ),
+            None,
+            "a user Receiver<T> must not acquire channel receive semantics"
+        );
+
+        let renamed_stream = select_ctx.make_expr(
+            HirExprKind::Unsupported("test stream".to_string()),
+            named(
+                "RenamedStream",
+                Some(BuiltinType::Stream),
+                vec![ResolvedTy::String],
+            ),
+            IntentKind::Read,
+            0..0,
+        );
+        assert_eq!(
+            select_ctx.select_arm_binding_ty(
+                &HirSelectArmKind::StreamNext {
+                    stream: Box::new(renamed_stream),
+                },
+                &(0..0),
+            ),
+            Some(ResolvedTy::String),
+            "a renamed builtin Stream<T> retains stream-next binding shape"
+        );
+        let user_stream = select_ctx.make_expr(
+            HirExprKind::Unsupported("test stream".to_string()),
+            named("Stream", None, vec![ResolvedTy::String]),
+            IntentKind::Read,
+            0..0,
+        );
+        assert_eq!(
+            select_ctx.select_arm_binding_ty(
+                &HirSelectArmKind::StreamNext {
+                    stream: Box::new(user_stream),
+                },
+                &(0..0),
+            ),
+            None,
+            "a user Stream<T> must not acquire stream-next semantics"
+        );
+
+        let task = select_ctx.make_expr(
+            HirExprKind::Unsupported("test task".to_string()),
+            ResolvedTy::Task(Box::new(ResolvedTy::I64)),
+            IntentKind::Read,
+            0..0,
+        );
+        assert_eq!(
+            select_ctx.select_arm_binding_ty(
+                &HirSelectArmKind::TaskAwait {
+                    task: Box::new(task),
+                },
+                &(0..0),
+            ),
+            Some(ResolvedTy::I64),
+            "Task<T> retains its await binding type"
+        );
+
+        let object = (Expr::Identifier("xs".to_string()), 0..2);
+        let index = (
+            Expr::Literal(Literal::Integer {
+                value: 0,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            }),
+            3..4,
+        );
+        let mut renamed_vec_facts = HashMap::new();
+        renamed_vec_facts.insert(
+            SpanKey::in_module(&object.1, 0),
+            Ty::Named {
+                name: "RenamedList".to_string(),
+                args: vec![Ty::Unit],
+                builtin: Some(BuiltinType::Vec),
+            },
+        );
+        let mut renamed_vec_diagnostics = Vec::new();
+        check_vec_index_element_type(
+            &object,
+            &index,
+            &(0..4),
+            &renamed_vec_facts,
+            &mut renamed_vec_diagnostics,
+        );
+        assert!(
+            matches!(
+                renamed_vec_diagnostics.as_slice(),
+                [HirDiagnostic {
+                    kind: HirDiagnosticKind::VecIndexElementTypeUnsupported { .. },
+                    ..
+                }]
+            ),
+            "a renamed builtin Vec<Unit> must retain the Vec runtime ABI gate"
+        );
+
+        let mut user_vec_facts = HashMap::new();
+        user_vec_facts.insert(
+            SpanKey::in_module(&object.1, 0),
+            Ty::Named {
+                name: "Vec".to_string(),
+                args: vec![Ty::Unit],
+                builtin: None,
+            },
+        );
+        let mut user_vec_diagnostics = Vec::new();
+        check_vec_index_element_type(
+            &object,
+            &index,
+            &(0..4),
+            &user_vec_facts,
+            &mut user_vec_diagnostics,
+        );
+        assert!(
+            user_vec_diagnostics.is_empty(),
+            "a user Vec<Unit> must not enter the builtin Vec ABI gate"
+        );
     }
 
     #[test]
@@ -30955,6 +37408,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authored_generic_local_records_shadow_generic_builtin_spellings() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            type Option<T> { value: T }
+            type Sink<T> { value: T }
+
+            fn keep_option(value: Option<i64>) -> Option<i64> { value }
+            fn keep_sink(value: Sink<i64>) -> Sink<i64> { value }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "generic local shadows must lower cleanly: {:#?}",
+            lowered.diagnostics
+        );
+
+        for (function_name, nominal_name) in [("keep_option", "Option"), ("keep_sink", "Sink")] {
+            let function = function_named(&lowered, function_name);
+            for ty in [&function.params[0].ty, &function.return_ty] {
+                assert_eq!(
+                    ty,
+                    &ResolvedTy::named_user(nominal_name, vec![ResolvedTy::I64],),
+                    "`{nominal_name}<i64>` authored at the root must remain a user nominal"
+                );
+            }
+        }
+    }
+
     /// A STDLIB bare `None` — with NO user `enum Option<T>` in source — must
     /// lower to a unit ctor whose stamped result type carries the concrete
     /// `Option<i64>` args, so codegen's mangled key resolves to `Option$$i64`.
@@ -31127,6 +37609,7 @@ mod tests {
     #[test]
     fn collect_call_sites_in_expr_recurses_through_machine_emit_fields() {
         let call_expr = dummy_expr(HirExprKind::Call {
+            target: CallTarget::IndirectFunctionValue,
             callee: Box::new(dummy_expr(HirExprKind::BindingRef {
                 name: "call_some_fn".to_string(),
                 resolved: ResolvedRef::Unresolved,
@@ -31514,6 +37997,390 @@ mod tests {
         );
     }
 
+    #[test]
+    fn same_leaf_user_enums_keep_user_constructor_identity() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum LinkError { UserLink; }
+            enum LookupError { UserLookup; }
+            enum MonitorError { UserMonitor; }
+            enum CrashAction { UserAction; }
+            enum CrashKind { UserKind; }
+
+            fn user_link() -> LinkError { LinkError::UserLink }
+            fn user_lookup() -> LookupError { LookupError::UserLookup }
+            fn user_monitor() -> MonitorError { MonitorError::UserMonitor }
+            fn user_action() -> CrashAction { CrashAction::UserAction }
+            fn user_kind() -> CrashKind { CrashKind::UserKind }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "same-leaf user enum lowering diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        for (function_name, expected_type) in [
+            ("user_link", "LinkError"),
+            ("user_lookup", "LookupError"),
+            ("user_monitor", "MonitorError"),
+            ("user_action", "CrashAction"),
+            ("user_kind", "CrashKind"),
+        ] {
+            let function = function_named(&lowered, function_name);
+            let tail = function.body.tail.as_deref().expect("constructor tail");
+            let HirExprKind::MachineVariantCtor { machine_name, .. } = &tail.kind else {
+                panic!("expected enum constructor tail, got {:#?}", tail.kind);
+            };
+            assert_eq!(machine_name, expected_type);
+            assert!(
+                matches!(
+                    &tail.ty,
+                    ResolvedTy::Named { name, builtin: None, .. } if name == expected_type
+                ),
+                "{function_name} retained non-user type identity: {:?}",
+                tail.ty
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_builtin_enum_owners_round_trip_exactly() {
+        let output = TypeCheckOutput::default();
+        let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+        for expected_type in [
+            "std.builtins.LinkError",
+            "std.builtins.LookupError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert_eq!(
+                ctx.canonical_monomorphic_builtin_enum_name(expected_type, None, false),
+                Some(expected_type)
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_qualified_same_leaf_is_not_a_builtin_alias() {
+        let output = TypeCheckOutput::default();
+        let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+        assert_eq!(
+            ctx.canonical_monomorphic_builtin_enum_name("std.other.LinkError", None, false),
+            None
+        );
+        assert_eq!(
+            ctx.canonical_monomorphic_builtin_enum_name("app.failure.CrashKind", None, false),
+            None
+        );
+        for false_owner in [
+            "std.lookup_error.LookupError",
+            "std.link_monitor.LinkError",
+            "std.link_monitor.CrashKind",
+        ] {
+            assert_eq!(
+                ctx.canonical_monomorphic_builtin_enum_name(false_owner, None, false),
+                None,
+                "false checker/bootstrap owner must not be accepted: {false_owner}"
+            );
+        }
+    }
+
+    #[test]
+    fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let source = hew_parser::parse(
+            r"
+            pub enum Color { Red; Green; Blue(i64); }
+            ",
+        );
+        assert!(
+            source.errors.is_empty(),
+            "source parse errors: {:?}",
+            source.errors
+        );
+        let mut root = hew_parser::parse(
+            r"
+            import hew::aliassrc::{ Color as Hue };
+
+            fn color_value(h: Hue) -> i64 {
+                match h {
+                    Hue::Red => 1,
+                    Hue::Green => 2,
+                    Hue::Blue(n) => n,
+                }
+            }
+
+            fn main() {
+                let a: Hue = Hue::Red;
+                let b: Hue = Hue::Blue(42);
+                println(color_value(a));
+                println(color_value(b));
+            }
+            ",
+        );
+        assert!(
+            root.errors.is_empty(),
+            "root parse errors: {:?}",
+            root.errors
+        );
+        for (item, _) in &mut root.program.items {
+            if let Item::Import(import) = item {
+                import.resolved_items = Some(source.program.items.clone());
+            }
+        }
+
+        let root_id = ModuleId::root();
+        let source_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: source_id.clone(),
+                items: source.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add source module");
+        graph
+            .add_module(Module {
+                id: root_id.clone(),
+                items: root.program.items.clone(),
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add root module");
+        graph.topo_order = vec![source_id, root_id];
+        let program = Program {
+            items: root.program.items,
+            module_graph: Some(graph),
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+        assert!(
+            !tco.warnings
+                .iter()
+                .any(|warning| { warning.message.contains("unused import: `aliassrc`") }),
+            "using `Hue` must credit the originating selective import: {:#?}",
+            tco.warnings
+        );
+        assert_eq!(
+            tco.import_type_name_aliases
+                .get(&(None, "Hue".to_string()))
+                .map(String::as_str),
+            Some("hew.aliassrc.Color"),
+            "the root alias must carry the exact enum declaration owner"
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "the `Hue` binding must resolve `Hue::Red` and `Hue::Blue` through \
+             `hew.aliassrc.Color`: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import-order regression constructs both complete module graphs inline"
+    )]
+    fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        // Deliberately disagree on both ordinal and payload shape. A flat
+        // `Color::Red` registry key would make one import order diagnose the
+        // tuple call as a struct ctor and the other mis-tag the struct ctor.
+        let alpha_source = r"
+            pub enum Color { AlphaOnly; Red(i64); }
+            pub machine Switch {
+                events { AlphaTick; }
+                state Empty;
+                state Shared;
+                on AlphaTick: Empty => Empty;
+                on AlphaTick: Shared => Empty;
+            }
+        ";
+        let beta_source = r"
+            pub enum Color { Red { value: i64 }; BetaOnly; }
+            pub machine Switch {
+                events { BetaTick; }
+                state Shared;
+                state Full;
+                on BetaTick: Shared => Full;
+                on BetaTick: Full => Full reenter;
+            }
+        ";
+        let root_with_alpha_first = r"
+            import hew::alpha::{ Color as Hue, Switch };
+            import hew::beta::{ Color as Shade };
+
+            fn alpha_value(value: Hue) -> i64 {
+                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+            }
+            fn beta_value(value: Shade) -> i64 {
+                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+            }
+            fn main() {
+                println(alpha_value(Hue::Red(11)));
+                println(beta_value(Shade::Red { value: 22 }));
+                let _switch = Switch::Shared;
+            }
+        ";
+        let root_with_beta_first = r"
+            import hew::beta::{ Color as Shade, Switch };
+            import hew::alpha::{ Color as Hue };
+
+            fn alpha_value(value: Hue) -> i64 {
+                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
+            }
+            fn beta_value(value: Shade) -> i64 {
+                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
+            }
+            fn main() {
+                println(alpha_value(Hue::Red(11)));
+                println(beta_value(Shade::Red { value: 22 }));
+                let _switch = Switch::Shared;
+            }
+        ";
+
+        for (root_source, alpha_first_in_topo) in
+            [(root_with_alpha_first, true), (root_with_beta_first, false)]
+        {
+            let alpha = hew_parser::parse(alpha_source);
+            let beta = hew_parser::parse(beta_source);
+            let mut root = hew_parser::parse(root_source);
+            assert!(
+                alpha.errors.is_empty(),
+                "alpha parse errors: {:?}",
+                alpha.errors
+            );
+            assert!(
+                beta.errors.is_empty(),
+                "beta parse errors: {:?}",
+                beta.errors
+            );
+            assert!(
+                root.errors.is_empty(),
+                "root parse errors: {:?}",
+                root.errors
+            );
+            for (item, _) in &mut root.program.items {
+                let Item::Import(import) = item else {
+                    continue;
+                };
+                import.resolved_items = Some(match import.path.as_slice() {
+                    [package, module] if package == "hew" && module == "alpha" => {
+                        alpha.program.items.clone()
+                    }
+                    [package, module] if package == "hew" && module == "beta" => {
+                        beta.program.items.clone()
+                    }
+                    path => panic!("unexpected import path: {path:?}"),
+                });
+            }
+
+            let root_id = ModuleId::root();
+            let alpha_id = ModuleId::new(vec!["hew".to_string(), "alpha".to_string()]);
+            let beta_id = ModuleId::new(vec!["hew".to_string(), "beta".to_string()]);
+            let mut graph = ModuleGraph::new(root_id.clone());
+            graph
+                .add_module(Module {
+                    id: alpha_id.clone(),
+                    items: alpha.program.items,
+                    imports: vec![],
+                    source_paths: vec![],
+                    doc: None,
+                })
+                .expect("add alpha module");
+            graph
+                .add_module(Module {
+                    id: beta_id.clone(),
+                    items: beta.program.items,
+                    imports: vec![],
+                    source_paths: vec![],
+                    doc: None,
+                })
+                .expect("add beta module");
+            graph
+                .add_module(Module {
+                    id: root_id.clone(),
+                    items: root.program.items.clone(),
+                    imports: vec![],
+                    source_paths: vec![],
+                    doc: None,
+                })
+                .expect("add root module");
+            graph.topo_order = if alpha_first_in_topo {
+                vec![alpha_id, beta_id, root_id]
+            } else {
+                vec![beta_id, alpha_id, root_id]
+            };
+            let program = Program {
+                items: root.program.items,
+                module_graph: Some(graph),
+                module_doc: None,
+            };
+
+            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+            let tco = checker.check_program(&program);
+            assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+            assert_eq!(
+                tco.import_type_name_aliases
+                    .get(&(None, "Hue".to_string()))
+                    .map(String::as_str),
+                Some("hew.alpha.Color")
+            );
+            assert_eq!(
+                tco.import_type_name_aliases
+                    .get(&(None, "Shade".to_string()))
+                    .map(String::as_str),
+                Some("hew.beta.Color")
+            );
+
+            let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "same-leaf alias resolution must be owner-stable regardless of \
+                 declaration order: {:#?}",
+                lowered.diagnostics
+            );
+            let dump = crate::dump_hir(&lowered.module);
+            assert!(
+                dump.contains("machine-variant-ctor hew.alpha.Color[1]"),
+                "tuple constructor must retain alpha's exact owner and ordinal: {dump}"
+            );
+            assert!(
+                dump.contains("machine-variant-ctor hew.beta.Color[0]"),
+                "struct constructor must retain beta's exact owner and ordinal: {dump}"
+            );
+            assert!(
+                !dump.contains("machine-variant-ctor Color["),
+                "imported constructors must never fall back to a legacy short owner: {dump}"
+            );
+            let expected_machine_ctor = if alpha_first_in_topo {
+                "machine-variant-ctor hew.alpha.Switch[1]"
+            } else {
+                "machine-variant-ctor hew.beta.Switch[0]"
+            };
+            assert!(
+                dump.contains(expected_machine_ctor),
+                "machine state must retain the selectively imported exact owner and ordinal: {dump}"
+            );
+            assert!(
+                !dump.contains("machine-variant-ctor Switch["),
+                "imported machine states must never use a legacy short owner: {dump}"
+            );
+        }
+    }
+
     /// Same as `nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir`
     /// but with a PRIVATE enum.  The checker's `pre_register_type_decl`
     /// (registration.rs:1359) inserts bare variant `fn_sigs` for ALL non-root
@@ -31711,14 +38578,117 @@ mod tests {
             );
         }
     }
+
+    /// A variant-bearing `#[resource]` `#[opaque]` declaration has no
+    /// single-representation lifecycle boundary to admit. Every sibling
+    /// rejection in `admit_declared_opaque_resource_lifecycles`'s filter
+    /// emits a `CheckerBoundaryViolation`; this pins that the variants case
+    /// does the same instead of falling out of the iterator silently.
+    ///
+    /// The surface parser rejects `#[opaque] enum` outright (`#[opaque]`
+    /// requires an empty-body `type`), so this shape is unreachable through
+    /// ordinary source syntax — the HIR item is hand-built here to exercise
+    /// the defence-in-depth diagnostic directly.
+    #[test]
+    fn opaque_resource_with_variants_emits_checker_boundary_violation() {
+        use crate::HirNodeId;
+        let decl = HirTypeDecl {
+            id: ItemId(0),
+            node: HirNodeId(0),
+            declaration: hew_types::DefId::new("app.Handle"),
+            name: "Handle".to_string(),
+            defining_module: None,
+            marker: ResourceMarker::Resource,
+            is_opaque: true,
+            is_indirect: false,
+            consuming_methods: Vec::new(),
+            type_params: Vec::new(),
+            fields: Vec::new(),
+            variants: vec![HirVariant {
+                name: "A".to_string(),
+                kind: HirVariantKind::Unit,
+            }],
+            span: 0..0,
+        };
+        let items = vec![HirItem::TypeDecl(decl)];
+        let graph = hew_types::OpaqueResourceCandidateGraph::default();
+        let mut type_classes = crate::value_class::TypeClassTable::new();
+        let mut diagnostics = Vec::new();
+        admit_declared_opaque_resource_lifecycles(
+            &items,
+            &graph,
+            &mut type_classes,
+            &mut diagnostics,
+        );
+
+        let violation = diagnostics.iter().find(|d| {
+            matches!(&d.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "app.Handle")
+        });
+        assert!(
+            violation.is_some(),
+            "variant-bearing opaque resource must emit CheckerBoundaryViolation; \
+             diagnostics: {diagnostics:?}"
+        );
+        let HirDiagnosticKind::CheckerBoundaryViolation { reason, .. } = &violation.unwrap().kind
+        else {
+            unreachable!()
+        };
+        assert!(
+            reason.contains("variants have no single-representation lifecycle boundary to admit"),
+            "reason must name the variants-lifecycle-boundary gap; got: {reason:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod caller_visible_param_projection_tests {
+    use super::{lower_program, HirItem, ResolutionCtx, TargetArch};
+    use hew_types::module_registry::ModuleRegistry;
+    use hew_types::Checker;
+
+    #[test]
+    fn checker_parameter_projection_facts_translate_to_stable_item_indices() {
+        let parsed = hew_parser::parse(
+            "fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parsed.program);
+        assert!(type_output.errors.is_empty(), "{:?}", type_output.errors);
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let function = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function) if function.name == "inspect" => Some(function),
+                _ => None,
+            })
+            .expect("inspect function");
+
+        assert_eq!(
+            lowered.module.caller_visible_param_projections,
+            [(function.id, 0), (function.id, 1), (function.id, 2)]
+                .into_iter()
+                .collect(),
+            "bytes, string, and Vec facts survive; scalar index 3 must be absent"
+        );
+    }
 }
 
 #[cfg(test)]
 mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
-    const TRANSITION_FINGERPRINT: u64 = 0x83e6_8437_693c_a927;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xc1be_3c6a_3ff5_be4f;
+    const TRANSITION_FINGERPRINT: u64 = 0xb212_192b_75a4_473a;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x1615_c20e_10cb_dac2;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);
@@ -31736,7 +38706,7 @@ mod builtin_enum_catalog_fingerprint_tests {
         BUILTIN_ENUM_SPECS
             .iter()
             .filter(|spec| spec.type_params.is_empty())
-            .map(|spec| (spec.type_name, spec.variant_names().collect()))
+            .map(|spec| (spec.canonical_type_name, spec.variant_names().collect()))
             .collect()
     }
 
@@ -31762,13 +38732,35 @@ mod builtin_enum_catalog_fingerprint_tests {
         );
     }
 
+    #[test]
+    fn monomorphic_builtin_specs_retain_exact_owner_identity() {
+        let identities: Vec<_> = BUILTIN_ENUM_SPECS
+            .iter()
+            .filter(|spec| spec.type_params.is_empty())
+            .map(|spec| spec.canonical_type_name)
+            .collect();
+        for expected in [
+            "std.builtins.LookupError",
+            "std.builtins.LinkError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert!(
+                identities.contains(&expected),
+                "missing HIR spec {expected}"
+            );
+        }
+        assert!(identities.iter().all(|identity| identity.contains('.')));
+    }
+
     // Guards HIR derivation-order drift separately from the upstream build-time `.hew` ABI guard.
     #[test]
     fn transition_fingerprint_detects_derived_variant_order_drift() {
         let mut specs = derived_monomorphic_specs();
         let crash_action_variants = &mut specs
             .iter_mut()
-            .find(|(type_name, _)| *type_name == "CrashAction")
+            .find(|(type_name, _)| *type_name == "std.failure.CrashAction")
             .expect("derived catalog must contain CrashAction")
             .1;
         crash_action_variants.swap(0, 1);

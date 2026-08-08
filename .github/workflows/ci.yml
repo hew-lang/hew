@@ -80,6 +80,11 @@ jobs:
               - 'Cargo.lock'
               - '**/Cargo.lock'
               - 'Makefile'
+              # The public-stdlib execution-proof mapping is a release gate,
+              # not a docs-only script: changes to either authority must run
+              # the code-path step that invokes its Make target below.
+              - 'scripts/stdlib-execution-proof.sh'
+              - 'scripts/stdlib-execution-proofs.tsv'
               - '.github/workflows/**'
               - '.github/actions/**'
             # Rule 4 (platform parity, strong set): native linking / LLVM / C ABI
@@ -95,7 +100,7 @@ jobs:
               - 'hew-codegen-rs/**'
               - 'hew-compile/**'
               - 'hew-cli/**'
-              - 'adze-cli/**'
+              - 'hew-pkg/**'
               - 'hew-capability-gen/**'
               - 'std/net/**'
               - '.cargo/**'
@@ -214,6 +219,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # A cold runner always pays this once; make structural-lint (below and
+      # in local `make lint`) provisions through the same idempotent target,
+      # so a warm cache anywhere in the chain makes this a no-op.
+      - name: Bootstrap pinned structural lint toolchain
+        run: make structural-lint-bootstrap
+
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge
@@ -229,6 +240,9 @@ jobs:
 
       - name: Verify every corpus floor has a live call site
         run: make corpus-floor-check
+
+      - name: Run structural authority lint
+        run: make structural-lint
       # <<< CI-PARITY-STEPS
 
       # Format-check std/ and examples/ .hew sources with the in-tree hew
@@ -259,7 +273,7 @@ jobs:
             | sarif-fmt
 
       - name: Verify JIT host ABI classification
-        run: make verify-ffi test-verify-ffi
+        run: make verify-ffi test-verify-ffi test-python310-toml-compat
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''
@@ -272,16 +286,21 @@ jobs:
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
 
-      - name: WASM-TODO issue-reference lint
-        # Reject WASM-TODO comments with no issue reference. Part of `make lint`
-        # locally, but nothing ran it in CI, so an unreferenced WASM-TODO could
-        # merge and only surface on the next local lint.
+      - name: WASM-TODO backlog-authority lint
+        # Parse the offline manifest authority, exercise the synthetic teeth,
+        # then validate every actionable source marker against a stable backlog
+        # id. No GitHub/API state is needed.
         run: make lint-wasm-todo
 
       - name: Codegen carried-identity gate
-        # Assert the codegen carried-identity invariants. Also a `make lint`
-        # prerequisite that no CI job invoked.
+        # Assert the codegen carried-identity invariants with a focused step;
+        # the aggregate lint edge below also owns it as a prerequisite.
         run: make codegen-carried-identity-gate
+
+      - name: Run complete lint authority graph
+        # Keep a real edge to the aggregate target so additions to lint's
+        # prerequisite graph cannot become local-only gates.
+        run: make lint
 
       - name: Orchestration-token leak scan
         # Scan tracked source files and commit-message bodies of all PR commits
@@ -458,7 +477,18 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+
+      - name: Install MQTT E2E clients
+        if: env.RUN_CODE_PATH == 'true'
+        # mqtt-broker-e2e drives the Hew broker with real MQTT 3.1.1 clients;
+        # do not let an absent client turn that behavioural oracle into an
+        # implicit local-only target.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mosquitto-clients
+          command -v mosquitto_pub
+          command -v mosquitto_sub
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
@@ -511,6 +541,14 @@ jobs:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
 
+      # The opaque-resource lifecycle gates below shell out to the pinned
+      # ast-grep to derive their fact set. Provision it here alongside LLVM
+      # and wasmtime, so the cost is one cached job-level toolchain step
+      # instead of a cargo install nested inside a test target.
+      - name: Provision pinned ast-grep toolchain
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-ast-grep
+
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag.
       # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.
@@ -535,18 +573,31 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           CARGO_INCREMENTAL: "0"
-        run: |
-          # `make test-rust` carries `$(LIBHEW_READY)` and asserts the archive
-          # exists before running. This step invokes nextest directly, so it
-          # must build the archive itself — the workspace build used to produce
-          # it as a side effect, which is not a guarantee.
-          cargo build -p hew-lib
-          test -f target/debug/libhew.a
-          # parity-cmd: make test
-          cargo nextest run --workspace \
-            --exclude hew-wasm \
-            --exclude hew-cabi \
-            --profile ci
+        # `make test` owns the complete native/WASI/libhew prerequisite graph
+        # and the workspace nextest policy. Keeping that edge real makes the
+        # hosted suite exercise the same fresh artifacts as local preflight.
+        run: make test
+
+      - name: Run leak-oracle harness selftest
+        if: env.RUN_CODE_PATH == 'true'
+        # Platform-independent teeth for the leak harness and the macOS
+        # runner's inventory contract (fail-closed counterfactuals + corpus
+        # floor cross-check). Requires nextest, which this job already has;
+        # the `lint` job does not, so this does not belong there. Keep this
+        # explicit edge so the selftest cannot become local-only.
+        run: make test-leak-oracle-selftest
+
+      - name: Run compiler pipeline and local opaque-resource lifecycle evidence
+        if: env.RUN_CODE_PATH == 'true'
+        # The focused compiler ladder owns the source-derived lifecycle matrix;
+        # keep this explicit CI edge so neither target can become local-only.
+        run: make test-compiler-pipeline
+
+      - name: Run external-network opaque-resource lifecycle evidence
+        if: env.RUN_CODE_PATH == 'true'
+        # These are bounded loopback/network lifecycle proofs intentionally
+        # deferred by the local profile, not live-service smoke tests.
+        run: make test-opaque-resource-lifecycle-matrix-external
 
       - name: Run C-ABI crate tests
         if: env.RUN_CODE_PATH == 'true'
@@ -578,7 +629,10 @@ jobs:
 
       - name: Run Hew language test suite (ratcheted)
         if: env.RUN_CODE_PATH == 'true'
-        # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
+        # Runs tests/hew/ through scripts/hew-suite-ratchet.sh, which runs
+        # `hew test --format junit` and writes
+        # target/hew-test-reports/hew-suite-ratchet.xml (read by the "Upload
+        # test reports" step below).
         # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
         # When all entries in the expected-failures file are cleared, this step
@@ -620,6 +674,12 @@ jobs:
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
+
+      - name: Verify public stdlib execution proofs
+        if: env.RUN_CODE_PATH == 'true'
+        # Enforces the README public-index → executed-fixture mapping, including
+        # parser-backed import evidence and the manifest's exact corpus floor.
+        run: make test-stdlib-execution-proofs
 
       - name: Run doc-fence typecheck suite (ratcheted)
         if: env.RUN_CODE_PATH == 'true'
@@ -698,7 +758,7 @@ jobs:
 
       - name: Run package-manager consumer oracle
         if: env.RUN_CODE_PATH == 'true'
-        # Publishes a local package, installs it with `hew package install`,
+        # Publishes a local package, installs it with `hew install`,
         # and asserts lock/materialization state plus exact `hew run` stdout
         # under an isolated HOME.
         run: make test-package-install
@@ -735,6 +795,14 @@ jobs:
         run: make hew-check-all
       # <<< CI-PARITY-STEPS
 
+      - name: Run MQTT broker end-to-end oracle
+        if: env.RUN_CODE_PATH == 'true'
+        # The client tools were provisioned explicitly above. This is a real
+        # broker/client exchange, not the compile-only example coverage in the
+        # workspace suite. It stays outside CI-PARITY-STEPS because a local
+        # preflight cannot assume the external Mosquitto clients are installed.
+        run: make mqtt-broker-e2e
+
       - name: Run hew observe functional harness
         if: env.RUN_CODE_PATH == 'true'
         run: make observe-functional-test
@@ -743,7 +811,7 @@ jobs:
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
           check_name: Test Results (Linux)
 
   # Code coverage moved off the per-PR path: it was the flakiest required check
@@ -794,6 +862,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
+      - name: Setup MSVC environment
+        # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
+        # the LLVM prefix is configured in the following setup-llvm step.
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-msvc
+
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
@@ -810,7 +884,46 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
+        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
+
+      - name: Build Hew runtime library for PDB e2e
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-lib --release
+
+      - name: Verify Windows CodeView PDB emission
+        if: env.RUN_CODE_PATH == 'true'
+        shell: pwsh
+        run: |
+          $pdbutil = Get-Command llvm-pdbutil -ErrorAction SilentlyContinue
+          if (-not $pdbutil) {
+            throw "llvm-pdbutil not found on PATH; the LLVM toolchain must provide the PDB inspection tool"
+          }
+          & $pdbutil.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil --version failed with exit code $LASTEXITCODE" }
+
+          $dir = Join-Path $env:RUNNER_TEMP "hew-pdb-e2e"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $source = Join-Path $dir "pdb-e2e.hew"
+          $binary = Join-Path $dir "pdb-e2e.exe"
+          @"
+          fn main() {
+              println(2235)
+          }
+          "@ | Set-Content -Path $source -Encoding utf8
+
+          & .\target\release\hew.exe build -g $source -o $binary
+          if ($LASTEXITCODE -ne 0) { throw "hew build -g failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $binary)) { throw "hew build -g did not produce $binary" }
+
+          $pdb = Join-Path $dir "pdb-e2e.pdb"
+          if (-not (Test-Path -LiteralPath $pdb)) { throw "hew build -g did not produce the expected PDB at $pdb" }
+
+          $dump = & $pdbutil.Source dump -summary -modules -symbols -l $pdb 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil could not inspect $pdb`n$dump" }
+          $dumpText = $dump -join "`n"
+          if ($dumpText -notmatch "pdb-e2e\.hew") { throw "PDB dump has no source module record for pdb-e2e.hew`n$dumpText" }
+          if ($dumpText -notmatch "(?i)main") { throw "PDB dump has no main symbol`n$dumpText" }
+          if ($dumpText -notmatch "(?i)line") { throw "PDB dump has no line information`n$dumpText" }
 
       - name: Install WASI runner prerequisites
         # Windows had no equivalent of the Linux tarball / macOS brew install,
@@ -901,6 +1014,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
@@ -913,7 +1027,7 @@ jobs:
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
-          report_paths: target/nextest/ci/junit.xml
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
           check_name: Test Results (Windows)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -1055,6 +1169,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          --no-fail-fast
           -E 'not binary(~oracle)'
 
       - name: Run C-ABI crate tests
@@ -1063,3 +1178,14 @@ jobs:
         # even when the full workspace nextest is deduped off this job.
         if: env.RUN_CODE_PATH == 'true'
         run: make test-cabi
+
+      - name: Upload test reports
+        # The Linux and Windows jobs already publish the same two reports
+        # as inline PR annotations; this job produces them too but never
+        # surfaced them — a macOS-only failure was readable only by
+        # scrolling raw step logs.
+        if: always() && env.RUN_CODE_PATH == 'true'
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Test Results (macOS)

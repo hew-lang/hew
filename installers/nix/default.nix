@@ -48,7 +48,6 @@ in stdenv.mkDerivation rec {
     runHook preInstall
 
     install -Dm755 bin/hew          $out/bin/hew
-    install -Dm755 bin/adze         $out/bin/adze
     install -Dm755 bin/hew-lsp      $out/bin/hew-lsp
     install -Dm755 bin/hew-observe  $out/bin/hew-observe
     install -Dm644 lib/libhew.a $out/lib/hew/libhew.a
@@ -78,18 +77,6 @@ in stdenv.mkDerivation rec {
     if [ -f completions/hew.fish ]; then
       install -Dm644 completions/hew.fish \
         $out/share/fish/vendor_completions.d/hew.fish
-    fi
-    if [ -f completions/adze.bash ]; then
-      install -Dm644 completions/adze.bash \
-        $out/share/bash-completion/completions/adze
-    fi
-    if [ -f completions/adze.zsh ]; then
-      install -Dm644 completions/adze.zsh \
-        $out/share/zsh/site-functions/_adze
-    fi
-    if [ -f completions/adze.fish ]; then
-      install -Dm644 completions/adze.fish \
-        $out/share/fish/vendor_completions.d/adze.fish
     fi
 
     install -Dm644 LICENSE-MIT    $out/share/licenses/hew/LICENSE-MIT

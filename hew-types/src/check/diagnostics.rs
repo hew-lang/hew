@@ -19,8 +19,16 @@ impl Checker {
         let mut reachable = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
 
+        // rc1-F1 stage A: `fn_def_spans`/`call_graph` key ROOT declarations
+        // canonically (`{root}.{name}`), so root-fn classification tests the
+        // root-owned LEAF (`root_owned_fn_leaf`), never "key has no dot".
         for fn_name in self.fn_def_spans.keys() {
-            if fn_name == "main" || fn_name.contains("::") || fn_name.starts_with('_') {
+            let root_leaf = self.root_owned_fn_leaf(fn_name);
+            if root_leaf == Some("main")
+                || fn_name.contains("::")
+                || fn_name.starts_with('_')
+                || root_leaf.is_some_and(|leaf| leaf.starts_with('_'))
+            {
                 reachable.insert(fn_name.clone());
                 queue.push_back(fn_name.clone());
             }
@@ -44,16 +52,19 @@ impl Checker {
 
         let mut findings: Vec<(Span, String, Option<String>)> = Vec::new();
         for (fn_name, (def_span, stored_module)) in &self.fn_def_spans {
-            if fn_name == "main" || fn_name.starts_with('_') || fn_name.contains("::") {
+            // Only ROOT free functions are warned (module functions keep
+            // their historical exemption); the finding renders the bare
+            // source leaf, exactly as before root keys became canonical.
+            let Some(leaf) = self.root_owned_fn_leaf(fn_name) else {
                 continue;
-            }
-            if fn_name.starts_with("std.") || fn_name.contains('.') {
+            };
+            if leaf == "main" || leaf.starts_with('_') {
                 continue;
             }
             if reachable.contains(fn_name) {
                 continue;
             }
-            findings.push((def_span.clone(), fn_name.clone(), stored_module.clone()));
+            findings.push((def_span.clone(), leaf.to_string(), stored_module.clone()));
         }
         // Route through the lint registry so `dead_code` is configurable
         // (`-A/-W/-D`) and suppressible (`// hew:allow(dead_code)`). The
@@ -72,6 +83,12 @@ impl Checker {
     }
 
     pub(super) fn warn_wasm_limitation(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        assert_eq!(
+            feature.disposition(),
+            WasmFeatureDisposition::Warn,
+            "manifest disposition mismatch: reject feature {} reached the warning emitter",
+            feature.capability_id()
+        );
         if !self.wasm_target {
             return;
         }
@@ -106,6 +123,12 @@ impl Checker {
     ///
     /// See `docs/wasm-capability-matrix.md` for the full disposition table.
     pub(super) fn reject_wasm_feature(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        assert_eq!(
+            feature.disposition(),
+            WasmFeatureDisposition::Reject,
+            "manifest disposition mismatch: warning feature {} reached the reject emitter",
+            feature.capability_id()
+        );
         if !self.wasm_target {
             return;
         }
@@ -129,6 +152,40 @@ impl Checker {
             ],
             source_module: self.current_module.clone(),
         });
+    }
+
+    /// Resolve a lexical module spelling through the current import binding and
+    /// return its manifest-defined native-only capability, when it is an exact
+    /// shipped stdlib module.
+    ///
+    /// Native-only module checks must not use a source spelling directly:
+    /// `import std::net::websocket as ws` is the same module as `websocket`,
+    /// while a user module named `websocket` must never inherit the standard
+    /// library's Wasm restriction.  `canonical_std_module_sources` is the
+    /// provenance boundary that distinguishes those cases.
+    pub(super) fn wasm_native_only_module_feature(
+        &self,
+        surface_module: &str,
+    ) -> Option<WasmUnsupportedFeature> {
+        let source_module = self.canonical_module_import_owner(surface_module);
+        if !self.canonical_std_module_sources.contains(&source_module) {
+            return None;
+        }
+        let module_leaf = source_module.rsplit('.').next()?;
+        crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+            .iter()
+            .find(|rejection| rejection.module == module_leaf)
+            .map(|rejection| rejection.feature)
+    }
+
+    /// Whether a lexical module spelling proves the exact shipped crypto
+    /// module.  Secure-randomness is a member-level restriction, unlike the
+    /// manifest's native-only module rows, so it shares the same owner and
+    /// provenance admission boundary explicitly.
+    pub(super) fn is_shipped_crypto_module(&self, surface_module: &str) -> bool {
+        let source_module = self.canonical_module_import_owner(surface_module);
+        source_module == "std.crypto.crypto"
+            && self.canonical_std_module_sources.contains(&source_module)
     }
 
     pub(super) fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
@@ -156,7 +213,7 @@ impl Checker {
             kind,
             span: span.clone(),
             message,
-            notes: vec![(note_span.clone(), note)],
+            notes: vec![(note_span.clone(), note, self.current_module.clone())],
             suggestions: vec![],
             source_module: self.current_module.clone(),
         });
@@ -225,7 +282,11 @@ impl Checker {
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` is already defined in this scope"),
-                notes: vec![(prev_span, "previously defined here".to_string())],
+                notes: vec![(
+                    prev_span,
+                    "previously defined here".to_string(),
+                    self.current_module.clone(),
+                )],
                 suggestions: vec![format!(
                     "choose a different name, or prefix with underscore: `_{name}`"
                 )],
@@ -262,7 +323,11 @@ impl Checker {
                         message: format!(
                             "variable `{name}` shadows a binding in an outer scope"
                         ),
-                        notes: vec![(prev, "previously defined here".to_string())],
+                        notes: vec![(
+                            prev,
+                            "previously defined here".to_string(),
+                            self.current_module.clone(),
+                        )],
                         suggestions: vec![format!(
                             "consider a more descriptive name, or prefix with underscore to suppress: `_{name}`"
                         )],
@@ -410,7 +475,9 @@ impl Checker {
                 };
                 let missing: Vec<String> = variants
                     .iter()
-                    .filter(|(name, shape)| !self.variant_covered(&leaves, name, shape))
+                    .filter(|(name, shape)| {
+                        !self.variant_covered(&leaves, scrutinee_ty, name, shape)
+                    })
                     .map(|(name, _)| name.clone())
                     .collect();
                 if !missing.is_empty() {
@@ -455,7 +522,9 @@ impl Checker {
                         };
                         let mut missing_names: Vec<String> = variants
                             .iter()
-                            .filter(|(vname, shape)| !self.variant_covered(&leaves, vname, shape))
+                            .filter(|(vname, shape)| {
+                                !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
+                            })
                             .map(|(vname, _)| vname.clone())
                             .collect();
                         if !missing_names.is_empty() {

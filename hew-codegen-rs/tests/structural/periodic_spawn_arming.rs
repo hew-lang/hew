@@ -13,7 +13,7 @@ use hew_mir::model::ActorHandlerLayout;
 use hew_mir::{
     ActorLayout, BasicBlock, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 fn local_pid_of(actor: &str) -> ResolvedTy {
     ResolvedTy::Named {
@@ -26,12 +26,11 @@ fn local_pid_of(actor: &str) -> ResolvedTy {
 
 fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
     let actor_name = "PulseActor";
-    let actor_pid_ty = ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![local_pid_of(actor_name)],
-        builtin: None,
-        is_opaque: false,
-    };
+    let actor_pid_ty = ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![local_pid_of(actor_name)],
+    );
     let handler_symbol = format!("{actor_name}__recv__tick");
 
     let spawn_fn = RawMirFunction {
@@ -163,8 +162,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

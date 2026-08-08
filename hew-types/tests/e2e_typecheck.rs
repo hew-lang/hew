@@ -550,7 +550,7 @@ fn close_conn(conn: net.Connection) {
             .any(|kind| matches!(
                 kind,
                 hew_types::MethodCallReceiverKind::HandleInstance { type_name }
-                    if type_name == "net.Connection"
+                    if type_name == "std.net.Connection"
             )),
         "expected handle method call receiver metadata, got: {:?}",
         output.method_call_receiver_kinds
@@ -2636,7 +2636,7 @@ fn http_request_body_encoding_arg_checked_via_fallback() {
 }
 
 #[test]
-fn net_listener_close_resolves_via_fallback() {
+fn net_resource_close_uses_source_impl_not_raw_fallback() {
     let output = typecheck_inline(
         r"
         import std::net;
@@ -2644,20 +2644,24 @@ fn net_listener_close_resolves_via_fallback() {
         fn close_listener(listener: net.Listener) {
             listener.close()
         }
+
+        fn close_connection(connection: net.Connection) {
+            connection.close()
+        }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "expected net.Listener::close to resolve cleanly via fallback, got: {:#?}",
+        "expected net resource closes to resolve through their authored impls, got: {:#?}",
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_tcp_listener_close"
+                if matches!(c_symbol.as_str(), "hew_tcp_listener_close" | "hew_tcp_close")
         )),
-        "expected net.Listener::close fallback rewrite, got: {:?}",
+        "resource close must not bypass source dispatch with a raw FFI rewrite, got: {:?}",
         output.method_call_rewrites
     );
 }

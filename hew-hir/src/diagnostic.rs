@@ -212,6 +212,31 @@ pub enum HirDiagnosticKind {
         /// User-facing rendering of the offending return type.
         return_ty: String,
     },
+    /// The checker proved that an opaque nominal is independently owned and
+    /// closeable, but its source declaration still requests the inert
+    /// `#[opaque] -> BitCopy` class. Such a value would leak on exceptional
+    /// exits, so HIR refuses to admit the declaration.
+    CloseableOpaqueMustBeResource {
+        resource_type: String,
+        producer: String,
+        release: String,
+    },
+    /// A checker candidate did not resolve to exactly one inherent unit close
+    /// that forwards its receiver to the contracted consuming release.
+    OpaqueResourceCloseMismatch {
+        resource_type: String,
+        expected_release: String,
+        detail: String,
+    },
+    /// Checker lifecycle derivation found incompatible ownership contracts.
+    /// No candidate is admitted and HIR keeps the conflict fatal rather than
+    /// allowing the opaque declaration to fall back to `BitCopy`.
+    OpaqueResourceLifecycleConflict {
+        resource_type: String,
+        producer: String,
+        release: String,
+        detail: String,
+    },
     /// `await` appeared outside a `scope{}` body or `select` arm. In v0.5,
     /// `await` is a statement-only form inside `scope{}` bodies. Future
     /// versions additionally permit it inside `select` arm source expressions.

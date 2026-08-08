@@ -56,6 +56,9 @@ pub enum Severity {
     Warning,
 }
 
+/// A secondary diagnostic location with its own source-file attribution.
+pub type TypeErrorNote = (Span, String, Option<String>);
+
 /// A type error with location, message, and diagnostic hints.
 #[derive(Debug, Clone)]
 pub struct TypeError {
@@ -68,7 +71,7 @@ pub struct TypeError {
     /// Human-readable error message
     pub message: String,
     /// Additional context with locations
-    pub notes: Vec<(Span, String)>,
+    pub notes: Vec<TypeErrorNote>,
     /// "Did you mean?" suggestions
     pub suggestions: Vec<String>,
     /// Dotted module path of the non-root module this diagnostic originates from
@@ -107,7 +110,20 @@ impl TypeError {
     /// Add a note with location.
     #[must_use]
     pub fn with_note(mut self, span: Span, note: impl Into<String>) -> Self {
-        self.notes.push((span, note.into()));
+        self.notes
+            .push((span, note.into(), self.source_module.clone()));
+        self
+    }
+
+    /// Add a note whose span belongs to a specific module source.
+    #[must_use]
+    pub fn with_note_source(
+        mut self,
+        span: Span,
+        note: impl Into<String>,
+        source_module: Option<String>,
+    ) -> Self {
+        self.notes.push((span, note.into(), source_module));
         self
     }
 
@@ -677,6 +693,8 @@ pub enum TypeErrorKind {
     ReturnTypeMismatch,
     /// Value used after it was moved to an actor
     UseAfterMove,
+    /// A linear value was used after its unique consume operation.
+    UseAfterConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// Actor types form a reference cycle via `LocalPid` fields
@@ -917,6 +935,14 @@ pub enum TypeErrorKind {
         symbol_name: String,
         /// Actionable hint for the user.
         hint: String,
+    },
+    /// Two source extern declarations bind the same concrete C symbol with
+    /// different parameter/result types, variadic shape, or ownership modes.
+    ///
+    /// Envelope code: `E_CONFLICTING_EXTERN_DECLARATION`.
+    ConflictingExternDeclaration {
+        /// The concrete linker symbol named by both declarations.
+        symbol_name: String,
     },
     /// A `gen { }` generator block appeared inside an actor receive handler.
     ///
@@ -1347,6 +1373,7 @@ impl TypeErrorKind {
             Self::MutabilityError => "MutabilityError",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
+            Self::UseAfterConsume => "UseAfterConsume",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
@@ -1383,6 +1410,7 @@ impl TypeErrorKind {
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::CrossActorProtocolCollision { .. } => "CrossActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
+            Self::ConflictingExternDeclaration { .. } => "ConflictingExternDeclaration",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
             Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",
             Self::AwaitInMachineTransition => "AwaitInMachineTransition",
@@ -1423,7 +1451,15 @@ mod tests {
     fn test_error_with_suggestions() {
         let err =
             TypeError::inference_failed(0..5, "variable").with_suggestion("use let x: i32 = ...");
-        assert!(!err.suggestions.is_empty());
+        // `inference_failed` seeds its own suggestion; `with_suggestion` appends
+        // after it — a dropped or reordered suggestion fails this exact pin.
+        assert_eq!(
+            err.suggestions,
+            vec![
+                "consider adding a type annotation".to_string(),
+                "use let x: i32 = ...".to_string(),
+            ]
+        );
     }
 
     #[test]

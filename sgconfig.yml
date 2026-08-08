@@ -1,7 +1,8 @@
 # ast-grep project config — registers Hew as a custom language.
 #
 # .hew is not built into ast-grep; it is parsed by the tree-sitter-hew grammar
-# compiled to .ast-grep/hew-lang.so (build with: scripts/build-ast-grep-lang.sh).
+# compiled to .ast-grep/hew-lang.so from the pinned grammar (build with:
+# scripts/build-ast-grep-lang.sh).
 #
 # Usage:
 #   ast-grep run --lang hew --pattern '|$P| $BODY' examples/

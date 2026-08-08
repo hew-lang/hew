@@ -1113,6 +1113,16 @@ pub(crate) fn active_channel_count() -> usize {
 }
 
 #[cfg(test)]
+pub(crate) unsafe fn ref_count_for_test(ch: *mut HewReplyChannel) -> usize {
+    if ch.is_null() {
+        return 0;
+    }
+    // SAFETY: test callers hold a live channel reference while inspecting the
+    // atomic count; this helper never changes ownership.
+    unsafe { (*ch).refs.load(Ordering::Acquire) }
+}
+
+#[cfg(test)]
 pub(crate) unsafe fn hew_reply_channel_is_ready_for_test(ch: *mut HewReplyChannel) -> bool {
     if ch.is_null() {
         return false;
@@ -1432,6 +1442,8 @@ mod tests {
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
                 sys_dispatch: None,
+                state_drop_consumed: AtomicBool::new(false),
+                state_drop_borrowed: AtomicBool::new(false),
             })
         }
 

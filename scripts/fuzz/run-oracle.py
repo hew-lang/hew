@@ -551,7 +551,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--hew",
         type=Path,
         default=None,
-        help="Path to the hew binary. Default: <repo-root>/target/debug/hew.",
+        help="Path to the hew binary. Default: Cargo's resolved debug output.",
     )
     p.add_argument(
         "--repo-root",
@@ -646,7 +646,27 @@ def main() -> int:
     script_dir = Path(__file__).resolve().parent
     repo_root: Path = args.repo_root or (script_dir.parent.parent)
 
-    hew: Path = args.hew or (repo_root / "target" / "debug" / "hew")
+    if args.hew:
+        hew = args.hew
+    else:
+        resolver = repo_root / "scripts" / "cargo-output-dir.py"
+        resolved = subprocess.run(
+            [sys.executable, str(resolver), "--profile", "debug"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if resolved.returncode != 0 or not resolved.stdout.strip():
+            print(
+                "error: could not resolve Cargo's debug output directory",
+                file=sys.stderr,
+            )
+            return 1
+        output_dir = Path(resolved.stdout.strip())
+        hew = (
+            output_dir if output_dir.is_absolute() else repo_root / output_dir
+        ) / "hew"
     if not hew.exists():
         print(f"error: hew binary not found at {hew}", file=sys.stderr)
         print("       build it with: cargo build -p hew-cli", file=sys.stderr)

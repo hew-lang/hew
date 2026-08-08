@@ -21,8 +21,9 @@
 
 use crate::common;
 
-use hew_types::check::MethodCallRewrite;
-use hew_types::runtime_call::RuntimeCallFamily;
+use hew_types::check::{MethodCallRewrite, SpanKey};
+use hew_types::error::TypeErrorKind;
+use hew_types::runtime_call::{ProducedArgumentBoundary, RuntimeCallFamily};
 use hew_types::TypeCheckOutput;
 
 use common::{parse_and_typecheck_inline, typecheck};
@@ -46,6 +47,23 @@ fn descriptor_present_for(output: &TypeCheckOutput, symbol: &str) -> Option<bool
         })
 }
 
+fn function_rewrite_for(output: &TypeCheckOutput, symbol: &str) -> Option<(SpanKey, bool, bool)> {
+    output
+        .method_call_rewrites
+        .iter()
+        .find_map(|(site, rewrite)| match rewrite {
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                descriptor,
+                consumes_receiver,
+                ..
+            } if c_symbol == symbol => {
+                Some((site.clone(), descriptor.is_some(), *consumes_receiver))
+            }
+            _ => None,
+        })
+}
+
 #[test]
 fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     // `duration.hours()` is declared in stdlib via
@@ -62,6 +80,7 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
         r"
         fn main() {
             let d: duration = 5s;
+            let _: i64 = d.hours();
             let _: i64 = d.hours();
         }
         ",
@@ -85,6 +104,25 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
             output.method_call_rewrites,
         ),
     }
+
+    let (site, _, consumes_receiver) =
+        function_rewrite_for(&output, "hew_duration_hours").expect("duration.hours rewrite");
+    assert!(
+        !consumes_receiver,
+        "duration.hours must borrow its receiver"
+    );
+    assert!(
+        !output.method_call_consumes_receiver.contains(&site),
+        "non-consuming extern method must not enter the consume side table",
+    );
+    assert_eq!(
+        output
+            .produced_value_ownership
+            .get(&site)
+            .and_then(|fact| fact.receiver_boundary),
+        Some(ProducedArgumentBoundary::Borrow),
+        "non-consuming extern method must publish an exact borrow boundary",
+    );
 }
 
 #[test]
@@ -164,23 +202,10 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
         output.errors,
     );
 
-    let release = output
-        .method_call_rewrites
-        .values()
-        .find_map(|rewrite| match rewrite {
-            MethodCallRewrite::RewriteToFunction {
-                c_symbol,
-                descriptor,
-                consumes_receiver,
-                ..
-            } if c_symbol == "hew_lambda_actor_release" => {
-                Some((descriptor.is_some(), *consumes_receiver))
-            }
-            _ => None,
-        });
+    let release = function_rewrite_for(&output, "hew_lambda_actor_release");
 
     match release {
-        Some((descriptor_present, consumes_receiver)) => {
+        Some((site, descriptor_present, consumes_receiver)) => {
             assert!(
                 !descriptor_present,
                 "extern-symbol release must not carry a typed descriptor",
@@ -190,6 +215,18 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
                 "extern-symbol consuming release MUST keep its consume mark \
                  (else the handle double-frees at scope exit)",
             );
+            assert!(
+                output.method_call_consumes_receiver.contains(&site),
+                "extern-symbol release must survive in the checker consume side table",
+            );
+            assert_eq!(
+                output
+                    .produced_value_ownership
+                    .get(&site)
+                    .and_then(|fact| fact.receiver_boundary),
+                Some(ProducedArgumentBoundary::Transfer),
+                "extern-symbol release must publish the exact transfer boundary",
+            );
         }
         None => panic!(
             "expected a RewriteToFunction recorded for `hew_lambda_actor_release`; \
@@ -197,4 +234,23 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
             output.method_call_rewrites,
         ),
     }
+
+    let (_, reused_output) = parse_and_typecheck_inline(
+        r"
+        import std::concurrency::lambda_actor;
+
+        fn exercise(handle: lambda_actor.LambdaActorHandle) {
+            handle.release();
+            handle.release();
+        }
+        ",
+    );
+    assert!(
+        reused_output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "a second use of the consuming extern receiver must fail as moved: {:#?}",
+        reused_output.errors,
+    );
 }

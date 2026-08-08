@@ -569,15 +569,12 @@ fn nested_fork_block_detected() {
 
 // ── FC-P1-A1 (revision pass 2, Finding 2) ───────────────────────────────────
 
-/// Module-qualified spawn callees (`mod::worker()`) must not false-reject.
-///
-/// The parser concatenates path segments into a single
-/// `Expr::Identifier("mod::worker")` (hew-parser/src/parser.rs:5334-5356),
-/// but `fn_registry` is keyed on bare function names. The Finding-2 fix
-/// strips the `mod::` prefix before lookup so cross-module spawns are
-/// accepted as direct module functions.
+/// A synthetic module-qualified callee must not recover a same-leaf local
+/// function.  The checker is the sole authority for qualified call targets;
+/// accepting `mod::worker()` here would reintroduce the unsafe `fn_registry`
+/// leaf-name fallback.
 #[test]
-fn mod_qualified_spawn_accepted() {
+fn synthetic_mod_qualified_spawn_is_not_leaf_recovered() {
     let source = r"
         fn worker() {}
         fn main() {
@@ -593,9 +590,34 @@ fn mod_qualified_spawn_accepted() {
         .iter()
         .any(|d| matches!(d.kind, HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }));
     assert!(
-        !has_callee_unsupported,
-        "module-qualified spawn `mod::worker()` must not false-reject as \
-         TaskSpawnCalleeUnsupported; got: {:#?}",
+        has_callee_unsupported,
+        "synthetic `mod::worker()` must not resolve through the local `worker` leaf; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+/// A qualified spawned callee is accepted when the checker resolved it from a
+/// real imported module, rather than from lowerer's own name recovery.
+#[test]
+fn checker_resolved_qualified_spawn_is_accepted() {
+    let program = support::checker_pipeline::program_with_imported_module(
+        "pub fn worker() {}",
+        r"
+            import m;
+            fn main() {
+                scope { m.worker(); }
+            }
+        ",
+    );
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    assert!(
+        !output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
+                | HirDiagnosticKind::CheckerBoundaryViolation { .. }
+        )),
+        "checker-resolved imported spawn must lower as a direct task call: {:#?}",
         output.diagnostics
     );
 }

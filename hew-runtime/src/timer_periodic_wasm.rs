@@ -16,7 +16,9 @@ use std::sync::atomic::Ordering;
 use crate::actor::{self, HewActor};
 use crate::internal::types::HewActorState;
 use crate::mailbox_wasm::HewMailboxWasm;
-use crate::timer_wheel::{hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerHandle};
+use crate::timer_wheel::{
+    hew_timer_wheel_remove, timer_wheel_cursor_ms, timer_wheel_schedule_at_handle, HewTimerHandle,
+};
 
 // ---------------------------------------------------------------------------
 // Per-timer context
@@ -195,27 +197,35 @@ unsafe extern "C" fn wasm_periodic_cb(data: *mut c_void) {
         return;
     }
 
-    // Fire one message. (Catch-up delivery of multiple missed intervals
-    // is intentionally omitted: the wheel fires once per deadline, and
-    // the host is responsible for calling hew_wasm_timer_tick frequently
-    // enough.  This matches native timer_periodic.rs semantics.)
+    // Fire one message for this due cadence slot. Re-arming preserves the
+    // absolute phase while dropping any other slots missed during a cursor
+    // stall, so the host cannot spin through overdue intervals.
     // SAFETY: actor_has_live_mailbox verified the actor and mailbox are valid.
     unsafe { send_periodic_message(ctx.actor, ctx.msg_type) };
 
-    // Advance next_fire_ms by one interval so test observers and the
-    // next re-arm agree on the expected fire time.
+    // Advance by one cadence slot, then snap past a stalled cursor while
+    // preserving the original phase.
     ctx.next_fire_ms = ctx.next_fire_ms.saturating_add(ctx.interval_ms);
 
-    // Re-arm: schedule interval_ms from the wheel's current position
-    // (not from wall-clock now) so timed tests advance predictably.
+    // Re-arm at the cadence's next absolute deadline. The cooperative host may
+    // leave the wheel cursor stale between ticks, so a relative re-arm can
+    // shift the cadence when the cursor and monotonic clock diverge.
     // SAFETY: wasm_timer_wheel() is safe to call from a wheel callback (the
     // lock is released before callbacks fire); wasm_periodic_cb re-acquires
     // the lock only to insert the new entry.
     let wheel = unsafe { crate::scheduler_wasm::wasm_timer_wheel() };
+    // SAFETY: wheel is live and single-threaded with this callback.
+    let cursor_ms = unsafe { timer_wheel_cursor_ms(wheel) };
+    if ctx.next_fire_ms < cursor_ms {
+        let skipped_slots = cursor_ms.saturating_sub(ctx.next_fire_ms) / ctx.interval_ms + 1;
+        ctx.next_fire_ms = ctx
+            .next_fire_ms
+            .saturating_add(ctx.interval_ms.saturating_mul(skipped_slots));
+    }
     // SAFETY: wheel is valid (guaranteed by wasm_timer_wheel); ctx_ptr is alive
     // and uniquely owned by this callback invocation.
     let new_handle = unsafe {
-        hew_timer_wheel_schedule_handle(wheel, ctx.interval_ms, wasm_periodic_cb, ctx_ptr.cast())
+        timer_wheel_schedule_at_handle(wheel, ctx.next_fire_ms, wasm_periodic_cb, ctx_ptr.cast())
     };
     if new_handle.entry.is_null() {
         // Re-arm failed (wheel destroyed or entry OOM) — fail closed.
@@ -259,6 +269,10 @@ pub(crate) fn periodic_registry_is_none() -> bool {
 
 /// Schedule a periodic self-send on the shared WASM timer wheel.
 ///
+/// The timer stays on an absolute cadence. A late timer fires once and drops
+/// cadence slots missed while the wheel cursor was stalled, matching the
+/// native API.
+///
 /// Returns a `*mut c_void` that is actually a `*mut WasmPeriodicCtx`; the
 /// caller stores it and passes it to [`hew_actor_cancel_periodic`].
 ///
@@ -299,7 +313,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     }
     // SAFETY: wheel is valid (non-null checked above); ctx is exclusively owned.
     let handle = unsafe {
-        hew_timer_wheel_schedule_handle(wheel, interval_ms, wasm_periodic_cb, ctx.cast())
+        timer_wheel_schedule_at_handle(wheel, next_fire_ms, wasm_periodic_cb, ctx.cast())
     };
     if handle.entry.is_null() {
         // Wheel rejected the insert (entry allocation failure) — fail closed.
@@ -535,6 +549,8 @@ mod tests {
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
                 sys_dispatch: None,
+                state_drop_consumed: AtomicBool::new(false),
+                state_drop_borrowed: AtomicBool::new(false),
             }));
             Self { actor, counter }
         }
@@ -602,6 +618,113 @@ mod tests {
         }
         drive_scheduler();
         assert_eq!(actor.count(), 1, "periodic message must fire at deadline");
+    }
+
+    #[test]
+    fn periodic_deadline_ignores_a_stale_wheel_cursor() {
+        let _guard = crate::runtime_test_guard();
+        reset_runtime();
+        // SAFETY: the runtime owns one live wheel and this test serializes access.
+        let wheel = unsafe { crate::scheduler_wasm::wasm_timer_wheel() };
+        // Model a cursor that differs from the clock sampled by registration.
+        // The requested deadline must remain anchored to that clock.
+        // SAFETY: wheel is live and exclusively accessed by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 100) };
+
+        let actor = TestActor::new();
+        // SAFETY: actor is live for the test duration.
+        let handle = unsafe { hew_actor_schedule_periodic(actor.actor, 7, 1_000) };
+        // SAFETY: handle owns one live periodic context.
+        let deadline = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+
+        // SAFETY: the cooperative timer wheel is serialized by the test guard.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(deadline) };
+        assert_eq!(fired, 1, "a periodic timer must fire at its deadline");
+        drive_scheduler();
+        assert_eq!(actor.count(), 1);
+
+        // SAFETY: the handle is still pending and uniquely owned here.
+        unsafe { hew_actor_cancel_periodic(handle) };
+        crate::scheduler_wasm::hew_sched_shutdown();
+    }
+
+    #[test]
+    fn late_fire_skips_missed_slots_at_anchored_cadence() {
+        let _guard = crate::runtime_test_guard();
+        reset_runtime();
+        let actor = TestActor::new();
+        // SAFETY: actor is live for the test duration.
+        let handle = unsafe { hew_actor_schedule_periodic(actor.actor, 7, 10) };
+        assert!(!handle.is_null());
+        // SAFETY: handle owns one live periodic context.
+        let first_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        let late_tick = first_fire.saturating_add(25);
+
+        // A late tick fires once and skips missed slots without drifting from
+        // the original cadence phase.
+        // SAFETY: the cooperative timer wheel is serialized by the guard.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(late_tick) };
+        assert_eq!(fired, 1);
+        // SAFETY: the periodic context stays live while it is re-armed.
+        let next_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        assert_eq!(next_fire, first_fire + 30);
+        // SAFETY: the next anchored deadline is ahead of the cursor.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(late_tick) };
+        assert_eq!(fired, 0);
+        // SAFETY: the next anchored cadence slot is now due.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(first_fire + 30) };
+        assert_eq!(fired, 1);
+        // SAFETY: the periodic context stays live while it is re-armed.
+        let next_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        assert_eq!(next_fire, first_fire + 40);
+        drive_scheduler();
+        assert_eq!(actor.count(), 2);
+
+        // SAFETY: handle is still pending and uniquely owned here.
+        unsafe { hew_actor_cancel_periodic(handle) };
+        crate::scheduler_wasm::hew_sched_shutdown();
+    }
+
+    #[test]
+    fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let _guard = crate::runtime_test_guard();
+        reset_runtime();
+        // Move the initially fresh cursor before modelling the stall; otherwise
+        // a zero-based cursor can make the stall setup a no-op.
+        // SAFETY: the runtime owns one live wheel and this test serializes access.
+        let wheel = unsafe { crate::scheduler_wasm::wasm_timer_wheel() };
+        // SAFETY: wheel is live and exclusively accessed by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 1) };
+
+        let actor = TestActor::new();
+        // SAFETY: actor is live for the test duration.
+        let handle = unsafe { hew_actor_schedule_periodic(actor.actor, 7, 1) };
+        assert!(!handle.is_null());
+        // SAFETY: handle owns one live periodic context.
+        let first_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        let stalled_cursor = first_fire + 5_000;
+
+        // SAFETY: the cooperative timer wheel is serialized by the guard.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(stalled_cursor) };
+        assert_eq!(fired, 1);
+        // SAFETY: the periodic context stays live while it is re-armed.
+        let next_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        assert_eq!(next_fire, stalled_cursor + 1);
+        // SAFETY: no cadence slot is due again at the frozen cursor.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(stalled_cursor) };
+        assert_eq!(fired, 0);
+        // SAFETY: the next phase-anchored cadence slot is now due.
+        let fired = unsafe { crate::scheduler_wasm::hew_wasm_timer_tick(stalled_cursor + 1) };
+        assert_eq!(fired, 1);
+        // SAFETY: the periodic context stays live while it is re-armed.
+        let next_fire = unsafe { (*handle.cast::<WasmPeriodicCtx>()).next_fire_ms };
+        assert_eq!(next_fire, stalled_cursor + 2);
+        drive_scheduler();
+        assert_eq!(actor.count(), 2);
+
+        // SAFETY: handle is still pending and uniquely owned here.
+        unsafe { hew_actor_cancel_periodic(handle) };
+        crate::scheduler_wasm::hew_sched_shutdown();
     }
 
     #[test]

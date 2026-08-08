@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 env:
   LLVM_VERSION: "22"
@@ -41,7 +42,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -50,8 +51,13 @@ jobs:
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            export PATH="/usr/local/llvm22/bin:$PATH"
             export MAKE=gmake
             /usr/local/llvm22/bin/llvm-config --version
+            command -v gdb || command -v lldb || {
+              echo "No debugger found: install the FreeBSD gdb package or LLVM's lldb package" >&2
+              exit 1
+            }
 
             # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
             ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
@@ -95,10 +101,30 @@ jobs:
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi
+            cargo nextest run --profile ci-cabi -p hew-cabi
 
             # The authenticated exact checkout must also prove compiled Hew,
             # including loopback network and resource surfaces. Workspace
             # nextest alone does not execute these language-level gates.
             gmake test-vertical-slice
             gmake test-hew-ratchet
+
+            # The source-level DWARF debugger proof must execute on FreeBSD,
+            # not merely compile as part of the workspace test build.
+            # A dedicated profile keeps this narrow run's report from
+            # overwriting the workspace run's junit.xml (same class of bug
+            # profile.ci-cabi exists to prevent — see .config/nextest.toml).
+            cargo nextest run -p hew-cli --test dwarf_debugger_locals_e2e --profile ci-focused
+
+      - name: Upload test reports
+        # vmactions/freebsd-vm syncs the working directory back to this host
+        # runner after the guest `run:` script exits (proven by release.yml's
+        # build-freebsd-aarch64 job, which packages a tarball entirely inside
+        # the VM's run block and then reads it from a host-side
+        # actions/upload-artifact step) — so the reports written by the
+        # guest's nextest and hew-suite-ratchet runs are present here.
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/nextest/ci-focused/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Test Results (FreeBSD)

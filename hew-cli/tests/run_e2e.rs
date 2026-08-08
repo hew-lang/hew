@@ -805,8 +805,11 @@ fn run_generic_vec_for_in_collect_scalar_and_record() {
 /// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
 /// increments an `i64` accumulator once per yielded element without touching
 /// the element value, isolating the `VecIter` desugar from the element-write
-/// path. The loop runs exactly once per element across three element ABIs —
-/// `i64` (3), `string` (4), and the Copy value-record `Point` (2).
+/// path. The loop runs exactly once per element across four concrete
+/// identities — `i64` (3), `string` (4), the Copy value-record `Point` (2),
+/// and a user-authored clone-total `MonitorRef` shadow (1). The last case pins
+/// the positive half of the builtin-resource identity boundary exercised by
+/// the fail-closed test below.
 #[test]
 fn run_generic_vec_for_in_count_across_element_abis() {
     require_codegen();
@@ -827,6 +830,63 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     );
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// A generic Vec iteration body is admitted before its `T` is known, then the
+/// concrete monomorphisation must discharge clone totality.  A resource handle
+/// has an inverse drop but no semantic clone, so `count<Handle>` fails at the
+/// MIR boundary instead of sending a shallow handle copy to
+/// `hew_vec_get_clone`.
+#[test]
+fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/for_in_generic_vec_resource_instantiation.hew");
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+            source.to_str().expect("source utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+
+    assert!(
+        !output.status.success(),
+        "a resource-valued VecIter monomorphisation must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("VecIter<Handle>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the direct resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<Wrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the nested resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<PositionalWrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the positional resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<std.link_monitor.MonitorRef>")
+            && combined
+                .contains("resource `std.link_monitor.MonitorRef` has an affine close contract"),
+        "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
+    );
 }
 
 /// Compile `tests/vertical-slice/accept/<fixture>.hew` to a native binary via
@@ -3671,32 +3731,40 @@ fn check_cross_module_generic_fn_value_ambiguous_rejected() {
     );
 }
 
-/// A context-determined GENERIC cross-module named function used as a value
-/// is now accepted (A156): the type parameters are inferred from the binding
-/// annotation, the monomorphisation is registered, and the compiled binary
-/// produces the expected output.
+/// A generic named function used as a value (context-determined by a
+/// binding annotation) is honestly diagnosed as not yet implemented rather
+/// than silently mis-lowered. MIR lowering only supports non-generic named
+/// functions as values today; generic-fn-as-value is deferred post-rc1.
 #[test]
-fn cross_module_generic_fn_value_context_determined_accepted() {
+fn cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented() {
     require_codegen();
 
     let source =
         repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew");
-    let output = run_bounded_hew_run(&source, repo_root());
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
 
     assert!(
-        output.status.success(),
-        "cross_module_generic_fn_value should succeed; stdout: {}\nstderr: {}",
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let expected = std::fs::read_to_string(
-        repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.expected"),
-    )
-    .expect("read main.expected");
-    assert_eq!(
-        actual, expected,
-        "expected the oracle lines from main.expected; got: {actual:?}"
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("E_NOT_YET_IMPLEMENTED")
+            && combined.contains("named function")
+            && combined.contains("used as a value")
+            && combined.contains("only non-generic named functions are currently supported"),
+        "expected the generic-fn-as-value NYI diagnostic; got: {combined}"
     );
 }
 
@@ -4324,9 +4392,11 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 
 /// Compile `source` with `--dump-mir elab` and return the number of owned
 /// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
-/// kind) in `callee`'s elaborated body. The oracle: a callee returning an
+/// kind) in `callee`'s *return plans*. The oracle: a callee returning an
 /// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
-/// report ZERO — the members are handed to the caller.
+/// report ZERO on the successful return path — the members are handed to the
+/// caller. Other plans, such as an exhaustiveness-fallthrough panic, correctly
+/// release still-live handles.
 ///
 /// A separate counter from `callee_handle_close_drops` because handle-place
 /// members register in `binding_locals` as their handle Place (not a `Local`),
@@ -4335,6 +4405,36 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 /// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
 /// the runtime negative-control the Stream/Sink shapes use is impossible — this
 /// dump-mir assertion is the only oracle.
+fn return_plan_marker_count(body: &str, marker: &str) -> usize {
+    let mut in_return_plan = false;
+    let mut count = 0;
+    for line in body.lines() {
+        if line.starts_with("    return[") {
+            in_return_plan = true;
+        } else if line.starts_with("    ") && line.contains("] ->") {
+            in_return_plan = false;
+        }
+        if in_return_plan {
+            count += line.matches(marker).count();
+        }
+    }
+    count
+}
+
+#[test]
+fn return_plan_marker_count_excludes_required_panic_cleanup() {
+    let body = "  drop_plans:\n    return[bb1] ->\n      (none)\n    panic[bb2] ->\n      drop lambda1 kind=lambda_actor_release\n    return[bb3] ->\n      drop lambda2 kind=lambda_actor_release\n";
+    assert_eq!(return_plan_marker_count(body, "lambda_actor_release"), 1);
+    assert_eq!(
+        return_plan_marker_count(
+            "  drop_plans:\n    return[bb1] ->\n      drop lambda1 kind=lambda_actor_release\n      drop lambda2 kind=lambda_actor_release\n",
+            "lambda_actor_release",
+        ),
+        2,
+        "counterfactual: a second successful-return release must remain visible"
+    );
+}
+
 fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
@@ -4359,7 +4459,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
     // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
-    body.matches("lambda_actor_release").count()
+    return_plan_marker_count(body, "lambda_actor_release")
 }
 
 /// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
@@ -4477,14 +4577,17 @@ fn mir_checked_dump(source: &str) -> String {
 #[test]
 fn suspending_stream_recv_send_flip_in_execution_context() {
     let dump = mir_checked_dump(
+        // The stream externs are scaffolding for the suspend-lowering subject,
+        // so they must restate the shipped contract exactly: the pair handle is
+        // `stream.StreamPair`, not a private opaque, and the free consumes it.
+        // A private handle type or a borrowing free is a real contract
+        // disagreement and the checker rejects it.
         "import std::stream;\n\
-         #[opaque]\n\
-         type Pair {}\n\
          extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: Pair) -> Sink<bytes>;\n\
-         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
-         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
+         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
+         \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
+         \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
          \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
          }\n\
          actor Runner {\n\

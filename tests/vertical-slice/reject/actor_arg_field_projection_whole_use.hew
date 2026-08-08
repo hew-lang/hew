@@ -1,0 +1,37 @@
+// Sending a partially-moved record whole would hand the handler frame the
+// socket storage that already moved out, giving one socket two owners. The
+// sibling field is still fine — that is the precision pinned by
+// `actor_arg_field_projection_sibling_use` — but the aggregate is not.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+type Holder {
+    sock: Socket;
+    count: i64;
+}
+
+actor Sink {
+    receive fn take(s: Socket) -> i64 {
+        return s.detach();
+    }
+    receive fn take_holder(h: Holder) -> i64 {
+        return h.count;
+    }
+}
+
+fn main() -> i64 {
+    let sink = spawn Sink;
+    let holder = Holder { sock: Socket { fd: 7 }, count: 3 };
+    let _ = await sink.take(holder.sock);
+    let _ = await sink.take_holder(holder);
+    return 0;
+}

@@ -22,17 +22,39 @@ use std::ffi::c_void;
 use std::ptr;
 use std::rc::Rc;
 
-use hew_cabi::vec::HewVecElemLayout;
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
 
 use crate::channel_common::{
-    decode_elem_envelope, elem_layout_witness, encode_elem_envelope, free_channel_pair,
+    decode_elem_envelope, drop_elem_envelope, elem_layout_witness, encode_elem_envelope,
+    free_channel_pair,
 };
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
-static ACTIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static ACTIVE_HANDLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HANDLE_COUNT_UNDERFLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn record_handle_open() {
+    ACTIVE_HANDLES.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn record_handle_close() {
+    ACTIVE_HANDLES.with(|count| {
+        let current = count.get();
+        if current == 0 {
+            HANDLE_COUNT_UNDERFLOWED.set(true);
+        }
+        // This runs from Drop, including while unwinding. Record an underflow
+        // for the explicit test oracle below instead of risking a double panic.
+        count.set(current.saturating_sub(1));
+    });
+}
 
 // ── Core queue ──────────────────────────────────────────────────────────
 
@@ -46,6 +68,18 @@ struct ChannelInner {
     sender_count: usize,
     /// Set when the receiver handle is dropped.
     receiver_closed: bool,
+    /// Witness for layout-managed envelopes. The final inner-state drop uses
+    /// it to release every queued deep value exactly once.
+    elem_layout: Option<HewVecElemLayout>,
+}
+
+impl Drop for ChannelInner {
+    fn drop(&mut self) {
+        let layout = self.elem_layout;
+        for envelope in self.queue.drain(..) {
+            drop_elem_envelope(layout.as_ref(), envelope, "WasmChannelInner::drop");
+        }
+    }
 }
 
 /// Sender handle. Multiple senders may share the same inner queue via `Rc`.
@@ -101,7 +135,7 @@ pub struct HewWasmChannelPair {
 impl HewWasmChannelSender {
     fn new(inner: WasmChannelSender) -> Self {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_add(1, Ordering::Relaxed);
+        record_handle_open();
         Self { inner }
     }
 }
@@ -109,7 +143,7 @@ impl HewWasmChannelSender {
 impl HewWasmChannelReceiver {
     fn new(inner: WasmChannelReceiver) -> Self {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_add(1, Ordering::Relaxed);
+        record_handle_open();
         Self { inner }
     }
 }
@@ -117,14 +151,14 @@ impl HewWasmChannelReceiver {
 impl Drop for HewWasmChannelSender {
     fn drop(&mut self) {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_sub(1, Ordering::Relaxed);
+        record_handle_close();
     }
 }
 
 impl Drop for HewWasmChannelReceiver {
     fn drop(&mut self) {
         #[cfg(test)]
-        ACTIVE_HANDLES.fetch_sub(1, Ordering::Relaxed);
+        record_handle_close();
     }
 }
 
@@ -140,6 +174,7 @@ pub fn channel(capacity: usize) -> (WasmChannelSender, WasmChannelReceiver) {
         capacity: cap,
         sender_count: 1,
         receiver_closed: false,
+        elem_layout: None,
     }));
 
     let sender = WasmChannelSender {
@@ -237,13 +272,21 @@ impl WasmChannelSender {
     ///
     /// Returns `Ok(())` if the message was enqueued, or an error if the
     /// channel is full or the receiver is closed.
+    #[allow(
+        dead_code,
+        reason = "direct wasm queue API exercised by host parity tests"
+    )]
     pub fn try_send(&self, data: Vec<u8>) -> Result<(), TrySendError> {
+        self.try_send_envelope(data).map_err(|(error, _)| error)
+    }
+
+    fn try_send_envelope(&self, data: Vec<u8>) -> Result<(), (TrySendError, Vec<u8>)> {
         let mut inner = self.inner.borrow_mut();
         if inner.receiver_closed {
-            return Err(TrySendError::Closed);
+            return Err((TrySendError::Closed, data));
         }
         if inner.queue.len() >= inner.capacity {
-            return Err(TrySendError::Full);
+            return Err((TrySendError::Full, data));
         }
         inner.queue.push_back(data);
         Ok(())
@@ -272,8 +315,52 @@ impl Clone for WasmChannelSender {
     }
 }
 
-fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
-    match sender.inner.try_send(bytes) {
+/// Enqueue an ABI envelope, releasing a rejected layout-managed envelope
+/// before reporting why it could not be accepted. This separates ownership
+/// cleanup from the void ABI's trap translation so aborting WASI tests can
+/// prove the same error-path cleanup as native unwind tests.
+fn try_send_bytes(
+    sender: &HewWasmChannelSender,
+    bytes: Vec<u8>,
+    layout: Option<&HewVecElemLayout>,
+    api_name: &str,
+) -> Result<(), TrySendError> {
+    if let Some(layout) = layout.filter(|l| l.ownership_kind == HewTypeOwnershipKind::LayoutManaged)
+    {
+        let mut inner = sender.inner.inner.borrow_mut();
+        match inner.elem_layout {
+            None => inner.elem_layout = Some(*layout),
+            Some(existing)
+                if existing.size != layout.size
+                    || existing.ownership_kind != layout.ownership_kind =>
+            {
+                drop(inner);
+                drop_elem_envelope(Some(layout), bytes, api_name);
+                crate::channel_common::abort_elem_witness(
+                    api_name,
+                    "conflicting element witnesses stamped on one queue",
+                );
+            }
+            Some(_) => {}
+        }
+    }
+
+    match sender.inner.try_send_envelope(bytes) {
+        Ok(()) => Ok(()),
+        Err((error, bytes)) => {
+            drop_elem_envelope(layout, bytes, api_name);
+            Err(error)
+        }
+    }
+}
+
+fn send_bytes(
+    sender: &HewWasmChannelSender,
+    bytes: Vec<u8>,
+    layout: Option<&HewVecElemLayout>,
+    api_name: &str,
+) {
+    match try_send_bytes(sender, bytes, layout, api_name) {
         Ok(()) => {}
         Err(TrySendError::Full) => {
             panic!(
@@ -311,7 +398,12 @@ pub unsafe extern "C" fn hew_channel_send_layout(
     // SAFETY: caller guarantees `data` points to one live element.
     let envelope = unsafe { encode_elem_envelope(data, layout, "hew_channel_send_layout") };
     // SAFETY: caller guarantees `sender` is a live ABI sender handle.
-    send_bytes(unsafe { &*sender }, envelope, "hew_channel_send_layout");
+    send_bytes(
+        unsafe { &*sender },
+        envelope,
+        Some(layout),
+        "hew_channel_send_layout",
+    );
 }
 
 // ── Receive ─────────────────────────────────────────────────────────────
@@ -423,7 +515,11 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewWasmChanne
 
 #[cfg(test)]
 fn active_handle_count() -> usize {
-    ACTIVE_HANDLES.load(Ordering::Relaxed)
+    assert!(
+        !HANDLE_COUNT_UNDERFLOWED.get(),
+        "wasm channel test handle count underflow"
+    );
+    ACTIVE_HANDLES.get()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -432,8 +528,6 @@ fn active_handle_count() -> usize {
 mod tests {
     use super::*;
     use std::ffi::{c_char, CStr};
-
-    use hew_cabi::vec::HewTypeOwnershipKind;
 
     fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
         HewVecElemLayout {
@@ -452,6 +546,50 @@ mod tests {
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
             drop_fn: None,
+        }
+    }
+
+    static WASM_OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[repr(C)]
+    struct WasmOwnedElem {
+        tag: u64,
+        heap: *mut u8,
+    }
+
+    unsafe extern "C" fn wasm_owned_clone(src: *const c_void, dst: *mut c_void) -> i32 {
+        // SAFETY: witness thunk receives one live source and writable copy.
+        let src = unsafe { &*src.cast::<WasmOwnedElem>() };
+        // SAFETY: as above.
+        let dst = unsafe { &mut *dst.cast::<WasmOwnedElem>() };
+        // SAFETY: allocation is released by wasm_owned_drop.
+        let heap = unsafe { libc::malloc(8).cast::<u8>() };
+        if !src.heap.is_null() {
+            // SAFETY: source and destination buffers are both 8 bytes.
+            unsafe { ptr::copy_nonoverlapping(src.heap, heap, 8) };
+        }
+        dst.heap = heap;
+        0
+    }
+
+    unsafe extern "C" fn wasm_owned_drop(slot: *mut c_void) {
+        // SAFETY: witness thunk receives one live owned element.
+        let elem = unsafe { &mut *slot.cast::<WasmOwnedElem>() };
+        if !elem.heap.is_null() {
+            // SAFETY: heap was allocated by wasm_owned_clone.
+            unsafe { libc::free(elem.heap.cast()) };
+            elem.heap = ptr::null_mut();
+        }
+        WASM_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn wasm_owned_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<WasmOwnedElem>(),
+            align: align_of::<WasmOwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: Some(wasm_owned_clone),
+            drop_fn: Some(wasm_owned_drop),
         }
     }
 
@@ -662,6 +800,236 @@ mod tests {
         assert_eq!(active_handle_count(), 0);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn abi_handle_accounting_is_test_thread_local() {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let pair = hew_channel_new(2);
+            assert_eq!(active_handle_count(), 2);
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+            // SAFETY: the worker exclusively owns its unextracted pair.
+            unsafe { hew_channel_pair_free(pair) };
+            assert_eq!(active_handle_count(), 0);
+        });
+
+        ready_rx.recv().unwrap();
+        assert_eq!(
+            active_handle_count(),
+            0,
+            "another test thread's live handles must not contaminate this oracle"
+        );
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn abi_pair_state_matrix_repeats_exactly() {
+        let _guard = crate::runtime_test_guard();
+        assert_eq!(active_handle_count(), 0);
+
+        for _ in 0..128 {
+            // Neither child extracted.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair and child pointers are fresh and live.
+            unsafe {
+                let inner = Rc::clone(&(*(*pair).sender).inner.inner);
+                assert_eq!(active_handle_count(), 2);
+                hew_channel_pair_free(pair);
+                assert_eq!(active_handle_count(), 0);
+                let state = inner.borrow();
+                assert_eq!(state.sender_count, 0);
+                assert!(state.receiver_closed);
+            }
+
+            // Sender only extracted: retained receiver closes on pair free.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; sender moves out once and is closed once.
+            unsafe {
+                let tx = hew_channel_pair_sender(pair);
+                assert!(hew_channel_pair_sender(pair).is_null());
+                let inner = Rc::clone(&(*tx).inner.inner);
+                hew_channel_pair_free(pair);
+                assert_eq!(active_handle_count(), 1);
+                assert_eq!(inner.borrow().sender_count, 1);
+                assert!(inner.borrow().receiver_closed);
+                hew_channel_sender_close(tx);
+                assert_eq!(inner.borrow().sender_count, 0);
+                assert_eq!(active_handle_count(), 0);
+            }
+
+            // Receiver only extracted: retained sender closes on pair free.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; receiver moves out once and is closed once.
+            unsafe {
+                let rx = hew_channel_pair_receiver(pair);
+                assert!(hew_channel_pair_receiver(pair).is_null());
+                let inner = Rc::clone(&(*rx).inner.inner);
+                hew_channel_pair_free(pair);
+                assert_eq!(active_handle_count(), 1);
+                assert_eq!(inner.borrow().sender_count, 0);
+                assert!(!inner.borrow().receiver_closed);
+                hew_channel_receiver_close(rx);
+                assert!(inner.borrow().receiver_closed);
+                assert_eq!(active_handle_count(), 0);
+            }
+
+            // Both extracted: pair free owns only the shell.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; each child moves out and closes once.
+            unsafe {
+                let tx = hew_channel_pair_sender(pair);
+                let rx = hew_channel_pair_receiver(pair);
+                assert!(hew_channel_pair_sender(pair).is_null());
+                assert!(hew_channel_pair_receiver(pair).is_null());
+                let inner = Rc::clone(&(*tx).inner.inner);
+                hew_channel_pair_free(pair);
+                assert_eq!(active_handle_count(), 2);
+                assert_eq!(inner.borrow().sender_count, 1);
+                assert!(!inner.borrow().receiver_closed);
+                hew_channel_sender_close(tx);
+                assert_eq!(inner.borrow().sender_count, 0);
+                hew_channel_receiver_close(rx);
+                assert!(inner.borrow().receiver_closed);
+                assert_eq!(active_handle_count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn abi_sender_clone_count_tracks_each_handle_exactly() {
+        let _guard = crate::runtime_test_guard();
+        assert_eq!(active_handle_count(), 0);
+        let pair = hew_channel_new(2);
+        // SAFETY: pair and handles remain exclusively owned by this test.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+            let inner = Rc::clone(&(*tx).inner.inner);
+            assert_eq!(inner.borrow().sender_count, 1);
+            let tx2 = hew_channel_sender_clone(tx);
+            assert_eq!(inner.borrow().sender_count, 2);
+            assert_eq!(active_handle_count(), 3);
+            hew_channel_sender_close(tx);
+            assert_eq!(inner.borrow().sender_count, 1);
+            hew_channel_sender_close(tx2);
+            assert_eq!(inner.borrow().sender_count, 0);
+            hew_channel_receiver_close(rx);
+        }
+        assert_eq!(active_handle_count(), 0);
+    }
+
+    #[test]
+    fn abi_receiver_explicit_close_and_pair_drop_share_protocol_authority() {
+        let _guard = crate::runtime_test_guard();
+        assert_eq!(active_handle_count(), 0);
+
+        let pair = hew_channel_new(2);
+        // SAFETY: pair and child pointers are fresh and live.
+        let pair_inner = unsafe { Rc::clone(&(*(*pair).receiver).inner.inner) };
+        // SAFETY: pair remains exclusively owned.
+        unsafe { hew_channel_pair_free(pair) };
+        assert!(pair_inner.borrow().receiver_closed);
+
+        let pair = hew_channel_new(2);
+        // SAFETY: extract each fresh child once and close each once.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            let explicit_inner = Rc::clone(&(*rx).inner.inner);
+            hew_channel_pair_free(pair);
+            assert!(!explicit_inner.borrow().receiver_closed);
+            hew_channel_receiver_close(rx);
+            assert!(explicit_inner.borrow().receiver_closed);
+            hew_channel_sender_close(tx);
+        }
+        assert_eq!(active_handle_count(), 0);
+    }
+
+    #[test]
+    fn abi_pair_held_receiver_releases_queued_owned_elements() {
+        let _guard = crate::runtime_test_guard();
+        assert_eq!(active_handle_count(), 0);
+        let drops_before = WASM_OWNED_DROPS.load(Ordering::SeqCst);
+        let pair = hew_channel_new(8);
+
+        // SAFETY: only sender moves out of pair; pair remains sole receiver
+        // owner and every caller allocation is released after the send clone.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let layout = wasm_owned_layout();
+            for tag in 0..2u64 {
+                let heap = libc::malloc(8).cast::<u8>();
+                let value = WasmOwnedElem { tag, heap };
+                hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+                libc::free(value.heap.cast());
+            }
+            hew_channel_sender_close(tx);
+            hew_channel_pair_free(pair);
+        }
+
+        assert_eq!(
+            WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "pair-held wasm receiver must release every queued owner once"
+        );
+        assert_eq!(active_handle_count(), 0);
+    }
+
+    #[test]
+    fn owned_envelopes_drop_on_full_closed_and_final_queue_teardown() {
+        let _guard = crate::runtime_test_guard();
+        assert_eq!(active_handle_count(), 0);
+        let drops_before = WASM_OWNED_DROPS.load(Ordering::SeqCst);
+        let layout = wasm_owned_layout();
+        let (tx, rx) = channel(1);
+        let tx = HewWasmChannelSender::new(tx);
+
+        let make_envelope = |tag| {
+            // SAFETY: allocation is copied into the returned envelope by the
+            // witness clone and released immediately afterward.
+            unsafe {
+                let heap = libc::malloc(8).cast::<u8>();
+                let value = WasmOwnedElem { tag, heap };
+                let envelope = encode_elem_envelope(
+                    std::ptr::addr_of!(value).cast(),
+                    &layout,
+                    "wasm owned error-path test",
+                );
+                libc::free(value.heap.cast());
+                envelope
+            }
+        };
+
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(1), Some(&layout), "test send"),
+            Ok(())
+        );
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(2), Some(&layout), "test send"),
+            Err(TrySendError::Full)
+        );
+        assert_eq!(WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 1);
+
+        drop(rx);
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(3), Some(&layout), "test send"),
+            Err(TrySendError::Closed)
+        );
+        assert_eq!(WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
+
+        drop(tx);
+        assert_eq!(
+            WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            3,
+            "one full, one closed, and one queued envelope each drop once"
+        );
+        assert_eq!(active_handle_count(), 0);
+    }
+
     #[test]
     fn abi_try_recv_and_lifecycle_match_native_contract() {
         let _guard = crate::runtime_test_guard();
@@ -780,6 +1148,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[should_panic(expected = "channel is full; blocking send is not available on wasm32")]
     fn send_bytes_full_traps() {
@@ -789,12 +1158,13 @@ mod tests {
         let tx = HewWasmChannelSender::new(tx);
 
         // Fill the channel to capacity.
-        send_bytes(&tx, vec![1], "hew_channel_send_layout");
+        send_bytes(&tx, vec![1], None, "hew_channel_send_layout");
 
         // Send to a full channel — must trap rather than silently dropping.
-        send_bytes(&tx, vec![2], "hew_channel_send_layout");
+        send_bytes(&tx, vec![2], None, "hew_channel_send_layout");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[should_panic(expected = "channel receiver is closed; message was not sent")]
     fn send_bytes_closed_traps() {
@@ -805,6 +1175,6 @@ mod tests {
         drop(rx);
 
         // A closed receiver must trap rather than silently dropping the envelope.
-        send_bytes(&tx, vec![1], "hew_channel_send_layout");
+        send_bytes(&tx, vec![1], None, "hew_channel_send_layout");
     }
 }

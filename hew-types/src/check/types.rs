@@ -5,11 +5,12 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
+use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
-    Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
+    ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Uniquely identifies an import declaration within the checker.
 ///
@@ -82,10 +83,133 @@ pub(super) struct ActorInitParamInfo {
     pub(super) span: Span,
 }
 
+/// One checker-derived lifecycle for a qualified closeable opaque nominal.
+///
+/// The fact is derived exclusively by joining generated producer contracts to
+/// exact source extern declarations and their consuming release declaration.
+/// Downstream stages may consume it; they must not rebuild it from names.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OpaqueResourceLifecycleCandidate {
+    /// Canonical identity of the opaque nominal declaration.
+    pub resource_declaration: crate::DefId,
+    pub resource_type: String,
+    pub owner_module: String,
+    /// Canonical identity of the inherent consuming `close` declaration.
+    pub close_declaration: crate::DefId,
+    /// Canonical identity of the source extern release declaration.
+    pub release_declaration: crate::DefId,
+    pub release_symbol: String,
+    /// Exact source/contract parameter position consumed by the release.
+    /// HIR validates receiver forwarding from this fact rather than searching
+    /// a signature by nominal spelling.
+    pub release_param_index: usize,
+    pub discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth,
+    pub result_ownership: crate::ffi_contracts::ExternResultOwnership,
+    pub result_retention: crate::ffi_contracts::ExternResultRetention,
+    pub producer_symbols: BTreeSet<String>,
+    /// Canonical source declarations whose contracts produce this resource.
+    pub producer_declarations: BTreeSet<crate::DefId>,
+    /// Source modules that declare compatible producer externs.
+    ///
+    /// This is provenance only: membership never authorizes a release
+    /// declaration, which remains pinned to `owner_module`.
+    pub producer_modules: BTreeSet<String>,
+}
+
+/// Why an otherwise provenance-matched producer failed lifecycle admission.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub enum OpaqueResourceLifecycleConflictKind {
+    ProducerResultMismatch {
+        actual: String,
+    },
+    ReleaseDeclarationMissing,
+    CloseDeclarationMissing,
+    ReleaseSignatureMismatch {
+        detail: String,
+    },
+    MultipleProducerLifecycle {
+        established: String,
+        conflicting: String,
+    },
+}
+
+/// Structured conflict retained for source diagnostics in the next stage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OpaqueResourceLifecycleConflict {
+    pub resource_type: String,
+    pub producer_symbol: String,
+    pub release_symbol: String,
+    pub kind: OpaqueResourceLifecycleConflictKind,
+}
+
+/// Checker-authoritative candidate graph for closeable opaque lifecycles.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct OpaqueResourceCandidateGraph {
+    pub candidates: BTreeMap<crate::DefId, OpaqueResourceLifecycleCandidate>,
+    pub conflicts: Vec<OpaqueResourceLifecycleConflict>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SourceExternDeclaration {
+    pub(super) declaration: crate::DefId,
+    pub(super) symbol: String,
+    /// Declarative endpoint template, when `symbol` has no call-independent
+    /// expansion. Candidate derivation matches this only against the closed
+    /// set of canonical ABI tokens; call authorization still requires the
+    /// exact resolved expansion.
+    pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
+    pub(super) signature_key: String,
+    pub(super) declaring_module: Option<String>,
+    /// Exact direct module-graph targets imported by the declaring module.
+    ///
+    /// These are resolved graph identities, not source spellings. They allow
+    /// result provenance to cross one acyclic import edge without treating a
+    /// qualified lookalike or transitive dependency as authority.
+    pub(super) direct_import_modules: BTreeSet<String>,
+    pub(super) consuming_params: Vec<bool>,
+}
+
+/// Exact source declaration and linker endpoint selected for one open-set
+/// `#[extern_symbol]` method call.
+///
+/// The endpoint is for ABI/contract lookup; the signature key is independently
+/// retained for positional/named formal ownership modes. Keeping both prevents
+/// an expanded symbol from being (incorrectly) used as a source declaration
+/// lookup key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternMethodCallIdentity {
+    pub endpoint: String,
+    pub signature_key: String,
+    pub declaring_module: Option<String>,
+    /// True only when the declaration came from compiler-embedded stdlib
+    /// source. Non-resource owned results require this origin proof; opaque
+    /// resource methods use the stricter qualified lifecycle graph instead.
+    pub trusted_compiled_stdlib: bool,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Total checker-authored ownership facts for accepted expression results.
+    ///
+    /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
+    /// that projection and may not reconstruct ownership from callee spellings,
+    /// result types, or expression intent.
+    pub produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
+    /// Closed structural dependency graph for result ownership.  This carries
+    /// the checker-proven source relation alongside the final ownership
+    /// verdict, so downstream lowering never has to reconstruct a transfer
+    /// from expression spelling or a local-number coincidence.
+    pub produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
+    /// Declaration spans of non-receiver parameters whose resolved type has
+    /// at least one checker-proven projection into storage shared with the
+    /// caller.
+    ///
+    /// This is a positive capability fact, not a method-name allowlist. MIR
+    /// combines it with an actual representation-replacing write before
+    /// granting a representation loan; absence always fails closed.
+    pub caller_visible_param_projections: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -120,13 +244,20 @@ pub struct TypeCheckOutput {
     /// Spans of method calls whose resolved method declares `consumes_receiver`.
     ///
     /// Per-call-site flag derived from [`MethodSig::consumes_receiver`] at the
-    /// dispatch site. Codegen consults this side table to null the receiver's
-    /// drop slot after the call, so the scope-exit drop becomes a null-guarded
-    /// no-op. PR 1 (issue #1295) ships the plumbing; the recognised set is
-    /// empty (no Hew surface syntax sets the flag yet), so this map is empty
-    /// for Hew programs — but tests can populate `consume_receiver_methods` on
-    /// the [`Checker`] to exercise the path end-to-end.
+    /// dispatch site. Lowering consults this side table to transfer or
+    /// discharge the receiver's drop obligation. The companion discharge set
+    /// distinguishes a canonical affine close from an ordinary ownership move.
     pub method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Affine `close` calls that discharge the receiver's release obligation
+    /// without making its closed handle bits unreadable.
+    pub method_call_discharges_receiver: HashSet<SpanKey>,
+    /// Receiver-identity calls whose result is discarded through a borrowing
+    /// method chain. HIR lowers these receivers as reads, returning the sole
+    /// ownership obligation to the original binding.
+    pub method_call_preserves_receiver_identity: HashSet<SpanKey>,
+    /// Qualified closeable opaque lifecycles derived from the single generated
+    /// FFI ownership contract and exact source extern provenance.
+    pub opaque_resource_candidates: OpaqueResourceCandidateGraph,
     /// Checker-owned lowering metadata keyed by the lowering site's source span.
     ///
     /// Populated for erased runtime types whose lowering must not guess from
@@ -259,7 +390,51 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
+    /// The compile's identity interner (rc1-F1 stage A): module identities
+    /// minted once at `check_program` entry, provenance-invariant (root vs
+    /// import vs dual-import of one source resolve to one `ModuleId`). The
+    /// canonical fn-sig identity of a root free function is
+    /// [`crate::identity::IdentityTable::root_fn_identity`]; later stages key
+    /// declaration registries by IDs minted here.
+    pub identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B):
+    /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
+    /// minted at the first declaration; later declarations must agree and
+    /// adopt the established contract. Also the `unsafe`-gating declaration
+    /// index (replaces the former `unsafe_functions` side registry).
+    pub extern_contracts: crate::extern_table::ExternTable,
+    /// Function signatures keyed by declaration identity.
+    ///
+    /// Key shapes: `{module}.{name}` for module free functions,
+    /// `Type::method` for methods, bare names for builtins/externs and for
+    /// legacy-rendered root free functions. Inside the checker the root
+    /// unit's free functions are keyed CANONICALLY (`{root_module}.{name}`,
+    /// minted through `identity`); at this publication boundary they are
+    /// re-rendered to the legacy bare spelling because HIR
+    /// (`hew-hir/src/lower.rs` `fn_sigs` clone) and hew-analysis still
+    /// resolve root functions by source spelling.
+    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
+    /// stage re-keys consumers by `DefId`; the render then disappears and
+    /// canonical keys publish as-is.
     pub fn_sigs: HashMap<String, FnSig>,
+    /// Checker-selected target for every ordinary direct or indirect call
+    /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
+    pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Canonical trait and trait-method declaration identities, keyed by the
+    /// owner-qualified source spelling `Trait::method`. This is the sole
+    /// checker-to-HIR authority for static-trait implementation indexing.
+    pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Canonical trait/method identities published through each exact source
+    /// binding. The key is `(module, binding spelling, method)`; HIR uses it
+    /// when an impl names an imported trait bare or through an alias, rather
+    /// than inferring an owner from a leaf name. This also records a bare trait
+    /// reference resolved unambiguously through a module import.
+    pub trait_method_ids_by_binding:
+        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+    /// Checker-allocated impl-method declaration identities keyed by their
+    /// linker presentation.  The key is a compatibility projection only;
+    /// HIR uses the stored ID directly and never constructs one from it.
+    pub impl_method_declaration_ids: HashMap<String, crate::DefId>,
     /// Root-scope value bindings declared by the program itself.
     ///
     /// Populated at the same checker registration sites that publish root
@@ -503,26 +678,31 @@ pub struct TypeCheckOutput {
     /// See [`crate::check::dispatch`] module docs for the full Stage A
     /// substrate ownership rationale and downstream consumer ordering.
     pub resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
-    /// Import type alias resolution table for HIR lowering.
+    /// Checker-authoritative imported type identities for HIR lowering.
     ///
-    /// Maps each bare alias name to its canonical qualified source identity for
-    /// every `import m::{ T as U }` where the alias binding (`U`) differs from
-    /// Import type alias map: maps `(module, alias-binding)` → canonical
-    /// qualified source identity, for every `import m::{ T as U }` where the
-    /// binding name (`U`) differs from the original name (`T`).
+    /// Maps `(module, source spelling)` to the canonical qualified source
+    /// identity. Named/glob imports use their bare binding; canonical lifecycle
+    /// whole-module imports additionally publish the exact qualified spelling
+    /// (`f.CrashNotification`).
     ///
     /// Example: `import hew::aliassrc::{ Payload as Tag }` in module `None`
     /// (root program) → `(None, "Tag") → "aliassrc.Payload"`.
     ///
-    /// Keyed by `(Option<String>, String)` — `(importer_module, alias)` — so
-    /// an alias introduced in one module cannot overwrite a same-named alias
-    /// from another module (the flat-string approach caused last-write-wins
-    /// cross-module pollution).
+    /// Keyed by importer so a binding introduced in one module cannot overwrite
+    /// a same-named binding from another module.
     ///
     /// HIR `lower_type` consults this table in `resolve_named_type_ref` as a
-    /// **fallback** (after local / builtin / record-registry lookups), so a
-    /// local `type U` in the same module as `import m::{ Payload as U }` wins.
+    /// **fallback** for bare bindings (so a local `type U` still wins), while
+    /// checker-proven qualified lifecycle spellings are consumed before HIR
+    /// classifies them as ordinary user nominals.
     pub import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    /// Exact declaring owner for each lexical whole-module import binding.
+    ///
+    /// Unlike `import_type_name_aliases`, this table covers qualified source
+    /// spellings such as `lmonobox.Box`: HIR must translate that lexical prefix
+    /// to the checker's canonical owner (`hew.lmonobox.Box`) before a generic
+    /// type argument can reach layout registration or unification.
+    pub module_import_bindings: HashMap<(Option<String>, String), String>,
 }
 
 /// Wire layout metadata for a single field, carried from AST through the
@@ -799,6 +979,10 @@ pub struct DynCoercion {
 /// `slot` is therefore `3 + method_decl_order` for the originating trait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynMethodCall {
+    /// Full checker-selected dispatch identity.  HIR carries this verbatim;
+    /// it must not rebuild a declaration id from the diagnostic spellings
+    /// below.
+    pub target: crate::check::dispatch::CallTarget,
     /// Originating trait name (resolved from the receiver's `Ty::TraitObject`
     /// bound that defined the called method).
     pub trait_name: String,
@@ -1080,10 +1264,16 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
+            method_call_discharges_receiver: HashSet::default(),
+            method_call_preserves_receiver_identity: HashSet::default(),
+            opaque_resource_candidates: OpaqueResourceCandidateGraph::default(),
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1098,7 +1288,13 @@ impl Default for TypeCheckOutput {
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
+            identity: crate::identity::IdentityTable::new(),
+            extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
+            direct_call_targets: HashMap::new(),
+            trait_method_ids: HashMap::new(),
+            trait_method_ids_by_binding: HashMap::new(),
+            impl_method_declaration_ids: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::default(),
             cycle_capable_actors: HashSet::default(),
@@ -1129,6 +1325,7 @@ impl Default for TypeCheckOutput {
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
+            module_import_bindings: HashMap::new(),
         }
     }
 }
@@ -1285,6 +1482,67 @@ impl From<&Span> for SpanKey {
     }
 }
 
+/// Checker-authored ownership fact for one expression publication site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducedValueFact {
+    pub ownership: crate::runtime_call::ProducedValueOwnership,
+    /// Exact receiver expression span for `ReceiverIdentity`; absent for all
+    /// other result dispositions.
+    pub receiver_span: Option<SpanKey>,
+    /// Checker-resolved ownership mode for a method receiver.
+    pub receiver_boundary: Option<crate::runtime_call::ProducedArgumentBoundary>,
+    /// One checker-owned boundary mode per source argument, in source order.
+    /// Non-call expressions carry an empty vector.
+    pub arguments: Vec<crate::runtime_call::ProducedArgumentBoundary>,
+}
+
+/// Resolved direct-call identity retained until the checked-output boundary,
+/// where the validated opaque lifecycle graph is available.
+#[derive(Debug, Clone)]
+pub(super) struct PendingDirectCallOwnership {
+    pub(super) fact: ProducedValueFact,
+    pub(super) extern_symbol: Option<String>,
+    pub(super) extern_declaring_module: Option<String>,
+    pub(super) extern_param_count: usize,
+    pub(super) resolved_result_ty: Ty,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingMethodCallOwnership {
+    pub(super) fact: ProducedValueFact,
+    pub(super) extern_identity: Option<ExternMethodCallIdentity>,
+    pub(super) resolved_result_ty: Ty,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProducedValueDependency {
+    /// This expression itself is the authority boundary for its produced
+    /// value.  Keeping leaves explicit makes the checker output a total,
+    /// closed graph rather than asking downstream consumers to treat a
+    /// missing map entry as semantic information.
+    Leaf,
+    Identity(SpanKey),
+    /// A specialised parent preserves the child's ownership disposition and
+    /// provenance but is the sole materialized publication. Parent and child
+    /// types may differ; downstream lowering must mint only the parent slot.
+    Subsumes(SpanKey),
+    Join(Vec<SpanKey>),
+    MoveOut(SpanKey),
+    Projection(SpanKey),
+}
+
+impl ProducedValueFact {
+    #[must_use]
+    pub fn result(ownership: crate::runtime_call::ProducedValueOwnership) -> Self {
+        Self {
+            ownership,
+            receiver_span: None,
+            receiver_boundary: None,
+            arguments: Vec::new(),
+        }
+    }
+}
+
 impl SpanKey {
     /// Construct a key for a span in module `module_idx` (0 = root).
     #[must_use]
@@ -1408,10 +1666,20 @@ pub enum MethodCallRewrite {
     /// discriminant rather than a receiver type name
     /// (LESSONS: drop-allowset-from-value-flow, raii-null-after-move).
     RewriteToFunction {
+        /// Canonical callee identity selected by checking.  `c_symbol` remains
+        /// an ABI/linker payload only; later phases must dispatch on this
+        /// structured target rather than reverse-parsing its spelling.
+        target: crate::check::dispatch::CallTarget,
         c_symbol: String,
         descriptor: Option<crate::runtime_call::RuntimeCallDescriptor>,
+        /// Present only for open-set `#[extern_symbol]` methods. Carries both
+        /// declaration identity and the exact expanded endpoint.
+        extern_identity: Option<ExternMethodCallIdentity>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
+        /// Exact receiver-in/result-out ownership identity, derived from the
+        /// validated method signature rather than the symbol spelling.
+        returns_receiver_identity: bool,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
@@ -1425,6 +1693,8 @@ pub enum MethodCallRewrite {
     ///
     /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {
+        /// Checker-selected source declaration or typed runtime endpoint.
+        target: crate::check::dispatch::CallTarget,
         c_symbol: String,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
@@ -1573,6 +1843,9 @@ pub enum MethodCallRewrite {
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
     StaticTraitDispatch {
+        /// Checker-selected canonical trait-method identity.  HIR preserves
+        /// this exact verdict through monomorphisation.
+        target: crate::check::dispatch::CallTarget,
         /// The type-parameter name on the enclosing function that carries the bound
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
@@ -1589,6 +1862,10 @@ pub enum MethodCallRewrite {
         method_name: String,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
+        /// Checker-owned receiver ownership bit from the declaring trait.
+        consumes_receiver: bool,
+        /// Exact receiver-in/result-out identity from the declaring trait.
+        returns_receiver_identity: bool,
     },
 }
 
@@ -1847,6 +2124,20 @@ pub(super) struct DeferredVecAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A built-in value-container clone whose receiver still contains an
+/// inference variable at the call site.
+///
+/// Source-order checking is not execution order: a clone in the first branch
+/// visited by the checker can execute after another branch has populated the
+/// same container. The receiver must therefore be rechecked for transitive
+/// affine payloads after inference has settled.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredBuiltinCloneAdmission {
+    pub(super) span: Span,
+    pub(super) receiver_ty: Ty,
+    pub(super) source_module: Option<String>,
+}
+
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
 /// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
@@ -1873,242 +2164,6 @@ impl PendingLoweringFact {
         Self {
             hashset_element_ty,
             source_module,
-        }
-    }
-}
-
-/// WASM-unsupported feature classes.
-///
-/// Variants in the **warning group** (`Timers`) are emitted as diagnostics at
-/// warning severity because wasm32 has a degraded-but-implemented runtime path.
-///
-/// Variants in the **reject group** (`SupervisionTrees`, `LinkMonitor`,
-/// `StructuredConcurrency`, `Tasks`, `BlockingChannelRecv`,
-/// `BlockingSemaphoreAcquire`, `Streams`, `HttpServer`, `TcpNetworking`,
-/// `ProcessExecution`) are emitted as compile-time **errors**. Their runtime
-/// support is absent on wasm32: some entry points trap via `unreachable!`,
-/// while native-only modules such as scope/task/supervisor/link-monitor are
-/// gated out of `hew-runtime` entirely. Making them errors ensures WASM
-/// programs fail loudly at check time rather than at link time or the first
-/// use at runtime.
-///
-/// `Timers` is now in the **warning group**: `sleep_ms`/`sleep` are implemented
-/// with cooperative semantics on wasm32 (park at message boundary rather than
-/// mid-handler).  See `hew-runtime/src/scheduler_wasm.rs` for the
-/// sleeping-actor queue.
-///
-/// `link`/`unlink`/`monitor`/`demonitor` are bundled together under
-/// `LinkMonitor` because they share the same OS-thread dependency.
-///
-/// See `docs/wasm-capability-matrix.md` for the authoritative Tier 1 / Tier 2
-/// capability split and feature disposition table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum WasmUnsupportedFeature {
-    // ── Reject group (no coherent wasm32 runtime support; compile-time error) ─
-    SupervisionTrees,
-    LinkMonitor,
-    StructuredConcurrency,
-    Tasks,
-    HttpClient,
-    Smtp,
-    // ── Warning group (implemented with degraded semantics) ─────────────────
-    /// `sleep_ms`, `sleep`, `#[every(duration)]`: timers are cooperative on
-    /// wasm32. Sleep parks at the *message boundary*, and periodic handlers are
-    /// delivered only when the host drives the timer queue via
-    /// `hew_wasm_timer_tick` / `hew_wasm_sched_tick`.
-    Timers,
-    // ── Reject group (runtime unreachable!-trap; compile-time error) ────────
-    /// `Receiver<T>::recv`: blocking receive still traps on wasm32 because the
-    /// cooperative scheduler does not yet yield and resume on an empty channel
-    /// with live senders.
-    BlockingChannelRecv,
-    /// `Semaphore::acquire` / `Semaphore::acquire_timeout`: blocking permit
-    /// waits still depend on native condvar-style parking and have no
-    /// cooperative wasm32 scheduler implementation yet.
-    BlockingSemaphoreAcquire,
-    /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
-    /// runtime module is not compiled for wasm32
-    /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
-    /// WASM-TODO(#1451): implement I/O-stream adapters over WASI fd/socket APIs.
-    Streams,
-    /// `http.listen` and `http.Server` / `http.Request` methods: the HTTP
-    /// server runtime is backed by native sockets and `tiny_http`, and is not
-    /// compiled for wasm32.
-    /// WASM-TODO(#1451): design a cooperative WASI-hosted HTTP server surface.
-    HttpServer,
-    /// `net.*` constructors and `net.Listener` / `net.Connection` methods: the
-    /// TCP transport runtime module is not compiled for wasm32.
-    /// WASM-TODO(#1451): expose socket-backed listener/connection adapters over WASI.
-    TcpNetworking,
-    /// `process.*` helpers and `process.Child::*` methods: the process runtime
-    /// module depends on the native OS process model and is not compiled for
-    /// wasm32.
-    /// WASM-TODO(#1451): define a host capability model for subprocess execution.
-    ProcessExecution,
-    /// `tls.*` constructors and `tls.*Stream` methods: the TLS transport runtime
-    /// is backed by `rustls` over native sockets and is not compiled for
-    /// wasm32. WASM-TODO(#1451): expose a WASI TLS bridge.
-    Tls,
-    /// `quic.*` endpoint/connection/stream/event constructors and methods: the
-    /// QUIC transport is backed by `quinn` over native sockets and is not
-    /// compiled for wasm32. WASM-TODO(#1451): expose a WASI QUIC bridge.
-    Quic,
-    /// `dns.resolve` / `dns.lookup_host`: the resolver is backed by the native
-    /// OS resolver and is not compiled for wasm32. WASM-TODO(#1451): probe whether
-    /// wasip1 `sock_addr_*` can cover the common case; relax to warn if so.
-    Dns,
-    /// `os.*` env / path / process helpers: the OS-env layer relies on native
-    /// POSIX APIs and is not compiled for wasm32. WASM-TODO(#1451): route through a
-    /// capability-scoped WASI surface.
-    OsEnv,
-    /// `Node::*` distributed cluster API (`start`, `shutdown`, `connect`,
-    /// `set_transport`, `load_keys`, `allow_peer`, `register`, `lookup`) and
-    /// `RemotePid<T>::send` / `RemotePid<T>::ask` remote messaging: these lower
-    /// to the native mesh transport (`hew_node_api_*` / `hew_remote_pid_send`),
-    /// which is gated behind `#[cfg(not(target_arch = "wasm32"))]` and absent
-    /// from the wasm32 link set. Reject at check time so the caller sees a
-    /// structured diagnostic rather than a wasm module importing an undefined
-    /// `env::hew_node_api_*` symbol that fails at instantiation.
-    /// WASM-TODO(#1451): decide a wasm peer transport before exposing any
-    /// distributed surface on wasm32.
-    Distributed,
-    // ── Crypto reject additions ─────────────────────────────────────────────
-    /// `crypto.random_bytes`: the secure entropy source (`ring::SystemRandom`)
-    /// is native-only and absent from the wasm32 link set. Reject so callers
-    /// cannot accidentally generate key material without cryptographic entropy.
-    /// WASM-TODO(#1451): plumb host entropy through WASI `random_get`.
-    CryptoRandom,
-    /// `encrypt.*` (`std::crypto::encrypt`): AES-256-GCM seal/open helpers are
-    /// provided by a native-only staticlib companion crate (`std/crypto/encrypt`)
-    /// that is absent from the wasm32 link set. Reject so the caller sees a
-    /// structured diagnostic at check time rather than a `wasm-ld` undefined-
-    /// symbol error. WASM-TODO(#1451): design a WASI-capable symmetric-
-    /// encryption surface.
-    CryptoEncrypt,
-    /// `sign.*` (`std::crypto::sign`): Ed25519 key-pair generation, signing, and
-    /// verification are provided by a native-only staticlib companion crate
-    /// (`std/crypto/sign`) that is absent from the wasm32 link set. Reject so
-    /// the caller sees a structured diagnostic at check time rather than a
-    /// `wasm-ld` undefined-symbol error. WASM-TODO(#1451): design a
-    /// WASI-capable signature surface.
-    CryptoSign,
-}
-
-impl WasmUnsupportedFeature {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::SupervisionTrees => "Supervision tree operations",
-            Self::LinkMonitor => "Link/monitor operations",
-            Self::StructuredConcurrency => "Structured concurrency scopes",
-            Self::Tasks => "Task handles spawned from scopes",
-            Self::HttpClient => "std::net::http::http_client operations",
-            Self::Smtp => "std::net::smtp operations",
-            Self::BlockingChannelRecv => "Blocking channel receive operations",
-            Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
-            Self::Timers => "Timer operations",
-            Self::Streams => "Stream operations",
-            Self::HttpServer => "HTTP server operations",
-            Self::TcpNetworking => "TCP networking operations",
-            Self::ProcessExecution => "Process execution operations",
-            Self::Tls => "std::net::tls operations",
-            Self::Quic => "std::net::quic operations",
-            Self::Dns => "std::net::dns resolver operations",
-            Self::OsEnv => "std::os environment and path operations",
-            Self::Distributed => "Distributed node and remote-actor operations",
-            Self::CryptoRandom => "std::crypto::crypto.random_bytes operations",
-            Self::CryptoEncrypt => "std::crypto::encrypt operations",
-            Self::CryptoSign => "std::crypto::sign operations",
-        }
-    }
-
-    pub(super) fn reason(self) -> &'static str {
-        match self {
-            Self::SupervisionTrees => {
-                "they require OS threads for restart strategies and child supervision"
-            }
-            Self::LinkMonitor => {
-                "they rely on OS threads to watch linked actors and propagate exits"
-            }
-            Self::StructuredConcurrency => {
-                "the wasm32 scheduler has no cooperative task executor or non-blocking scope join"
-            }
-            Self::Tasks => {
-                "task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32"
-            }
-            Self::HttpClient => {
-                "the std::net::http::http_client wrappers are still native-only; \
-                 no wasm32 networking bridge exists yet"
-            }
-            Self::Smtp => {
-                "the std::net::smtp transport is still native-only; \
-                 no wasm32 SMTP bridge exists yet"
-            }
-            Self::BlockingChannelRecv => {
-                "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; \
-                 use try_recv or the actor ask pattern instead"
-            }
-            Self::BlockingSemaphoreAcquire => {
-                "Semaphore::acquire and Semaphore::acquire_timeout still require a blocking \
-                 permit wait that has no cooperative wasm32 implementation; use try_acquire \
-                 or actor coordination instead"
-            }
-            Self::Timers => {
-                "timers are cooperative on wasm32: sleep parks at the message boundary, \
-                 and #[every(duration)] handlers fire only when the host drives the timer queue"
-            }
-            Self::Streams => {
-                "I/O streams require the OS threading and networking stack; \
-                 the stream runtime module is not compiled for wasm32"
-            }
-            Self::HttpServer => {
-                "the std::net::http server is backed by native sockets and tiny_http; \
-                 no cooperative wasm32 server implementation exists yet"
-            }
-            Self::TcpNetworking => {
-                "hew_tcp_listen / hew_tcp_connect require the native OS socket layer; \
-                 the transport runtime module is not compiled for wasm32"
-            }
-            Self::ProcessExecution => {
-                "hew_process_run / hew_process_spawn require the native OS process model; \
-                 the process runtime module is not compiled for wasm32"
-            }
-            Self::Tls => {
-                "the std::net::tls transport is backed by rustls over native sockets; \
-                 no wasm32 TLS bridge exists yet"
-            }
-            Self::Quic => {
-                "the std::net::quic transport is backed by quinn over native sockets; \
-                 no wasm32 QUIC bridge exists yet"
-            }
-            Self::Dns => {
-                "the std::net::dns resolver uses the native OS resolver; \
-                 no wasm32 implementation exists yet"
-            }
-            Self::OsEnv => {
-                "the std::os helpers rely on native POSIX APIs; \
-                 the os runtime layer is not compiled for wasm32"
-            }
-            Self::Distributed => {
-                "the Node:: cluster API and RemotePid messaging route through the \
-                 native mesh transport (hew_node_api_* / hew_remote_pid_send), which \
-                 is not compiled for wasm32; no wasm32 distributed runtime exists yet"
-            }
-            Self::CryptoRandom => {
-                "the std::crypto.random_bytes secure entropy source (ring::SystemRandom) is \
-                 native-only and absent from the wasm32 link set; no cryptographically secure \
-                 wasm32 implementation exists yet; generating key material on wasm32 would \
-                 not be secure"
-            }
-            Self::CryptoEncrypt => {
-                "the std::crypto::encrypt module is backed by a native-only staticlib \
-                 companion crate (std/crypto/encrypt) that is absent from the wasm32 link \
-                 set; no wasm32 AES-GCM seal/open implementation exists yet"
-            }
-            Self::CryptoSign => {
-                "the std::crypto::sign module is backed by a native-only staticlib \
-                 companion crate (std/crypto/sign) that is absent from the wasm32 link \
-                 set; no wasm32 Ed25519 implementation exists yet"
-            }
         }
     }
 }
@@ -2259,6 +2314,9 @@ pub struct FnSig {
     ///
     /// Default `false` for every signature without a consuming receiver.
     pub consumes_receiver: bool,
+    /// `true` only for a validated `#[returns_receiver]` consuming-self
+    /// method. Its result is the exact receiver owner, never a fresh owner.
+    pub returns_receiver_identity: bool,
     /// `true` iff this `fn_sig` was registered for a builtin enum variant
     /// (e.g. `LookupError::NotFound`, `SendError::Timeout`).
     ///
@@ -2292,6 +2350,7 @@ impl Default for FnSig {
             extern_symbol: None,
             requires_mutable_receiver: false,
             consumes_receiver: false,
+            returns_receiver_identity: false,
             is_builtin_variant: false,
         }
     }
@@ -2384,10 +2443,94 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-side accumulator for
+    /// [`TypeCheckOutput::produced_value_ownership`].
+    pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
+    /// Resolved direct/indirect call ownership facts produced by call
+    /// resolution and consumed by the expression-result publisher.
+    pub(super) resolved_direct_call_ownership: HashMap<SpanKey, PendingDirectCallOwnership>,
+    /// Resolved inherent/impl/static/dyn/var-self method-site facts.
+    pub(super) resolved_method_call_ownership: HashMap<SpanKey, PendingMethodCallOwnership>,
+    /// Parent expression edges recomputed after every call leaf and deferred
+    /// dispatch fact has reached its final form.
+    pub(super) produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
+    /// Source expression occurrences that have passed the central public
+    /// completion hook. `record_type` may seed a conservative raw fact for a
+    /// checker-synthetic span; this set lets the real expression publisher
+    /// replace that seed exactly once without double-running side effects when
+    /// `check_against` delegates through `synthesize`.
+    pub(super) published_value_occurrences: HashSet<SpanKey>,
+    /// Expected `(has_receiver, source_argument_count)` for every resolved
+    /// call publication site.
+    pub(super) produced_call_arities: HashMap<SpanKey, (bool, usize)>,
+    /// Per-formal ownership disposition keyed by canonical function identity.
+    pub(super) fn_param_ownership:
+        HashMap<String, Vec<crate::runtime_call::ProducedArgumentBoundary>>,
+    /// Declaring provenance for attributed methods, keyed by canonical
+    /// `Type::method` signature identity.
+    pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
+    /// Origin override used only while registering compiler-embedded stdlib
+    /// source; unlike `current_module`, it never changes lookup keys.
+    pub(super) registration_origin_module: Option<String>,
+    /// Exact module owners whose source path was selected by the canonical
+    /// stdlib search-path authority for this check. A `std.*` spelling alone
+    /// is not trusted: user packages may use the same path.
+    pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Source files assembled into each module of this check's graph.
+    ///
+    /// A directory module owns its primary file plus every peer `.hew` file in
+    /// that directory, so importing both `std::net::http` and its
+    /// `http_client` peer registers one declaration under two owners. This map
+    /// is what lets a consumer prove that relation from the graph rather than
+    /// guessing it from the two owner spellings.
+    pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Per-item defining source file for each graph module (parallel to the
+    /// module's items), captured from `ModuleGraph::item_sources` at
+    /// `check_program` entry. Item spans are file-relative byte offsets with
+    /// no file identity, so this table is the sole sound authority for "which
+    /// file declared item N of directory module M" (rc1-F1 stage C).
+    pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
+    /// Defining source file of the item currently being registered, when the
+    /// enclosing module recorded per-item attribution. `None` for the root
+    /// unit and for hand-built module graphs.
+    pub(super) current_item_source: Option<std::path::PathBuf>,
+    /// Type names declared per source FILE (populated during type
+    /// collection from per-item attribution). This is the lexical authority
+    /// behind extern-signature nominal identity: a bare name in an extern
+    /// signature declared in the item's own file — or in exactly one sibling
+    /// file of its module — resolves to that FILE's minted identity, so the
+    /// same declaration reached through peer assembly and through a direct
+    /// submodule import compares equal by identity (rc1-F1 stage C).
+    pub(super) file_type_decls: HashMap<std::path::PathBuf, HashSet<String>>,
+    /// Canonical stdlib owners compiled as the root source unit itself. This
+    /// is narrower than `canonical_std_module_sources`, which also contains
+    /// imported stdlib modules in an ordinary user program.
+    pub(super) canonical_std_root_sources: HashSet<String>,
+    /// Whether the module currently undergoing signature registration came
+    /// from a file-path import. Those items are flattened into the root program
+    /// before HIR lowering, so their declaration IDs are root-owned even though
+    /// their checker spans retain the source module index.
+    pub(super) registration_is_flat_file_import: bool,
+    /// Checker-side accumulator for
+    /// [`TypeCheckOutput::caller_visible_param_projections`].
+    pub(super) caller_visible_param_projections: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    pub(super) method_call_discharges_receiver: HashSet<SpanKey>,
+    pub(super) method_call_preserves_receiver_identity: HashSet<SpanKey>,
+    /// Source extern declarations retained until the output boundary, where
+    /// they are joined to the generated FFI ownership graph.
+    pub(super) source_extern_declarations: Vec<SourceExternDeclaration>,
+    /// Direct resolved import targets for the module whose declarations are
+    /// currently being registered. Cleared between module-graph nodes.
+    pub(super) current_module_direct_imports: BTreeSet<String>,
+    /// Direct resolved import EDGES (target module, import spec) for the
+    /// module whose declarations are currently being registered. The spec is
+    /// what decides which names an import binds bare — an aliased item
+    /// import binds only its alias. Cleared between module-graph nodes.
+    pub(super) current_module_direct_import_bindings: Vec<(String, Option<ImportSpec>)>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -2424,6 +2567,9 @@ pub struct Checker {
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
     pub(super) deferred_vec_admission: HashMap<SpanKey, DeferredVecAdmission>,
+    /// Built-in value-container clone checks deferred until after inference.
+    /// Keyed by clone call-site span.
+    pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
@@ -2450,6 +2596,10 @@ pub struct Checker {
     /// `await listener.accept()` suspending-accept sites. Mirrors
     /// [`TypeCheckOutput::listener_await_accepts`].
     pub(super) listener_await_accepts: HashSet<SpanKey>,
+    /// Exact receiver nominal proven when a suspending network method is
+    /// admitted. Ownership publication requires this witness in addition to
+    /// the public lowering side-table membership.
+    pub(super) suspending_io_receiver_nominals: HashMap<SpanKey, String>,
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
@@ -2470,6 +2620,39 @@ pub struct Checker {
     pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    /// Closed runtime call families published by compiler builtin
+    /// registration.  This is deliberately distinct from `fn_sigs`: a
+    /// signature name is an open-set source lookup key, whereas this table is
+    /// the checker-owned executable authority for compiler-provided builtins.
+    pub(super) runtime_builtin_targets: HashMap<String, crate::runtime_call::RuntimeCallFamily>,
+    /// Exact import bindings for free functions. Values retain the source
+    /// declaration identity (`owner.OriginalName`), so an aliased import never
+    /// causes the call-target boundary to manufacture `owner.Alias`.
+    pub(super) import_fn_name_aliases: HashMap<(Option<String>, String), String>,
+    /// Every source declaration published into a bare free-function binding.
+    /// The single-valued signature table is only a compatibility lookup index;
+    /// call resolution must reject a binding with more than one exact owner.
+    pub(super) published_bare_function_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    /// Every source declaration published into a bare constant binding.  Like
+    /// functions, constants share an env slot for legacy lookup, so this exact
+    /// owner set is the ambiguity authority at identifier use sites.
+    pub(super) published_bare_const_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    /// Per-call target facts for ordinary `Expr::Call` expressions.
+    pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Checker-owned canonical declaration ids for trait methods. Keys are
+    /// owner-qualified source spellings, never linker symbols.
+    pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Source-owned trait method IDs as exposed through an exact source
+    /// binding. Lookup registries may retain short compatibility keys, but
+    /// call targets use this full-path table and never mint identities from
+    /// those keys.
+    pub(super) trait_method_ids_by_binding:
+        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+    /// Declaration identities for impl methods, keyed by the checker-selected
+    /// dispatch symbol. These are allocated while registering the source impl
+    /// and selected at the call site; receiver monomorphisations must not mint
+    /// new declaration identities.
+    pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
@@ -2515,11 +2698,21 @@ pub struct Checker {
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — keyed by
+    /// the canonical declaration identity (`{module}.{name}`, root included
+    /// via the minted root identity), so declaration-authority probes share
+    /// one key shape with the signature registry and never miss on
+    /// alignment. The stored module (`None` = root) remains the
+    /// display/provenance axis for diagnostics and the legacy root render.
     pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
     /// Declared visibility for each function, keyed by the same registry key used
-    /// in `fn_def_spans` (scoped name: `{module}.{name}` or bare for root).
+    /// in `fn_def_spans`.
     /// Populated alongside `fn_def_spans` during `collect_function_item` and when
     /// cross-module functions are registered in the import-surface passes.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` (co-minted
+    /// with `fn_def_spans` under the canonical declaration key).
     pub(super) fn_visibility: HashMap<String, Visibility>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
@@ -2754,6 +2947,23 @@ pub struct Checker {
     /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
     /// leaking through to the bare-identifier "undefined variable" fallback.
     pub(super) module_type_exports: HashMap<String, HashSet<String>>,
+    /// Canonical full source module for each lexical whole-module binding.
+    ///
+    /// For `import std::failure as f`, `(current_module, "f")` maps to
+    /// `"std.failure"`.  Qualified lifecycle types use this table to preserve
+    /// their canonical source identity instead of treating the alias spelling
+    /// (`f.CrashNotification`) as a distinct nominal type.  The key is scoped
+    /// to the importer, so an alias imported by a sibling cannot authorize the
+    /// current module.
+    pub(super) module_import_bindings: HashMap<(Option<String>, String), String>,
+    /// Lifecycle identities authorized for one lexical import binding.
+    ///
+    /// Entries are `(importing_module, binding, canonical_identity)`, for
+    /// example `(None, "f", "std.failure.CrashNotification")`. Unlike ordinary
+    /// type visibility and import tables, this authority is written only after
+    /// the import target's exact source path has been proven to be the shipped
+    /// `std.failure` or `std.link_monitor` source.
+    pub(super) canonical_lifecycle_import_authority: HashSet<(Option<String>, String, String)>,
     /// Qualified type names (`module.Type`) for which a visibility-violation
     /// diagnostic has already been emitted in the current check pass.  Prevents
     /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
@@ -2877,6 +3087,13 @@ pub struct Checker {
     pub(super) published_bare_trait_owners:
         HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
+    ///
+    /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` — caller
+    /// keys are `current_function` (a canonical fn-sig key) and callee keys
+    /// are the resolved fn-sig keys, so dead-code reachability joins against
+    /// canonical `fn_def_spans` without a bare/scoped rewrite. Bare callee
+    /// entries remain for builtins/externs, which have no declaration span
+    /// and never participate in dead-code findings.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
     pub(super) current_function: Option<String>,
@@ -2928,6 +3145,20 @@ pub struct Checker {
     pub(super) task_scope_depth: u32,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
+    /// The compile's identity interner (rc1-F1 stage A). Minted once in
+    /// `check_program` from the module graph before any registration pass;
+    /// moved into [`TypeCheckOutput::identity`] at publication. The root
+    /// compilation unit's canonical identity (when it has a source) lives
+    /// here — `identity.root_module_path()` — and is the authority the
+    /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
+    pub(super) identity: crate::identity::IdentityTable,
+    /// The compile's single-owner extern contract table (rc1-F1 stage B).
+    /// The ONE authority for extern symbol identity and `unsafe` gating:
+    /// contracts are minted at `register_extern_block`, contract-less extern
+    /// declarations (registry imports, layout-witness builtins) register as
+    /// declaration-only entries. Moved into
+    /// [`TypeCheckOutput::extern_contracts`] at publication.
+    pub(super) extern_table: crate::extern_table::ExternTable,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -2972,6 +3203,22 @@ pub struct Checker {
     /// may only be assigned inside `init`; handlers and methods must declare
     /// the field with `var` to write it).
     pub(super) current_actor_fields: Vec<ActorFieldInfo>,
+    /// Nesting depth of "this expression is the BASE of a projection, not a
+    /// whole-value use".
+    ///
+    /// Reading `h.sock` reads `h` too, but only as the address the projection
+    /// starts from — it does not hand anyone the whole aggregate. Without the
+    /// distinction the partially-moved-root rule would reject every sibling
+    /// access after a field transfer, which is exactly the precision the rule
+    /// exists to preserve.
+    pub(super) place_base_depth: usize,
+    /// Nesting depth of "this expression is an assignment TARGET place".
+    ///
+    /// A target is written, not read: it neither consumes the old value nor
+    /// requires one to still be there. Combined with `place_base_depth == 0`
+    /// it identifies the OUTERMOST target place, which is exactly the place a
+    /// plain `=` re-initialises.
+    pub(super) place_write_depth: usize,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an
@@ -2997,8 +3244,6 @@ pub struct Checker {
     /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
     /// stack used for `Self::Bar` lookup during impl-body checking.
     pub(super) impl_assoc_type_bindings: HashMap<(String, String, String), Ty>,
-    /// Names of functions that require an unsafe block to call.
-    pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
     /// Whether the program under check is a synthetic `hew eval` REPL fragment.
@@ -3080,7 +3325,8 @@ pub struct Checker {
     pub(super) last_lambda_generic_sig: Option<GenericLambdaSig>,
     /// Range bounds whose element type is deferred until surrounding inference
     /// settles. Each entry is:
-    ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated)
+    ///   (outer-span, element-TypeVar, literal-value-if-any, inner-operand-span-if-negated,
+    ///    module-idx, identifier-binding-var-if-any)
     /// The fourth field carries the inner literal span when the bound is a
     /// negated integer literal (`-5`) so `apply_deferred_range_bound_types`
     /// can re-record the inner span too.  Without this, the inner literal's
@@ -3088,20 +3334,49 @@ pub struct Checker {
     /// `materialize_literal_defaults`), while the outer span is correctly
     /// narrowed to the resolved type (e.g. `I32`), causing a
     /// `UnaryOperatorUnsupportedInMir` width mismatch in HIR.
+    /// The sixth field carries the bound's own binding `TypeVar` when the
+    /// bound is a bare identifier referring to an unannotated `let` literal
+    /// (`let n = 6; ... 0 .. n`) — see `coercible_identifier_binding_var`.
+    /// That identifier's own var is a SEPARATE unknown from the range's
+    /// element var; without also promoting it here, the identifier's
+    /// declaration-site type stays defaulted to `i64` even after the range's
+    /// element var narrows to a concrete width elsewhere (e.g. `i32` from a
+    /// loop-variable use-site constraint), producing a self-inconsistent
+    /// range MIR fail-closes on.
     /// Processed in `apply_deferred_range_bound_types` after all inference and
     /// literal defaulting is complete.
-    // The tuple carries (span, var, literal_value, inner_span, module_idx). A named
-    // struct would be cleaner but the field is private and short-lived — it never
-    // escapes the deferred-resolution pass.
+    // The tuple carries (span, var, literal_value, inner_span, module_idx,
+    // identifier_binding_var). A named struct would be cleaner but the field is
+    // private and short-lived — it never escapes the deferred-resolution pass.
     #[allow(
         clippy::type_complexity,
         reason = "short-lived tuple; a named struct would be overkill for an internal deferred-resolution pass"
     )]
-    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>, Option<Span>, u32)>,
+    pub(super) deferred_range_bounds: Vec<(
+        Span,
+        TypeVar,
+        Option<i64>,
+        Option<Span>,
+        u32,
+        Option<TypeVar>,
+    )>,
+    /// Maps a literal-defaulting `TypeVar` (created by
+    /// `infer_integer_literal_binding_type` for an unannotated `let`/`var`
+    /// integer literal) back to the span + module index where that literal
+    /// was recorded, so `apply_deferred_range_bound_types` can re-record the
+    /// DECLARATION site when it promotes such a var via a range-bound
+    /// identifier reference — not just the reference site that triggered the
+    /// promotion. See the call site in `infer_integer_literal_binding_type`.
+    pub(super) literal_binding_value_spans: HashMap<TypeVar, (Span, u32)>,
     /// Intrinsic declarations seen during registration: fn name → intrinsic key.
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
     /// Moved into `TypeCheckOutput::intrinsic_declarations` at `check_program` exit.
+    ///
+    /// rc1-F1 stage A classification: CANONICAL-BY-CONSTRUCTION — the
+    /// `E_INTRINSIC_OUTSIDE_FLOOR` module-axis gate restricts declarations
+    /// to stdlib-floor modules, so every key is already a module-qualified
+    /// `std.*` path; the root unit cannot mint an entry. No re-keying needed.
     pub(super) intrinsic_declarations: HashMap<String, String>,
     /// Per-arm pattern resolutions accumulated during match checking.
     ///
@@ -3254,10 +3529,32 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            resolved_direct_call_ownership: HashMap::new(),
+            resolved_method_call_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
+            published_value_occurrences: HashSet::new(),
+            produced_call_arities: HashMap::new(),
+            fn_param_ownership: HashMap::new(),
+            extern_method_origins: HashMap::new(),
+            registration_origin_module: None,
+            canonical_std_module_sources: HashSet::new(),
+            module_source_paths: HashMap::new(),
+            module_item_sources: HashMap::new(),
+            current_item_source: None,
+            file_type_decls: HashMap::new(),
+            canonical_std_root_sources: HashSet::new(),
+            registration_is_flat_file_import: false,
+            caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_discharges_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            source_extern_declarations: Vec::new(),
+            current_module_direct_imports: BTreeSet::new(),
+            current_module_direct_import_bindings: Vec::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
@@ -3267,6 +3564,7 @@ impl Checker {
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
+            deferred_builtin_clone_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
@@ -3278,6 +3576,7 @@ impl Checker {
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
+            suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),
@@ -3285,6 +3584,14 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            runtime_builtin_targets: HashMap::new(),
+            import_fn_name_aliases: HashMap::new(),
+            published_bare_function_owners: HashMap::new(),
+            published_bare_const_owners: HashMap::new(),
+            direct_call_targets: HashMap::new(),
+            trait_method_ids: HashMap::new(),
+            trait_method_ids_by_binding: HashMap::new(),
+            impl_method_declaration_ids: HashMap::new(),
             root_value_bindings: HashSet::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
@@ -3350,6 +3657,8 @@ impl Checker {
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
+            module_import_bindings: HashMap::new(),
+            canonical_lifecycle_import_authority: HashSet::new(),
             reported_type_visibility_violations: HashSet::new(),
             reported_undefined_named_types: HashSet::new(),
             reported_borrow_types_outside_extern: HashSet::new(),
@@ -3374,6 +3683,8 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
+            identity: crate::identity::IdentityTable::new(),
+            extern_table: crate::extern_table::ExternTable::new(),
             cross_module_colliding_record_names: HashSet::new(),
             generic_layout_instantiations: HashMap::new(),
             reported_generic_layout_collisions: HashSet::new(),
@@ -3385,11 +3696,12 @@ impl Checker {
             current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
+            place_base_depth: 0,
+            place_write_depth: 0,
             actor_protocol_descriptors: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
-            unsafe_functions: HashSet::new(),
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,
@@ -3407,6 +3719,7 @@ impl Checker {
             lambda_poly_sig_map: HashMap::new(),
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
+            literal_binding_value_spans: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pending_let_closure_name: None,
             pending_pattern_resolutions: HashMap::new(),

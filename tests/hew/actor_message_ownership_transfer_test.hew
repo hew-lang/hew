@@ -1,0 +1,199 @@
+//! An owned value handed to an actor is owned by the RECEIVING frame, exactly
+//! once, and the caller's binding is dead afterwards.
+//!
+//! MIR moves every actor message argument out of the caller frame and mints the
+//! delivered copy a scope-exit owner in the handler. This suite pins the
+//! ACCEPT side of that contract for each value class the boundary treats
+//! differently — the reject side (a caller reusing a transferred resource, or
+//! one resource reaching two select arms) is pinned by the env-checker suite in
+//! `hew-types`, because a rejected program cannot appear in a compiled corpus.
+//!
+//! Assertions pin exact values: a handler that received a stale or aliased
+//! resource would read a different `fd`, and a copy-on-write argument that was
+//! wrongly stolen would give the caller a different length on the second send.
+
+import std::testing;
+
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+#[linear]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn redeem(consuming self) -> i64 {
+        self.id
+    }
+}
+
+actor Sink {
+    receive fn take_socket(s: Socket) -> i64 {
+        return s.detach();
+    }
+    receive fn take_ticket(t: Ticket) -> i64 {
+        return t.redeem();
+    }
+    receive fn count(n: i64) -> i64 {
+        return n;
+    }
+    receive fn measure(text: string) -> i64 {
+        return text.len();
+    }
+    receive fn hold(h: Holder) -> i64 {
+        return h.socket.detach();
+    }
+}
+
+actor Leaf {
+    receive fn value(n: i64) -> i64 {
+        return n;
+    }
+}
+
+actor Peer {
+    let leaf: LocalPid<Leaf>;
+    receive fn relay(n: i64) -> i64 {
+        match await leaf.value(n) {
+            Ok(v) => {
+                return v;
+            },
+            Err(_) => {
+                return -1;
+            },
+        }
+    }
+}
+
+type Holder {
+    socket: Socket;
+}
+
+actor Racer {
+    let left: LocalPid<Sink>;
+    let right: LocalPid<Sink>;
+
+    // Two DISTINCT resources, one per arm: each arm's source is issued before
+    // dispatch, so each socket is transferred exactly once. The winner's exact
+    // fd proves the arms did not cross their payloads.
+    receive fn run_pair() -> i64 {
+        let a = Socket { fd: 21 };
+        let b = Socket { fd: 22 };
+        let winner = select {
+            reply from left.take_socket(a) => reply,
+            reply from right.take_socket(b) => reply,
+            after 2s => -1,
+        };
+        return winner;
+    }
+}
+
+#[test]
+fn resource_transferred_to_ask_handler_is_detached_there() {
+    let sink = spawn Sink;
+    let s = Socket { fd: 7 };
+    match await sink.take_socket(s) {
+        Ok(v) => testing.assert_eq(v, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn linear_transferred_to_ask_handler_is_redeemed_there() {
+    let sink = spawn Sink;
+    let t = Ticket { id: 13 };
+    match await sink.take_ticket(t) {
+        Ok(v) => testing.assert_eq(v, 13),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn distinct_resources_across_select_arms_each_transfer_once() {
+    let sink = spawn Sink;
+    let other = spawn Sink;
+    let racer = spawn Racer(left: sink, right: other);
+    // Both arm sources run; whichever reply wins must carry one of the two
+    // fds, never the deadline sentinel and never a crossed value.
+    match await racer.run_pair() {
+        Ok(v) => testing.assert_true(v == 21 || v == 22),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn copyable_argument_survives_repeated_sends() {
+    // A bit-copyable scalar is not an ownership transfer: the caller keeps it.
+    let sink = spawn Sink;
+    let n = 41;
+    match await sink.count(n) {
+        Ok(v) => testing.assert_eq(v, 41),
+        Err(_) => testing.assert_true(false),
+    }
+    match await sink.count(n) {
+        Ok(v) => testing.assert_eq(v, 41),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn cow_argument_survives_repeated_sends() {
+    // A copy-on-write value crosses the boundary as a copy; the caller's own
+    // binding stays intact and usable after two sends.
+    let sink = spawn Sink;
+    let text = "abcde";
+    match await sink.measure(text) {
+        Ok(v) => testing.assert_eq(v, 5),
+        Err(_) => testing.assert_true(false),
+    }
+    match await sink.measure(text) {
+        Ok(v) => testing.assert_eq(v, 5),
+        Err(_) => testing.assert_true(false),
+    }
+    testing.assert_eq(text.len(), 5);
+}
+
+#[test]
+fn record_carrying_a_resource_transfers_it_to_the_handler() {
+    // The record is a plain aggregate; the `Socket` inside it is what owns.
+    // The handler detaching the exact fd proves the resource arrived intact
+    // and that this frame is where it is consumed.
+    let sink = spawn Sink;
+    let h = Holder { socket: Socket { fd: 31 } };
+    match await sink.hold(h) {
+        Ok(v) => testing.assert_eq(v, 31),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn one_actor_reference_shared_by_two_peers_still_runs() {
+    // An actor reference is NOT an ownership transfer: a pid's drop frees
+    // nothing. Handing one leaf to two peers must keep compiling AND running,
+    // and the caller must still be able to use its own handle afterwards.
+    let leaf = spawn Leaf;
+    let a = spawn Peer(leaf: leaf);
+    let b = spawn Peer(leaf: leaf);
+    match await a.relay(5) {
+        Ok(v) => testing.assert_eq(v, 5),
+        Err(_) => testing.assert_true(false),
+    }
+    match await b.relay(6) {
+        Ok(v) => testing.assert_eq(v, 6),
+        Err(_) => testing.assert_true(false),
+    }
+    match await leaf.value(7) {
+        Ok(v) => testing.assert_eq(v, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}

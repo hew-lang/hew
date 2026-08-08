@@ -184,16 +184,16 @@ fn test_glob_import_resolution() {
     let output = checker.check_program(&program);
 
     assert!(
-        output.fn_sigs.contains_key("utils.helper"),
-        "glob import should register qualified 'utils.helper'"
+        output.fn_sigs.contains_key("myapp.utils.helper"),
+        "glob import should register qualified 'myapp.utils.helper'"
     );
     assert!(
         output.fn_sigs.contains_key("helper"),
         "glob import should register unqualified 'helper'"
     );
     assert!(
-        output.fn_sigs.contains_key("utils.other"),
-        "glob import should register qualified 'utils.other'"
+        output.fn_sigs.contains_key("myapp.utils.other"),
+        "glob import should register qualified 'myapp.utils.other'"
     );
     assert!(
         output.fn_sigs.contains_key("other"),
@@ -237,8 +237,8 @@ fn test_named_import_selective_resolution() {
         "non-imported 'other' must NOT be unqualified"
     );
     // Both should still be available qualified
-    assert!(output.fn_sigs.contains_key("utils.helper"));
-    assert!(output.fn_sigs.contains_key("utils.other"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
 }
 
 // ── generic bounds across module imports ─────────────────────────────────────
@@ -318,7 +318,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("widgets.describe"),
+        output.fn_sigs.contains_key("myapp.widgets.describe"),
         "module-qualified imported generic should be registered"
     );
     assert!(
@@ -331,7 +331,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .get(&SpanKey::from(&call_span))
         .expect("imported generic call should record inferred type args");
     // The glob import PUBLISHES `Label` bare, so a bare `Label` binds to its
-    // owner's QUALIFIED identity (`widgets.Label`) — the per-module-type-identity
+    // owner's QUALIFIED identity (`myapp.widgets.Label`) — the per-module-type-identity
     // discipline that keeps a sibling module's same-bare-name `Label` from
     // colliding on one last-write-wins key downstream. The C1 layout authority
     // shortens the qualifier back to bare on the non-colliding layout lookup.
@@ -339,7 +339,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         inferred,
         &vec![Ty::Named {
             builtin: None,
-            name: "widgets.Label".to_string(),
+            name: "myapp.widgets.Label".to_string(),
             args: vec![],
         }]
     );
@@ -716,7 +716,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
     let param = sig.params.first().expect("take_alpha has one param");
     match param {
         Ty::Named { name, .. } => assert_eq!(
-            name, "alpha.Value",
+            name, "pkg.alpha.Value",
             "param type must carry the module qualifier into the resolved sig"
         ),
         other => panic!("expected Ty::Named, got {other:?}"),
@@ -1290,8 +1290,8 @@ fn test_actor_bare_import_registers_type_and_methods() {
     // bare key is never written for module actors so a second same-named
     // import cannot clobber another module's actor.
     assert!(
-        output.type_defs.contains_key("mymod.MyActor"),
-        "qualified 'mymod.MyActor' should be registered"
+        output.type_defs.contains_key("app.mymod.MyActor"),
+        "qualified 'app.mymod.MyActor' should be registered"
     );
     assert!(
         !output.type_defs.contains_key("MyActor"),
@@ -1299,17 +1299,17 @@ fn test_actor_bare_import_registers_type_and_methods() {
     );
 
     // Actor type should have the Actor kind under its qualified identity
-    let def = output.type_defs.get("mymod.MyActor").unwrap();
+    let def = output.type_defs.get("app.mymod.MyActor").unwrap();
     assert!(
         matches!(def.kind, TypeDefKind::Actor),
-        "mymod.MyActor should be TypeDefKind::Actor, got {:?}",
+        "app.mymod.MyActor should be TypeDefKind::Actor, got {:?}",
         def.kind
     );
 
     // Receive fn should be registered under the dotted actor identity
     assert!(
-        output.fn_sigs.contains_key("mymod.MyActor::ping"),
-        "receive fn should be registered as 'mymod.MyActor::ping'"
+        output.fn_sigs.contains_key("app.mymod.MyActor::ping"),
+        "receive fn should be registered as 'app.mymod.MyActor::ping'"
     );
     assert!(
         !output.fn_sigs.contains_key("MyActor::ping"),
@@ -1346,9 +1346,9 @@ fn test_actor_glob_import_registers_unqualified() {
     // The dotted key is the actor's identity even under a glob import;
     // unqualified ACCESS resolves through the local-first bare-name
     // resolution at spawn/annotation sites, not a bare registry copy.
-    assert!(output.type_defs.contains_key("mymod.Greeter"));
+    assert!(output.type_defs.contains_key("app.mymod.Greeter"));
     assert!(!output.type_defs.contains_key("Greeter"));
-    assert!(output.fn_sigs.contains_key("mymod.Greeter::greet"));
+    assert!(output.fn_sigs.contains_key("app.mymod.Greeter::greet"));
     assert!(!output.fn_sigs.contains_key("Greeter::greet"));
 }
 
@@ -1388,12 +1388,12 @@ fn test_actor_named_import_selective() {
     // Both actors register under their dotted identity only; the named
     // import binding ("Counter") resolves through `unqualified_to_module`
     // at reference sites rather than a bare registry copy.
-    assert!(output.type_defs.contains_key("mymod.Counter"));
+    assert!(output.type_defs.contains_key("app.mymod.Counter"));
     assert!(!output.type_defs.contains_key("Counter"));
-    assert!(output.fn_sigs.contains_key("mymod.Counter::increment"));
+    assert!(output.fn_sigs.contains_key("app.mymod.Counter::increment"));
     assert!(!output.fn_sigs.contains_key("Counter::increment"));
 
-    assert!(output.type_defs.contains_key("mymod.Timer"));
+    assert!(output.type_defs.contains_key("app.mymod.Timer"));
     assert!(!output.type_defs.contains_key("Timer"));
 }
 
@@ -1425,9 +1425,9 @@ fn test_actor_multiple_receive_fns() {
         output.errors
     );
 
-    assert!(output.fn_sigs.contains_key("cache.Cache::get"));
-    assert!(output.fn_sigs.contains_key("cache.Cache::set"));
-    assert!(output.fn_sigs.contains_key("cache.Cache::delete"));
+    assert!(output.fn_sigs.contains_key("app.cache.Cache::get"));
+    assert!(output.fn_sigs.contains_key("app.cache.Cache::set"));
+    assert!(output.fn_sigs.contains_key("app.cache.Cache::delete"));
 }
 
 #[test]
@@ -1458,12 +1458,12 @@ fn test_actor_and_function_coexist_in_module() {
     );
 
     // Actor registered under its dotted identity
-    assert!(output.type_defs.contains_key("workers.Worker"));
-    assert!(output.fn_sigs.contains_key("workers.Worker::run"));
+    assert!(output.type_defs.contains_key("app.workers.Worker"));
+    assert!(output.fn_sigs.contains_key("app.workers.Worker::run"));
 
     // Function registered (functions keep their bare glob-import binding)
     assert!(output.fn_sigs.contains_key("create_worker"));
-    assert!(output.fn_sigs.contains_key("workers.create_worker"));
+    assert!(output.fn_sigs.contains_key("app.workers.create_worker"));
 }
 
 #[test]

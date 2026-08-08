@@ -18,6 +18,46 @@ use std::fmt;
 
 use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
+use crate::{DefId, NominalId};
+
+/// A concrete use of a declared nominal type.
+///
+/// `nominal` is the declaration identity; `args` are an instance payload and
+/// are never folded into a leaf-name lookup key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NominalInstance {
+    pub nominal: NominalId,
+    pub args: Vec<ResolvedTy>,
+}
+
+/// Allocate the direct-body identity for a trait default materialized in one
+/// concrete impl. The trait method identity remains the dispatch key; this
+/// identity names the selected body for the exact receiver instance.
+#[must_use]
+pub fn default_impl_method_declaration(
+    declaring_trait: &DefId,
+    receiver: &NominalInstance,
+    method: &str,
+) -> DefId {
+    let nominal = receiver.nominal.full_path();
+    let rendered_receiver = if receiver.args.is_empty() {
+        nominal.to_string()
+    } else {
+        format!(
+            "{nominal}<{}>",
+            receiver
+                .args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    DefId::new(format!(
+        "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
+        declaring_trait.full_path(),
+    ))
+}
 
 /// A fully-resolved, concrete type that has crossed the checker output
 /// boundary.
@@ -266,6 +306,28 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// Return the canonical nominal instance carried by a user named type.
+    ///
+    /// The checker canonicalises imported names before its output boundary, so
+    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
+    /// semantic nominal identity. Builtins and abstract parameters have their
+    /// own closed discriminators and therefore do not produce a user nominal.
+    #[must_use]
+    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+        match self {
+            Self::Named {
+                name,
+                args,
+                builtin: None,
+                ..
+            } => Some(NominalInstance {
+                nominal: NominalId::new(name.clone()),
+                args: args.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {
@@ -362,6 +424,126 @@ impl ResolvedTy {
             // `lower_numeric_cast`'s dedicated char->int arm (zero-extend /
             // truncate from the i32 codepoint storage).
             || (*self == Self::Char && target.is_integer())
+    }
+
+    /// Whether a checker-selected common numeric type may normalize this value
+    /// implicitly at a downstream HIR/MIR join boundary.
+    ///
+    /// This is deliberately narrower than an explicit `as` cast: fixed-width
+    /// integers must keep signedness and may only widen, platform-sized
+    /// integers combine only with their exact own type, floats may only widen,
+    /// and an integer may normalize to a concrete float selected by the
+    /// checker. Keeping this authority on `ResolvedTy` lets HIR verification
+    /// and MIR emission agree without inferring semantics from storage widths.
+    #[must_use]
+    pub fn can_implicitly_numeric_normalize_to(&self, target: &Self) -> bool {
+        fn fixed_width(ty: &ResolvedTy) -> Option<u8> {
+            match ty {
+                ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
+                ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
+                ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
+                ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
+                _ => None,
+            }
+        }
+
+        if self == target {
+            return self.is_numeric();
+        }
+        if matches!(self, Self::Isize | Self::Usize) || matches!(target, Self::Isize | Self::Usize)
+        {
+            return false;
+        }
+        if self.is_integer() && target.is_float() {
+            return true;
+        }
+        if self.is_float() && target.is_float() {
+            return matches!((self, target), (Self::F32, Self::F64));
+        }
+        if !(self.is_integer() && target.is_integer())
+            || self.is_signed_integer() != target.is_signed_integer()
+        {
+            return false;
+        }
+        matches!((fixed_width(self), fixed_width(target)), (Some(from), Some(to)) if from <= to)
+    }
+
+    /// Whether two resolved types denote the same ownership-bearing storage.
+    /// Exact equality remains authoritative for user and opaque nominals. A
+    /// compiler builtin may retain different presentation names across source
+    /// boundaries, so its discriminator and recursively congruent arguments
+    /// provide the stable identity in that case.
+    #[must_use]
+    pub fn is_storage_congruent_with(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        match (self, other) {
+            (
+                Self::Named {
+                    args: left_args,
+                    builtin: Some(left_builtin),
+                    is_opaque: false,
+                    ..
+                },
+                Self::Named {
+                    args: right_args,
+                    builtin: Some(right_builtin),
+                    is_opaque: false,
+                    ..
+                },
+            ) => {
+                left_builtin == right_builtin
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+            }
+            (Self::Tuple(left), Self::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+            }
+            (Self::Array(left, left_size), Self::Array(right, right_size)) => {
+                left_size == right_size && left.is_storage_congruent_with(right)
+            }
+            (Self::Slice(left), Self::Slice(right))
+            | (Self::Task(left), Self::Task(right))
+            | (Self::Borrow { pointee: left }, Self::Borrow { pointee: right }) => {
+                left.is_storage_congruent_with(right)
+            }
+            (
+                Self::Pointer {
+                    is_mutable: left_mutable,
+                    pointee: left,
+                },
+                Self::Pointer {
+                    is_mutable: right_mutable,
+                    pointee: right,
+                },
+            ) => left_mutable == right_mutable && left.is_storage_congruent_with(right),
+            (
+                Self::Function {
+                    params: left_params,
+                    ret: left_ret,
+                },
+                Self::Function {
+                    params: right_params,
+                    ret: right_ret,
+                },
+            ) => {
+                left_params.len() == right_params.len()
+                    && left_params
+                        .iter()
+                        .zip(right_params)
+                        .all(|(left, right)| left.is_storage_congruent_with(right))
+                    && left_ret.is_storage_congruent_with(right_ret)
+            }
+            _ => false,
+        }
     }
 
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].
@@ -967,6 +1149,38 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_congruence_uses_nested_builtin_identity() {
+        let short = ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![ResolvedTy::named_builtin(
+                "Sender",
+                crate::BuiltinType::Sender,
+                vec![ResolvedTy::I64],
+            )],
+        );
+        let qualified = ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![ResolvedTy::named_builtin(
+                "std.channel.Sender",
+                crate::BuiltinType::Sender,
+                vec![ResolvedTy::I64],
+            )],
+        );
+        assert!(short.is_storage_congruent_with(&qualified));
+
+        let foreign = ResolvedTy::named_user("user.channel.Sender", vec![ResolvedTy::I64]);
+        assert!(!short.is_storage_congruent_with(&ResolvedTy::named_builtin(
+            "Vec",
+            crate::BuiltinType::Vec,
+            vec![foreign],
+        )));
+        assert!(!ResolvedTy::named_user("left.Token", Vec::new())
+            .is_storage_congruent_with(&ResolvedTy::named_user("right.Token", Vec::new())));
+    }
 
     #[test]
     fn concrete_type_param_mangling_preserves_probe_encoding() {

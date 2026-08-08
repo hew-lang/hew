@@ -493,11 +493,9 @@ def test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers() ->
 
 # ── Finding 6: a build-artefact precondition behind a variable ────────────────
 #
-# `make test-rust` is proved reached by CONTAINMENT: CI runs every command the
-# recipe runs. When the recipe grew `test -f $(LIBHEW)` — an assertion that the
-# archive make just brought up to date is really on disk — the proof collapsed,
-# because the only `test -f` the checker classified was one on a literal
-# `target/…` path, and the output directory had moved behind a variable.
+# A target proved through containment may assert that an artefact declared in
+# its prerequisites exists. When the path moved behind a variable, an older
+# classifier lost that relationship and treated the assertion as opaque.
 #
 # The licence is the prerequisite, not the path. Everything else about
 # `test -f` stays unclassified.
@@ -532,42 +530,34 @@ def test_a_real_command_is_not_smuggled_in_as_a_precondition() -> None:
     )
 
 
-def test_the_real_test_rust_recipe_is_proved_from_its_prerequisites() -> None:
+def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
     known = set(prereqs) | phony
-    reached = {"check-libhew-fresh", "runtime", "wasm-runtime"}
-    assert gate.prove_contained(
+    workflows = gate.load_workflows()
+    commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
+    roots = gate.make_targets_in(commands, known)
+    reached = gate.close_over_makefile(roots, prereqs, recipes, known)
+    required = {
+        "test",
         "test-rust",
-        prereqs,
-        recipes,
-        reached,
-        known,
-        [],
-        ["cargo nextest run --workspace --profile ci"],
-        ["hew-cabi"],
-        set(),
-    ), (
-        "CI runs the workspace suite test-rust runs; the rest of the recipe is "
-        "a nextest probe and an archive precondition"
+        "check-libhew-fresh",
+        "libhew-debug",
+        "runtime",
+        "wasm-runtime",
+    }
+    assert required <= reached, (
+        "CI must execute the authoritative Make test edge and its native, WASI, "
+        f"and libhew prerequisites; missing {sorted(required - reached)}"
     )
 
 
 # ── Counterfactual: a parity marker is not an edge ────────────────────────────
 #
-# ci.yml annotates its workspace test step `run: >-  # parity-cmd: make test`,
-# and it is tempting to read that as wiring: check-preflight-ci-parity.sh knows
-# the convention, so the marker looks checked. It is not checked in the sense
-# reachability needs. That script asserts the NAMED command appears in the
-# dispatcher's CI_REQUIRED_CHECKS array and in its fallback command set; nothing
-# anywhere compares the workflow's `run:` body against what `make test` would
-# actually run. Honouring the marker would make a YAML comment plus a bash
-# array entry sufficient to declare a target reached — a mention promoted to an
-# edge, one indirection deeper than the release-gate.yml TODO that made this
-# checker necessary.
-#
-# `make test` is reached here on a proof instead: every command in its recipe
-# is a command CI demonstrably runs. That proof reads the real commands on both
-# sides, so it cannot be satisfied by writing a comment.
+# A `parity-cmd` annotation is metadata for the separate preflight-parity
+# checker, not an executable CI edge. Honouring the marker here would make a
+# YAML comment plus a dispatcher entry sufficient to declare a target reached.
+# The real workflow now executes `make test`; keep this counterfactual so a
+# future inline replacement cannot recover reachability through a comment.
 
 
 def test_a_parity_cmd_marker_is_not_an_edge() -> None:
@@ -597,6 +587,112 @@ def test_the_gate_has_no_marker_convention_at_all() -> None:
             f"{waiver} would be an exemption list under another name; an "
             "unreached gate is wired in or deleted"
         )
+
+
+# ── Finding 7: generic oracle/e2e gates and host release authorities ─────────
+#
+# `mqtt-broker-e2e` was a real Make target but neither of the old fixed-name
+# lists matched it, so A1 never asked whether CI ran it. The inverse mistake is
+# just as dangerous: `macos-leak-oracle` measures a local Darwin release host
+# with leaks(1), and a hosted macOS step must not be allowed to claim that
+# authority. These tests pin the two classes at the model boundary rather than
+# trusting workflow prose about either one.
+
+
+def test_a_new_unwired_generic_oracle_or_e2e_is_red() -> None:
+    phony = {"new-behaviour-oracle", "new-network-e2e", "ordinary-build"}
+    assert gate.ci_gate_targets(phony) == [
+        "new-behaviour-oracle",
+        "new-network-e2e",
+    ], "generic *-oracle/*-e2e names must join the CI-gate class automatically"
+    assert gate.unreached_ci_gates(phony, set()) == [
+        "new-behaviour-oracle",
+        "new-network-e2e",
+    ], "an unwired new oracle/e2e must be red, not invisible to A1"
+
+
+def test_a_named_host_authority_requires_a_real_uncommented_runner_port() -> None:
+    authority = gate.HostReleaseAuthority(
+        target="synthetic-darwin-oracle",
+        host="Darwin",
+        runner="scripts/synthetic-darwin-oracle.sh",
+    )
+    known = {authority.target}
+    assert not gate.host_release_authority_is_ported(
+        authority,
+        known,
+        {
+            authority.target: (
+                "# scripts/synthetic-darwin-oracle.sh\n@echo skipped on this host\n"
+            )
+        },
+    ), "a comment or a green skip cannot impersonate a local authority"
+    assert gate.host_release_authority_is_ported(
+        authority,
+        known,
+        {authority.target: "scripts/synthetic-darwin-oracle.sh\n"},
+    ), "the authority port is an exact executable runner command"
+
+
+def test_macos_leak_runner_rejects_a_non_darwin_host_before_measuring() -> None:
+    # Force the host classifier through PATH so this test is safe even when a
+    # developer happens to run it on a Darwin workstation: the runner must
+    # refuse the wrong host rather than printing a green skip.
+    runner = ROOT / "scripts" / "macos-leak-oracle.sh"
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_bin = Path(tmp) / "bin"
+        fake_bin.mkdir()
+        fake_uname = fake_bin / "uname"
+        fake_uname.write_text("#!/usr/bin/env bash\nprintf 'Linux\\n'\n")
+        fake_uname.chmod(0o755)
+        env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run(
+            ["bash", str(runner)],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Darwin is required" in result.stderr, result.stderr
+
+
+def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_authority() -> (
+    None
+):
+    expected = (
+        (ROOT / ".github" / "workflows" / "ci.yml", "build-and-test"),
+        (ROOT / ".github" / "workflows" / "release-gate.yml", "gate-linux"),
+    )
+    for path, job_name in expected:
+        workflow = gate._load_workflow(path)
+        job = next(job for job in workflow.jobs if job.ident == job_name)
+        runnable = [step.run or "" for step in job.steps if not step.disabled]
+        provision = next(
+            (index, run)
+            for index, run in enumerate(runnable)
+            if "mosquitto-clients" in run
+        )
+        oracle = next(
+            (index, run)
+            for index, run in enumerate(runnable)
+            if "make mqtt-broker-e2e" in run
+        )
+        assert "mosquitto_pub" in provision[1] and "mosquitto_sub" in provision[1], (
+            f"{path.name}:{job_name} must verify both MQTT client commands"
+        )
+        assert provision[0] < oracle[0], (
+            f"{path.name}:{job_name} must provision clients before the MQTT oracle"
+        )
+        assert any("make mqtt-broker-e2e" in run for run in runnable), (
+            f"{path.name}:{job_name} must execute the MQTT oracle"
+        )
+    workflows = gate.load_workflows()
+    commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
+    assert "macos-leak-oracle" not in gate.make_targets_in(
+        commands, {"macos-leak-oracle"}
+    ), "hosted CI must not certify the named local Darwin authority"
 
 
 # ── Containment proofs ────────────────────────────────────────────────────────
@@ -912,9 +1008,13 @@ _TESTS = [
     test_a_precondition_on_a_declared_prerequisite_is_scaffolding,
     test_a_precondition_on_a_path_the_target_never_declared_is_not,
     test_a_real_command_is_not_smuggled_in_as_a_precondition,
-    test_the_real_test_rust_recipe_is_proved_from_its_prerequisites,
+    test_real_ci_reaches_the_complete_test_prerequisite_graph,
     test_a_parity_cmd_marker_is_not_an_edge,
     test_the_gate_has_no_marker_convention_at_all,
+    test_a_new_unwired_generic_oracle_or_e2e_is_red,
+    test_a_named_host_authority_requires_a_real_uncommented_runner_port,
+    test_macos_leak_runner_rejects_a_non_darwin_host_before_measuring,
+    test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_authority,
     test_containment_refuses_an_opaque_command,
     test_containment_refuses_an_env_prefixed_command,
     test_containment_accepts_a_narrower_selection_of_what_ci_runs,

@@ -26,7 +26,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${ROOT}/target/debug/hew"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
 ORACLE="${ROOT}/scripts/fuzz/run-oracle.py"
 TMPDIR_BASE="$(mktemp -d /tmp/hew-oracle-selftest.XXXXXX)"
 trap 'rm -rf "${TMPDIR_BASE}"' EXIT

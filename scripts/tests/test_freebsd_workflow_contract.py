@@ -47,16 +47,18 @@ PKG_INSTALL_PREFIX = (
     "pkg",
     "install",
     "-y",
-    "-U",
     "-r",
     "FreeBSD",
 )
 FREEBSD_TOOL_PACKAGES = (
     "llvm22",
+    "gdb",
     "rust",
     "cmake",
     "ninja",
     "git",
+    "gmake",
+    "bash",
     "pkgconf",
     "libffi",
     "libxml2",
@@ -70,6 +72,7 @@ EXPECTED_PKG_PHASES = (
 )
 NIGHTLY_TOOL_PACKAGES = (
     "llvm22",
+    "gdb",
     "rust",
     "cmake",
     "ninja",
@@ -237,7 +240,7 @@ def _literal_block(step: str, key: str) -> str:
             break
         base_indent = content_indent
         break
-    assert base_indent == child_indent + 2, (
+    assert base_indent is not None and base_indent == child_indent + 2, (
         f"direct 'with' child {key!r} must use the canonical two-space "
         f"scalar indentation, got {base_indent!r}"
     )
@@ -349,8 +352,7 @@ def _assert_wasi_tool_setup(
         EXPECTED_WASMTIME_PROBE,
         EXPECTED_WASM_LD_PROBE,
     ]
-    if job_name == "build-and-test":
-        required_commands.append(EXPECTED_BASH_PROBE)
+    required_commands.append(EXPECTED_BASH_PROBE)
     for required in required_commands:
         assert run_commands.count(required) == 1, (
             f"{job_name} must run exactly one active command {required!r}"
@@ -507,10 +509,20 @@ def test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest() -> None:
     _assert_rejected(lambda: _assert_nightly_compiled_hew_authority(mutated))
 
 
-def test_both_release_gate_freebsd_commands_are_exact() -> None:
-    release_gate = RELEASE_GATE.read_text()
-    _assert_exact_nextest(release_gate, "gate-freebsd-x86_64")
-    _assert_exact_nextest(release_gate, "gate-freebsd-aarch64")
+def test_x86_64_release_gate_command_is_exact() -> None:
+    _assert_exact_nextest(RELEASE_GATE.read_text(), "gate-freebsd-x86_64")
+
+
+def test_aarch64_release_gate_runs_no_nextest_suite() -> None:
+    # gate-freebsd-aarch64 intentionally diverges from gate-freebsd-x86_64:
+    # under full-system QEMU emulation the shared full-scope workload never
+    # completed inside its 180-minute timeout (see the job's header comment
+    # in release-gate.yml for the measured evidence). The leg is scoped down
+    # to a release build of hew-cli plus a compile+run smoke test; it must
+    # not carry any `cargo nextest run` invocation. A future PR reintroducing
+    # one must also revert this test consciously.
+    arm_job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    assert _nextest_commands(arm_job) == []
 
 
 def test_all_freebsd_jobs_provision_and_probe_wasi_tools() -> None:
@@ -605,15 +617,28 @@ def test_nightly_bash_probe_removal_is_rejected() -> None:
     _assert_rejected(lambda: _assert_wasi_tool_setup(mutated, job_name, step_name))
 
 
-def test_aarch64_release_gate_drift_is_rejected() -> None:
+def test_aarch64_release_gate_stays_scoped_down() -> None:
+    # Companion to test_aarch64_release_gate_runs_no_nextest_suite: guards
+    # the other expensive commands the aarch64 leg dropped (the release-lib
+    # profile rebuild, vertical-slice, the Hew ratchet) from silently
+    # reappearing, and that the minimal build+smoke proof it keeps is still
+    # present. A PR that wants any of these back must edit this test.
     release_gate = RELEASE_GATE.read_text()
     arm_job = _job_block(release_gate, "gate-freebsd-aarch64")
-    assert arm_job.count("--profile ci --no-fail-fast") == 1
-    mutated_arm_job = arm_job.replace("--profile ci --no-fail-fast", "--profile ci", 1)
-    _assert_rejected(
-        lambda: _assert_command_list(
-            _nextest_commands(mutated_arm_job), "gate-freebsd-aarch64"
+    for forbidden in (
+        "cargo build -p hew-lib",
+        "gmake test-vertical-slice",
+        "gmake test-hew-ratchet",
+        "cargo install cargo-nextest",
+    ):
+        assert forbidden not in arm_job, (
+            f"gate-freebsd-aarch64 must not reintroduce {forbidden!r} without "
+            "consciously updating this scope-down contract"
         )
+    assert "cargo build -p hew-cli --release" in arm_job
+    assert re.search(r"^\s+cpu:\s*4\s*$", arm_job, re.MULTILINE), (
+        "gate-freebsd-aarch64 must keep cpu: 4 to use the runner's full core "
+        "budget for the emulated build"
     )
 
 
@@ -690,7 +715,7 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                 command_text.replace(" -r FreeBSD", " -r FreeBSD-ports", 1),
             ]
             if command[:2] == ("pkg", "install"):
-                replacements.append(command_text.replace(" -U", "", 1))
+                replacements.append(command_text.replace(" -y", " -y -U", 1))
             if command == EXPECTED_PKG_BOOTSTRAP:
                 replacements.extend(
                     (
@@ -1010,7 +1035,8 @@ _TESTS = (
     test_nightly_compiled_hew_commands_cannot_be_commented_out,
     test_nightly_compiled_hew_gate_order_cannot_drift,
     test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest,
-    test_both_release_gate_freebsd_commands_are_exact,
+    test_x86_64_release_gate_command_is_exact,
+    test_aarch64_release_gate_runs_no_nextest_suite,
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
     test_required_clippy_job_runs_contract_unconditionally,
     test_docs_copy_cannot_mask_required_job_mutation,
@@ -1018,7 +1044,7 @@ _TESTS = (
     test_added_nightly_exclusion_is_rejected,
     test_nightly_bash_package_removal_is_rejected,
     test_nightly_bash_probe_removal_is_rejected,
-    test_aarch64_release_gate_drift_is_rejected,
+    test_aarch64_release_gate_stays_scoped_down,
     test_commented_nightly_tool_commands_are_rejected,
     test_single_release_leg_missing_wasmtime_is_rejected,
     test_named_repository_drift_is_rejected_in_every_freebsd_job,

@@ -19,7 +19,7 @@ fn main() -> () [conv=default]
     _16: string
   bb0:
     _0 = const.i64 1
-    _1 = call channel$new(_0) -> bb1
+    _1 = call std$channel$new(_0) -> bb1
   bb1:
     stmt: bind BindingId(1) __tuple_0 site=SiteId(0) ty=(Sender<string>, Receiver<string>)
     stmt: use BindingId(1) __tuple_0 site=SiteId(3) ty=(Sender<string>, Receiver<string>) intent=Read
@@ -29,15 +29,17 @@ fn main() -> () [conv=default]
     stmt: use BindingId(2) tx site=SiteId(8) ty=Sender<string> intent=Read
     _2 = move _1
     _3 = _2.0
+    aggregate_projection_neutralize _2 fields=[0] -> _3
     _4 = move _3
     _5 = _2.1
+    aggregate_projection_neutralize _2 fields=[1] -> _5
     _6 = move _5
     _7 = string_lit "ready"
-    call hew_channel_send_layout(_4, _7) [builtin=ChannelSendLayout] -> bb2
+    call hew_channel_send_layout(_4, _7) [authority=Runtime(ChannelSendLayout)] -> bb2
   bb2:
     stmt: eval site=SiteId(7) ty=()
     stmt: use BindingId(3) rx site=SiteId(13) ty=Receiver<string> intent=Read
-    _9 = call hew_channel_try_recv_layout(_6) [builtin=ChannelTryRecvLayout] -> bb3
+    _9 = call hew_channel_try_recv_layout(_6) [authority=Runtime(ChannelTryRecvLayout)] -> bb3
   bb3:
     _10 = move etag9
     _11 = const.i64 0
@@ -67,19 +69,19 @@ fn main() -> () [conv=default]
   bb10:
     goto bb4
 
-fn Sender::send(Sender, string) -> () [conv=default]
+fn std.channel.Sender::send(Sender, string) -> () [conv=default]
   locals:
     _0: Sender
     _1: string
   bb0:
     stmt: use BindingId(5) tx site=SiteId(23) ty=Sender intent=Read
     stmt: use BindingId(6) data site=SiteId(24) ty=string intent=Read
-    call hew_channel_send_layout(_0, _1) [builtin=ChannelSendLayout] -> bb1
+    call hew_channel_send_layout(_0, _1) [authority=Runtime(ChannelSendLayout)] -> bb1
   bb1:
     stmt: eval site=SiteId(21) ty=()
     return
 
-fn Sender::clone(Sender) -> Sender [conv=default]
+fn std.channel.Sender::clone(Sender) -> Sender [conv=default]
   locals:
     _0: Sender
     _1: Sender
@@ -93,7 +95,7 @@ fn Sender::clone(Sender) -> Sender [conv=default]
     ret = move _2
     return
 
-fn Sender::close(Sender) -> () [conv=default]
+fn std.channel.Sender::close(Sender) -> () [conv=default]
   locals:
     _0: Sender
   bb0:
@@ -103,35 +105,37 @@ fn Sender::close(Sender) -> () [conv=default]
     stmt: eval site=SiteId(30) ty=()
     return
 
-fn Receiver::recv(Receiver) -> Option<string> [conv=default]
+fn std.channel.Receiver::recv(Receiver) -> Option<string> [conv=default]
   locals:
     _0: Receiver
     _1: Option<string>
     _2: Option<string>
   bb0:
     stmt: use BindingId(9) rx site=SiteId(36) ty=Receiver intent=Read
-    _1 = call hew_channel_recv_layout(_0) [builtin=ChannelRecvLayout] -> bb1
+    _1 = call hew_channel_recv_layout(_0) [authority=Runtime(ChannelRecvLayout)] -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(35) ty=Option<string>
     stmt: return site=Some(SiteId(34)) ty=Option<string>
     _2 = move _1
     ret = move _2
     return
 
-fn Receiver::try_recv(Receiver) -> Option<string> [conv=default]
+fn std.channel.Receiver::try_recv(Receiver) -> Option<string> [conv=default]
   locals:
     _0: Receiver
     _1: Option<string>
     _2: Option<string>
   bb0:
     stmt: use BindingId(10) rx site=SiteId(40) ty=Receiver intent=Read
-    _1 = call hew_channel_try_recv_layout(_0) [builtin=ChannelTryRecvLayout] -> bb1
+    _1 = call hew_channel_try_recv_layout(_0) [authority=Runtime(ChannelTryRecvLayout)] -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(39) ty=Option<string>
     stmt: return site=Some(SiteId(38)) ty=Option<string>
     _2 = move _1
     ret = move _2
     return
 
-fn Receiver::close(Receiver) -> () [conv=default]
+fn std.channel.Receiver::close(Receiver) -> () [conv=default]
   locals:
     _0: Receiver
   bb0:
@@ -141,7 +145,7 @@ fn Receiver::close(Receiver) -> () [conv=default]
     stmt: eval site=SiteId(42) ty=()
     return
 
-fn channel$new(i64) -> (Sender, Receiver) [conv=default]
+fn std$channel$new(i64) -> (Sender, Receiver) [conv=default]
   locals:
     _0: i64
     _1: (Sender, Receiver)
@@ -155,8 +159,9 @@ fn channel$new(i64) -> (Sender, Receiver) [conv=default]
     _9: string
   bb0:
     stmt: use BindingId(12) capacity site=SiteId(48) ty=i64 intent=Read
-    _2 = call channel$try_new(_0) -> bb1
+    _2 = call std$channel$try_new(_0) -> bb1
   bb1:
+    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(47) ty=Result<(Sender, Receiver), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4
@@ -175,7 +180,7 @@ fn channel$new(i64) -> (Sender, Receiver) [conv=default]
     stmt: bind BindingId(14) err site=SiteId(51) ty=string
     stmt: use BindingId(14) err site=SiteId(52) ty=string intent=Read
     _9 = move mvar2.1.0
-    call panic(_9) -> bb7
+    call hew_panic_msg(_9) -> bb7
   bb5:
     trap(ExhaustivenessFallthrough)
   bb6:
@@ -185,43 +190,44 @@ fn channel$new(i64) -> (Sender, Receiver) [conv=default]
   bb7:
     goto bb2
 
-fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
+fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
   locals:
     _0: i64
     _1: ()
     _2: i64
     _3: bool
     _4: Result<(Sender, Receiver), string>
-    _5: i64
+    _5: string
     _6: string
     _7: string
     _8: string
     _9: string
-    _10: string
+    _10: i64
     _11: i64
-    _12: channel.ChannelPair
-    _13: channel.ChannelPair
-    _14: ()
-    _15: bool
+    _12: std.channel.ChannelPair
+    _13: std.channel.ChannelPair
+    _14: i64
+    _15: ()
     _16: bool
-    _17: string
+    _17: bool
     _18: string
-    _19: ()
-    _20: string
-    _21: bool
-    _22: Result<(Sender, Receiver), string>
-    _23: i64
+    _19: string
+    _20: ()
+    _21: string
+    _22: bool
+    _23: Result<(Sender, Receiver), string>
     _24: string
-    _25: Result<(Sender, Receiver), string>
-    _26: i64
-    _27: Sender
+    _25: i64
+    _26: Result<(Sender, Receiver), string>
+    _27: i64
     _28: Sender
-    _29: Receiver
+    _29: Sender
     _30: Receiver
-    _31: Result<(Sender, Receiver), string>
-    _32: i64
+    _31: Receiver
+    _32: Result<(Sender, Receiver), string>
     _33: (Sender, Receiver)
-    _34: Result<(Sender, Receiver), string>
+    _34: i64
+    _35: Result<(Sender, Receiver), string>
   bb0:
     stmt: use BindingId(15) capacity site=SiteId(55) ty=i64 intent=Read
     _2 = const.i64 0
@@ -229,98 +235,122 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     branch _3 ? bb1 : bb2
   bb1:
     stmt: use BindingId(15) capacity site=SiteId(60) ty=i64 intent=Read
-    _5 = const.i64 1
-    mtag4 = move _5
-    _6 = string_lit "channel.new: invalid capacity "
-    _7 = call to_string_i64(_0) -> bb4
+    _5 = string_lit "channel.new: invalid capacity "
+    _6 = call hew_i64_to_string(_0) -> bb4
   bb2:
     goto bb3
   bb3:
     stmt: eval site=SiteId(69) ty=()
     stmt: use BindingId(15) capacity site=SiteId(73) ty=i64 intent=Read
     _11 = cast _0 i64 -> i64
-    _12 = call hew_channel_new(_11) -> bb8
+    _12 = call hew_channel_new(_11) -> bb6
   bb4:
-    _8 = call string_concat(_6, _7) -> bb5
-  bb5:
-    drop _7 ty=string fn=release(hew_string_drop)
-    _9 = string_lit " (must be >= 0)"
-    _10 = call string_concat(_8, _9) -> bb6
-  bb6:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(62) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(58) ty=string
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(57) ty=Result<(Sender, Receiver), string>
     stmt: return site=Some(SiteId(57)) ty=Result<(Sender, Receiver), string>
-    drop _8 ty=string fn=release(hew_string_drop)
-    mvar4.1.0 = move _10
+    _7 = call_rt hew_string_concat(_5, _6)
+    drop _6 ty=string fn=release(hew_string_drop)
+    _8 = string_lit " (must be >= 0)"
+    _9 = call_rt hew_string_concat(_7, _8)
+    drop _7 ty=string fn=release(hew_string_drop)
+    _10 = const.i64 1
+    mtag4 = move _10
+    mvar4.1.0 = move _9
     ret = move _4
     return
-  bb7:
+  bb5:
     goto bb3
-  bb8:
-    stmt: bind BindingId(16) pair site=SiteId(71) ty=channel.ChannelPair
-    stmt: use BindingId(16) pair site=SiteId(77) ty=channel.ChannelPair intent=Read
+  bb6:
+    stmt: bind BindingId(4294967228) __hew_produced_value site=SiteId(71) ty=std.channel.ChannelPair
+    stmt: bind BindingId(16) pair site=SiteId(71) ty=std.channel.ChannelPair
+    stmt: use BindingId(16) pair site=SiteId(77) ty=std.channel.ChannelPair intent=Read
     _13 = move _12
-    _15 = call hew_channel_pair_is_valid(_13) -> bb9
+    _14 = const.i64 0
+    _16 = call hew_channel_pair_is_valid(_13) -> bb7
+  bb7:
+    _17 = not _16
+    branch _17 ? bb8 : bb9
+  bb8:
+    _18 = call hew_stream_last_error() -> bb11
   bb9:
-    _16 = not _15
-    branch _16 ? bb10 : bb11
+    goto bb10
   bb10:
-    _17 = call hew_stream_last_error() -> bb13
-  bb11:
-    goto bb12
-  bb12:
     stmt: eval site=SiteId(91) ty=()
-    stmt: use BindingId(16) pair site=SiteId(93) ty=channel.ChannelPair intent=Read
-    _27 = call hew_channel_pair_sender(_13) -> bb19
-  bb13:
+    stmt: use BindingId(16) pair site=SiteId(93) ty=std.channel.ChannelPair intent=Read
+    _28 = call hew_channel_pair_sender(_13) -> bb17
+  bb11:
+    stmt: bind BindingId(4294967227) __hew_produced_value site=SiteId(79) ty=string
     stmt: bind BindingId(17) detail site=SiteId(79) ty=string
     stmt: use BindingId(17) detail site=SiteId(82) ty=string intent=Read
-    _18 = move _17
-    _20 = string_lit ""
-    _21 = icmp.eq _18 _20
-    branch _21 ? bb14 : bb15
-  bb14:
+    _19 = move _18
+    _21 = string_lit ""
+    _22 = icmp.eq _19 _21
+    branch _22 ? bb12 : bb13
+  bb12:
+    stmt: bind BindingId(4294967226) __hew_produced_value site=SiteId(84) ty=Result<(Sender, Receiver), string>
     stmt: return site=Some(SiteId(84)) ty=Result<(Sender, Receiver), string>
-    _23 = const.i64 1
-    mtag22 = move _23
     _24 = string_lit "channel.new: channel allocation failed"
-    mvar22.1.0 = move _24
-    ret = move _22
+    _25 = const.i64 1
+    mtag23 = move _25
+    mvar23.1.0 = move _24
+    ret = move _23
     return
-  bb15:
-    goto bb16
-  bb16:
+  bb13:
+    goto bb14
+  bb14:
     stmt: eval site=SiteId(87) ty=()
     stmt: use BindingId(17) detail site=SiteId(89) ty=string intent=Read
+    stmt: bind BindingId(4294967225) __hew_produced_value site=SiteId(88) ty=Result<(Sender, Receiver), string>
     stmt: return site=Some(SiteId(88)) ty=Result<(Sender, Receiver), string>
-    _26 = const.i64 1
-    mtag25 = move _26
-    mvar25.1.0 = move _18
-    ret = move _25
+    _27 = const.i64 1
+    mtag26 = move _27
+    mvar26.1.0 = move _19
+    ret = move _26
     return
+  bb15:
+    goto bb14
+  bb16:
+    goto bb10
   bb17:
-    goto bb16
-  bb18:
-    goto bb12
-  bb19:
     stmt: bind BindingId(18) tx site=SiteId(92) ty=Sender
-    stmt: use BindingId(16) pair site=SiteId(96) ty=channel.ChannelPair intent=Read
-    _28 = move _27
-    _29 = call hew_channel_pair_receiver(_13) -> bb20
-  bb20:
+    stmt: use BindingId(16) pair site=SiteId(96) ty=std.channel.ChannelPair intent=Read
+    _29 = move _28
+    _30 = call hew_channel_pair_receiver(_13) -> bb18
+  bb18:
     stmt: bind BindingId(19) rx site=SiteId(95) ty=Receiver
-    stmt: use BindingId(16) pair site=SiteId(99) ty=channel.ChannelPair intent=Read
-    _30 = move _29
-    call hew_channel_pair_free(_13) -> bb21
-  bb21:
+    stmt: use BindingId(16) pair site=SiteId(99) ty=std.channel.ChannelPair intent=Consume
+    _31 = move _30
+    _14 = const.i64 1
+    call hew_channel_pair_free(_13) -> bb19
+  bb19:
     stmt: eval site=SiteId(98) ty=()
     stmt: use BindingId(18) tx site=SiteId(103) ty=Sender intent=Consume
     stmt: use BindingId(19) rx site=SiteId(104) ty=Receiver intent=Consume
+    stmt: agg_alias BindingId(18) tx site=SiteId(103) ty=Sender
+    stmt: agg_alias BindingId(19) rx site=SiteId(104) ty=Receiver
     stmt: return site=Some(SiteId(70)) ty=Result<(Sender, Receiver), string>
-    _32 = const.i64 0
-    mtag31 = move _32
-    _33 = tuple (_28, _30)
-    mvar31.0.0 = move _33
-    _34 = move _31
-    ret = move _34
+    _33 = tuple (_29, _31)
+    neutralize_payload _29 -> _33 [ReturnedAggregateMemberConsume]
+    neutralize_payload _31 -> _33 [ReturnedAggregateMemberConsume]
+    _34 = const.i64 0
+    mtag32 = move _34
+    mvar32.0.0 = move _33
+    _35 = move _32
+    ret = move _35
+    return
+
+fn std.channel.ChannelPair::close(std.channel.ChannelPair) -> () [conv=default]
+  locals:
+    _0: std.channel.ChannelPair
+    _1: i64
+  bb0:
+    stmt: use BindingId(20) self site=SiteId(107) ty=std.channel.ChannelPair intent=Consume
+    _1 = const.i64 0
+    _1 = const.i64 1
+    call hew_channel_pair_free(_0) -> bb1
+  bb1:
+    stmt: eval site=SiteId(105) ty=()
     return
 
 fn i8::fmt(i8) -> string [conv=default]
@@ -329,11 +359,12 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(28) val site=SiteId(175) ty=i8 intent=Read
+    stmt: use BindingId(29) val site=SiteId(179) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(173)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(177) ty=string
+    stmt: return site=Some(SiteId(177)) ty=string
     ret = move _2
     return
 
@@ -343,11 +374,12 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(29) val site=SiteId(179) ty=i16 intent=Read
+    stmt: use BindingId(30) val site=SiteId(183) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(177)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(181) ty=string
+    stmt: return site=Some(SiteId(181)) ty=string
     ret = move _2
     return
 
@@ -356,10 +388,11 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(30) val site=SiteId(182) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    stmt: use BindingId(31) val site=SiteId(186) ty=i32 intent=Read
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(181)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(185) ty=string
+    stmt: return site=Some(SiteId(185)) ty=string
     ret = move _1
     return
 
@@ -368,10 +401,11 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(31) val site=SiteId(185) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    stmt: use BindingId(32) val site=SiteId(189) ty=i64 intent=Read
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(184)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(188) ty=string
+    stmt: return site=Some(SiteId(188)) ty=string
     ret = move _1
     return
 
@@ -380,10 +414,11 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(32) val site=SiteId(188) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    stmt: use BindingId(33) val site=SiteId(192) ty=u8 intent=Read
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(187)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(191) ty=string
+    stmt: return site=Some(SiteId(191)) ty=string
     ret = move _1
     return
 
@@ -392,10 +427,11 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(33) val site=SiteId(191) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    stmt: use BindingId(34) val site=SiteId(195) ty=u16 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(190)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(194) ty=string
+    stmt: return site=Some(SiteId(194)) ty=string
     ret = move _1
     return
 
@@ -404,10 +440,11 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(34) val site=SiteId(194) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    stmt: use BindingId(35) val site=SiteId(198) ty=u32 intent=Read
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(193)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(197) ty=string
+    stmt: return site=Some(SiteId(197)) ty=string
     ret = move _1
     return
 
@@ -416,10 +453,11 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(35) val site=SiteId(197) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    stmt: use BindingId(36) val site=SiteId(201) ty=u64 intent=Read
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(196)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(200) ty=string
+    stmt: return site=Some(SiteId(200)) ty=string
     ret = move _1
     return
 
@@ -429,11 +467,12 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(36) val site=SiteId(201) ty=isize intent=Read
+    stmt: use BindingId(37) val site=SiteId(205) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(199)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(203) ty=string
+    stmt: return site=Some(SiteId(203)) ty=string
     ret = move _2
     return
 
@@ -443,11 +482,12 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(37) val site=SiteId(205) ty=usize intent=Read
+    stmt: use BindingId(38) val site=SiteId(209) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(203)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(207) ty=string
+    stmt: return site=Some(SiteId(207)) ty=string
     ret = move _2
     return
 
@@ -456,10 +496,11 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(38) val site=SiteId(208) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    stmt: use BindingId(39) val site=SiteId(212) ty=bool intent=Read
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(207)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(211) ty=string
+    stmt: return site=Some(SiteId(211)) ty=string
     ret = move _1
     return
 
@@ -468,10 +509,11 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(39) val site=SiteId(211) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    stmt: use BindingId(40) val site=SiteId(215) ty=char intent=Read
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(210)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(214) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
     return
 
@@ -480,10 +522,11 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(40) val site=SiteId(214) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    stmt: use BindingId(41) val site=SiteId(218) ty=f64 intent=Read
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(213)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(217) ty=string
+    stmt: return site=Some(SiteId(217)) ty=string
     ret = move _1
     return
 
@@ -493,11 +536,12 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(41) val site=SiteId(218) ty=f32 intent=Read
+    stmt: use BindingId(42) val site=SiteId(222) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(216)) ty=string
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(220) ty=string
+    stmt: return site=Some(SiteId(220)) ty=string
     ret = move _2
     return
 
@@ -505,8 +549,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(42) val site=SiteId(220) ty=string intent=Read
-    stmt: return site=Some(SiteId(220)) ty=string
+    stmt: use BindingId(43) val site=SiteId(224) ty=string intent=Read
+    stmt: return site=Some(SiteId(224)) ty=string
     string.retain _0
     ret = move _0
     return
@@ -518,14 +562,14 @@ fn duration::from_nanos(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(43) n site=SiteId(222) ty=i64 intent=Read
+    stmt: use BindingId(44) n site=SiteId(226) ty=i64 intent=Read
     _1 = const.duration 1ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(221)) ty=duration
+    stmt: return site=Some(SiteId(225)) ty=duration
     ret = move _2
     return
 
@@ -536,14 +580,14 @@ fn duration::from_micros(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(44) n site=SiteId(225) ty=i64 intent=Read
+    stmt: use BindingId(45) n site=SiteId(229) ty=i64 intent=Read
     _1 = const.duration 1000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(224)) ty=duration
+    stmt: return site=Some(SiteId(228)) ty=duration
     ret = move _2
     return
 
@@ -554,14 +598,14 @@ fn duration::from_millis(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(45) n site=SiteId(228) ty=i64 intent=Read
+    stmt: use BindingId(46) n site=SiteId(232) ty=i64 intent=Read
     _1 = const.duration 1000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(227)) ty=duration
+    stmt: return site=Some(SiteId(231)) ty=duration
     ret = move _2
     return
 
@@ -572,14 +616,14 @@ fn duration::from_secs(i64) -> duration [conv=default]
     _2: duration
     _3: bool
   bb0:
-    stmt: use BindingId(46) n site=SiteId(231) ty=i64 intent=Read
+    stmt: use BindingId(47) n site=SiteId(235) ty=i64 intent=Read
     _1 = const.duration 1000000000ns
     _2 ovf=_3 = mul.checked.s _0 _1
     branch _3 ? bb1 : bb2
   bb1:
     trap(IntegerOverflow)
   bb2:
-    stmt: return site=Some(SiteId(230)) ty=duration
+    stmt: return site=Some(SiteId(234)) ty=duration
     ret = move _2
     return
 
@@ -591,11 +635,14 @@ fn duration::fmt(duration) -> string [conv=default]
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(47) val site=SiteId(236) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    stmt: use BindingId(48) val site=SiteId(240) ty=duration intent=Read
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(233)) ty=string
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(238) ty=string
+    stmt: bind BindingId(4294967230) __hew_produced_value site=SiteId(237) ty=string
+    stmt: return site=Some(SiteId(237)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)
     drop _2 ty=string fn=release(hew_string_drop)

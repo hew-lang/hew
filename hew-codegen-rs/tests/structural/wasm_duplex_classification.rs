@@ -8,7 +8,7 @@
 //! invoking the WASM toolchain, and that non-duplex programs still emit WASM
 //! normally (the native path is unaffected in both cases).
 //!
-//! WASM-TODO(#1451): duplex WASM parity is tracked in issue #1451.
+//! WASM-TODO(duplex): add the native dual-queue substrate to WASM.
 //!
 //! LESSONS: boundary-fail-closed (P0), parity-or-tracked-gap (P0),
 //! user-surface-correctness (P0).
@@ -18,19 +18,25 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
+
+#[test]
+fn public_wasm_error_preserves_legacy_symbol_only_shape() {
+    let error = CodegenError::WasmUnsupportedSubstrate {
+        symbol: "hew_duplex_pair".to_string(),
+    };
+    let CodegenError::WasmUnsupportedSubstrate { symbol } = error else {
+        panic!("constructed legacy WASM error changed variant")
+    };
+    assert_eq!(symbol, "hew_duplex_pair");
+}
 
 // ---------------------------------------------------------------------------
 // Pipeline builders
 // ---------------------------------------------------------------------------
 
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![])
 }
 
 /// Minimal pipeline with a `hew_duplex_pair` call — mirrors the shape produced
@@ -132,8 +138,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -222,8 +227,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -314,8 +318,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -336,7 +339,8 @@ fn out_dir(name: &str) -> std::path::PathBuf {
 /// A pipeline containing `hew_duplex_pair` must return
 /// `CodegenError::WasmUnsupportedSubstrate` when WASM emission is requested,
 /// rather than proceeding to invoke `wasm-ld` (which would fail with
-/// `undefined symbol: hew_duplex_pair`).  WASM-TODO(#1451).
+/// `undefined symbol: hew_duplex_pair`).
+/// WASM-TODO(duplex): add the native dual-queue substrate to WASM.
 #[test]
 fn duplex_pair_call_blocks_wasm_emission() {
     let pipeline = pipeline_with_duplex_pair_call();
@@ -368,7 +372,7 @@ fn duplex_pair_call_blocks_wasm_emission() {
 }
 
 /// A pipeline with a `hew_duplex_close` drop in the Instr stream must also
-/// block WASM emission.  WASM-TODO(#1451).
+/// block WASM emission. WASM-TODO(duplex): add the native dual-queue substrate to WASM.
 #[test]
 fn duplex_close_drop_blocks_wasm_emission() {
     let pipeline = pipeline_with_duplex_close_drop();

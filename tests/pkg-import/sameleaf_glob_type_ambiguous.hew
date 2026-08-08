@@ -1,0 +1,7 @@
+import ambiguity::type_left::*;
+import ambiguity::type_right::*;
+
+fn main() {
+    let item: ClashType = ClashType { value: 1 };
+    println(item.value);
+}

@@ -1061,7 +1061,7 @@ fn is_owned_vec_element_matches_codegen_owned_vec_table() {
         ret: Box::new(ResolvedTy::Unit),
         captures: vec![ResolvedTy::String],
     };
-    let table: [(ResolvedTy, bool); 11] = [
+    let table: [(ResolvedTy, bool); 13] = [
         (ResolvedTy::String, false),
         (ResolvedTy::Bytes, false),
         (ResolvedTy::I64, false),
@@ -1092,6 +1092,14 @@ fn is_owned_vec_element_matches_codegen_owned_vec_table() {
         (
             ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![fn_elem.clone()]),
             false,
+        ),
+        (
+            ResolvedTy::named_builtin("Sender", BuiltinType::Sender, vec![ResolvedTy::I64]),
+            true,
+        ),
+        (
+            ResolvedTy::named_builtin("Receiver", BuiltinType::Receiver, vec![ResolvedTy::I64]),
+            true,
         ),
         (fn_elem, false),
         (closure_elem, false),

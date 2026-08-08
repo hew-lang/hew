@@ -2,7 +2,7 @@
 //! value inspection. Compiles real Hew source through the front-end → MIR →
 //! codegen with `debug: true`, then asserts the emitted textual LLVM IR carries
 //! the variable DIEs (`!DILocalVariable`), the struct member DIEs, the enum
-//! tag enumerators, and the parameter `arg:` index. A NEGATIVE case proves a
+//! tag enumerators + variant part, and the parameter `arg:` index. A NEGATIVE case proves a
 //! non-`-g` build emits zero debug-variable/type metadata, so the whole feature
 //! stays gated on `-g` (the #2004 byte-clean invariant).
 //!
@@ -186,11 +186,34 @@ fn debug_build_emits_named_struct_member_dies() {
 fn debug_build_emits_enum_tag_enumerators_by_variant_name() {
     let ir = emit_ll(true, "enum");
 
-    // The Shape tag is a DW_TAG_enumeration_type whose enumerators are the
-    // variant names — gdb prints the active variant by name.
+    // The tag enumeration must be reachable through the discriminator member
+    // used by the variant part, not merely present as an orphan metadata node.
+    let tag_line = ir
+        .lines()
+        .find(|line| {
+            line.contains("DW_TAG_enumeration_type") && line.contains("name: \"Shape::Tag\"")
+        })
+        .unwrap_or_else(|| panic!("expected the Shape tag enumeration; IR:\n{ir}"));
+    let tag_id = tag_line
+        .split_once(" = ")
+        .map(|(id, _)| id)
+        .expect("metadata definition has an id");
+    let discriminator_line = ir
+        .lines()
+        .find(|line| {
+            line.contains("DW_TAG_member") && line.contains(&format!("baseType: {tag_id}"))
+        })
+        .unwrap_or_else(|| panic!("expected a discriminator member typed by {tag_id}; IR:\n{ir}"));
+    let discriminator_id = discriminator_line
+        .split_once(" = ")
+        .map(|(id, _)| id)
+        .expect("metadata definition has an id");
     assert!(
-        ir.contains("DW_TAG_enumeration_type"),
-        "expected a DW_TAG_enumeration_type for the Shape tag; IR:\n{ir}"
+        ir.lines().any(|line| {
+            line.contains("DW_TAG_variant_part")
+                && line.contains(&format!("discriminator: {discriminator_id}"))
+        }),
+        "expected the variant part to reference discriminator {discriminator_id}; IR:\n{ir}"
     );
     let has_enumerator = |name: &str| {
         ir.lines()
@@ -203,6 +226,25 @@ fn debug_build_emits_enum_tag_enumerators_by_variant_name() {
     assert!(
         has_enumerator("Rect"),
         "expected enumerator `Rect`; IR:\n{ir}"
+    );
+}
+
+#[test]
+fn debug_build_emits_discriminated_enum_variant_part() {
+    let ir = emit_ll(true, "variant-part");
+
+    assert!(
+        ir.contains("DW_TAG_variant_part"),
+        "expected a DW_TAG_variant_part for Shape; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("discriminator:") && ir.contains("extraData: i8 0"),
+        "expected the variant part to reference the tag and carry Circle's \
+         discriminant value; IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("extraData: i8 1"),
+        "expected Rect's discriminant value; IR:\n{ir}"
     );
 }
 
@@ -276,7 +318,7 @@ fn main() {
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must not overflow");
     let ir =
         std::fs::read_to_string(artefacts.ll_path.as_deref().expect("ll_path")).expect("read .ll");
-    // The recursive `List` enum struct is emitted (degraded tagged-union view).
+    // The recursive `List` enum struct is emitted with discriminated variants.
     assert!(
         ir.contains("name: \"List\""),
         "expected the recursive List type DIE; IR:\n{ir}"

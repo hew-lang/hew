@@ -7,9 +7,10 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 
 - [ ] All release PRs merged to `main`
 - [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
-- [ ] The release branch `gate-sanitizers` job is green: ASan passed on the release commit, and TSan/Miri are either green in their recurring lanes or covered by commit-pinned waivers in `release-sanitizer-waiver.toml` (see Known gaps)
+- [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed, and TSan/Miri have bounded behavioral ledger entries for this release version in `release-sanitizer-waiver.toml` (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
-- [ ] CHANGELOG.md `[Unreleased]` section is populated
+- [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
+      `[X.Y.Z]` section for the intended release
 - [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
 - [ ] Version in workspace `Cargo.toml` is still the *previous* release (bump happens below)
 
@@ -86,14 +87,14 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 
 | Platform       | Build scope                              | Test scope                          |
 |----------------|------------------------------------------|-------------------------------------|
-| Linux x86_64   | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| Linux aarch64  | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
-| macOS arm64    | hew-cli, adze-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
-| Windows x86_64 | adze-cli, hew-lsp (hew-cli: check only) | Rust workspace (no codegen)         |
+| Linux x86_64   | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| Linux aarch64  | hew-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| macOS arm64    | hew-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
+| Windows x86_64 | hew-cli, hew-lsp, hew-observe, hew-lib | Rust workspace + C-ABI + executable release-library consumer |
 
 **Wait for all release gate jobs to go green, including `gate-sanitizers`.**
-The sanitizer job runs ASan on the release branch commit and rejects missing,
-ambiguous, expired, or non-commit-scoped TSan/Miri waivers.
+The sanitizer job executes ASan and rejects missing, ambiguous, expired, vague,
+or wrong-release TSan/Miri behavioral evidence.
 
 ## Phase 4 — Local cross-platform validation (optional but recommended)
 
@@ -121,22 +122,30 @@ Requires `.env.pre-release` in the repo root (gitignored):
 
 ```bash
 MACOS_HOST=my-mac.local
+# Optional when LLVM 22 is outside the standard Homebrew locations:
+HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
-LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 FREEBSD_HOST=user@freebsd-host
-FREEBSD_PROJECT_DIR=/path/to/hew
 WINDOWS_HOST=user@windows-host
-WINDOWS_PROJECT_DIR=P:/path/to/hew
 ```
 
-Windows hosts also need a one-time LLVM 22 install that matches the tag
-release workflow: install into `C:\llvm-22` and verify
+Windows hosts also need Visual Studio C++ Build Tools with a Windows SDK and a
+one-time LLVM 22 install that matches the tag release workflow: install into
+`C:\llvm-22`, verify `vswhere.exe` can find the x64 C++ tools, and verify
 `C:\llvm-22\bin\clang.exe` exists before running `make pre-release`. See
 [`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
 for the exact bootstrap command sequence. The validator defaults to
-`LLVM_PREFIX=C:\llvm-22` and prepends `C:\llvm-22\bin` to `PATH`; override
-with `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if
-that host uses a different compiler driver.
+`LLVM_PREFIX=C:\llvm-22`; it imports `VsDevCmd.bat` for the SDK/CRT environment
+before prepending `C:\llvm-22\bin` to `PATH`. Override with
+`HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
+uses a different compiler driver.
+
+The macOS validator requires an LLVM 22 root. It first honors
+`HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in `.env.pre-release`), then
+uses `brew --prefix llvm@22` when `brew` is available, and finally probes
+`/opt/homebrew/opt/llvm@22` and `/usr/local/opt/llvm@22` directly. Each
+candidate is accepted only when its `bin/llvm-config --version` reports major
+version 22; an absent or different version fails validation before building.
 
 What `make pre-release` does:
 1. `make release` — release build of all binaries
@@ -145,9 +154,14 @@ What `make pre-release` does:
      - Verify binaries exist and run (`--version`)
      - Smoke test: compile and execute a .hew program
      - Linux: verify no dynamic LLVM deps (`ldd` check)
-      - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
-        LLVM 22 provisioned from `apt.llvm.org/noble`
-     - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+     - Linux aarch64 (optional): stage the local candidate in a fresh remote
+       temporary directory, then build on Ubuntu 24.04 arm64 with LLVM 22
+       provisioned from `apt.llvm.org/noble`
+     - macOS, FreeBSD, and Windows: stage the local working-tree candidate in
+       a fresh remote temporary directory. Existing host checkouts are never
+       reset, updated, or used as a fallback.
+     - Every requested remote platform fails closed when its host is absent or
+       unreachable. Narrow `PLATFORMS` explicitly when omitting a host.
      - Windows: require `LLVM_PREFIX`, then compile+run a smoke program so
        validation cannot silently pass a frontend-only `hew.exe`
 
@@ -182,9 +196,11 @@ but every arm must succeed before the graph rejoins:
    checksums. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
 4. After the assets exist, complete both independent publication arms:
-   - Manually dispatch `.github/workflows/publish-npm-packages.yml` for
-     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1` through its actual
-     workflow, and wait for each result. A tag does not publish these packages.
+   - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
+     `release_tag=v0.6.0-rc1` for
+     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
+     result. The workflow checks out that immutable tag and rejects a workspace
+     or sandbox package version mismatch. A tag does not publish these packages.
    - Wait for the release workflow's automated playground dispatch, then
      verify the published image, API, and `hew run` smoke path against the
      candidate version.
@@ -198,12 +214,12 @@ vendoring commands for npm consumers until their vendoring assumptions are
 repaired or the commands are removed.
 
 Do not tag until `.github/workflows/release-gate.yml` is green on the release
-branch. In particular, `gate-sanitizers` must have validated ASan on the exact
-release commit and accepted any TSan/Miri waivers for that same commit.
+branch. In particular, `gate-sanitizers` must have executed ASan successfully
+and accepted the bounded TSan/Miri behavioral ledger for the release version.
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"
+git push origin v0.6.0-rc1
 ```
 
 This triggers `.github/workflows/release.yml`, which:
@@ -288,17 +304,18 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Codegen E2E (WASM)           | ci.yml + release-gate.yml    | Yes       |
 | Native↔sandbox-VM parity     | ci.yml (Linux, `make sandbox-parity`) | Yes for PRs |
 | Smoke test (compile+run)     | release-gate.yml             | Yes       |
+| Release-library consumer link+run | release-gate.yml + release.yml (every platform/architecture lane) | Yes |
 | Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix) | Yes    |
-| Packaged archive smoke (Windows zip) | release.yml (Windows job) | Best-effort |
-| FreeBSD packaged archive smoke | release.yml (FreeBSD VM)   | Advisory  |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job) | Yes |
+| FreeBSD packaged archive smoke | release.yml (FreeBSD VM, x86_64 + aarch64) | Yes |
 | Linux package install smoke  | release.yml (`linux-packages`) | Yes    |
 | Linux Docker clean-room tarball smoke | release.yml (`docker-clean-room-test`) | Yes |
 | macOS build + tests          | ci.yml + release-gate.yml    | Yes       |
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
-| FreeBSD build + tests        | freebsd.yml (nightly)        | Advisory  |
+| FreeBSD build + tests        | release-gate.yml (x86_64 + aarch64), freebsd.yml (nightly) | Yes for release branches |
 | ASan                         | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml | Yes for release branches |
-| TSan (Rust runtime)          | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Waiver-carried for releases |
-| Miri                         | `release-sanitizer-waiver.toml` | Waiver-carried for releases |
+| TSan (Rust runtime)          | nightly-sanitizers.yml + `release-sanitizer-waiver.toml` | Bounded behavioral ledger for releases |
+| Miri                         | `release-sanitizer-waiver.toml` | Bounded behavioral ledger for releases |
 | Codegen silent-failure lint  | codegen-lint.yml (PR)        | Advisory  |
 | Local cross-platform build   | `make pre-release`           | Recommended |
 
@@ -308,63 +325,66 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 The release branch gate is the release-time authority for sanitizer evidence:
 
-- **ASan is a hard pre-tag gate on the exact release commit.** The
+- **ASan is an executed hard pre-tag gate and cannot be waived.** The
   `gate-sanitizers` job in `.github/workflows/release-gate.yml` runs
-  `make asan`, records the result, and then invokes
-  `scripts/check-sanitizer-gate.sh "${GITHUB_SHA}" ...`. The validator fails
-  closed when the ASan result is absent, red, skipped, or ambiguous.
-- **TSan is waiver-carried for releases while the upstream nightly
-  `build-std`/TSan link failure remains unresolved.** The nightly sanitizer
-  job still provides signal, but a release commit needs an explicit
-  `axis = "tsan"` waiver row in `release-sanitizer-waiver.toml` unless
-  future work promotes TSan to a recurring green release input.
-- **Miri is not yet a recurring gate.** It is reserved in the same waiver
-  contract because Miri has caught real Stacked-Borrows issues, but standing up
-  the recurring subset and skip policy is tracked separately.
+  `make asan`, records the result, and invokes
+  `scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" ...`. The validator
+  fails closed when ASan is absent, red, skipped, or ambiguous.
+- **TSan has a bounded release-version behavioral ledger while the upstream
+  `build-std`/TSan link failure remains unresolved.** The nightly lane still
+  provides signal, but a release needs an explicit `axis = "tsan"` row that
+  records observed behavior, rationale, owner, tracking issue, and expiry.
+- **Miri is not yet a recurring gate.** It uses the same bounded behavioral
+  ledger until a representative recurring FFI subset exists.
 - **ASan coverage is only as broad as `make asan`.** Today that command runs
   the `hew-runtime --lib` ASan suite. It does not prove integration-only free
   sites, thread-reachable handle leaks, or every packaged binary path are
   covered. Expanding ASan to integration binaries is a tracked follow-on; once
   `make asan` grows, the release gate inherits that coverage automatically.
 
-To add a waiver, edit `release-sanitizer-waiver.toml` on the release branch and
-add one `[[waiver]]` row per non-green axis:
+To record a limitation, edit `release-sanitizer-waiver.toml` and add exactly
+one `[[waiver]]` row per non-executed axis:
 
 ```toml
 [[waiver]]
 axis = "tsan"
-reason = "upstream nightly build-std + TSan link failure"
+release = "0.6.0-rc1"
+behavior = "the concrete observed lane or toolchain behavior"
+reason = "why the behavior is not an authoritative release failure"
 tracking = "https://github.com/hew-lang/hew/issues/<issue>"
-commit = "<40-hex release commit SHA>"
+owner = "Hew runtime maintainers"
 expires = "YYYY-MM-DD"
 ```
 
-The `commit` must match the release branch HEAD exactly. Keep `expires` short
-enough to force re-evaluation on the next release candidate, and remove expired
-rows instead of extending them without new evidence. Blanket waivers
-(`axis = "*"`, `axis = "all"`), missing fields, duplicate rows, and expired
+The `release` must match the version being validated. Keep `expires` short
+enough to force re-evaluation on a later release candidate, and remove expired
+rows instead of extending them without new evidence. Blanket or vague entries,
+missing or duplicate fields, duplicate axis rows, and expired
 rows fail the gate.
 
-- **Windows codegen**: hew-cli is `cargo check` only on Windows CI (no LLVM provisioned).
-  The release.yml Windows job builds from source (~90 min). If the Windows build
-  breaks at tag time, it uses `continue-on-error: true`. The packaged zip smoke
-  is best-effort for the same reason.
+- **Windows codegen**: release-gate and tag workflows provision LLVM 22, build
+  the release compiler and `hew.lib`, and execute a Rust-staticlib consumer
+  through `hew build --link-lib`. Ordinary PR CI remains the faster workspace
+  path; the release workflows are the platform artifact authority.
 - **Release-gate sandbox parity**: native↔sandbox-VM parity is enforced per PR
   on Linux by `ci.yml` with `make sandbox-parity`. The release gate does not
   rerun that Node/npm-backed harness across its platform matrix; rerun
   `make sandbox-parity` locally before tagging when cutting a release candidate.
-- **linux-aarch64**: No pre-tag CI gate before tagging; the tag workflow now
-  runs both packaged-archive smoke and an Ubuntu clean-room smoke on arm64.
-- **FreeBSD**: Nightly plus tag-time packaged-archive smoke, but the tag job is
-  still `continue-on-error: true`. Check the last nightly before tagging.
+- **linux-aarch64**: The pre-tag release gate builds and tests on a native
+  Ubuntu 24.04 arm runner; the tag workflow additionally runs packaged-archive
+  and clean-room smoke checks.
+- **FreeBSD**: Both x86_64 and aarch64 are blocking pre-tag build/test lanes and
+  blocking tag-time packaged-archive lanes. The nightly remains additional
+  early warning rather than the release authority.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
   publish the LLVM 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
 - **TSan (Rust runtime)**: upstream Rust/Cargo build-std + TSan link failures
   (duplicate lang items, panic-strategy mismatch) have no clean repo-side fix
-  as of 2026-04. Keep the nightly signal and carry release exceptions only via
-  `release-sanitizer-waiver.toml`; re-evaluate when upstream resolves.
+  as of 2026-04. Keep the nightly signal and record bounded release-version
+  behavior only via `release-sanitizer-waiver.toml`; re-evaluate when upstream
+  resolves.
 - **WASM capability gaps**: Channels and I/O streams are rejected at compile
   time when targeting wasm32-wasi.  Timers (`sleep`/`sleep_until`) now have
   cooperative semantics on WASM (actor parks at message boundary) and emit a

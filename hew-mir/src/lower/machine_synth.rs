@@ -1,12 +1,13 @@
 use super::{
-    build_down_hook_body, build_exit_hook_body, crash_action_return_ty, is_crash_info_payload_ty,
-    lower_function, resource_drop_fn, ActorHandlerLayout, ActorLayout, BindingId, BlockKind,
-    Builder, CheckedMirFunction, ChildSlot, CmpPred, ElabBlock, ElaboratedMirFunction, HashMap,
-    HashSet, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind,
-    HirMachineDecl, HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
-    ParamOwnershipFacts, Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId,
-    SiteId, SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
+    build_down_hook_body, build_exit_hook_body, crash_action_return_ty,
+    is_canonical_lifecycle_named_ty, is_crash_info_payload_ty, lower_function, resource_drop_fn,
+    ActorHandlerLayout, ActorLayout, BindingId, BlockKind, Builder, CheckedMirFunction, ChildSlot,
+    CmpPred, ElabBlock, ElaboratedMirFunction, HashMap, HashSet, HirActorDecl, HirBinding,
+    HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind, HirMachineDecl,
+    HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind, ParamOwnershipFacts,
+    Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId, SiteId,
+    SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
     SENTINEL_CRASH_CODE_BINDING, SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE,
     SENTINEL_CRASH_MESSAGE_BINDING, SENTINEL_DOWN_CRASH_KIND_BINDING,
     SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
@@ -87,6 +88,7 @@ fn lower_actor_receive_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -148,6 +150,7 @@ fn lower_actor_receive_handlers(
         let synthetic_fn = HirFn {
             id: actor.id,
             node: actor.node,
+            declaration: hew_types::DefId::new(format!("{}::{}", actor.name, handler.name)),
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
             params,
@@ -175,6 +178,7 @@ fn lower_actor_receive_handlers(
                 call_scrutinee_provenance,
                 param_ownership,
                 &HashMap::new(),
+                direct_call_symbols,
                 call_site_type_args,
                 None,
                 supervisor_child_slots,
@@ -204,6 +208,7 @@ pub(super) fn lower_actor_body_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -227,6 +232,7 @@ pub(super) fn lower_actor_body_handlers(
             opaque_handle_names,
             module_fn_names,
             module_generic_fn_names,
+            direct_call_symbols,
             call_scrutinee_provenance,
             param_ownership,
             call_site_type_args,
@@ -250,6 +256,7 @@ pub(super) fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        direct_call_symbols,
         call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
@@ -270,6 +277,7 @@ pub(super) fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        direct_call_symbols,
         call_scrutinee_provenance,
         param_ownership,
         call_site_type_args,
@@ -297,6 +305,7 @@ fn lower_actor_init_handler(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -326,6 +335,7 @@ fn lower_actor_init_handler(
     let synthetic_fn = HirFn {
         id: actor.id,
         node: actor.node,
+        declaration: hew_types::DefId::new(format!("{}::init", actor.name)),
         name: format!("{}::init", actor.name),
         type_params: Vec::new(),
         params: init.params.clone(),
@@ -347,12 +357,13 @@ fn lower_actor_init_handler(
             machine_layout_names,
             enum_layouts,
             opaque_handle_names,
-            Some(&actor.name),
+            Some(actor.qualified_name().as_str()),
             module_fn_names,
             module_generic_fn_names,
             call_scrutinee_provenance,
             param_ownership,
             &HashMap::new(),
+            direct_call_symbols,
             call_site_type_args,
             None,
             supervisor_child_slots,
@@ -383,6 +394,7 @@ fn lower_actor_lifecycle_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -417,6 +429,7 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
+                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: hook.params.clone(),
@@ -444,6 +457,7 @@ fn lower_actor_lifecycle_handlers(
                         call_scrutinee_provenance,
                         param_ownership,
                         &HashMap::new(),
+                        direct_call_symbols,
                         call_site_type_args,
                         None,
                         supervisor_child_slots,
@@ -471,6 +485,7 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
+                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: hook.params.clone(),
@@ -498,6 +513,7 @@ fn lower_actor_lifecycle_handlers(
                         call_scrutinee_provenance,
                         param_ownership,
                         &HashMap::new(),
+                        direct_call_symbols,
                         call_site_type_args,
                         None,
                         supervisor_child_slots,
@@ -532,7 +548,7 @@ fn lower_actor_lifecycle_handlers(
                 //
                 // The runtime ABI for `HewOnCrashFn` (M-3 reshape) is
                 // `(ctx, crash_code: i64, crash_message: *const c_char,
-                //  actor_state_ptr) -> i32` — see
+                //  actor_state_ptr) -> CrashAction` — see
                 // `hew-runtime/src/internal/types.rs`.
                 //
                 // User sources declare a single crash-info payload param and
@@ -586,9 +602,10 @@ fn lower_actor_lifecycle_handlers(
                 // The crash-info payload param expands to TWO ABI params:
                 // `__crash_code: i64` then `__crash_message: string` (a `ptr`),
                 // matching the `HewOnCrashFn` signature `(ctx, i64, *const
-                // c_char, *mut c_void) -> i32`. The message param is a borrow
-                // (the runtime owns the buffer) and is unused until M-5 seeds
-                // `CrashInfo.message` from it. Non-payload params pass through.
+                // c_char, *mut c_void) -> HewCrashActionAbi`. The message param
+                // is a borrow (the runtime owns the buffer) and seeds
+                // `CrashInfo.message` through the cloned prologue owner.
+                // Non-payload params pass through.
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()
@@ -746,6 +763,7 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
+                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -773,6 +791,7 @@ fn lower_actor_lifecycle_handlers(
                         call_scrutinee_provenance,
                         param_ownership,
                         &HashMap::new(),
+                        direct_call_symbols,
                         call_site_type_args,
                         None,
                         supervisor_child_slots,
@@ -806,57 +825,60 @@ fn lower_actor_lifecycle_handlers(
                     });
                     continue;
                 }
+
+                // Checker/HIR must hand MIR exactly one canonical lifecycle
+                // payload. Passing an unrecognised aggregate through here would
+                // silently emit a handler whose ABI disagrees with the runtime's
+                // `(u64, i32)` call site, so fail closed before raw MIR emission.
+                let Some(notification_param) = hook.params.first().filter(|p| {
+                    hook.params.len() == 1
+                        && is_canonical_lifecycle_named_ty(
+                            &p.ty,
+                            hew_types::BuiltinType::CrashNotification,
+                            "std.failure.CrashNotification",
+                        )
+                }) else {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "actor `{}` #[on(exit)] hook `{}` reached MIR without exactly \
+                                 one canonical std.failure.CrashNotification parameter",
+                                actor.name, hook.name
+                            ),
+                        },
+                        note: "#[on(exit)] runtime ABI is fixed to scalar (u64 actor_id, i32 \
+                               crash_kind); checker/HIR lifecycle identity must agree before \
+                               MIR emission"
+                            .to_string(),
+                    });
+                    continue;
+                };
                 emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-                // The CrashNotification payload param (if present) expands to the
-                // two raw ABI params; other params pass through (there are none
-                // in the canonical shape).
-                let notification_param: Option<HirBinding> = hook.params.iter().find_map(|p| {
-                    matches!(&p.ty, ResolvedTy::Named { name, args, .. }
-                        if name == "CrashNotification" && args.is_empty())
-                    .then(|| p.clone())
-                });
+                let abi_params = vec![
+                    HirBinding {
+                        id: SENTINEL_EXIT_ACTOR_ID_BINDING,
+                        name: "__exit_actor_id".to_string(),
+                        ty: ResolvedTy::U64,
+                        mutable: false,
+                        span: notification_param.span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_EXIT_KIND_TAG_BINDING,
+                        name: "__exit_kind_tag".to_string(),
+                        ty: ResolvedTy::I32,
+                        mutable: false,
+                        span: notification_param.span.clone(),
+                        is_consume: false,
+                    },
+                ];
 
-                let abi_params: Vec<HirBinding> = hook
-                    .params
-                    .iter()
-                    .flat_map(|p| {
-                        let is_notification = matches!(&p.ty, ResolvedTy::Named { name, args, .. }
-                            if name == "CrashNotification" && args.is_empty());
-                        if is_notification {
-                            vec![
-                                HirBinding {
-                                    id: SENTINEL_EXIT_ACTOR_ID_BINDING,
-                                    name: "__exit_actor_id".to_string(),
-                                    ty: ResolvedTy::U64,
-                                    mutable: false,
-                                    span: p.span.clone(),
-                                    is_consume: false,
-                                },
-                                HirBinding {
-                                    id: SENTINEL_EXIT_KIND_TAG_BINDING,
-                                    name: "__exit_kind_tag".to_string(),
-                                    ty: ResolvedTy::I32,
-                                    mutable: false,
-                                    span: p.span.clone(),
-                                    is_consume: false,
-                                },
-                            ]
-                        } else {
-                            vec![p.clone()]
-                        }
-                    })
-                    .collect();
-
-                let body = if let Some(note_param) = notification_param {
-                    build_exit_hook_body(hook.body.clone(), &note_param)
-                } else {
-                    hook.body.clone()
-                };
-
+                let body = build_exit_hook_body(hook.body.clone(), notification_param);
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
+                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -884,6 +906,7 @@ fn lower_actor_lifecycle_handlers(
                         call_scrutinee_provenance,
                         param_ownership,
                         &HashMap::new(),
+                        direct_call_symbols,
                         call_site_type_args,
                         None,
                         supervisor_child_slots,
@@ -975,6 +998,7 @@ fn lower_actor_lifecycle_handlers(
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,
+                    declaration: hew_types::DefId::new(format!("{}::{}", actor.name, hook.name)),
                     name: format!("{}::{}", actor.name, hook.name),
                     type_params: Vec::new(),
                     params: abi_params,
@@ -1002,6 +1026,7 @@ fn lower_actor_lifecycle_handlers(
                         call_scrutinee_provenance,
                         param_ownership,
                         &HashMap::new(),
+                        direct_call_symbols,
                         call_site_type_args,
                         None,
                         supervisor_child_slots,
@@ -1205,6 +1230,8 @@ pub(super) fn machine_emit_type_id(name: &str) -> u64 {
 )]
 pub(super) fn synthesize_machine_step_fn(
     md: &HirMachineDecl,
+    layout_name: String,
+    type_args: &[ResolvedTy],
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     actor_layouts: &HashMap<String, ActorLayout>,
@@ -1219,21 +1246,17 @@ pub(super) fn synthesize_machine_step_fn(
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     pointer_width: PointerWidth,
 ) -> LoweredFunction {
-    let emit_name = mangle_machine_step(&md.name);
+    let emit_name = mangle_machine_step(&layout_name);
 
-    // For generic machines, build the self-type with each type-param as a
-    // free `ResolvedTy::Named` arg (the same convention as registration in
-    // `hew-types`). Non-generic machines have an empty args vec.
-    let type_args: Vec<ResolvedTy> = md.type_params.iter().map(|_| ResolvedTy::I64).collect();
     let self_ty = ResolvedTy::Named {
-        name: md.name.clone(),
-        args: type_args.clone(),
+        name: md.qualified_name(),
+        args: type_args.to_vec(),
         builtin: None,
         is_opaque: false,
     };
     let event_ty = ResolvedTy::Named {
-        name: format!("{}Event", md.name),
-        args: type_args.clone(),
+        name: format!("{}Event", md.qualified_name()),
+        args: type_args.to_vec(),
         builtin: None,
         is_opaque: false,
     };
@@ -1270,8 +1293,8 @@ pub(super) fn synthesize_machine_step_fn(
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
-    for param in &md.type_params {
-        builder.subst.insert(param.clone(), ResolvedTy::I64);
+    for (param, arg) in md.type_params.iter().zip(type_args.iter()) {
+        builder.subst.insert(param.clone(), arg.clone());
     }
 
     // Allocate parameter locals. `self` → Local(0), `event` → Local(1).
@@ -1514,6 +1537,7 @@ pub(super) fn synthesize_machine_step_fn(
                 transition,
                 (self_binding, self_place),
                 (event_binding, event_place),
+                machine_emit_type_id(&layout_name),
             );
             builder.finish_current_block(Terminator::Return);
         }
@@ -1594,7 +1618,7 @@ pub(super) fn synthesize_machine_step_fn(
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
         source_origin: SourceOrigin::SynthesizedMachineStep {
-            machine_name: md.name.clone(),
+            machine_name: layout_name,
         },
     };
 
@@ -1646,6 +1670,10 @@ pub(super) fn synthesize_machine_step_fn(
         record_layouts: Vec::new(),
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "transition emission carries the exact machine, state, binding, event, and emit identities"
+)]
 fn emit_machine_step_transition_return(
     builder: &mut Builder,
     md: &HirMachineDecl,
@@ -1654,11 +1682,10 @@ fn emit_machine_step_transition_return(
     transition: &HirMachineTransition,
     self_info: (BindingId, Place),
     event_info: (BindingId, Place),
+    machine_emit_id: u64,
 ) {
     let (self_binding, self_place) = self_info;
     let (event_binding, event_place) = event_info;
-    let machine_emit_id = machine_emit_type_id(&md.name);
-
     let target_idx = md
         .states
         .iter()
@@ -1760,21 +1787,21 @@ fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
         _ => false,
     }
 }
-/// Build the per-machine layout descriptor from its HIR declaration.
-///
-/// `tag_width` is the minimum bit width to index all states:
-/// max(1, `ceil(log2(state_count))`). A single-state machine uses 1 bit
-/// (the tag field is always present) so `Place::MachineTag` is always
-/// addressable. State and event payload field types ride the
-/// v0.5 generic-machine doctrine: type parameters default to `i64`
-/// (`default_machine_type_params_to_i64`); non-`i64` instantiations fail
-/// closed downstream at codegen's Move type check, so the defaulted
-/// layout is exact for every instantiation that can actually run.
-pub(super) fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
+/// Build one concrete per-instantiation machine layout from its HIR
+/// declaration.  The caller supplies the canonical machine/event layout keys
+/// and the complete map from declared type parameters to the concrete HIR
+/// machine-mono arguments; no layout layer may substitute a default argument.
+pub(super) fn build_machine_layout(
+    md: &HirMachineDecl,
+    name: String,
+    event_name: String,
+    subst: &HashMap<String, ResolvedTy>,
+) -> crate::model::MachineLayout {
     let state_count = u32::try_from(md.states.len().max(1)).unwrap_or(u32::MAX);
     let tag_width = u32::max(1, state_count.next_power_of_two().trailing_zeros());
     crate::model::MachineLayout {
-        name: md.name.clone(),
+        name,
+        event_name,
         tag_width,
         variants: md
             .states
@@ -1784,7 +1811,7 @@ pub(super) fn build_machine_layout(md: &HirMachineDecl) -> crate::model::Machine
                 field_tys: s
                     .fields
                     .iter()
-                    .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                    .map(|f| hew_hir::lower::substitute_ty(&f.ty, subst))
                     .collect(),
                 field_names: s.fields.iter().map(|f| f.name.clone()).collect(),
             })
@@ -1797,73 +1824,11 @@ pub(super) fn build_machine_layout(md: &HirMachineDecl) -> crate::model::Machine
                 field_tys: e
                     .fields
                     .iter()
-                    .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                    .map(|f| hew_hir::lower::substitute_ty(&f.ty, subst))
                     .collect(),
                 field_names: e.fields.iter().map(|f| f.name.clone()).collect(),
             })
             .collect(),
-    }
-}
-fn default_machine_type_params_to_i64(ty: &ResolvedTy, md: &HirMachineDecl) -> ResolvedTy {
-    match ty {
-        ResolvedTy::Named { name, args, .. }
-            if args.is_empty() && md.type_params.contains(name) =>
-        {
-            ResolvedTy::I64
-        }
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            is_opaque,
-        } => ResolvedTy::Named {
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|arg| default_machine_type_params_to_i64(arg, md))
-                .collect(),
-            builtin: *builtin,
-            is_opaque: *is_opaque,
-        },
-        ResolvedTy::Tuple(elems) => ResolvedTy::Tuple(
-            elems
-                .iter()
-                .map(|elem| default_machine_type_params_to_i64(elem, md))
-                .collect(),
-        ),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
-            params: params
-                .iter()
-                .map(|param| default_machine_type_params_to_i64(param, md))
-                .collect(),
-            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
-        },
-        ResolvedTy::Closure {
-            params,
-            ret,
-            captures,
-        } => ResolvedTy::Closure {
-            params: params
-                .iter()
-                .map(|param| default_machine_type_params_to_i64(param, md))
-                .collect(),
-            ret: Box::new(default_machine_type_params_to_i64(ret, md)),
-            captures: captures
-                .iter()
-                .map(|capture| default_machine_type_params_to_i64(capture, md))
-                .collect(),
-        },
-        ResolvedTy::Pointer {
-            is_mutable,
-            pointee,
-        } => ResolvedTy::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(default_machine_type_params_to_i64(pointee, md)),
-        },
-        ResolvedTy::Task(inner) => {
-            ResolvedTy::Task(Box::new(default_machine_type_params_to_i64(inner, md)))
-        }
-        other => other.clone(),
     }
 }
 fn emit_machine_transition_out_drops(
@@ -2196,6 +2161,7 @@ pub(super) fn lower_supervisor_bootstrap(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    direct_call_symbols: &HashMap<hew_types::DefId, String>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
@@ -2503,6 +2469,7 @@ pub(super) fn lower_supervisor_bootstrap(
     let synthetic_fn = HirFn {
         id: sup.id,
         node: sup.node,
+        declaration: hew_types::DefId::new(format!("{}::__bootstrap", sup.name)),
         name: format!("{}::__bootstrap", sup.name),
         type_params: Vec::new(),
         params: bootstrap_params,
@@ -2525,8 +2492,8 @@ pub(super) fn lower_supervisor_bootstrap(
         enum_layouts,
         opaque_handle_names,
         // Supervisors have no actor state. `lower_actor_init_handler`
-        // passes `Some(&actor.name)` for the same role; here we pass
-        // `None` because there's no state-field table to lift into the
+        // passes `Some(actor.qualified_name())` for the same role; here we
+        // pass `None` because there's no state-field table to lift into the
         // Builder.
         None,
         module_fn_names,
@@ -2534,6 +2501,7 @@ pub(super) fn lower_supervisor_bootstrap(
         call_scrutinee_provenance,
         param_ownership,
         &HashMap::new(),
+        direct_call_symbols,
         call_site_type_args,
         None,
         supervisor_child_slots,
@@ -2801,7 +2769,7 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_unknown_self_fields_in_expr(callee, state_fields, seen, unknown);
             for arg in args {
                 collect_unknown_self_fields_in_expr(arg, state_fields, seen, unknown);
@@ -2969,7 +2937,10 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {

@@ -57,7 +57,7 @@ pub enum IoError {
     Other(i64);
 }
 
-// WASM-TODO(#1451): WASI uses wasi_errno codes; needs a WASI branch or separate mapping
+// WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `IoError` variant.
 ///
 /// The i64 payload carried in each variant is the raw OS errno so callers
@@ -208,9 +208,9 @@ pub fn read(path: string) -> string {
 /// Returns `Err(IoError)` instead of panicking on open failures.
 pub fn try_read(file_path: string) -> Result<string, IoError> {
     unsafe {
-        let file = hew_stream_from_file_read(file_path);
-        if hew_stream_is_valid(file) {
-            let contents = hew_stream_collect_string(file);
+        let file = hew_file_read_stream_open(file_path);
+        if hew_file_read_stream_is_valid(file) {
+            let contents = hew_file_read_stream_collect_string(file);
             let kind = hew_stream_last_error_kind() as i64;
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
@@ -500,8 +500,17 @@ pub fn is_dir(path: string) -> bool {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
+#[resource]
 #[opaque]
 pub type FileReadStream {
+}
+
+impl FileReadStream {
+    fn close(consuming self) {
+        unsafe {
+            hew_file_read_stream_close(self)
+        };
+    }
 }
 
 extern "C" {
@@ -519,10 +528,11 @@ extern "C" {
     fn hew_fs_rename(from: string, to: string) -> i32;
     fn hew_fs_copy(from: string, to: string) -> i32;
     fn hew_fs_is_dir(path: string) -> bool;
-    fn hew_stream_from_file_read(path: string) -> FileReadStream;
-    fn hew_stream_is_valid(stream: FileReadStream) -> bool;
+    fn hew_file_read_stream_open(path: string) -> FileReadStream;
+    fn hew_file_read_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
-    fn hew_stream_collect_string(stream: FileReadStream) -> string;
+    fn hew_file_read_stream_collect_string(consume stream: FileReadStream) -> string;
+    fn hew_file_read_stream_close(consume stream: FileReadStream);
 }

@@ -9,6 +9,470 @@ fn should_import_name_bare_import_returns_false() {
     assert!(!Checker::should_import_name("helper", &None));
 }
 
+fn check_resolved_testffi_import(root_source: &str) -> (Checker, TypeCheckOutput) {
+    let module = hew_parser::parse(include_str!(
+        "../../../../tests/pkg-import/pkgs/testffi/testffi.hew"
+    ));
+    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(module.program.items);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    (checker, output)
+}
+
+/// Resolve the two same-leaf package fixtures exactly as the package loader
+/// does: imports retain their lexical bindings while declarations retain their
+/// full source owners (`hew.closableerr` and `hew.closableerr2`).
+fn check_resolved_closableerr_import(
+    root_source: &str,
+    include_second_owner: bool,
+) -> (Checker, TypeCheckOutput) {
+    let primary = hew_parser::parse(include_str!(
+        "../../../../tests/pkg-import/pkgs/closableerr/closableerr.hew"
+    ));
+    assert!(primary.errors.is_empty(), "parse: {:?}", primary.errors);
+    let secondary = hew_parser::parse(include_str!(
+        "../../../../tests/pkg-import/pkgs/closableerr2/closableerr2.hew"
+    ));
+    assert!(secondary.errors.is_empty(), "parse: {:?}", secondary.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+
+    for (item, _) in &mut root.program.items {
+        let Item::Import(import) = item else {
+            continue;
+        };
+        match import.path.as_slice() {
+            [package, module] if package == "hew" && module == "closableerr" => {
+                import.resolved_items = Some(primary.program.items.clone());
+            }
+            [package, module]
+                if include_second_owner && package == "hew" && module == "closableerr2" =>
+            {
+                import.resolved_items = Some(secondary.program.items.clone());
+            }
+            _ => {}
+        }
+    }
+
+    // A resolved import surface alone records the declarations, but a trait
+    // method signature is collected from its declaring module. Mirror the
+    // package loader's graph so the conformance check reads
+    // `hew.closableerr.Closable::close`, never an importer-local placeholder.
+    let root_id = ModuleId::root();
+    let primary_id = ModuleId::new(vec!["hew".to_string(), "closableerr".to_string()]);
+    let secondary_id = ModuleId::new(vec!["hew".to_string(), "closableerr2".to_string()]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: primary_id.clone(),
+            items: primary.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add primary fixture module");
+    if include_second_owner {
+        module_graph
+            .add_module(Module {
+                id: secondary_id.clone(),
+                items: secondary.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add second fixture module");
+    }
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root fixture module");
+    module_graph.topo_order = std::iter::once(primary_id)
+        .chain(include_second_owner.then_some(secondary_id))
+        .chain(std::iter::once(root_id))
+        .collect();
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    });
+    (checker, output)
+}
+
+#[test]
+fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding() {
+    let (checker, output) = check_resolved_closableerr_import(
+        include_str!("../../../../tests/pkg-import/qualified_trait_sig.hew"),
+        false,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "qualified nested trait signature must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("closableerr")
+        }),
+        "the lexical whole-module binding must be marked used: {:#?}",
+        output.warnings
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("ClosableHandle::close")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::result(
+            Ty::Unit,
+            Ty::Named {
+                builtin: None,
+                name: "hew.closableerr.CloseError".to_string(),
+                args: vec![],
+            },
+        )),
+        "the nested impl return must retain the exact source owner"
+    );
+    assert!(
+        checker.type_defs.contains_key("hew.closableerr.CloseError"),
+        "source declaration must be registered under its canonical owner"
+    );
+}
+
+#[test]
+fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
+    let (_, output) = check_resolved_closableerr_import(
+        include_str!("../../../../tests/pkg-import/aliased_trait_sig.hew"),
+        false,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "a selective trait alias must retain its source module for sibling types: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output
+            .module_import_bindings
+            .get(&(None, "closableerr".to_string()))
+            .map(String::as_str),
+        Some("hew.closableerr"),
+        "the lexical `closableerr` qualifier must retain the exact owner even \
+         when only `Closable as C` was selectively imported"
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("ClosableHandle::close")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::result(
+            Ty::Unit,
+            Ty::Named {
+                builtin: None,
+                name: "hew.closableerr.CloseError".to_string(),
+                args: vec![],
+            },
+        )),
+        "the qualified sibling must resolve through its source owner"
+    );
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("closableerr")
+        }),
+        "using the selective trait alias and its sibling qualifier must credit the import: {:#?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn aliased_trait_rejects_same_leaf_nested_type_from_different_source_owner() {
+    let (_, output) = check_resolved_closableerr_import(
+        include_str!("../../../../tests/pkg-import/aliased_trait_cross_module_sig_reject.hew"),
+        true,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    detail: "return type",
+                    ..
+                }
+            )
+        }),
+        "a trait alias must not collapse `hew.closableerr.CloseError` with \
+         `hew.closableerr2.CloseError`: {:#?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn imported_actor_i32_uses_exact_module_binding_and_owner() {
+    let (checker, output) = check_resolved_testffi_import(include_str!(
+        "../../../../tests/pkg-import/imported_actor_ask_i32.hew"
+    ));
+
+    assert!(
+        output.errors.is_empty(),
+        "imported i32 actor ask must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(checker.type_defs.contains_key("hew.testffi.Db"));
+    assert!(checker
+        .module_type_exports
+        .get("hew.testffi")
+        .is_some_and(|exports| exports.contains("Db")));
+    assert!(!checker.module_type_exports.contains_key("testffi"));
+    assert_eq!(
+        output
+            .module_import_bindings
+            .iter()
+            .find(|((_, binding), _)| binding == "testffi")
+            .map(|(_, owner)| owner.as_str()),
+        Some("hew.testffi"),
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.testffi.Db::count32")
+            .map(|sig| &sig.return_type),
+        Some(&Ty::I32)
+    );
+}
+
+#[test]
+fn imported_actor_record_impl_and_extern_share_exact_owner() {
+    let (checker, output) = check_resolved_testffi_import(include_str!(
+        "../../../../tests/pkg-import/imported_actor_ask_record.hew"
+    ));
+
+    let result_ty = Ty::Named {
+        builtin: None,
+        name: "hew.testffi.Result".to_string(),
+        args: vec![],
+    };
+    assert!(
+        checker.registry.has_type_markers("hew.testffi.Result"),
+        "canonical record marker metadata must be published"
+    );
+    assert!(
+        checker
+            .registry
+            .implements_marker(&result_ty, crate::traits::MarkerTrait::Send),
+        "canonical i64-only Result must derive Send"
+    );
+    assert!(
+        output.errors.is_empty(),
+        "imported record actor ask must typecheck: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.testffi.Db::query")
+            .map(|sig| &sig.return_type),
+        Some(&result_ty)
+    );
+    assert_eq!(
+        output
+            .fn_sigs
+            .get("hew.testffi.hew_testffi_query")
+            .map(|sig| &sig.return_type),
+        Some(&result_ty)
+    );
+    assert!(checker
+        .type_defs
+        .get("hew.testffi.Result")
+        .is_some_and(|result| result.methods.contains_key("echo_len")));
+    let echo_id = output
+        .impl_method_declaration_ids
+        .get("hew.testffi.Result::echo_len")
+        .unwrap_or_else(|| {
+            panic!(
+                "canonical emitted impl symbol must publish its declaration ID; keys: {:?}",
+                output
+                    .impl_method_declaration_ids
+                    .keys()
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(echo_id
+        .full_path()
+        .starts_with("hew.testffi.Result::<impl "));
+}
+
+#[test]
+fn module_private_extern_call_publishes_exact_executable_target() {
+    let output = check_source_in_module(
+        include_str!("../../../../tests/pkg-import/pkgs/testffi/testffi.hew"),
+        vec!["hew".to_string(), "testffi".to_string()],
+    );
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| {
+            matches!(
+                target,
+                crate::check::dispatch::CallTarget::Extern {
+                    declaration,
+                    endpoint,
+                    ..
+                } if declaration.full_path() == "hew.testffi.hew_testffi_query"
+                    && endpoint == "hew_testffi_query"
+            )
+        }),
+        "direct targets: {:?}",
+        output.direct_call_targets
+    );
+}
+
+#[test]
+fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
+    let left = hew_parser::parse(
+        r"
+        pub type Result { left: i64; }
+        impl Result {
+            fn echo(self) -> i64 { self.left }
+        }
+        ",
+    );
+    let right = hew_parser::parse(
+        r"
+        pub type Result { right: string; }
+        impl Result {
+            fn echo(self) -> string { self.right }
+        }
+        ",
+    );
+    assert!(left.errors.is_empty());
+    assert!(right.errors.is_empty());
+    let mut root = hew_parser::parse(
+        r"
+        import left::render as left_render;
+        import right::render as right_render;
+        fn main() {}
+        ",
+    );
+    assert!(root.errors.is_empty());
+    for (item, _) in &mut root.program.items {
+        let Item::Import(import) = item else {
+            continue;
+        };
+        import.resolved_items = Some(if import.path.first().is_some_and(|part| part == "left") {
+            left.program.items.clone()
+        } else {
+            right.program.items.clone()
+        });
+    }
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+    let left_id = output
+        .impl_method_declaration_ids
+        .get("left.render.Result::echo")
+        .expect("left emitted impl symbol");
+    let right_id = output
+        .impl_method_declaration_ids
+        .get("right.render.Result::echo")
+        .expect("right emitted impl symbol");
+    assert_ne!(left_id, right_id);
+    assert!(left_id
+        .full_path()
+        .starts_with("left.render.Result::<impl "));
+    assert!(right_id
+        .full_path()
+        .starts_with("right.render.Result::<impl "));
+}
+
+#[test]
+fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
+    let user_module = hew_parser::parse(
+        r"
+        pub type Sender { marker: i64; }
+        pub type Receiver { marker: i64; }
+        ",
+    );
+    assert!(
+        user_module.errors.is_empty(),
+        "parse: {:#?}",
+        user_module.errors
+    );
+
+    let mut root = hew_parser::parse(
+        r"
+        import std::channel::channel as ch;
+        fn probe(tx: ch.Sender, rx: ch.Receiver) {}
+        ",
+    );
+    assert!(root.errors.is_empty(), "parse: {:#?}", root.errors);
+    let user_source = std::path::PathBuf::from("/user/project/std/channel/channel.hew");
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(user_module.program.items);
+    import.resolved_source_paths = vec![user_source.clone()];
+    import.resolved_item_source_paths = vec![user_source; 2];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+    let params = &output.fn_sigs["probe"].params;
+    assert!(matches!(
+        &params[0],
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if name == "std.channel.channel.Sender" && args.is_empty()
+    ));
+    assert!(matches!(
+        &params[1],
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if name == "std.channel.channel.Receiver" && args.is_empty()
+    ));
+}
+
 #[test]
 fn should_import_name_glob_returns_true() {
     assert!(Checker::should_import_name(
@@ -163,8 +627,8 @@ fn named_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("mod_a.Reply"),
-        "named import should still register the qualified type"
+        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        "named import should still register the exact source-qualified type"
     );
     assert!(
         checker
@@ -212,8 +676,8 @@ fn named_import_type_alias_publishes_alias_binding() {
 }
 
 /// P3-alias-identity — an aliased opt-in (`import m::{ Reply as R }`) makes the
-/// bare binding `R` resolve to the SOURCE identity `m.Reply`, not a phantom
-/// `m.R`. This is the resolver half of the aliased-import fix: the published-bare
+/// bare binding `R` resolve to the SOURCE identity `myapp.mod_a.Reply`, not a
+/// phantom `myapp.mod_a.R`. This is the resolver half of the aliased-import fix: the published-bare
 /// map carries the owner-qualified source name, so `published_bare_type_qualified`
 /// returns the type `m` actually exports under `Reply`.
 #[test]
@@ -236,14 +700,14 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
 
     assert_eq!(
         checker.published_bare_type_qualified("R"),
-        Some("mod_a.Reply".to_string()),
-        "aliased binding `R` must resolve to the source identity `mod_a.Reply`, not `mod_a.R`"
+        Some("myapp.mod_a.Reply".to_string()),
+        "aliased binding `R` must resolve to the full source identity `myapp.mod_a.Reply`, not `myapp.mod_a.R`"
     );
-    // The reconstructed `mod_a.R` must never exist as a registered def — the bug
+    // The reconstructed `myapp.mod_a.R` must never exist as a registered def — the bug
     // was binding it (or failing closed) instead of the real source type.
     assert!(
-        !checker.type_defs.contains_key("mod_a.R"),
-        "no `mod_a.R` def should exist; the alias binds the source `Reply`"
+        !checker.type_defs.contains_key("myapp.mod_a.R"),
+        "no `myapp.mod_a.R` def should exist; the alias binds the source `Reply`"
     );
 }
 
@@ -273,19 +737,19 @@ fn alias_import_does_not_conflate_with_same_named_export() {
 
     // Both distinct source types keep their own qualified identity.
     assert!(
-        output.type_defs.contains_key("mod_a.Reply"),
+        output.type_defs.contains_key("myapp.mod_a.Reply"),
         "source `Reply` must register its qualified identity"
     );
     assert!(
-        output.type_defs.contains_key("mod_a.Other"),
+        output.type_defs.contains_key("myapp.mod_a.Other"),
         "the distinct source `Other` must register its own qualified identity"
     );
-    // The bare binding `Other` denotes the ALIASED source `mod_a.Reply`, NOT the
-    // same-named export `mod_a.Other`.
+    // The bare binding `Other` denotes the ALIASED source
+    // `myapp.mod_a.Reply`, NOT the same-named export `myapp.mod_a.Other`.
     assert_eq!(
         checker.published_bare_type_qualified("Other"),
-        Some("mod_a.Reply".to_string()),
-        "aliased binding `Other` must resolve to `mod_a.Reply`, not the same-named export `mod_a.Other`"
+        Some("myapp.mod_a.Reply".to_string()),
+        "aliased binding `Other` must resolve to `myapp.mod_a.Reply`, not the same-named export `myapp.mod_a.Other`"
     );
     // The real `Other` export is not opted in by the alias, so it is not itself
     // published under its own bare name.
@@ -314,7 +778,7 @@ fn glob_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("mod_a.Reply"),
+        output.type_defs.contains_key("myapp.mod_a.Reply"),
         "glob import should still register the qualified type"
     );
     assert!(
@@ -392,6 +856,135 @@ fn stdlib_named_import_publishes_bare_type() {
             .contains_key(&(None, "Server".to_string())),
         "named stdlib opt-in must publish bare `Server`"
     );
+}
+
+#[test]
+fn stdlib_const_uses_full_registry_owner() {
+    let parsed = hew_parser::parse("pub const MAX_READS: i64 = 4096;");
+    assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("codec".to_string());
+    checker.module_import_bindings.insert(
+        (None, "codec".to_string()),
+        "std.net.http.codec".to_string(),
+    );
+
+    checker.register_stdlib_hew_items(
+        "codec",
+        "std.net.http.codec",
+        &parsed.program.items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    assert!(
+        checker
+            .env
+            .lookup_ref("std.net.http.codec.MAX_READS")
+            .is_some(),
+        "the constant key must match the exact owner behind the lexical module binding"
+    );
+    assert!(checker.env.lookup_ref("codec.MAX_READS").is_none());
+}
+
+#[test]
+fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup() {
+    let connection = make_pub_struct("Connection", "fd");
+    let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
+    let plain_decl = ImportDecl {
+        path: vec!["std".to_string(), "net".to_string()],
+        spec: None,
+        module_alias: None,
+        file_path: None,
+        resolved_items: Some(resolved_items.clone()),
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let named_spec = Some(ImportSpec::Names(vec![ImportName {
+        name: "Connection".to_string(),
+        alias: None,
+    }]));
+    let named_decl = ImportDecl {
+        spec: named_spec.clone(),
+        ..plain_decl.clone()
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("transitive".to_string());
+    checker.register_resolved_stdlib_hew_source(
+        &plain_decl,
+        "std::net",
+        "net",
+        "std.net",
+        &resolved_items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    checker.current_module = None;
+    checker.register_resolved_stdlib_hew_source(
+        &named_decl,
+        "std::net",
+        "net",
+        "std.net",
+        &resolved_items,
+        StdlibBarePublication::Import(&named_spec),
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Connection".to_string())),
+        "the root's named import must publish Connection even when a transitive importer registered std::net first"
+    );
+    assert_eq!(
+        checker
+            .import_type_name_aliases
+            .get(&(None, "Connection".to_string()))
+            .map(String::as_str),
+        Some("std.net.Connection"),
+        "HIR must receive the root import's exact source identity"
+    );
+}
+
+#[test]
+fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
+    let parsed = hew_parser::parse(
+        "pub enum NetError { Failed(i64); }\n\
+         pub fn net_error() -> NetError { NetError::Failed(1) }\n",
+    );
+    assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    // This is the shape a legacy registry wrapper publishes before the parsed
+    // `std::net` source is registered: the surface module name is not a
+    // declaration identity. Source publication must replace it regardless of
+    // registration order.
+    checker.fn_sigs.insert(
+        "std.net.net_error".to_string(),
+        FnSig {
+            return_type: Ty::Named {
+                name: "net.NetError".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+            ..FnSig::default()
+        },
+    );
+
+    checker.register_stdlib_hew_items(
+        "net",
+        "std.net",
+        &parsed.program.items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    let signature = checker
+        .fn_sigs
+        .get("std.net.net_error")
+        .expect("source declaration must publish its canonical signature");
+    assert!(matches!(
+        signature.return_type,
+        Ty::Named { ref name, .. } if name == "std.net.NetError"
+    ));
 }
 
 /// A compiled-in `Prelude` bootstrap surface publishes its bare binding
@@ -474,8 +1067,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         .expect("qualified Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { name, .. }) => assert_eq!(
-            name, "tls.Wrap",
-            "the private local member must retain its own qualified type identity"
+            name, "std.net.tls.Wrap",
+            "the private local member must retain its exact source-qualified type identity"
         ),
         other => panic!("Holder.wrap must be a named type, got {other:?}"),
     }
@@ -503,6 +1096,53 @@ fn bare_import_type_qualified_alias_has_fields() {
         qualified.fields.contains_key("code"),
         "qualified alias must carry the source def's fields (alias-copy ordering)"
     );
+}
+
+fn assert_same_leaf_canonical_type_defs_keep_distinct_shapes(left_first: bool) {
+    let left = make_user_import(
+        &["pkg", "left"],
+        None,
+        vec![(Item::TypeDecl(make_pub_struct("Shared", "left_only")), 0..0)],
+    );
+    let right = make_user_import(
+        &["pkg", "right"],
+        None,
+        vec![(
+            Item::TypeDecl(make_pub_struct("Shared", "right_only")),
+            0..0,
+        )],
+    );
+    let imports = if left_first {
+        vec![(Item::Import(left), 0..0), (Item::Import(right), 0..0)]
+    } else {
+        vec![(Item::Import(right), 0..0), (Item::Import(left), 0..0)]
+    };
+    let output = check_items(imports);
+
+    let left_def = output.type_defs.get("pkg.left.Shared").unwrap_or_else(|| {
+        panic!(
+            "left module must retain its canonical Shared definition; keys: {:?}",
+            output.type_defs.keys().collect::<Vec<_>>()
+        )
+    });
+    let right_def = output
+        .type_defs
+        .get("pkg.right.Shared")
+        .expect("right module must retain its canonical Shared definition");
+    assert!(left_def.fields.contains_key("left_only"));
+    assert!(!left_def.fields.contains_key("right_only"));
+    assert!(right_def.fields.contains_key("right_only"));
+    assert!(!right_def.fields.contains_key("left_only"));
+}
+
+#[test]
+fn same_leaf_type_defs_keep_distinct_full_owners_left_then_right() {
+    assert_same_leaf_canonical_type_defs_keep_distinct_shapes(true);
+}
+
+#[test]
+fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
+    assert_same_leaf_canonical_type_defs_keep_distinct_shapes(false);
 }
 
 // (The machine arm is structurally identical to the type arm; its gate is
@@ -540,8 +1180,8 @@ fn glob_import_registers_unqualified_names() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     // Both qualified and unqualified should be registered
-    assert!(output.fn_sigs.contains_key("utils.helper"));
-    assert!(output.fn_sigs.contains_key("utils.other"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
     assert!(
         output.fn_sigs.contains_key("helper"),
         "glob import should register unqualified 'helper'"
@@ -585,9 +1225,9 @@ fn named_import_registers_specified_names_only() {
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
-    // Both should be qualified
-    assert!(output.fn_sigs.contains_key("utils.helper"));
-    assert!(output.fn_sigs.contains_key("utils.other"));
+    // Both should retain their exact source-qualified declaration identity.
+    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
     // Only "helper" should be unqualified
     assert!(
         output.fn_sigs.contains_key("helper"),
@@ -627,14 +1267,14 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.fn_sigs.contains_key("utils.secret"),
-        "private function must be registered under its qualified name for enforcement"
+        output.fn_sigs.contains_key("myapp.utils.secret"),
+        "private function must be registered under its exact source-qualified name for enforcement"
     );
     assert!(
         !output.fn_sigs.contains_key("secret"),
         "private function must NOT receive an unqualified (bare) binding"
     );
-    assert!(output.fn_sigs.contains_key("utils.visible"));
+    assert!(output.fn_sigs.contains_key("myapp.utils.visible"));
     assert!(output.fn_sigs.contains_key("visible"));
 }
 
@@ -689,15 +1329,15 @@ fn user_module_registers_pub_consts() {
 
     // pub const should be findable in the environment
     assert!(
-        checker.env.lookup_ref("config.MAX_SIZE").is_some(),
-        "pub const should be registered as qualified"
+        checker.env.lookup_ref("myapp.config.MAX_SIZE").is_some(),
+        "pub const should be registered under its exact source owner"
     );
     assert!(
         checker.env.lookup_ref("MAX_SIZE").is_some(),
         "pub const should be unqualified with glob import"
     );
     assert!(
-        checker.env.lookup_ref("config.INTERNAL").is_none(),
+        checker.env.lookup_ref("myapp.config.INTERNAL").is_none(),
         "private const should NOT be registered"
     );
     assert!(
@@ -738,8 +1378,8 @@ fn user_module_const_bare_import_qualified_only() {
     let _output = checker.check_program(&program);
 
     assert!(
-        checker.env.lookup_ref("config.LIMIT").is_some(),
-        "pub const should be registered as qualified"
+        checker.env.lookup_ref("myapp.config.LIMIT").is_some(),
+        "pub const should be registered under its exact source owner"
     );
     assert!(
         checker.env.lookup_ref("LIMIT").is_none(),
@@ -1139,8 +1779,12 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let output = checker.check_program(&program);
     let stream_from_file = output
         .fn_sigs
-        .get("stream.from_file")
-        .expect("expected std::stream import to register stream.from_file");
+        .get("std.stream.from_file")
+        .expect("expected std::stream import to register std.stream.from_file");
+    assert!(
+        !output.fn_sigs.contains_key("stream.from_file"),
+        "the stdlib function registry must not retain a leaf-qualified declaration identity"
+    );
 
     assert_eq!(
         stream_from_file.return_type,
@@ -1220,7 +1864,7 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
     assert_eq!(
-        error.notes.first().map(|(span, _)| span.clone()),
+        error.notes.first().map(|(span, _, _)| span.clone()),
         Some(0..5),
         "duplicate pub name should point back to the first merged definition"
     );
@@ -1470,7 +2114,7 @@ fn named_ty(name: &str) -> Ty {
 fn import_alias_in_record_field_resolves_to_source_identity() {
     // mod_a exports `pub type Payload { code: i64 }`; root imports it as `Tag`
     // and declares `pub type Boxed { item: Tag }`. The stored field type must be
-    // the canonical `mod_a.Payload`, not the frozen bare alias `Tag` — otherwise
+    // the canonical `myapp.mod_a.Payload`, not the frozen bare alias `Tag` — otherwise
     // the field freezes mismatched against the construction site (#2202).
     let payload = make_pub_struct("Payload", "code");
     let import = make_user_import(
@@ -1493,16 +2137,16 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
-        Some(&named_ty("mod_a.Payload")),
+        Some(&named_ty("myapp.mod_a.Payload")),
         "field `item: Tag` must resolve to the canonical source identity \
-         `mod_a.Payload`, not the frozen bare alias `Tag`"
+         `myapp.mod_a.Payload`, not the frozen bare alias `Tag`"
     );
 }
 
 #[test]
 fn import_alias_in_enum_payload_resolves_to_source_identity() {
     // Root declares `pub enum Wrap { Has(Tag) }`; the variant payload AND its
-    // constructor `fn_sig` must both upgrade to the canonical `mod_a.Payload`.
+    // constructor `fn_sig` must both upgrade to the canonical `myapp.mod_a.Payload`.
     let payload = make_pub_struct("Payload", "code");
     let import = make_user_import(
         &["myapp", "mod_a"],
@@ -1549,13 +2193,13 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         .expect("`Wrap` must be registered");
     assert_eq!(
         wrap_def.variants.get("Has"),
-        Some(&VariantDef::Tuple(vec![named_ty("mod_a.Payload")])),
-        "enum variant payload `Has(Tag)` must resolve to `mod_a.Payload`"
+        Some(&VariantDef::Tuple(vec![named_ty("myapp.mod_a.Payload")])),
+        "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
     assert_eq!(
         output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
-        Some(vec![named_ty("mod_a.Payload")]),
-        "the variant constructor `Has` must be re-keyed to take `mod_a.Payload`"
+        Some(vec![named_ty("myapp.mod_a.Payload")]),
+        "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
     );
 }
 
@@ -1596,7 +2240,7 @@ fn local_type_shadows_import_alias_in_member_position() {
 #[test]
 fn aliased_member_matches_qualified_member_type() {
     // The aliased member (`item: Tag`) and the qualified member
-    // (`item: mod_a.Payload`) must resolve to the SAME stored field type, so
+    // (`item: myapp.mod_a.Payload`) must resolve to the SAME stored field type, so
     // every member-derived fact (Send/Copy/Frozen markers, serializable set) is
     // identical regardless of which spelling the user wrote (Risk #1).
     let payload = make_pub_struct("Payload", "code");
@@ -1609,7 +2253,7 @@ fn aliased_member_matches_qualified_member_type() {
         vec![(Item::TypeDecl(payload), 0..0)],
     );
     let aliased = make_struct_with_field_ty("AliasedBox", "item", "Tag");
-    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "mod_a.Payload");
+    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "myapp.mod_a.Payload");
     let output = check_items(vec![
         (Item::Import(import), 0..0),
         (Item::TypeDecl(aliased), 0..0),
@@ -1626,12 +2270,12 @@ fn aliased_member_matches_qualified_member_type() {
         .and_then(|d| d.fields.get("item"));
     assert_eq!(
         aliased_field,
-        Some(&named_ty("mod_a.Payload")),
-        "the aliased member must resolve to the canonical `mod_a.Payload`"
+        Some(&named_ty("myapp.mod_a.Payload")),
+        "the aliased member must resolve to the canonical `myapp.mod_a.Payload`"
     );
     assert_eq!(
         aliased_field, qualified_field,
-        "aliased member `Tag` and qualified member `mod_a.Payload` must resolve to \
+        "aliased member `Tag` and qualified member `myapp.mod_a.Payload` must resolve to \
          the identical stored field type"
     );
 }
@@ -1648,6 +2292,8 @@ fn import_trait_from_module_glob() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "display".to_string(),
             type_params: None,
             params: vec![],
@@ -1690,6 +2336,8 @@ fn import_private_trait_not_registered() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "internal_op".to_string(),
             type_params: None,
             params: vec![],
@@ -1957,5 +2605,103 @@ fn test_file_import_private_items_not_visible() {
     assert!(
         !checker.known_types.contains("PrivateType"),
         "private type must not be registered from file import"
+    );
+}
+
+/// Harness for the qualified-variant-under-expected-nominal rule: a module
+/// `m` exporting `enum Mode` + `fn pick(m: Mode)`, checked from a root that
+/// reaches `Mode` only through the call's expected parameter type.
+fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
+    let module = hew_parser::parse(
+        "pub enum Mode {\n    A;\n    B;\n}\n\npub fn pick(m: Mode) -> i64 {\n    match m {\n        Mode::A => 1,\n        Mode::B => 2,\n    }\n}\n",
+    );
+    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.as_slice() == ["m"] {
+                import.resolved_items = Some(module.program.items.clone());
+            }
+        }
+    }
+    let root_id = ModuleId::root();
+    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: m_id.clone(),
+            items: module.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add module m");
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root");
+    module_graph.topo_order = vec![m_id, root_id];
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    })
+}
+
+/// A qualified unit-variant expression (`Mode::A`) in a position whose
+/// expected type is the module-owned nominal resolves through that expected
+/// identity — mirroring pattern position — without requiring the bare name
+/// to be published by the plain `import`.
+#[test]
+fn qualified_variant_expression_resolves_through_expected_nominal_identity() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected-nominal authority must resolve `Mode::A`; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A root-local enum with the same leaf claims the spelling: `Mode::A` then
+/// denotes the LOCAL nominal, which is distinct from `m.Mode` — the pairing
+/// stays a type mismatch (no false merge through the expected type).
+#[test]
+fn local_same_leaf_enum_does_not_merge_with_expected_module_nominal() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nenum Mode {\n    A;\n    Z;\n}\n\nfn main() {\n    let x = m.pick(Mode::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")),
+        "local `Mode` is a distinct nominal; errors: {:?}",
+        output.errors
+    );
+}
+
+/// A wrong owner prefix (`Other::A`) is never folded into the expected
+/// nominal, even though the variant name matches.
+#[test]
+fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
+    let output = check_qualified_variant_root(
+        "import m;\n\nenum Other {\n    A;\n}\n\nfn main() {\n    let x = m.pick(Other::A);\n    print(\"{x}\");\n}\n",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type mismatch")),
+        "`Other` must not fold into `m.Mode`; errors: {:?}",
+        output.errors
     );
 }

@@ -111,6 +111,31 @@ def test_ci_required_names_freebsd_authoritative_job() -> None:
     assert result.stdout.splitlines().count(expected) == 1, result.stdout
 
 
+def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() -> None:
+    required = run_ci_required()
+    assert required.returncode == 0, required.stderr
+    expected = (
+        "Pinned structural lint (ci.yml: make structural-lint)\tmake structural-lint"
+    )
+    assert required.stdout.splitlines().count(expected) == 1, required.stdout
+    assert "ci.yml: make structural-lint-bootstrap)" not in required.stdout
+
+    local = run_dispatcher("scripts/structural-authority-audit.py")
+    assert local.returncode == 0, local.stderr
+    assert "  - make structural-lint " in local.stdout, local.stdout
+    assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert re.search(
+        r"name: Bootstrap pinned structural lint toolchain\s+run: make structural-lint-bootstrap",
+        workflow,
+    ), "hosted CI must explicitly bootstrap on a clean checkout"
+    assert re.search(
+        r"name: Run structural authority lint\s+run: make structural-lint",
+        workflow,
+    ), "the required parity step must dispatch the labeled cache-only command"
+
+
 # ---------------------------------------------------------------------------
 # Slice 1: Instrumentation & hang-bound tests
 # ---------------------------------------------------------------------------
@@ -418,7 +443,7 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     assert "make test-vertical-slice" in result.stdout, result.stdout
     # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
     # eval_e2e, …) runs inside make test-compiler-pipeline (-p hew-cli
-    # -p adze-cli, ci profile); a separate single-test hew-cli command here
+    # -p hew-pkg, ci profile); a separate single-test hew-cli command here
     # would be a duplicate run of tests the lane already covers.
     assert "--test await_e2e" not in result.stdout, result.stdout
 
@@ -491,7 +516,7 @@ def test_types_lane_includes_checked_mir_run() -> None:
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep
-    -p hew-cli and -p adze-cli under the ci profile.  If a Makefile edit drops
+    -p hew-cli and -p hew-pkg under the ci profile.  If a Makefile edit drops
     either package, the compiled leak/drop oracles and the e2e suites silently
     stop running for HIR/MIR/codegen and type-checker diffs — exactly the
     consumer-corpus escape class this ratchet exists to block.
@@ -504,7 +529,7 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
     recipe = match.group(0)
     assert "--profile ci" in recipe, recipe
     assert "-p hew-cli" in recipe, recipe
-    assert "-p adze-cli" in recipe, recipe
+    assert "-p hew-pkg" in recipe, recipe
 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
@@ -631,6 +656,20 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     )
 
 
+def test_stdlib_execution_proof_authorities_route_to_their_gate() -> None:
+    """The manifest and its checker run the proof gate before push."""
+    result = run_dispatcher(
+        "scripts/stdlib-execution-proof.sh",
+        "scripts/stdlib-execution-proofs.tsv",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: scripts-config" in result.stdout, result.stdout
+    assert "make test-stdlib-execution-proofs" in result.stdout, (
+        "Expected stdlib proof authorities to run their verifier.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
 def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     """Parser + type-checker changes route to the types lane, not fallback.
 
@@ -689,7 +728,7 @@ def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
 def test_hew_compile_routes_to_cli_lane() -> None:
     """hew-compile/* changes route to the cli lane.
 
-    is_cli_path matches hew-cli/*, adze-cli/*, hew-compile/*,
+    is_cli_path matches hew-cli/*, hew-pkg/*, hew-compile/*,
     hew-cabi/*, hew-capability-gen/*.
     """
     result = run_dispatcher("hew-compile/src/lib.rs")
@@ -774,6 +813,7 @@ _TESTS = [
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
     test_ci_required_names_freebsd_authoritative_job,
+    test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,
@@ -802,6 +842,7 @@ _TESTS = [
     test_hew_tests_path_routes_to_hew_tests_lane,
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
+    test_stdlib_execution_proof_authorities_route_to_their_gate,
     test_ci_parity_script_passes,
     # Slice 2 positive bucket-routing tests
     test_hew_hir_routes_to_compiler_pipeline_lane,

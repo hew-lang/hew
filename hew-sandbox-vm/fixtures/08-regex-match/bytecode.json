@@ -184,21 +184,21 @@
           "mutable": false,
           "name": null,
           "span": "span:51-70",
-          "type": "type:Regex"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.2",
           "mutable": false,
           "name": "re",
           "span": "span:46-49",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.3",
           "mutable": false,
           "name": null,
           "span": "span:84-86",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.4",
@@ -226,7 +226,7 @@
           "mutable": false,
           "name": null,
           "span": "span:108-110",
-          "type": "type:regex.Pattern"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.8",
@@ -264,6 +264,16 @@
         "name": "AskError"
       },
       {
+        "id": "type:CrashInfo",
+        "kind": "record",
+        "name": "CrashInfo"
+      },
+      {
+        "id": "type:CrashNotification",
+        "kind": "record",
+        "name": "CrashNotification"
+      },
+      {
         "id": "type:HashMapIter",
         "kind": "record",
         "name": "HashMapIter"
@@ -282,11 +292,6 @@
         "id": "type:NodeId",
         "kind": "record",
         "name": "NodeId"
-      },
-      {
-        "id": "type:Regex",
-        "kind": "regex",
-        "name": "Regex"
       },
       {
         "id": "type:RemotePid",
@@ -324,6 +329,26 @@
         "name": "f64"
       },
       {
+        "id": "type:failure.CrashAction",
+        "kind": "enum",
+        "name": "failure.CrashAction"
+      },
+      {
+        "id": "type:failure.CrashInfo",
+        "kind": "record",
+        "name": "failure.CrashInfo"
+      },
+      {
+        "id": "type:failure.CrashKind",
+        "kind": "enum",
+        "name": "failure.CrashKind"
+      },
+      {
+        "id": "type:failure.CrashNotification",
+        "kind": "record",
+        "name": "failure.CrashNotification"
+      },
+      {
         "id": "type:i64",
         "kind": "integer",
         "name": "i64"
@@ -339,14 +364,89 @@
         "name": "regex"
       },
       {
-        "id": "type:regex.Pattern",
-        "kind": "record",
-        "name": "regex.Pattern"
-      },
-      {
         "id": "type:reply",
         "kind": "opaque",
         "name": "ReplyToken"
+      },
+      {
+        "id": "type:std.builtins.AskError",
+        "kind": "enum",
+        "name": "std.builtins.AskError"
+      },
+      {
+        "id": "type:std.builtins.HashMapIter",
+        "kind": "record",
+        "name": "std.builtins.HashMapIter"
+      },
+      {
+        "id": "type:std.builtins.LinkError",
+        "kind": "enum",
+        "name": "std.builtins.LinkError"
+      },
+      {
+        "id": "type:std.builtins.LocalPid",
+        "kind": "record",
+        "name": "std.builtins.LocalPid"
+      },
+      {
+        "id": "type:std.builtins.Location",
+        "kind": "record",
+        "name": "std.builtins.Location"
+      },
+      {
+        "id": "type:std.builtins.LookupError",
+        "kind": "enum",
+        "name": "std.builtins.LookupError"
+      },
+      {
+        "id": "type:std.builtins.NodeId",
+        "kind": "record",
+        "name": "std.builtins.NodeId"
+      },
+      {
+        "id": "type:std.builtins.RemotePid",
+        "kind": "record",
+        "name": "std.builtins.RemotePid"
+      },
+      {
+        "id": "type:std.builtins.SendError",
+        "kind": "enum",
+        "name": "std.builtins.SendError"
+      },
+      {
+        "id": "type:std.builtins.TimeoutError",
+        "kind": "enum",
+        "name": "std.builtins.TimeoutError"
+      },
+      {
+        "id": "type:std.builtins.VecIter",
+        "kind": "record",
+        "name": "std.builtins.VecIter"
+      },
+      {
+        "id": "type:std.failure.CrashAction",
+        "kind": "enum",
+        "name": "std.failure.CrashAction"
+      },
+      {
+        "id": "type:std.failure.CrashInfo",
+        "kind": "record",
+        "name": "std.failure.CrashInfo"
+      },
+      {
+        "id": "type:std.failure.CrashKind",
+        "kind": "enum",
+        "name": "std.failure.CrashKind"
+      },
+      {
+        "id": "type:std.failure.CrashNotification",
+        "kind": "record",
+        "name": "std.failure.CrashNotification"
+      },
+      {
+        "id": "type:std.text.regex.Pattern",
+        "kind": "regex",
+        "name": "std.text.regex.Pattern"
       },
       {
         "id": "type:string",
@@ -384,7 +484,7 @@
       }
     ]
   },
-  "package_id": "pkg:931a63ae0c822147",
+  "package_id": "pkg:cca95b81c5e00908",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

@@ -32,7 +32,6 @@ class Hew < Formula
 
   def install
     bin.install "bin/hew"
-    bin.install "bin/adze"
     bin.install "bin/hew-lsp"
     bin.install "bin/hew-observe"
     lib.install "lib/libhew.a"
@@ -59,12 +58,6 @@ class Hew < Formula
     (zsh_completion/"_hew").write output
     output = Utils.safe_popen_read(bin/"hew", "completions", "fish")
     (fish_completion/"hew.fish").write output
-    output = Utils.safe_popen_read(bin/"adze", "completions", "bash")
-    (bash_completion/"adze").write output
-    output = Utils.safe_popen_read(bin/"adze", "completions", "zsh")
-    (zsh_completion/"_adze").write output
-    output = Utils.safe_popen_read(bin/"adze", "completions", "fish")
-    (fish_completion/"adze.fish").write output
   end
 
   def caveats
@@ -79,7 +72,6 @@ class Hew < Formula
 
   test do
     system "#{bin}/hew", "version"
-    system "#{bin}/adze", "--version"
     system "#{bin}/hew-lsp", "--version"
     system "#{bin}/hew-observe", "--version"
   end

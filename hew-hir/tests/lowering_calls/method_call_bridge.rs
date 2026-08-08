@@ -84,22 +84,33 @@ fn method_call_with_rewrite_produces_hir_call() {
 
     // The body should contain a statement whose expr is a Call with callee
     // name `hew_duplex_send`.
-    let has_duplex_send_call = fn_item.body.statements.iter().any(|stmt| {
+    let duplex_send_target = fn_item.body.statements.iter().find_map(|stmt| {
         if let HirStmtKind::Expr(expr) = &stmt.kind {
-            if let HirExprKind::Call { callee, args } = &expr.kind {
+            if let HirExprKind::Call {
+                target,
+                callee,
+                args,
+            } = &expr.kind
+            {
                 // Callee should be a BindingRef named "hew_duplex_send"
                 if let HirExprKind::BindingRef { name, .. } = &callee.kind {
-                    return name == "hew_duplex_send" && args.len() == 2;
+                    if name == "hew_duplex_send" && args.len() == 2 {
+                        return Some(target);
+                    }
                 }
             }
         }
-        false
+        None
     });
     assert!(
-        has_duplex_send_call,
+        duplex_send_target.is_some(),
         "a.send(42) must lower to HirExprKind::Call {{ callee: hew_duplex_send, args: [receiver, 42] }}; \
          body statements: {:#?}",
         fn_item.body.statements
+    );
+    assert!(
+        matches!(duplex_send_target, Some(hew_types::CallTarget::Runtime(_))),
+        "runtime method calls must preserve the checker-selected Runtime target, got: {duplex_send_target:#?}"
     );
     // Note: verify_hir is not called here because the synthetic runtime-symbol
     // callee (`hew_duplex_send`) uses `ResolvedRef::Unresolved` by design —
@@ -220,5 +231,149 @@ fn method_call_without_rewrite_fails_closed() {
         "method call with no rewrite entry must emit MethodCallNoRewrite; \
          got diagnostics: {:#?}",
         lower_output.diagnostics
+    );
+}
+
+#[test]
+fn direct_call_without_checker_target_fails_closed() {
+    let source = r"
+        fn helper() -> i64 { 7 }
+        fn main() -> i64 { helper() }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut tc_output = checker.check_program(&parsed.program);
+    assert!(
+        !tc_output.direct_call_targets.is_empty(),
+        "checker must publish an ordinary-call target for helper()"
+    );
+    tc_output.direct_call_targets.clear();
+
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        lower_output.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { ref reason, .. }
+                    if reason == "missing direct_call_targets entry"
+            )
+        }),
+        "missing direct-call target must be diagnosed before MIR: {:#?}",
+        lower_output.diagnostics
+    );
+
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    assert!(
+        matches!(
+            main.body.tail.as_deref().map(|expr| &expr.kind),
+            Some(HirExprKind::Unsupported(_))
+        ),
+        "missing target must not leave an admitted HIR Call for legacy MIR to execute: {:#?}",
+        main.body
+    );
+}
+
+#[test]
+fn direct_call_carries_checker_user_declaration_id() {
+    let (lower_output, tc_output) = typecheck_and_lower(
+        r"
+            fn helper() -> i64 { 7 }
+            fn main() -> i64 { helper() }
+        ",
+    );
+    assert!(tc_output.direct_call_targets.values().any(|target| {
+        matches!(target, hew_types::CallTarget::User(id) if id.full_path() == "helper")
+    }));
+    let main = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main function must lower");
+    assert!(matches!(
+        main.body.tail.as_deref().map(|expr| &expr.kind),
+        Some(HirExprKind::Call {
+            target: hew_types::CallTarget::User(id),
+            ..
+        }) if id.full_path() == "helper"
+    ));
+}
+
+#[test]
+fn indirect_call_without_checker_target_fails_closed() {
+    let source = r"
+        fn apply(f: fn(i64) -> i64) -> i64 { f(1) }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output
+            .direct_call_targets
+            .values()
+            .any(|target| matches!(target, hew_types::CallTarget::IndirectFunctionValue)),
+        "checker must publish IndirectFunctionValue for f(1)"
+    );
+    tc_output.direct_call_targets.clear();
+
+    let lower_output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        lower_output.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { ref reason, .. }
+                    if reason == "missing direct_call_targets entry"
+            )
+        }),
+        "missing indirect-call target must be diagnosed before MIR: {:#?}",
+        lower_output.diagnostics
+    );
+    let apply = lower_output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "apply" => Some(function),
+            _ => None,
+        })
+        .expect("apply function must lower");
+    assert!(
+        matches!(
+            apply.body.tail.as_deref().map(|expr| &expr.kind),
+            Some(HirExprKind::Unsupported(_))
+        ),
+        "missing checker target must not leave an indirect HIR Call for legacy MIR: {:#?}",
+        apply.body
     );
 }

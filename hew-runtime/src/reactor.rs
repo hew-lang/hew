@@ -176,20 +176,27 @@ struct Registration {
 unsafe impl Send for Registration {}
 
 impl Drop for Registration {
-    /// SINGLE AUTHORITY for releasing the reactor's read-slot ref. A resume-mode
-    /// registration owns one ref on its `read_slot` (taken in
-    /// `reactor_await_read`). Whenever a `Registration` is dropped — removed from
-    /// the registry by `unregister_fd`, scrubbed by `evict_actor_state` on the
-    /// abandon edge, cleared by `reactor_shutdown`, or consumed by the
-    /// `apply_add` poller-register-failure path — that ref is released here
-    /// exactly once. Deposit/wake sites must NOT free the slot themselves; they
-    /// drop the registration and let this impl release the ref. Active-mode
-    /// (`AutoSend`) registrations carry no slot, so the drop is a no-op for them.
+    /// SINGLE AUTHORITY for releasing everything a registration owns. A
+    /// resume/accept registration releases its reactor-held read-slot ref. An
+    /// active-mode registration releases the consumed connection's transport
+    /// table entry and socket fd. Every teardown path drops the registration:
+    /// readiness EOF/error, actor eviction, reactor shutdown, queued-add scrub,
+    /// explicit detach, and poller-registration failure.
+    ///
+    /// Lock order is load-bearing for active mode: actor eviction must finish
+    /// its `REACTOR_STATE` unregister enqueue before this drop enters
+    /// `TCP_API_STATE` and closes the socket. Closing first would expose the fd
+    /// for reuse while its stale unregister can still be queued after a new add.
     fn drop(&mut self) {
-        if let RegMode::Resume { read_slot } | RegMode::Accept { read_slot } = self.mode {
-            // SAFETY: the registration held one live ref on `read_slot`; this
-            // releases it. The slot box is freed when its last ref drops.
-            unsafe { crate::read_slot::hew_read_slot_free(read_slot) };
+        match &self.mode {
+            RegMode::AutoSend { .. } => {
+                crate::transport::tcp_close_reactor_owned_conn(self.conn);
+            }
+            RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => {
+                // SAFETY: the registration held one live ref on `read_slot`; this
+                // releases it. The slot box is freed when its last ref drops.
+                unsafe { crate::read_slot::hew_read_slot_free(*read_slot) };
+            }
         }
     }
 }
@@ -231,6 +238,31 @@ static REACTOR_STATE: std::sync::LazyLock<PoisonSafe<ReactorState>> =
 static REACTOR_RUNNING: AtomicBool = AtomicBool::new(false);
 static REACTOR_STOP: AtomicBool = AtomicBool::new(false);
 static REACTOR_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+
+#[cfg(test)]
+type DetachPostEvictHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static DETACH_POST_EVICT_HOOK: std::sync::LazyLock<Mutex<Option<DetachPostEvictHook>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn set_detach_post_evict_hook(hook: Option<DetachPostEvictHook>) {
+    *DETACH_POST_EVICT_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
+}
+
+#[cfg(test)]
+fn fire_detach_post_evict_hook() {
+    let hook = DETACH_POST_EVICT_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 /// The actor key (`*mut HewActor` as `usize`) the reactor is currently
 /// delivering a message to, or `0` when idle. This is the Dekker-protocol
@@ -491,12 +523,12 @@ struct ReadySnapshot {
 /// P1-A guard. The `Registration` snapshot copies `read_slot` by raw pointer,
 /// and the deposit in `handle_ready_resume` runs WITHOUT the registry lock. A
 /// concurrent `reactor_detach_actor` is scrub-then-wait: its Phase-1
-/// `evict_actor_state` drops the `Registration` (and thus the registration-owned
-/// slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait. Teardown destroys the
-/// coroutine first (the codegen cleanup drops the creator ref), so the Phase-1
-/// scrub can drop the LAST ref and free the slot while the reactor is mid-deposit
-/// on this pointer — the `DELIVERING_ACTOR` guard protects the actor, not the
-/// slot.
+/// eviction returns the `Registration`, then its caller drops it (and thus the
+/// registration-owned slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait.
+/// Teardown destroys the coroutine first (the codegen cleanup drops the creator
+/// ref), so Phase 1 can drop the LAST ref and free the slot while the reactor is
+/// mid-deposit on this pointer — the `DELIVERING_ACTOR` guard protects the actor,
+/// not the slot.
 ///
 /// `handle_ready_fd` retains its OWN ref on the slot UNDER the registry lock (in
 /// the snapshot closure, where the `Registration`'s ref guarantees the slot is
@@ -1612,8 +1644,11 @@ pub(crate) fn reactor_detach_actor(actor_key: usize) {
     // Phase 1: synchronously evict this actor's registrations (registry) AND its
     // still-queued attach requests (pending), then queue the poller-side removal
     // for the fds that were already registered.
-    let fds = evict_actor_state(actor_key);
-    queue_unregister_fds(&fds);
+    let evicted = evict_actor_state(actor_key);
+    #[cfg(test)]
+    fire_detach_post_evict_hook();
+    queue_unregister_fds(&evicted.registered_fds);
+    drop(evicted.registrations);
 
     // Phase 2: drain to quiescence with a *scrub-then-wait* loop. Each iteration
     //
@@ -1659,8 +1694,9 @@ pub(crate) fn reactor_detach_actor(actor_key: usize) {
         // (B) Re-scrub: a promotion may have inserted a registration after the
         // previous scrub (it had already left `pending`, so that scrub could not
         // catch it). Evict any such entry and queue its poller-side removal.
-        let late_fds = evict_actor_state(actor_key);
-        queue_unregister_fds(&late_fds);
+        let late_evicted = evict_actor_state(actor_key);
+        queue_unregister_fds(&late_evicted.registered_fds);
+        drop(late_evicted.registrations);
 
         // Quiescence check, ordered AFTER the scrub: the actor is fully drained
         // only when no registration or pending add remains AND no guard is set
@@ -1732,12 +1768,18 @@ pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewRead
     !fds.0.is_empty() || fds.1
 }
 
+struct EvictedActorState {
+    registered_fds: Vec<c_int>,
+    registrations: Vec<Registration>,
+}
+
 /// Remove every registry + pending entry owned by `actor_key` under the
-/// [`ReactorState`] lock, returning the fds whose registrations were already in
-/// the registry (those need a poller-side `EPOLL_CTL_DEL`). Scrubbed
-/// `Pending::Add` entries were never handed to the poller, so they are not
-/// returned.
-fn evict_actor_state(actor_key: usize) -> Vec<c_int> {
+/// [`ReactorState`] lock. The returned registrations deliberately stay alive
+/// until the caller queues every poller unregister; only then may their drops
+/// close active-mode sockets and expose those fd numbers for reuse. Scrubbed
+/// `Pending::Add` entries were never handed to the poller, so only registry fds
+/// are returned in `registered_fds`.
+fn evict_actor_state(actor_key: usize) -> EvictedActorState {
     REACTOR_STATE.access(|state| {
         let owned: Vec<c_int> = state
             .registry
@@ -1745,8 +1787,11 @@ fn evict_actor_state(actor_key: usize) -> Vec<c_int> {
             .filter(|(_, reg)| reg.actor_key == actor_key)
             .map(|(fd, _)| *fd)
             .collect();
+        let mut registrations = Vec::with_capacity(owned.len());
         for fd in &owned {
-            state.registry.remove(fd);
+            if let Some(registration) = state.registry.remove(fd) {
+                registrations.push(registration);
+            }
             state.conn_to_fd.retain(|_, mapped| mapped != fd);
         }
         if !owned.is_empty() {
@@ -1756,11 +1801,20 @@ fn evict_actor_state(actor_key: usize) -> Vec<c_int> {
         // promoted into a dangling registration after the actor is freed. Their
         // conn handles never reached `conn_to_fd`, so nothing else references
         // them.
-        state.pending.retain(|req| match req {
-            Pending::Add { reg, .. } => reg.actor_key != actor_key,
-            _ => true,
-        });
-        owned
+        let pending = std::mem::take(&mut state.pending);
+        state.pending.reserve(pending.len());
+        for request in pending {
+            match request {
+                Pending::Add { reg, .. } if reg.actor_key == actor_key => {
+                    registrations.push(reg);
+                }
+                other => state.pending.push(other),
+            }
+        }
+        EvictedActorState {
+            registered_fds: owned,
+            registrations,
+        }
     })
 }
 
@@ -2058,6 +2112,7 @@ mod tests {
         // leave either set.
         set_delivering_actor_for_test(0);
         set_promoting_actor_for_test(0);
+        set_detach_post_evict_hook(None);
     }
 
     // 4a oracle (unit form): the reactor starts on demand, runs its poll loop,
@@ -2233,6 +2288,188 @@ mod tests {
         // SAFETY: fds is a valid 2-element array.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         (fds[0], fds[1])
+    }
+
+    #[cfg(unix)]
+    fn make_pipe_reusing_fd(target_fd: c_int) -> (c_int, c_int) {
+        let (read_fd, mut write_fd) = make_pipe();
+        if read_fd == target_fd {
+            return (read_fd, write_fd);
+        }
+        if write_fd == target_fd {
+            // Preserve the write end before dup2 replaces target_fd with the
+            // read end. F_DUPFD chooses a descriptor above this reuse window.
+            // SAFETY: write_fd is live and target_fd + 1 is a valid lower bound.
+            let replacement = unsafe { libc::fcntl(write_fd, libc::F_DUPFD, target_fd + 1) };
+            assert!(replacement >= 0, "duplicate forced-reuse pipe write end");
+            // SAFETY: replacement now owns the duplicate.
+            unsafe { libc::close(write_fd) };
+            write_fd = replacement;
+        }
+        // SAFETY: all descriptors are test-owned; target_fd is known closed.
+        assert_eq!(unsafe { libc::dup2(read_fd, target_fd) }, target_fd);
+        // SAFETY: dup2 created the replacement descriptor; close the source.
+        unsafe { libc::close(read_fd) };
+        (target_fd, write_fd)
+    }
+
+    /// Active-mode attach consumes each connection into its registration. When
+    /// the handler is dropped, the reactor teardown must release both ownership
+    /// ledgers: no registration, transport-table entry, or reactor-owned socket
+    /// fd may survive.
+    #[cfg(unix)]
+    #[test]
+    fn active_mode_teardown_releases_all_consumed_connections() {
+        const CONNECTIONS: usize = 128;
+        const ACTOR_KEY: usize = 0xAC71_0EED;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        let mut handles = Vec::with_capacity(CONNECTIONS);
+        let mut connection_fds = Vec::with_capacity(CONNECTIONS);
+        let mut peers = Vec::with_capacity(CONNECTIONS);
+        for _ in 0..CONNECTIONS {
+            let (conn, peer) = crate::transport::tcp_socketpair_conn_for_test();
+            let fd = crate::transport::tcp_conn_raw_fd(conn).expect("connection fd");
+            inject_registration_for_test(fd, conn, dead_actor_ref(), ACTOR_KEY);
+            handles.push(conn);
+            connection_fds.push(fd);
+            peers.push(peer);
+        }
+        assert_eq!(registration_count_for_test(), CONNECTIONS);
+        assert!(handles
+            .iter()
+            .all(|handle| crate::transport::tcp_streams_has_handle_for_test(*handle)));
+
+        reactor_detach_actor(ACTOR_KEY);
+        drop(peers);
+
+        assert_eq!(
+            registration_count_for_test(),
+            0,
+            "handler teardown must leave no active-mode registrations"
+        );
+        for handle in handles {
+            assert!(
+                !crate::transport::tcp_streams_has_handle_for_test(handle),
+                "consumed connection {handle} survived in the transport table"
+            );
+        }
+        for fd in connection_fds {
+            assert_eq!(
+                // SAFETY: F_GETFD only queries the recorded numeric descriptor.
+                unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                -1,
+                "reactor-owned connection fd {fd} survived handler teardown"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF),
+                "closed connection fd {fd} did not report EBADF"
+            );
+        }
+        reset_reactor();
+    }
+
+    /// Forced fd-reuse ordering: pause detach after actor eviction while the
+    /// poller drain is held, recycle the closed fd into a new add, then release
+    /// detach and drain. The stale unregister must precede the new add, or it
+    /// deletes the recycled fd from the poller and readiness disappears.
+    #[cfg(unix)]
+    #[test]
+    fn detach_actor_queues_unregister_before_recycled_fd_add() {
+        const OLD_ACTOR: usize = 0x0FD0_01D0;
+        const NEW_ACTOR: usize = 0x0FD0_02D0;
+
+        let _guard = REACTOR_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_reactor();
+
+        // SAFETY: no preconditions for new.
+        let poller = unsafe { hew_io_poller_new() };
+        assert!(!poller.is_null());
+        let (old_conn, old_peer) = crate::transport::tcp_socketpair_conn_for_test();
+        let old_fd = crate::transport::tcp_conn_raw_fd(old_conn).expect("old connection fd");
+        assert_eq!(
+            // SAFETY: poller and old_fd are live and owned by this test.
+            unsafe { hew_io_poller_register(poller, old_fd, std::ptr::null_mut(), 0, HEW_IO_READ) },
+            0
+        );
+        inject_registration_for_test(old_fd, old_conn, dead_actor_ref(), OLD_ACTOR);
+
+        let (evicted_tx, evicted_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        set_detach_post_evict_hook(Some(Box::new(move || {
+            evicted_tx.send(()).expect("announce actor eviction");
+            release_rx.recv().expect("release actor detach");
+        })));
+
+        let mut detach = Some(std::thread::spawn(|| reactor_detach_actor(OLD_ACTOR)));
+        evicted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detach must reach the post-eviction window");
+
+        // Before the fix, actor eviction drops the registration here, closing
+        // old_fd before its unregister is queued. The new add can therefore
+        // land ahead of the stale unregister. After the fix old_fd stays open
+        // until detach has queued the unregister, so release detach first.
+        // SAFETY: F_GETFD only queries the numeric descriptor.
+        let old_fd_was_closed = unsafe { libc::fcntl(old_fd, libc::F_GETFD) } == -1;
+        let (new_fd, new_write) = if old_fd_was_closed {
+            let pipe = make_pipe_reusing_fd(old_fd);
+            enqueue_pending_add_for_test(pipe.0, 902, dead_actor_ref(), NEW_ACTOR);
+            release_tx.send(()).expect("release pre-fix detach");
+            pipe
+        } else {
+            release_tx.send(()).expect("release ordered detach");
+            detach.take().unwrap().join().expect("ordered detach joins");
+            let pipe = make_pipe_reusing_fd(old_fd);
+            enqueue_pending_add_for_test(pipe.0, 902, dead_actor_ref(), NEW_ACTOR);
+            pipe
+        };
+        if old_fd_was_closed {
+            detach.take().unwrap().join().expect("pre-fix detach joins");
+        }
+
+        // Release the held drain. Correct queue order is UnregisterFd(old)
+        // followed by Add(new); the buggy order is Add(new), UnregisterFd(old).
+        drain_pending(poller);
+        let byte = [0x5A_u8];
+        assert_eq!(
+            // SAFETY: new_write is the live write end of the forced-reuse pipe.
+            unsafe { libc::write(new_write, byte.as_ptr().cast(), byte.len()) },
+            1
+        );
+        let mut ready_fds = [-1_i32; 1];
+        let mut ready_events = [0_i32; 1];
+        // SAFETY: poller and the one-element output buffers are live.
+        let ready = unsafe {
+            hew_io_poller_poll_ready(
+                poller,
+                100,
+                ready_fds.as_mut_ptr(),
+                ready_events.as_mut_ptr(),
+                1,
+            )
+        };
+        assert_eq!(
+            ready, 1,
+            "the stale unregister deleted the newly attached recycled fd"
+        );
+        assert_eq!(ready_fds[0], new_fd);
+
+        reset_reactor();
+        drop(old_peer);
+        // SAFETY: this test owns both pipe fds and the poller.
+        unsafe {
+            libc::close(new_fd);
+            libc::close(new_write);
+            hew_io_poller_stop(poller);
+        }
     }
 
     // 4b oracle (unit form): a readiness event for an actor that has stopped
@@ -2782,11 +3019,11 @@ mod tests {
     // `handle_ready_fd` snapshots `RegMode::Resume { read_slot }` by raw pointer.
     // The deposit in `handle_ready_resume` runs WITHOUT the registry lock. A
     // concurrent `reactor_detach_actor` is scrub-then-wait: Phase-1
-    // `evict_actor_state` drops the `Registration` (and the registration-owned
-    // slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait. Teardown destroys the
-    // coroutine first (drops the creator ref), so the Phase-1 scrub can drop the
-    // LAST ref and free the slot while the reactor is mid-deposit — the
-    // `DELIVERING_ACTOR` guard protects the ACTOR, not the SLOT.
+    // eviction returns the `Registration`, then its caller drops it (and the
+    // registration-owned slot ref) BEFORE the Phase-2 `DELIVERING_ACTOR` wait.
+    // Teardown destroys the coroutine first (drops the creator ref), so Phase 1
+    // can drop the LAST ref and free the slot while the reactor is mid-deposit —
+    // the `DELIVERING_ACTOR` guard protects the ACTOR, not the SLOT.
     //
     // The fix: `handle_ready_fd` takes its OWN in-flight ref on the slot under the
     // registry lock (in the snapshot closure), released by the `InflightSlotRef`

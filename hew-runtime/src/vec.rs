@@ -1923,11 +1923,9 @@ vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 /// - `layout` must point to a `HewTypeLayout` whose `size`, `align`, and
 ///   `ownership_kind` match those stored in the vec.
 ///
-/// # WASM-TODO
-///
-/// `HewTypeLayout.size` is host `usize`-width. On wasm32 `usize = u32`, so
-/// the `elem_size` arithmetic and the descriptor struct shape below must
-/// become target-aware before WASM parity can be claimed for this symbol.
+/// `HewTypeLayout.size` and the arithmetic below use target-width `usize`;
+/// wasm32 therefore carries 32-bit descriptor fields and native 64-bit targets
+/// carry 64-bit fields without a host-width assumption in this ABI.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_at_layout(
     v: *mut HewVec,
@@ -4958,6 +4956,50 @@ mod vec_owned_tests {
             hew_vec_free_owned(v);
             assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 3, "one drop per element");
             assert_eq!(live_allocations(), 0, "no leak, no double-free after free");
+        }
+    }
+
+    /// A clone-null descriptor is a valid drop-only Vec lane: MOVE-in must not
+    /// touch the missing clone thunk, and the later descriptor free must still
+    /// run the one slot drop exactly once. This is the runtime contract used by
+    /// `Vec<channel.Receiver<T>>`.
+    #[test]
+    fn push_move_release_only_descriptor_drops_once_without_clone() {
+        let _guard = reset_counters();
+        // SAFETY: the release-only descriptor has a valid drop thunk; MOVE-in
+        // transfers `source`'s heap pointer into the Vec slot, so source is not
+        // freed separately afterwards.
+        unsafe {
+            let layout = HewVecElemLayout {
+                size: core::mem::size_of::<OwnedElem>(),
+                align: core::mem::align_of::<OwnedElem>(),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                clone_fn: None,
+                drop_fn: Some(drop_thunk),
+            };
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let source = make_source(73);
+
+            hew_vec_push_owned_move(v, (&raw const source).cast());
+            assert_eq!(hew_vec_len(v), 1);
+            assert_eq!(
+                CLONE_CALLS.load(Ordering::SeqCst),
+                0,
+                "release-only move-in must not require a clone thunk"
+            );
+            assert_eq!(
+                live_allocations(),
+                1,
+                "the sole source heap is now owned by the Vec slot"
+            );
+
+            hew_vec_free_owned(v);
+            assert_eq!(
+                DROP_CALLS.load(Ordering::SeqCst),
+                1,
+                "descriptor free drops the moved-in slot exactly once"
+            );
+            assert_eq!(live_allocations(), 0, "drop-only slot must not leak");
         }
     }
 

@@ -13,6 +13,11 @@
 # on nothing would silently accept regressions.  This ratchet is the middle
 # path: known failures are explicitly tracked, anything else is a hard fail.
 #
+# Parses `hew test --format junit` output (via scripts/lib/hew_junit.py)
+# rather than regex-matching the human-readable text — a cosmetic text-format
+# change can no longer silently break pass/fail extraction, and the same
+# JUnit report this script parses is the one uploaded to the CI checks UI.
+#
 # WHEN OBSOLETE: When the list is empty and all tests are green, drop the
 # ratchet wrapper and have the gate target run `hew test tests/hew/` directly.
 #
@@ -22,6 +27,7 @@
 #   scripts/hew-suite-ratchet.sh [--help]
 #   scripts/hew-suite-ratchet.sh [--expected-failures <path>]
 #   scripts/hew-suite-ratchet.sh [--emit-o0-outcomes <path>]
+#   scripts/hew-suite-ratchet.sh [--junit-output <path>]
 #
 # Options:
 #   --expected-failures <path>   Override default expected-failures file path.
@@ -33,6 +39,11 @@
 #                                captured file to o2-differential.sh's
 #                                --o0-outcomes flag instead of re-running the
 #                                identical O0 pass a second time.
+#   --junit-output <path>        Where to write the `hew test --format junit`
+#                                report this script parses. Default:
+#                                target/hew-test-reports/hew-suite-ratchet.xml
+#                                — a stable path a CI job's upload step reads,
+#                                the same way it reads target/nextest/*/junit.xml.
 
 set -euo pipefail
 
@@ -43,12 +54,17 @@ source "$REPO_ROOT/scripts/lib/line-set.sh"
 # shellcheck source=scripts/lib/corpus-floor.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 TESTS_DIR="$REPO_ROOT/tests/hew"
 EMIT_O0_OUTCOMES_FILE=""
+JUNIT_OUTPUT="$REPO_ROOT/target/hew-test-reports/hew-suite-ratchet.xml"
+HEW_JUNIT_PY="$REPO_ROOT/scripts/lib/hew_junit.py"
 
 usage() {
     cat <<'EOF'
@@ -79,6 +95,12 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || { echo "error: --emit-o0-outcomes requires a path" >&2; exit 1; }
             EMIT_O0_OUTCOMES_FILE="$1"
+            shift
+            ;;
+        --junit-output)
+            shift
+            [[ $# -gt 0 ]] || { echo "error: --junit-output requires a path" >&2; exit 1; }
+            JUNIT_OUTPUT="$1"
             shift
             ;;
         --help|-h)
@@ -124,86 +146,78 @@ while IFS= read -r line; do
     EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
 done < "$EXPECTED_FAILURES_FILE"
 
-# Run hew test and capture output (exit code is non-zero when tests fail;
-# we determine pass/fail from the parsed output, not the exit code).
-RAW_OUTPUT=""
-RAW_OUTPUT=$("$HEW_BIN" test "$TESTS_DIR" 2>&1) || true
+# Run hew test, writing a JUnit report (exit code is non-zero when tests
+# fail; we determine pass/fail from the parsed report, not the exit code).
+mkdir -p "$(dirname "$JUNIT_OUTPUT")"
+STDERR_FILE="$(mktemp /tmp/hew-suite-ratchet-stderr.XXXXXX)"
+trap 'rm -f "$STDERR_FILE"' EXIT
+"$HEW_BIN" test "$TESTS_DIR" --format junit > "$JUNIT_OUTPUT" 2> "$STDERR_FILE" || true
 
-# hew test colours its output even when not attached to a TTY; strip ANSI
-# escape sequences before parsing so "FAILED" matches literally.
-CLEAN_OUTPUT="$(printf '%s\n' "$RAW_OUTPUT" | sed $'s/\x1b\\[[0-9;]*m//g')"
-
-# Fail closed if the runner produced no summary line: a runner crash or an
-# output-format change must never read as success. Keep this loop local so an
-# early match cannot SIGPIPE an upstream producer under pipefail.
-has_test_summary=0
-while IFS= read -r line; do
-    if [[ "$line" == "test result:"* ]]; then
-        has_test_summary=1
-        break
-    fi
-done <<< "$CLEAN_OUTPUT"
-if (( has_test_summary == 0 )); then
-    echo "error: no 'test result:' summary in hew test output; refusing to ratchet" >&2
-    printf '%s\n' "$RAW_OUTPUT"
+# Fail closed if the runner produced no report at all: a runner crash before
+# any output must never read as an empty (thus vacuously matching) run.
+if [[ ! -s "$JUNIT_OUTPUT" ]]; then
+    echo "error: hew test produced no JUnit report at $JUNIT_OUTPUT; refusing to ratchet" >&2
+    echo "==> stderr from the run:" >&2
+    cat "$STDERR_FILE" >&2
     exit 1
 fi
 
+# scripts/lib/hew_junit.py parses the report and prints one "<status>\t<name>"
+# line per test plus a trailing "__SUMMARY__\t<total>\t<failures>\t<skipped>"
+# line. It exits non-zero (with a diagnostic on stderr) on malformed XML or a
+# <testsuites> whose failures attribute disagrees with its own <failure>
+# element count — fail closed on either, the same "refuse to ratchet against
+# an inconsistent run" posture the old text-parser's checks had.
+PARSED=""
+if ! PARSED="$(python3 "$HEW_JUNIT_PY" "$JUNIT_OUTPUT")"; then
+    echo "error: could not parse JUnit report at $JUNIT_OUTPUT; refusing to ratchet" >&2
+    echo "==> stderr from the run:" >&2
+    cat "$STDERR_FILE" >&2
+    exit 1
+fi
+
+SUMMARY_LINE="$(printf '%s\n' "$PARSED" | grep '^__SUMMARY__' || true)"
+if [[ -z "$SUMMARY_LINE" ]]; then
+    echo "error: hew_junit.py produced no __SUMMARY__ line; refusing to ratchet" >&2
+    exit 1
+fi
+IFS=$'\t' read -r _ report_total report_failures _report_skipped <<< "$SUMMARY_LINE"
+
 # Emit the full per-test outcome set for the O2-differential gate to reuse as
-# its O0 baseline (C1: dedup the identical O0 re-run). Same extraction pattern
-# as scripts/o2-differential.sh's run_outcomes(): every "test <name> ...
-# ok|PASSED|FAILED|ignored" line, sorted. Written before the ratchet verdict is
-# known — the outcome set is valid regardless of whether the ratchet itself
-# passes or fails; only a missing summary line (handled above) makes it unsafe
-# to emit.
+# its O0 baseline (C1: dedup the identical O0 re-run), reconstructed in the
+# "test <name> ... ok|PASSED|FAILED|ignored" text form
+# scripts/o2-differential.sh's run_outcomes() already extracts from a plain
+# `hew test` run, so that consumer needs no change. Written before the
+# ratchet verdict is known — the outcome set is valid regardless of whether
+# the ratchet itself passes or fails.
 if [[ -n "$EMIT_O0_OUTCOMES_FILE" ]]; then
-    printf '%s\n' "$CLEAN_OUTPUT" \
-        | grep -E "^test .* \.\.\. (ok|PASSED|FAILED|ignored)" \
+    printf '%s\n' "$PARSED" \
+        | awk -F'\t' '$1 != "__SUMMARY__" { print "test " $2 " ... " $1 }' \
         | sort > "$EMIT_O0_OUTCOMES_FILE"
 fi
 
 # Floor the size of the run itself. The ratchet compares a failing-test set
 # against the expected list; a run that executed no tests at all reports an
 # empty failing set, which agrees with an empty expected list and would ratchet
-# green over nothing. The outcome lines are the same ones the O2 differential
-# gate consumes.
-total_outcomes=0
-while IFS= read -r line; do
-    case "$line" in
-        "test "*"... ok"*|"test "*"... PASSED"*|"test "*"... FAILED"*|"test "*"... ignored"*)
-            total_outcomes=$(( total_outcomes + 1 ))
-            ;;
-    esac
-done <<< "$CLEAN_OUTPUT"
-if ! corpus_floor_assert "hew-suite-tests" "$total_outcomes"; then
-    printf '%s\n' "$RAW_OUTPUT"
+# green over nothing.
+if ! corpus_floor_assert "hew-suite-tests" "$report_total"; then
+    cat "$STDERR_FILE" >&2
     exit 1
 fi
 
-# Extract names of failing tests from lines matching "test <name> ... FAILED".
+# Extract names of failing tests.
 ACTUAL_STR=""
-while IFS= read -r line; do
-    case "$line" in
-        "test "*"... FAILED"*)
-            name="${line#test }"
-            name="${name%% ...*}"
-            [[ -n "$name" ]] && ACTUAL_STR="${ACTUAL_STR}${name}"$'\n'
-            ;;
-    esac
-done <<< "$CLEAN_OUTPUT"
+while IFS=$'\t' read -r status name; do
+    [[ "$status" == "FAILED" ]] || continue
+    [[ -n "$name" ]] && ACTUAL_STR="${ACTUAL_STR}${name}"$'\n'
+done <<< "$(printf '%s\n' "$PARSED" | grep -v '^__SUMMARY__')"
 
-# Cross-check the parsed failure count against the runner's own summary.
-# A mismatch means the per-test parse missed lines (format drift) — fail
-# closed rather than ratcheting against an undercounted set.
-summary_failed="$(printf '%s\n' "$CLEAN_OUTPUT" | sed -n 's/^test result:.*[^0-9]\([0-9][0-9]*\) failed.*/\1/p' | tail -1)"
-[[ -z "$summary_failed" ]] && summary_failed=0
 parsed_failed=0
 if [[ -n "$ACTUAL_STR" ]]; then
     parsed_failed="$(line_set_count "$ACTUAL_STR")"
 fi
-if [[ "$parsed_failed" -ne "$summary_failed" ]]; then
-    echo "error: parsed $parsed_failed FAILED line(s) but runner summary reports $summary_failed failed; refusing to ratchet" >&2
-    printf '%s\n' "$RAW_OUTPUT"
+if [[ "$parsed_failed" -ne "$report_failures" ]]; then
+    echo "error: parsed $parsed_failed FAILED test(s) but report summary reports $report_failures failed; refusing to ratchet" >&2
     exit 1
 fi
 
@@ -294,9 +308,13 @@ if [[ $count_unexpected_pass -gt 0 ]]; then
     echo ""
 fi
 
-# Print the raw runner output so CI surfaces it.
-echo "==> Raw hew test output:"
-printf '%s\n' "$RAW_OUTPUT"
+# Print the run's stderr (build/FFI errors, warnings) and point at the full
+# JUnit report — the same report a CI job's upload step reads into the
+# checks UI, so failure detail is one click away there too.
+echo "==> stderr from the run:"
+cat "$STDERR_FILE"
+echo ""
+echo "==> Full JUnit report: $JUNIT_OUTPUT"
 
 echo ""
 echo "==> Ratchet: FAILED"

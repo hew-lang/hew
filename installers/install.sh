@@ -106,12 +106,7 @@ detect_platform() {
 
     case "$(uname -m)" in
     x86_64 | amd64) ARCH="x86_64" ;;
-    aarch64 | arm64)
-        if [ "$OS" = "freebsd" ]; then
-            err "FreeBSD prebuilt releases are x86_64 only today; build from source or use a x86_64 host"
-        fi
-        ARCH="aarch64"
-        ;;
+    aarch64 | arm64) ARCH="aarch64" ;;
     *) err "unsupported architecture: $(uname -m)" ;;
     esac
 }
@@ -266,7 +261,7 @@ main() {
     mkdir -p "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/lib" \
         "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/completions"
 
-    for b in hew adze hew-lsp hew-observe; do
+    for b in hew hew-lsp hew-observe; do
         if [ -f "${extracted_dir}/bin/${b}" ]; then
             cp -f "${extracted_dir}/bin/${b}" "${INSTALL_PREFIX}/bin/${b}"
             chmod +x "${INSTALL_PREFIX}/bin/${b}"
@@ -287,8 +282,6 @@ main() {
     for shell in bash zsh fish; do
         "${INSTALL_PREFIX}/bin/hew" completions "${shell}" \
             > "${INSTALL_PREFIX}/completions/hew.${shell}" 2>/dev/null || true
-        "${INSTALL_PREFIX}/bin/adze" completions "${shell}" \
-            > "${INSTALL_PREFIX}/completions/adze.${shell}" 2>/dev/null || true
     done
 
     for f in LICENSE-MIT LICENSE-APACHE NOTICE README.md; do
@@ -304,7 +297,7 @@ main() {
     # Check if already on PATH
     bin_dir="${INSTALL_PREFIX}/bin"
     if echo "$PATH" | tr ':' '\n' | grep -qx "$bin_dir" 2>/dev/null; then
-        printf "  Run %bhew version%b and %badze --version%b to verify the installation.\n\n" "${CYAN}" "${RESET}" "${CYAN}" "${RESET}"
+        printf "  Run %bhew version%b to verify the installation.\n\n" "${CYAN}" "${RESET}"
         return
     fi
 

@@ -5,8 +5,9 @@
 //! [`super::MonoKey::mangle_no_const_args`] applies to
 //! [`FunctionMonoKey`] directly.
 //!
-//! The legacy [`crate::monomorph::MonoKey`] struct (3 fields, no
-//! `const_args`) remains in place for source compatibility with every
+//! The legacy [`crate::monomorph::MonoKey`] struct (source declaration,
+//! linker payload, and no `const_args`) remains in place for source
+//! compatibility with every
 //! current call site; this module's [`FunctionMonoKey`] is the new
 //! parametric equivalent that downstream callers should prefer.
 
@@ -35,11 +36,11 @@ pub type FunctionMonoKey = MonoKey<Function>;
 
 /// Convert the legacy [`crate::monomorph::MonoKey`] into a
 /// [`FunctionMonoKey`]. Used as a migration bridge: a producer that
-/// still emits the legacy 3-field struct can feed the new
+/// still emits the legacy declaration-bearing struct can feed the new
 /// [`super::mangle_instantiation`] helper without a struct-literal
 /// rewrite.
 impl From<crate::monomorph::MonoKey> for FunctionMonoKey {
     fn from(legacy: crate::monomorph::MonoKey) -> Self {
-        Self::new(legacy.origin, legacy.origin_name, legacy.type_args)
+        Self::new(legacy.origin, legacy.linker_symbol, legacy.type_args)
     }
 }

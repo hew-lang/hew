@@ -15,11 +15,25 @@ resolve_timeout() {
 TIMEOUT="$(resolve_timeout)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
+# Keep direct runs aligned with Cargo's target-dir and build-target resolution.
+# RC1 gates use an isolated target tree, and falling back to the repository's
+# default target would silently exercise an older compiler binary than the one
+# built below.
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+cargo_debug_dir="$(cargo_debug_dir "${ROOT}")"
+HEW="${HEW_BIN:-${cargo_debug_dir}/hew}"
 
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
 cargo build -q -p hew-lib
 cargo build -q -p hew-cli
+
+if [[ ! -x "${HEW}" ]]; then
+  echo "error: Hew compiler binary not found at ${HEW}" >&2
+  echo "       set HEW_BIN or check Cargo's resolved debug output directory" >&2
+  exit 1
+fi
 
 mkdir -p "${ROOT}/.tmp"
 accept_output="${ROOT}/.tmp/vertical-slice-accept-output.txt"
@@ -71,18 +85,26 @@ run_compiled_binary() {
   local stdout_path="$2"
   local stderr_path="$3"
   shift 3
-  # Keep compilation uncapped because linking libhew.a needs substantial
-  # address space; apply the platform-appropriate cap only to execution.
+  # Pin the worker count so the 512 MB virtual-memory cap below is a function
+  # of the fixture, not the host's core count. The Hew runtime defaults to one
+  # worker thread per core, and each worker reserves an 8 MB stack. On a host
+  # with enough cores (e.g. 32), those reservations alone exceed the cap and
+  # thread spawn fails with EAGAIN mid-scheduler-init ("could not spawn worker
+  # N/nproc") — this has nothing to do with the semantics under test. HEW_WORKERS=4
+  # matches CI runners' core counts, so local Linux parity runs match CI's
+  # behaviour instead of an unbounded local host's. A caller-supplied
+  # HEW_WORKERS in "$@" still wins: `env` applies repeated assignments in
+  # order, so a later NAME=VALUE overrides this default.
   if [[ "$(uname -s)" == "Linux" ]]; then
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -v 524288; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   else
     # Darwin and BSD reject ulimit -v; the data-segment cap is the nearest
     # supported proxy and the timeout remains the hard containment boundary.
     # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-    "${TIMEOUT}" --kill-after=5s 30s env "$@" bash -c \
+    "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=4 "$@" bash -c \
       'ulimit -d 524288 2>/dev/null || true; exec "$1" >"$2" 2>"$3"' _ \
       "${bin}" "${stdout_path}" "${stderr_path}" 2>/dev/null
   fi
@@ -714,6 +736,10 @@ run_accept_expect_status "hashset_for_in_owned" 9
 # non-identifier shapes the bug hid.
 # HashSet via a struct field: 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_field" 60
+# HashSet via nested struct fields: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_nested_field" 60
+# HashSet via a tuple field: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_tuple_projection" 60
 # HashSet via a call result (also a single-eval witness): 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_call" 60
 # HashMap via a struct field: keys 6 + values 60 → exit 66.
@@ -721,6 +747,9 @@ run_accept_expect_status "hashmap_for_in_field" 66
 # HashMap via a call result (single-eval: keys()+values() borrow one temp, so
 # make_map() runs once): keys 6 + values 60 → exit 66.
 run_accept_expect_status "hashmap_for_in_call" 66
+# HashMap::into_iter via a record field: both synthetic Vec projections retain
+# the HashMap-typed field receiver, and the source remains live. Three entries.
+run_accept_expect_status "hashmap_into_iter_field" 3
 # Owned-element drop ratchet on the non-identifier route (field access): string
 # lens 2+3+4 → exit 9. Verified clean under the guard allocator (MallocScribble /
 # MallocGuardEdges) alongside the other owned for-in fixtures.
@@ -743,6 +772,19 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \
   "is not a fixed-size Copy type" \
   "hashmap_key_owned_vec_field"
+# A user nominal sharing the compiler's synthetic `HashMapIter` leaf name
+# keeps its own independent Iterator impl (dispatches user code), while a
+# real HashMap pipeline still dispatches through the compiler cursor.
+run_accept_expect_status "hashmap_iter_user_shadow" 43
+
+# Ownership markers (#[resource], #[linear]) are only valid on nominal `type`
+# / `enum` declarations, never on `record`. Positive control on `type`, plus
+# the reject boundary on `record`.
+run_accept_expect_status "resource_marker_nominal_type" 0
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/resource_marker_on_record_reject.hew" \
+  "#[resource] is only valid on \`type\` or \`enum\` declarations" \
+  "resource_marker_on_record_reject"
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
@@ -824,16 +866,16 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
   "owned or heap-backed" \
   "managed_record_or_enum_eq"
-# #2509: user type name colliding with a loaded stdlib opaque handle name must
-# fail closed at codegen with an actionable rename diagnostic, not a raw LLVM
-# non-pointer-type dump.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/opaque_handle_name_collision.hew" \
-  "collides with the built-in opaque handle type of the same name" \
-  "opaque_handle_name_collision"
-if grep -qF 'resolves to non-pointer type' "${reject_output}"; then
-  echo "opaque_handle_name_collision leaked the raw LLVM non-pointer dump" >&2
-  cat "${reject_output}" >&2
+# A user actor may share a short name with an imported opaque runtime handle.
+# The names are distinct nominals: `Listener` is the actor while
+# `net.Listener` remains the pointer-backed TCP handle.  Exercise both
+# codegen representations and the handle's real close ownership path.
+run_accept_expect_stdout "opaque_handle_user_shadow"
+# Negative guard: qualified-owner identity resolves this collision without
+# ever falling back to a raw LLVM type dump in user-facing compile output.
+if grep -qF -- "resolves to non-pointer type" "${accept_output}"; then
+  echo "opaque_handle_user_shadow: raw LLVM dump leaked into compile output" >&2
+  cat "${accept_output}" >&2
   exit 1
 fi
 # Declaration-level generic bounds are authority at nominal instantiation sites:
@@ -847,6 +889,27 @@ run_accept_expect_stdout "payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_inequality_result"
 run_accept_expect_stdout "generic_aggregate_eq"
+# Arena<T> generational-index slotmap (std/arena.hew): the first stdlib
+# consumer of the generic Vec<Composite<T>> codegen path. Each fixture asserts
+# exact/boundary/negative values — stale-key None, generation +1, exact len.
+run_accept_expect_stdout "arena_insert_get_roundtrip"
+run_accept_expect_stdout "arena_key_vec_roundtrip"
+run_accept_expect_stdout "arena_key_hashmap_roundtrip"
+run_accept_expect_stdout "arena_remove_stale_key"
+run_accept_expect_stdout "arena_generation_reuse"
+run_accept_expect_stdout "arena_len_live_count"
+run_accept_expect_stdout "arena_composite_value"
+run_accept_expect_stdout "arena_no_leak_cycle"
+run_accept_expect_stdout "arena_cross_instance_key_rejected"
+run_accept_expect_stdout "arena_nested_vec_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/arena_method_clone_rejected.hew" \
+  "cannot be cloned" \
+  "arena_method_clone_rejected"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/arena_prefix_clone_rejected.hew" \
+  "cannot be cloned" \
+  "arena_prefix_clone_rejected"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
   echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2
@@ -905,6 +968,10 @@ run_accept_expect_status_and_stdout "for_range_rev_empty_signed_min" 0
 # by testing general emptiness `raw_start >= raw_end` instead).
 run_accept_expect_status_and_stdout "for_range_rev_empty_unsigned_gt" 0
 run_accept_expect_status_and_stdout "for_range_rev_empty_signed_gt" 0
+# Mixed-width bounds in a `for x in lo..hi`: narrower and wider integer
+# operands on either side of the range, forward and reversed, plus the
+# analogous mixed-width if/if-let branch-merge normalization.
+run_accept_expect_stdout "for_range_mixed_width_normalization"
 
 # platform-int-arith (W60.040): isize/usize as first-class integers. Each
 # fixture asserts exact values via assert_eq/assert and exits 0 on success
@@ -1377,6 +1444,20 @@ run_accept_expect_status "actor_ctor_init_coexist" 110
 # Exit code 42 proves the actor ran its full lifecycle (spawn → start → messages → stop).
 run_accept_expect_status "actor_on_stop" 42
 
+# Regression: owned actor-state writes in default initialization, explicit
+# init, on(start), an ordinary receive handler, and on(stop). Lifecycle phases
+# have no same-state scheduler transaction, while receive still validates one.
+# Malloc scribbling makes an extra/missed ownership handoff or double release
+# deterministic on the native teardown path.
+run_accept_expect_status "actor_lifecycle_state_writes" 3 \
+  MallocScribble=1 MallocPreScribble=1
+
+# Lifecycle phase permission is not panic-containment permission. Direct
+# on(start) runs synchronously in the spawning main context: its state write is
+# valid, then its panic keeps the established module-fatal exit-101 policy.
+run_accept_expect_panic "actor_start_panic_module_fatal" \
+  "intentional on(start) panic"
+
 # Multiple #[on(stop)] hooks on the same actor must compile and run without
 # ActorHandlerSymbolCollision. Previously the second hook would collide with
 # the first at MIR lowering. Exit 0 = Sequencer(start: 0).value() = 0.
@@ -1408,6 +1489,19 @@ run_accept_expect_status "f01_actor_spawn_owned_vec_drop_segv" 0
 # double-free). Exit code == "WINNER-OWNED-REPLY".len() == 18 proves the winner
 # reply is consumed correctly while the abandoned owned reply is reclaimed.
 run_accept_expect_status "ask_reply_owned_select_loser" 18
+
+# A fresh owned string produced by an await is moved into its lexical binding
+# before the later handled actor panic. The crash cleanup must drop it exactly
+# once, and the actor balance oracle must remain exact.
+run_accept_expect_status "await_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "used=fresh-value" "${stdout_output}"
+grep -qF -- "handled-crash" "${stdout_output}"
+
+# The select winner writes an owned string directly into its binding. Prove the
+# shared winner tail arms that slot before a later handled actor panic.
+run_accept_expect_status "select_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "selected=selected-value" "${stdout_output}"
+grep -qF -- "select-handled-crash" "${stdout_output}"
 
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
@@ -1623,6 +1717,12 @@ run_accept_expect_status "supervisor_fungible_dead_child_select" 46
 # cannot. (No WASM check: supervisor fixtures are HIR-gated off wasm32.)
 run_accept_expect_status "supervisor_lifecycle_fires" 220
 
+# The lifecycle phase discriminator must also hold on the supervisor wrapper
+# used for both the initial incarnation and restart. The child writes in init,
+# on(start), a normal receive handler, and on(stop); 22 = 11 + 11 across the
+# restart, with stop executing during supervisor teardown.
+run_accept_expect_status "supervisor_lifecycle_phase_writes" 22
+
 # Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0
@@ -1689,15 +1789,16 @@ run_accept_expect_status "on_crash_action_restart" 42
 # Accept: a REAL crash fires the emitted Worker__on_crash, which clones the
 # borrowed crash_message into the owned CrashInfo.message (hew_string_clone),
 # reads it, and returns CrashAction::Restart. The child traps, the supervisor
-# restarts it, await_restart re-fetches the fresh child, and main exits 42.
+# mutates its restart-template state, restarts it, await_restart re-fetches the
+# fresh child, and main exits 43.
 # Teeth: a wrong crash-message string ABI / a move-of-borrow aborts the runtime
 # (exit 134, libc::abort from validate_cstring_header) the instant the hook runs
 # on a real crash — only a correct clone+drop reaches the clean restart and
-# exit 42. This is the runtime coverage the compile-only fixture above lacks.
+# exit 43. This is the runtime coverage the compile-only fixture above lacks.
 # Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
 # no leak, no OOB) — see the on_crash_action_restart_real_crash gate in
 # scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
-run_accept_expect_status "on_crash_action_restart_real_crash" 42
+run_accept_expect_status "on_crash_action_restart_real_crash" 43
 
 # Accept (G-S-A): a REAL crash fires an #[on(crash)] hook that returns
 # CrashAction::Escalate on a ROOT supervisor (no parent). Before the fix,
@@ -1713,10 +1814,34 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # Watcher__on_exit; codegen routes HewSysMsg::Exit to it in the dispatch
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
+# A real linked-peer crash traverses the EXIT sys-dispatch path and invokes the
+# hook, not merely its compile-time declaration.
+run_accept_expect_stdout "on_exit_hook_delivery"
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.
 run_accept_expect_status "on_down_hook" 42
+
+# Diagnostic-honesty counterfactuals (W_B3): lifecycle payload records are
+# source-owned. Their bare spelling requires a named/glob/aliased publication;
+# an omitted import must fail during checker resolution, never as an
+# internal-looking HIR/MIR layout failure. The two accept fixtures above pin
+# the imported form; the checker unit matrix pins unused-import accounting.
+echo "RUN on_exit_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_exit_hook_missing_import.hew" \
+  "unknown type \`CrashNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_exit_hook_missing_import"
+echo "PASS on_exit_hook_missing_import (reject)"
+
+echo "RUN on_down_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_down_hook_missing_import.hew" \
+  "unknown type \`DownNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_down_hook_missing_import"
+echo "PASS on_down_hook_missing_import (reject)"
 
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
@@ -3013,21 +3138,51 @@ run_accept_expect_stdout "receive_gen_fn_record_stream_break"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return"
 run_accept_expect_stdout "receive_gen_fn_stream_early_return_close"
 
+# Assert a receive-gen fault fixture faulted the stream cleanly: the fault
+# diagnostic is present AND the abort is the DESIGNED fault trap, not a heap
+# allocator abort. Both `exit 134` (the designed trap) and a glibc double-free
+# abort share the SIGABRT exit status, so the status check alone cannot tell a
+# clean fault from a memory-safety crash on the fault-cleanup path (#2865). A
+# bare `grep` here had no failure message: under `set -euo pipefail` a crash
+# that printed the allocator error before the fault message made the grep fail
+# with no context, silently killing the whole run at an unrelated point. This
+# reports the failure AT the fixture, and fails closed on any allocator-abort
+# signature glibc prints to stderr on a double-free / heap corruption.
+assert_receive_gen_stream_faulted() {
+  local fixture="$1"
+  if ! grep -qF -- 'receive-gen stream: producer actor' "${stderr_output}"; then
+    echo "expected ${fixture} stderr to carry the receive-gen fault diagnostic" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  if grep -qE 'double free|free\(\): |corrupted|malloc\(\): |munmap_chunk|tcache|Invalid free' \
+      "${stderr_output}"; then
+    echo "${fixture}: heap allocator abort on the fault-cleanup path (double-free/corruption)" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 # Fault (producer crash): the gen body yields once, then traps on a
 # runtime div-by-zero. The consumer, having already received the first value,
 # must observe the fault on its next resume — never a clean, silent EOF. The
 # trap crashes the actor (SIGABRT via the runtime's abort-on-internal-panic
-# convention, same as the bytes/string index-oob traps), exit 134.
+# convention, same as the bytes/string index-oob traps), exit 134. The fault
+# fires while the producer generator is RUNNING, so its coro frame is
+# raw-reclaimed by crash recovery AND owned by the pump's crash-cleanup escrow;
+# the frame must be freed exactly once (#2865).
 run_accept_expect_status "receive_gen_fn_fault_trap" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_fault_trap"
 
 # Fault (producer teardown): an actor stopped (via `supervisor_stop`)
 # while its stream is live and undrained must fault-close the stream on the
 # consumer's next resume — not a hang, not a silent EOF. Same fault mechanism
 # and exit code as the crash case above; the deterministic buffered-value
-# count (8, the receive-gen stream capacity) is asserted via stdout.
+# count (8, the receive-gen stream capacity) is asserted via stdout. Here the
+# generator is SUSPENDED at teardown, the mirror case to the running-crash
+# fixture above.
 run_accept_expect_status "receive_gen_fn_teardown_fault" 134
-grep -qF 'receive-gen stream: producer actor' "${stderr_output}"
+assert_receive_gen_stream_faulted "receive_gen_fn_teardown_fault"
 
 # Owned actor-state fields are snapshotted through the same clone-total plan as
 # direct generator parameters.
@@ -3117,12 +3272,186 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_pattern_double_clos
 fi
 # shellcheck disable=SC2016  # backticks are literal — they match the
 # diagnostic's pretty-printed `pat` binding name.
-grep -qF 'use of moved value `pat`' "${reject_output}"
+grep -qF 'resource `pat` cannot be closed more than once' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# Move/release tracking across branch joins.
+#
+# The ownership rule is one consume per PATH, not one consume per function
+# body. These fixtures pin both directions of that rule, and which of the two
+# use-after-consume authorities owns each verdict: the env checker reports
+# `use of moved value` / `cannot be closed more than once`, while the
+# checked-MIR dataflow pass reports `E_MIR_CHECK: UseAfterConsume` for the loop
+# shapes the env checker deliberately does not walk.
+# ---------------------------------------------------------------------------
+
+# Accept: consuming once in every arm. The close bodies print, so stdout is the
+# drop oracle — one close per call down either path, never zero and never two.
+run_accept_expect_stdout "branch_join_close_both_arms"
+run_accept_expect_stdout "branch_join_diverging_arm"
+# A guard that leaves the function contributes nothing to the fall-through the
+# later arms start from, and its own body is unreachable so it stays out of the
+# join. An ordinary guard in the same fixture still threads into the arms below.
+run_accept_expect_stdout "branch_join_diverging_guard"
+
+# Reject: whichever arm ran, the handle is gone after the join.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_use_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_use_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_use_after_join_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
+if [[ "${branch_join_use_after_join_count}" -ne 4 ]]; then
+  echo "expected 4 post-join use diagnostics, got ${branch_join_use_after_join_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# The two shapes whose arms closed also carry the discharge diagnostic; the two
+# that merely moved do not.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_released_count="$(grep -c 'cannot consume released resource `held`' "${reject_output}")"
+if [[ "${branch_join_released_count}" -ne 2 ]]; then
+  echo "expected 2 post-join released-resource diagnostics, got ${branch_join_released_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: a close reached on one path still discharges on that path.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_double_close_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_double_close_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_double_close_count="$(grep -c 'resource `held` cannot be closed more than once' "${reject_output}")"
+if [[ "${branch_join_double_close_count}" -ne 3 ]]; then
+  echo "expected 3 double-close diagnostics, got ${branch_join_double_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: consuming across a loop back edge. This one is the checked-MIR pass's
+# verdict, and the env checker must stay silent on it — if the env layer ever
+# starts reporting here the shape is being double-diagnosed.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_move_in_loop.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_move_in_loop fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'E_MIR_CHECK: binding `held` is used after it was consumed' "${reject_output}"
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+if grep -qF 'use of moved value `held`' "${reject_output}"; then
+  echo "env checker must not duplicate the checked-MIR loop verdict" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+# Reject: a `break` or `continue` arm leaves the LOOP, not the function, so its
+# consume reaches the code below the loop and the arm must stay in the join.
+# Three of the four cases are `BitCopy`-classed (a record wrapping an
+# `#[opaque]` handle, and all-scalar records), which the checked-MIR dataflow
+# pass does not track — the env checker is the only authority there, and
+# `double_free` becomes a real double free in the emitted binary if it stops
+# reporting. The count is exact so a partial regression cannot hide.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_break_escape.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_break_escape fixture to fail" >&2
+  exit 1
+fi
+branch_join_escape_count="$(grep -c 'use of moved value' "${reject_output}")"
+if [[ "${branch_join_escape_count}" -ne 4 ]]; then
+  echo "expected 4 loop-escape consume diagnostics, got ${branch_join_escape_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+# The opaque-handle wrapper is the case with no backstop; name it explicitly so
+# a future change that drops only that one is still caught.
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+grep -qF 'use of moved value `w`' "${reject_output}"
+
+# Reject: only the BODIES of a `select` are alternatives. Consuming the handle
+# in every body is one consume per path and must NOT be reported — the absence
+# of a diagnostic inside the select is half of what this fixture pins. The
+# single diagnostic after the select is the other half: whichever body ran, the
+# handle is gone by the time control reaches the code below.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/branch_join_select_use_after_join.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected branch_join_select_use_after_join fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+branch_join_select_count="$(grep -c 'use of moved value `held`' "${reject_output}")"
+if [[ "${branch_join_select_count}" -ne 1 ]]; then
+  echo "expected exactly 1 post-select use diagnostic, got ${branch_join_select_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
 
 # B-1 safe stdlib resource migration: every migrated handle surface resolves
 # `close(self)` through its wrapper impl, including the same-short-name Message
 # wrappers that must be compiled in separate importer fixtures.
 compile_accept "safe_handle_resources_close"
+run_accept_expect_stdout "json_value_resource_exactly_once"
+run_accept_expect_stdout "toml_value_resource_exactly_once"
+run_accept_expect_stdout "yaml_value_resource_exactly_once"
+
+# The value-tree fixtures also carry dormant early-return/panic probes and a
+# loop-back-edge cancellation probe. Their elaborated MIR must close exactly
+# the live independent owners on every exit: the child handed to `with` is no
+# longer a caller-owned root, while getter results are.
+assert_value_tree_exit_plans() {
+  local fixture="$1"
+  local module="$2"
+  local main_close_count="$3"
+  "${HEW}" compile --dump-mir elab \
+    "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
+    >"${accept_output}" 2>&1
+
+  local function_body
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="early_exit" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 4
+  test "$(grep -cF "return[" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="_panic_exit" "${accept_output}")"
+  grep -qF "call[bb4 hew_panic_msg" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="cancel_exit" "${accept_output}")"
+  grep -qF "panic[" <<<"${function_body}"
+  grep -qF "cancel[" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 6
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="main" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq "${main_close_count}"
+}
+
+assert_value_tree_exit_plans "json_value_resource_exactly_once" "std.encoding.json" 2
+assert_value_tree_exit_plans "toml_value_resource_exactly_once" "std.encoding.toml" 1
+assert_value_tree_exit_plans "yaml_value_resource_exactly_once" "std.encoding.yaml" 1
+
 compile_accept "http_client_response_resource_close"
 compile_accept "websocket_message_resource_close"
 compile_accept "protobuf_message_resource_close"
@@ -3140,6 +3469,20 @@ fi
 safe_handle_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
 if [[ "${safe_handle_use_after_close_count}" -ne 11 ]]; then
   echo "expected 11 safe-handle use-after-close diagnostics, got ${safe_handle_use_after_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/value_tree_resources_use_after_close.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected value_tree_resources_use_after_close fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+value_tree_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
+if [[ "${value_tree_use_after_close_count}" -ne 3 ]]; then
+  echo "expected 3 value-tree use-after-close diagnostics, got ${value_tree_use_after_close_count}" >&2
   cat "${reject_output}" >&2
   exit 1
 fi
@@ -3715,7 +4058,8 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/duplicate_short_name.he
   echo "W3.025: expected duplicate_short_name to fail" >&2
   exit 1
 fi
-grep -q 'two imported modules share the short name' "${reject_output}"
+grep -q "imports both \`alpha\` and \`beta::alpha\` under the ambiguous binding \`alpha\`" \
+  "${reject_output}"
 
 # Reject: ambiguous module resolution (both flat ambig_mod.hew and dir ambig_mod/ambig_mod.hew exist)
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/ambiguous_module.hew" \
@@ -3726,7 +4070,7 @@ fi
 grep -q 'is ambiguous' "${reject_output}"
 grep -q 'Rename or remove one' "${reject_output}"
 
-# WASM parity: must either succeed or emit a named WASM-TODO(#1451) diagnostic — never silent failure.
+# WASM parity: must either succeed or emit a structured WASM diagnostic — never silent failure.
 # Matches hew-cli/src/main.rs CodegenError::WasmUnsupportedSubstrate ("WASM target does not support").
 if ! "${HEW}" compile --target wasm32-unknown-unknown \
     "${ROOT}/tests/vertical-slice/accept/directory_module_call.hew" \
@@ -4596,6 +4940,23 @@ grep -q 'UseAfterConsume' "${reject_output}"
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
 
+# Regression: trait DEFAULT methods reached through a file import must resolve
+# on the implementing type and lower. Two gaps compounded: the checker gated
+# the imported trait's `trait_defs` entry on `pub`, so the impl inherited no
+# default bodies ("no method `simple` on `RootThing`"); and HIR lowered a
+# materialised default at the impl's module index while the copied body's spans
+# belong to the declaring file, so a default calling back through `self`
+# fail-closed with MethodCallNoRewrite. The fixture exercises both a leaf
+# default and a Self-dispatching one.
+run_check_run_expect_stdout file_import_trait_default_method
+
+# Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
+# declarations (constructs a type and calls a free function declared beside
+# the trait) must resolve them even though the default is materialised at an
+# impl site in the importing file — the copied body's spans belong to the
+# trait's file while the impl's module context is the root.
+run_check_run_expect_stdout file_import_trait_default_local_type
+
 # Regression: a file-imported multi-handler actor keeps a DISTINCT message-kind
 # discriminant per receive handler. The spliced file-import lowering path
 # previously missed the checker's protocol descriptor (keyed by module-short
@@ -4621,6 +4982,17 @@ run_accept_expect_stdout record_clone_string_field
 # User-defined record `.clone()`: original stays live and usable after the clone.
 run_accept_expect_stdout record_clone_independence
 
+# A returned dyn value would retain a pointer into the callee's dead frame.
+# Reject the signature before MIR/codegen until the return bridge promotes the
+# concrete storage and transfers drop authority to the caller.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/dyn_trait_return.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected dyn_trait_return fixture to fail" >&2
+  exit 1
+fi
+grep -q 'heap-promoted before its fat pointer can escape' "${reject_output}"
+
 # User-defined record `.clone()` on a record containing an opaque handle must be rejected.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/record_clone_unclonable_field.hew" \
@@ -4629,6 +5001,46 @@ if "${HEW}" check \
   exit 1
 fi
 grep -q 'contains an opaque field' "${reject_output}"
+
+# Affine records are move-only even when their physical fields are all
+# structurally cloneable. Both explicit clone spellings must reject resource
+# and linear identities before a RecordCloneInplace reaches MIR.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/affine_record_clone.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected affine_record_clone fixture to fail" >&2
+  exit 1
+fi
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 4 ]]; then
+  echo "expected four affine record-clone diagnostics" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+grep -q 'affine close contract' "${reject_output}"
+grep -q 'consumed exactly once' "${reject_output}"
+
+# The affine veto is transitive and substitution-aware: plain and generic
+# wrappers must not hide resource/linear fields behind a structurally cloneable
+# outer record.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/affine_record_clone_transitive.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected affine_record_clone_transitive fixture to fail" >&2
+  exit 1
+fi
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 9 ]]; then
+  echo "expected nine transitive affine record-clone diagnostics" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+grep -q 'PlainWrapper.*ResourceToken' "${reject_output}"
+grep -q 'GenericWrapper<ResourceToken>.*ResourceToken' "${reject_output}"
+grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}"
+grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}"
+grep -q 'TupleWrapper.*ResourceToken' "${reject_output}"
+grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
+grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
+grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
 
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
@@ -4970,3 +5382,65 @@ expect_check_fail_error_count \
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/rc_set_type_mismatch.hew" \
   1 "rc_set_type_mismatch"
+
+# ---------------------------------------------------------------------------
+# Place-level ownership: consumption is a fact about a PLACE, not a binding
+# name. Each reject asserts exactly one diagnostic — an ancestor of a consumed
+# place is read only to project through it, so the partially-moved-root rule
+# must not stack an error per projection step.
+# ---------------------------------------------------------------------------
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_reuse.hew" \
+  1 "actor_arg_field_projection_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_reuse.hew" \
+  "use of moved place \`holder.sock\`" \
+  "actor_arg_field_projection_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_whole_use.hew" \
+  1 "actor_arg_field_projection_whole_use"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_field_projection_whole_use.hew" \
+  "use of \`holder\` after its field \`holder.sock\` was moved out" \
+  "actor_arg_field_projection_whole_use_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_tuple_element_reuse.hew" \
+  1 "actor_arg_tuple_element_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_tuple_element_reuse.hew" \
+  "use of moved place \`pair.0\`" \
+  "actor_arg_tuple_element_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_nested_field_projection_reuse.hew" \
+  1 "actor_arg_nested_field_projection_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_arg_nested_field_projection_reuse.hew" \
+  "use of moved place \`outer.inner.ticket\`" \
+  "actor_arg_nested_field_projection_reuse_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_consumed_unplugged.hew" \
+  1 "actor_state_field_consumed_unplugged"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_consumed_unplugged.hew" \
+  "actor state \`sock\` is consumed here and never re-initialised" \
+  "actor_state_field_consumed_unplugged_message"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_reinit_one_branch.hew" \
+  1 "actor_state_field_reinit_one_branch"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_state_field_reinit_one_branch.hew" \
+  "actor state \`sock\` is consumed here and never re-initialised" \
+  "actor_state_field_reinit_one_branch_message"
+
+# Accept side of the same rules: a transferred field costs the record only
+# that field, value-semantics fields transfer nothing at all, and
+# re-initialising a consumed state field really does hand the next message an
+# owned value (the second `swap` observes the socket the first one installed).
+run_accept_expect_stdout "actor_arg_field_projection_sibling_use"
+run_accept_expect_stdout "actor_arg_value_field_projection"
+run_accept_expect_stdout "actor_state_field_reinit"

@@ -33,7 +33,7 @@ use std::path::Path;
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::lower_hir_module;
-use hew_types::TypeCheckOutput;
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn pipeline_for(path: &str) -> hew_mir::IrPipeline {
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -43,11 +43,28 @@ fn pipeline_for(path: &str) -> hew_mir::IrPipeline {
         "parse errors for {path}: {:?}",
         parsed.errors
     );
+    // Run the checker for real: lowering consumes checker-published typed
+    // facts (e.g. an integer literal assigned to an `i8` variant field is
+    // typed at the field's width). A default `TypeCheckOutput` bypasses the
+    // stage the real driver always runs, and the codegen move guard then
+    // fails closed on the untyped-literal width mismatch.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors for {path}: {:#?}",
+        tc_output.errors
+    );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &tc_output,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "hir diagnostics for {path}: {:?}",
+        output.diagnostics
     );
     lower_hir_module(&output.module)
 }
@@ -83,8 +100,12 @@ fn traffic_light_step_emits_dispatch_shape_with_state_tag_load() {
 
     // The synthesised step fn must be present.
     assert!(
-        ll.contains("define") && ll.contains("@TrafficLight__step("),
-        "traffic_light .ll missing TrafficLight__step definition; got:\n{ll}"
+        ll.contains("define") && ll.contains("@\"mc$$TrafficLight$$__step\"("),
+        "traffic_light .ll missing canonical machine-class step definition; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@TrafficLight__step("),
+        "traffic_light .ll must not emit the legacy bare machine step symbol; got:\n{ll}"
     );
 
     // Outer-struct field-0 GEP for the state tag. inkwell labels the
@@ -129,8 +150,12 @@ fn counter_machine_step_emits_variant_payload_access() {
     let ll = emit_ll_text(&pipeline, "counter_machine");
 
     assert!(
-        ll.contains("define") && ll.contains("@Counter__step("),
-        "counter_machine .ll missing Counter__step definition; got:\n{ll}"
+        ll.contains("define") && ll.contains("@\"mc$$Counter$$__step\"("),
+        "counter_machine .ll missing canonical machine-class step definition; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@Counter__step("),
+        "counter_machine .ll must not emit the legacy bare machine step symbol; got:\n{ll}"
     );
 
     // Tag projection for self's state — same as zero-payload case.
@@ -241,8 +266,13 @@ fn padded_payload_machine_uses_abi_correct_payload_size() {
     // Module::verify() is exercised by emit_module succeeding above.
     // Confirm step fn is present and the two-field variant access lowers.
     assert!(
-        ll.contains("@PaddedPayload__step("),
-        "padded_payload_machine .ll missing PaddedPayload__step definition; \
+        ll.contains("@\"mc$$PaddedPayload$$__step\"("),
+        "padded_payload_machine .ll missing canonical machine-class step definition; \
+         got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@PaddedPayload__step("),
+        "padded_payload_machine .ll must not emit the legacy bare machine step symbol; \
          got:\n{ll}"
     );
     assert!(

@@ -1375,6 +1375,8 @@ Put post-spawn initialization in `#[on(start)]` and teardown in `#[on(stop)]`. B
 ### #[on(crash)] hook
 
 ```hew
+import std::failure::{ CrashInfo, CrashAction };
+
 actor Risky {
     var n: i64 = 0;
     #[on(start)] fn boot() { n = 1; }
@@ -1593,7 +1595,7 @@ actor Server {
         let listener = net.listen(addr);
         loop {
             let conn = await listener.accept();
-            let data = await conn.read();
+            let _data = await conn.read();
             // ...
         }
     }

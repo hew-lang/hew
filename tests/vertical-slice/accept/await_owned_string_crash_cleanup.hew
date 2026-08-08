@@ -1,0 +1,33 @@
+// A fresh owned reply becomes live only after the await resumes. The later
+// actor panic must reclaim that string through the typed crash registry, and
+// the caller must receive the handled ask failure without a registration trap.
+actor Fresh {
+    receive fn text() -> string {
+        "fresh-value"
+    }
+}
+
+actor CrashAfterUse {
+    let fresh: LocalPid<Fresh>;
+
+    receive fn run(trigger: i64) -> i64 {
+        let text = match await fresh.text() {
+            Ok(value) => value,
+            Err(_) => "fallback",
+        };
+        println(f"used={text}");
+        if trigger != 0 {
+            panic("handled crash after fresh string use");
+        }
+        1
+    }
+}
+
+fn main() {
+    let fresh = spawn Fresh;
+    let probe = spawn CrashAfterUse(fresh: fresh);
+    match await probe.run(1) {
+        Ok(value) => println(f"unexpected={value}"),
+        Err(_) => println("handled-crash"),
+    }
+}

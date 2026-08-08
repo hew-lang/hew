@@ -3367,7 +3367,7 @@ fn generic_decl_bounds_are_stored_on_type_defs() {
         .get("Box")
         .and_then(|type_def| type_def.bounds.get("T"))
         .expect("Box<T: Display> should retain the T bound on TypeDef");
-    assert_eq!(bounds, &vec!["Display".to_string()]);
+    assert_eq!(bounds, &vec!["std.builtins.Display".to_string()]);
 }
 
 #[test]

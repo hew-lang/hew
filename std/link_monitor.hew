@@ -11,7 +11,7 @@
 //! `monitor()` both build `Result<MonitorRef, MonitorError>` from explicit
 //! runtime setup statuses.
 
-// WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
+// WASM-TODO(link-monitor): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on
 // wasm32 via the existing Link/monitor gate.
 //
@@ -19,6 +19,8 @@
 // the `link()` builtin, like `SendError` for `.tell`), so it is NOT redeclared
 // here — that would collide with the always-loaded prelude on import. Programs
 // name `LinkError::AlreadyLinked` / `TargetDead` without importing this module.
+import std::failure::{CrashKind};
+
 /// Error returned when a monitor delivery cannot be completed.
 pub enum MonitorError {
     /// No distributed node runtime is active.

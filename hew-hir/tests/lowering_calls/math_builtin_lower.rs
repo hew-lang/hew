@@ -2,6 +2,7 @@ use hew_hir::{lower_program, verify_hir, HirExprKind, HirItem, ResolutionCtx};
 use hew_types::{
     module_registry::ModuleRegistry, runtime_call::MathIntrinsic, Checker, RuntimeCallFamily,
 };
+use std::collections::BTreeSet;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let source = format!("import std::math;\n{source}");
@@ -21,6 +22,11 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         tc_output.errors.is_empty(),
         "type errors: {:#?}",
         tc_output.errors
+    );
+    assert_eq!(
+        tc_output.intrinsic_declarations.get("std.math.abs"),
+        Some(&"math.abs".to_string()),
+        "registry-loaded canonical std.math must publish exact intrinsic metadata"
     );
     let output = lower_program(
         &parsed.program,
@@ -145,4 +151,83 @@ fn math_builtin_identifiers_resolve_to_typed_intrinsics() {
     ] {
         assert_main_tail_call_resolves(source, name, intrinsic);
     }
+}
+
+#[test]
+fn math_intrinsic_source_catalog_and_runtime_inventory_are_total() {
+    let source = include_str!("../../../std/math/math.hew");
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "std math parse errors: {:?}",
+        parsed.errors
+    );
+    let source_keys: BTreeSet<String> = parsed
+        .program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            hew_parser::ast::Item::Function(function) => function.intrinsic.clone(),
+            _ => None,
+        })
+        .collect();
+    let catalog_keys: BTreeSet<String> = hew_hir::stdlib_catalog::entries()
+        .iter()
+        .filter_map(|entry| match entry.linkage {
+            hew_hir::stdlib_catalog::BuiltinLinkage::CompilerIntrinsic { intrinsic }
+                if intrinsic.starts_with("math.") =>
+            {
+                Some(intrinsic.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        source_keys, catalog_keys,
+        "every math CompilerIntrinsic must have exactly one source declaration, and vice versa"
+    );
+
+    for key in source_keys {
+        match key.as_str() {
+            "math.abs" | "math.min" | "math.max" => {
+                let op = match key.as_str() {
+                    "math.abs" => hew_types::MathGenericOp::Abs,
+                    "math.min" => hew_types::MathGenericOp::Min,
+                    "math.max" => hew_types::MathGenericOp::Max,
+                    _ => unreachable!(),
+                };
+                for operand in [hew_types::ResolvedTy::I64, hew_types::ResolvedTy::F64] {
+                    let (symbol, _) =
+                        hew_hir::stdlib_catalog::generic_math_intrinsic_callee(op, &operand)
+                            .expect("generic math catalog supports i64 and f64");
+                    assert!(
+                        matches!(
+                            RuntimeCallFamily::from_c_symbol(symbol),
+                            Some(RuntimeCallFamily::MathIntrinsic(_))
+                        ),
+                        "{key} overload `{symbol}` must select a typed math runtime family"
+                    );
+                }
+            }
+            _ => {
+                let symbol = key.strip_prefix("math.").expect("math key");
+                assert!(
+                    matches!(
+                        RuntimeCallFamily::from_c_symbol(symbol),
+                        Some(RuntimeCallFamily::MathIntrinsic(_))
+                    ),
+                    "{key} must select a typed math runtime family"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn math_intrinsic_module_alias_retains_canonical_typed_target() {
+    assert_main_tail_call_resolves(
+        "import std::math as trig; fn main() -> f64 { trig.sqrt(9.0) }",
+        "sqrt",
+        MathIntrinsic::Sqrt,
+    );
 }

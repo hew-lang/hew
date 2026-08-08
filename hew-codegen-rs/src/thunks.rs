@@ -15,7 +15,6 @@
 use inkwell::context::Context;
 use std::collections::HashSet;
 
-use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
@@ -26,8 +25,8 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
 use hew_mir::{
-    model::CoalesceKeyKind, ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place,
-    SpawnEnvFieldOwnership, StateFieldCloneKind,
+    model::CoalesceKeyKind, ActorLayout, LambdaEnvFieldDrop, Place, SpawnEnvFieldOwnership,
+    StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_runtime::mailbox_header::HewSysMsg;
@@ -204,6 +203,8 @@ pub(crate) fn emit_spawn_task_direct(
 /// * `None` — BitCopy, nothing to release.
 /// * `String` — the env owns an independent `hew_string_clone`; release
 ///   via `hew_string_drop`.
+/// * `StrongLambdaActorHandle` — the env owns an independent
+///   `hew_lambda_actor_clone`; release via `hew_lambda_actor_release`.
 /// * `WeakSelfHandle` — the downgraded self handle from the
 ///   MakeLambdaActor back-fill; release via `hew_lambda_actor_weak_drop`
 ///   (a weak drop never releases the actor itself). Null-safe at the
@@ -237,6 +238,10 @@ pub(crate) fn emit_lambda_env_dropper<'ctx>(
             LambdaEnvFieldDrop::String => (
                 "hew_string_drop",
                 ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ),
+            LambdaEnvFieldDrop::StrongLambdaActorHandle => (
+                "hew_lambda_actor_release",
+                ctx.i32_type().fn_type(&[ptr_ty.into()], false),
             ),
             LambdaEnvFieldDrop::WeakSelfHandle => (
                 "hew_lambda_actor_weak_drop",
@@ -349,10 +354,12 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
         })
         .collect();
     let mut visited = HashSet::new();
-    let kind = hew_mir::classify_state_field_with_enum_layouts(
+    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
         reply_ty,
         &record_layouts,
         fn_ctx.enum_layouts,
+        &[],
+        fn_ctx.lifecycle_registry,
         &mut visited,
     )
     .map_err(|e| {
@@ -365,14 +372,11 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
 
     match &kind {
         // No embedded heap: the free leg frees the buffer alone (prior
-        // behaviour). Opaque handles are user-owned (`.free()` is explicit) and
-        // a borrowed `Connection` is not released by the reply path, so both are
-        // also null here — matching `emit_field_drop_step`'s no-op arms.
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        | StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(ptr_ty.const_null()),
+        // behaviour). Opaque handles are user-owned (`.free()` is explicit),
+        // so they are also null here — matching `emit_field_drop_step`'s no-op arm.
+        StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {
+            Ok(ptr_ty.const_null())
+        }
         // Record / enum reply: register the already-seeded in-place drop thunk.
         StateFieldCloneKind::UserRecord { name } => {
             Ok(
@@ -817,6 +821,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
     total_size: u64,
+    env_offset: u64,
+    box_align: u64,
     env_struct: StructType<'ctx>,
     field_kinds: &[StateFieldCloneKind],
 ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -827,16 +833,9 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     let ctx = fn_ctx.ctx;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
     let void_ty = ctx.void_type();
-    let box_free_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_free")
-        .unwrap_or_else(|| {
-            let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-        });
+    let box_free_fn = get_or_declare_dyn_box_free(fn_ctx)?;
     let thunk = fn_ctx.llvm_mod.add_function(
         &symbol,
         void_ty.fn_type(&[ptr_ty.into()], false),
@@ -859,8 +858,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     // (LIFO — the same order the elaboration pass drops scope-exit locals and
     // the record/actor-state drop bodies use). `env` IS the captures region
     // pointer (the header sits BEFORE it at `env - HEADER`), so the env struct
-    // GEPs land directly on the capture fields. BitCopy / Connection / opaque
-    // arms are no-ops inside `emit_field_drop_step`; every owning class routes
+    // GEPs land directly on the capture fields. BitCopy / opaque arms are
+    // no-ops inside `emit_field_drop_step`; every owning class routes
     // to its single canonical release.
     let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
     let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
@@ -884,7 +883,7 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
 
     // Act 2: free the box. box = env - HEADER (in-bounds: the header is part
     // of the allocation).
-    let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let neg_header = i64_ty.const_int(env_offset.wrapping_neg(), true);
     let box_ptr =
         unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }
             .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: box base gep"))?;
@@ -893,8 +892,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
             box_free_fn,
             &[
                 box_ptr.into(),
-                i64_ty.const_int(total_size, false).into(),
-                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+                usize_ty.const_int(total_size, false).into(),
+                usize_ty.const_int(box_align, false).into(),
             ],
             "env_box_free",
         )
@@ -1086,7 +1085,7 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
         target_data,
         record_layouts: &record_layouts,
         record_structs: &empty_record_structs,
-        resource_record_close: &[],
+        lifecycle_registry: regs.lifecycle_registry,
     };
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
@@ -1144,6 +1143,7 @@ pub(crate) fn owned_elem_thunk_key(
                     | hew_types::BuiltinType::HashSet
                     | hew_types::BuiltinType::Rc
                     | hew_types::BuiltinType::Weak
+                    | hew_types::BuiltinType::Sender
             ),
             ..
         }
@@ -1158,14 +1158,13 @@ pub(crate) fn owned_elem_thunk_key(
         return None;
     };
     // Enum-first: an owned-payload / recursive enum is the F3/F4 shape.
-    let short = short_name(name);
     let enum_key = if args.is_empty() {
         regs.enum_layouts
             .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+            .find(|el| el.name == *name)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
+        let mangled = mangle_with_shortened_args(name, args);
         regs.enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
@@ -1183,27 +1182,24 @@ pub(crate) fn owned_elem_thunk_key(
     // from event companions / plain enums by their state-name table.
     if regs
         .machine_layouts
-        .get(short)
+        .get(name)
         .is_some_and(|m| m.state_name_table.is_some())
     {
-        return Some((OwnedElemThunkKind::Enum, short.to_string()));
+        return Some((OwnedElemThunkKind::Enum, name.clone()));
     }
     // Record: look up the codegen record registry key (mangled if generic).
-    // A generic instantiation registers on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling.
+    // The shared layout-key encoder preserves the exact declaration owner
+    // while mapping dots only for the native-safe symbol spelling.
     let lookup_key = if args.is_empty() {
         name.clone()
     } else {
-        mangle_with_shortened_args(short_name(name), args)
+        mangle_with_shortened_args(name, args)
     };
     if regs
         .record_field_resolved_tys
         .contains_key(lookup_key.as_str())
     {
         return Some((OwnedElemThunkKind::Record, lookup_key));
-    }
-    if regs.record_field_resolved_tys.contains_key(short) {
-        return Some((OwnedElemThunkKind::Record, short.to_string()));
     }
     None
 }
@@ -1290,19 +1286,15 @@ fn eq_struct_field_resolved_tys<'ctx>(
         return Some(fields.clone());
     }
     if let Some(ResolvedTy::Named { name, args, .. }) = resolved_ty {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(key.as_str()) {
             return Some(fields.clone());
         }
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(name.as_str()) {
-            return Some(fields.clone());
-        }
-        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short) {
             return Some(fields.clone());
         }
     }
@@ -2312,9 +2304,10 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
 /// pointer (offset 0) and all other dispatch-substrate state. `state` is
 /// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
 ///
-/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
-/// `catch_unwind` catches it and releases the lock via
+/// Panic safety on unwind-capable native profiles: if any on(stop) body panics,
+/// `call_terminate_fn`'s `catch_unwind` catches it and releases the lock via
 /// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
+/// A panic=abort artifact has no catchable panic edge.
 pub(crate) fn emit_actor_terminate_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -2709,10 +2702,12 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
             )?);
             let mut visited = HashSet::new();
             field_kinds.push(
-                hew_mir::classify_state_field_with_enum_layouts(
+                hew_mir::classify_state_field_with_lifecycle_registry(
                     param_ty,
                     mir_record_layouts,
                     enum_layouts,
+                    &[],
+                    w.lifecycle_registry,
                     &mut visited,
                 )
                 .map_err(|error| {
@@ -2929,8 +2924,8 @@ pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
     // M-7-R: emit the `HewSysMsg::Exit` → `#[on(exit)]` case body. The runtime
     // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
     // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
-    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
-    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
+    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind)`.
+    // The hook is a run-to-completion ActorHandler returning unit,
     // so the dispatch contributes `null` to the suspend-handle phi.
     if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
         builder.position_at_end(on_exit_bb);
@@ -3444,6 +3439,9 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         .llvm_ctx("dispatch borrow payload null branch")?;
 
     // Fail-closed arm: hard panic, never return to the load.
+    // TRAP-DISPOSITION: actor-cooperative(hew_panic). This generated thunk
+    // calls the plain-C runtime symbol directly: an installed actor recovery
+    // frame catches it; otherwise the process exits. It cannot Rust-unwind.
     builder.position_at_end(borrow_null_bb);
     let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
         // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via
@@ -3863,15 +3861,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     }
 
     builder.position_at_end(default_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
-        .llvm_ctx("actor dispatch trap")?;
-    builder
-        .build_unreachable()
-        .llvm_ctx("actor dispatch unreachable")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "actor_dispatch_unknown_msg_trap",
+    )?;
 
     builder.position_at_end(after_bb);
     // D-A.2 / NEW-3a: the trampoline returns the dispatch suspend outcome — a

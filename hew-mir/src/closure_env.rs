@@ -370,7 +370,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
                 walk_expr_for_suspend(elem, found);
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr_for_suspend(callee, found);
             for a in args {
                 walk_expr_for_suspend(a, found);
@@ -458,7 +458,8 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue { source: receiver, .. } => {
             walk_expr_for_suspend(receiver, found);
         }
         HirExprKind::MachineEmit { fields, .. } => {
@@ -600,8 +601,9 @@ fn walk_stmt_for_suspend(stmt: &hew_hir::HirStmt, found: &mut bool) {
 mod tests {
     use super::*;
     use hew_hir::{
-        BindingId, HirBlock, HirLiteral, HirNodeId, HirStmt, HirStmtKind, IntentKind, ScopeId,
-        SiteId, ValueClass,
+        BindingId, HirBlock, HirLiteral, HirNodeId, HirProducedValueProducer,
+        HirProducedValueSourceAnchor, HirStmt, HirStmtKind, IntentKind, ScopeId, SiteId,
+        ValueClass,
     };
 
     fn site() -> SiteId {
@@ -657,6 +659,16 @@ mod tests {
                 binding_name: "t".to_string(),
                 binding_id: BindingId(0),
                 output_ty: ResolvedTy::Unit,
+                source_anchor: HirProducedValueSourceAnchor {
+                    node: HirNodeId(1),
+                    site: SiteId(1),
+                    ty: ResolvedTy::Task(Box::new(ResolvedTy::Unit)),
+                    value_class: ValueClass::Linear,
+                    intent: IntentKind::Consume,
+                    producer: HirProducedValueProducer::BindingRef,
+                    span: 0..0,
+                    source: None,
+                },
             },
             ResolvedTy::Unit,
         )

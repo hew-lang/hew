@@ -295,7 +295,7 @@ pub(crate) fn from_type_error(
     let notes = error
         .notes
         .iter()
-        .map(|(span, message)| JsonNote {
+        .map(|(span, message, _)| JsonNote {
             message: message.clone(),
             span: Some(JsonSpan::from_range(source, span)),
         })

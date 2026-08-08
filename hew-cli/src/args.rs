@@ -59,7 +59,7 @@ pub enum Command {
     Machine(MachineCommand),
     /// Format source files in-place or from stdin.
     Fmt(FmtArgs),
-    /// Scaffold a source-only project with `main.hew` + `README.md` (no `hew.toml`).
+    /// Scaffold a manifest-first project (`hew.toml` + starter source + merged `.gitignore`).
     Init(InitArgs),
     /// Curated playground example tools.
     Playground(PlaygroundCommand),
@@ -87,17 +87,8 @@ pub enum Command {
     ///   hew lsp
     ///   hew lsp --version
     Lsp(LspArgs),
-    /// Manage packages and dependencies (delegates to the bundled package manager).
-    ///
-    /// Forwards all arguments to the in-process `adze-cli` package-manager
-    /// library. No sibling `adze` binary is invoked.
-    ///
-    /// Examples:
-    ///   hew package init
-    ///   hew package add `hew::db::sqlite`
-    ///   hew package install
-    ///   hew package build
-    Package(PackageArgs),
+    #[command(flatten)]
+    Pkg(hew_pkg::cli::PkgCommand),
 }
 
 #[derive(Debug, Args)]
@@ -245,7 +236,7 @@ pub struct CommonBuildArgs {
     /// Skip type-checking phase.
     #[arg(long)]
     pub no_typecheck: bool,
-    /// Override package search directory (default: .adze/packages/).
+    /// Override package search directory (default: .hew/packages/).
     #[arg(long, value_name = "DIR")]
     pub pkg_path: Option<PathBuf>,
     /// Override project directory for manifest and package resolution.
@@ -282,6 +273,19 @@ impl CommonBuildArgs {
             lint_levels: resolve_lint_levels(&self.allow, &self.warn, &self.deny),
             ..Default::default()
         }
+    }
+
+    /// True when any compile-only flag was passed. No-input package-mode
+    /// `check`/`build` cannot honor these (there is no `.hew` file to apply
+    /// them to) — callers reject loudly rather than silently ignoring them.
+    pub fn any_set(&self) -> bool {
+        self.werror
+            || self.no_typecheck
+            || self.pkg_path.is_some()
+            || self.project_dir.is_some()
+            || !self.allow.is_empty()
+            || !self.warn.is_empty()
+            || !self.deny.is_empty()
     }
 }
 
@@ -381,8 +385,9 @@ impl DebugArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file. Omit inside a `hew.toml` project to validate the
+    /// manifest instead (text output only).
+    pub input: Option<PathBuf>,
     /// Print alias-vs-copy decision for every actor send site.
     ///
     /// Shows whether each `actor.method(arg)` call crossed the mailbox
@@ -422,8 +427,9 @@ impl CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file. Omit inside a `hew.toml` project to build and stage
+    /// the package's `[native]` FFI library instead.
+    pub input: Option<PathBuf>,
     /// Output binary path. Default: `./<stem>` (no extension on Unix targets,
     /// `.exe` on Windows targets). Ignored with `--emit-obj`.
     #[arg(long, short = 'o', value_name = "PATH")]
@@ -441,14 +447,11 @@ pub struct BuildArgs {
     /// Build with debug info (no optimization, no stripping).
     ///
     /// Emits DWARF debug info into the native object. gdb and lldb read this
-    /// faithfully on Linux (ELF) and macOS (Mach-O). On `windows-msvc` the
-    /// output is COFF with `CodeView` plus a sidecar `.pdb`, so MSVC-toolchain
-    /// debuggers (and lldb-on-Windows) read it natively (added in the now-
-    /// closed #2117: <https://github.com/hew-lang/hew/issues/2117>). On
-    /// `windows-gnu` the object is still PE/COFF with embedded DWARF, which
-    /// MSVC-native debuggers do not fully read; remaining Windows debug-info
-    /// polish is tracked in the #2117 follow-up:
-    /// <https://github.com/hew-lang/hew/issues/2235>
+    /// faithfully on Linux (ELF), macOS, and FreeBSD. On `windows-msvc` the
+    /// output is COFF with `CodeView` plus a sidecar `.pdb`; `windows-gnu`
+    /// remains the PE/COFF GNU-target path with embedded DWARF, which no
+    /// debugger check currently proves (the live-debugger suite is excluded
+    /// on Windows and the PDB check covers only `windows-msvc`).
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or
@@ -744,11 +747,14 @@ pub struct FmtArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// Project name (creates a directory with `main.hew` + `README.md`; omit to init in current dir).
+    /// Project name (creates the directory if needed; omit to init the current directory).
     pub name: Option<String>,
-    /// Overwrite existing scaffold files.
+    /// Scaffold a library project (`lib.hew`).
+    #[arg(long, conflicts_with = "actor")]
+    pub lib: bool,
+    /// Scaffold an actor project.
     #[arg(long)]
-    pub force: bool,
+    pub actor: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -807,15 +813,6 @@ pub struct PlaygroundVerifyArgs {
 #[command(disable_help_flag = true)]
 pub struct ObserveArgs {
     /// Arguments passed through to `hew-observe`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
-}
-
-/// Arguments forwarded verbatim to the bundled package manager.
-#[derive(Debug, Args)]
-#[command(disable_help_flag = true)]
-pub struct PackageArgs {
-    /// Subcommand + arguments for the package manager (e.g. `install`, `build`, `add <pkg>`).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }

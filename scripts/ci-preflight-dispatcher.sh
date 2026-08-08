@@ -35,6 +35,7 @@ command_timeout_floor() {
         # headroom and matches the compiler-pipeline lane tier, so that lane's
         # effective budget is unchanged.
         "make test-compiler-pipeline") echo 600 ;;
+        "make test-opaque-resource-lifecycle-matrix-external") echo 600 ;;
         "make test-vertical-slice") echo 240 ;;
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
@@ -44,12 +45,14 @@ command_timeout_floor() {
         "make doc-ratchet-selftest") echo 45 ;;
         "make test-release-workflow-contract") echo 30 ;;
         "make test-stdlib-ratchet") echo 45 ;;
+        "make test-stdlib-execution-proofs") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
         "make checked-mir-verify") echo 45 ;;
         "make checked-mir-run") echo 420 ;;
         "make ll-diff") echo 45 ;;
         "make hew-check-all") echo 300 ;;
+        "make test-leak-oracle-selftest") echo 60 ;;
         *) echo 0 ;;
     esac
 }
@@ -92,6 +95,8 @@ CI_REQUIRED_CHECKS=(
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
     "FreeBSD workflow contract (ci.yml required Clippy & format job)	make freebsd-workflow-contract-check"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
+    "Compiler pipeline + local opaque lifecycle matrix (ci.yml: make test-compiler-pipeline)	make test-compiler-pipeline"
+    "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
     "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
@@ -99,6 +104,7 @@ CI_REQUIRED_CHECKS=(
     "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
     "Release workflow contract (ci.yml: make test-release-workflow-contract)	make test-release-workflow-contract"
     "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
+    "Stdlib execution-proof manifest (ci.yml: make test-stdlib-execution-proofs)	make test-stdlib-execution-proofs"
     "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
     "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
     "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
@@ -106,12 +112,15 @@ CI_REQUIRED_CHECKS=(
     "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
     "Checked-MIR corpus execution (ci.yml: make checked-mir-run)	make checked-mir-run"
     "Per-function .ll byte-identity corpus (ci.yml: make ll-diff)	make ll-diff"
+    "ll-byte-identity normaliser self-test (ci.yml: make ll-identity-selftest)	make ll-identity-selftest"
     "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
     "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
     "C-ABI crate tests (ci.yml: make test-cabi)	make test-cabi"
     "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
     "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
     "Corpus floors have live call sites (ci.yml: make corpus-floor-check)	make corpus-floor-check"
+    "Leak-oracle harness selftest (ci.yml: make test-leak-oracle-selftest)	make test-leak-oracle-selftest"
+    "Pinned structural lint (ci.yml: make structural-lint)	make structural-lint"
     "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
     "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
     "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"
@@ -235,12 +244,12 @@ is_compiler_pipeline_path() {
 is_cli_path() {
     case "$1" in
         # Direct CLI crates.
-        hew-cli/*|adze-cli/*)
+        hew-cli/*|hew-pkg/*)
             return 0
             ;;
         # CLI pipeline support crates: compile pipeline, C ABI helpers,
         # and code generators.  Changes here are covered by
-        # cargo nextest run -p hew-cli -p adze-cli because hew-cli links
+        # cargo nextest run -p hew-cli -p hew-pkg because hew-cli links
         # the full pipeline including hew-runtime (which links hew-cabi)
         # and hew-compile.
         hew-compile/*|hew-cabi/*|hew-capability-gen/*)
@@ -691,8 +700,10 @@ case "$LANE" in
         add_command "make test-doc-examples"
         ;;
     scripts-config)
+        add_command "make structural-lint"
         add_command "make leak-scan"
         add_command "make test-release-workflow-contract"
+        add_command "make test-stdlib-execution-proofs"
         add_command "cargo fmt --all -- --check"
         add_command "make freebsd-workflow-contract-check"
         add_command "make test-rust"
@@ -738,7 +749,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         # test-compiler-pipeline IS the consumer-corpus gate: its nextest
-        # invocation includes -p hew-cli -p adze-cli under the ci profile, so
+        # invocation includes -p hew-cli -p hew-pkg under the ci profile, so
         # every hew-cli integration suite — the compiled leak/drop oracles,
         # await_e2e, eval_e2e, and the rest of the e2e corpus — runs for any
         # HIR/MIR/codegen diff.  scripts/tests/test_ci_preflight_dispatcher.py
@@ -837,10 +848,13 @@ case "$LANE" in
         # The sequence below mirrors CI's build-and-test job exactly so a green
         # fallback preflight predicts a green merge-queue outcome.
         add_command "make ci-preflight-smoke"
+        add_command "make structural-lint"
         add_command "make lint"
         add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"
         add_command "make test"
+        add_command "make test-compiler-pipeline"
+        add_command "make test-opaque-resource-lifecycle-matrix-external"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
         add_command "make fuzz-oracle"
@@ -849,17 +863,20 @@ case "$LANE" in
         add_command "make o2-differential-selftest"
         add_command "make test-release-workflow-contract"
         add_command "make test-stdlib-ratchet"
+        add_command "make test-stdlib-execution-proofs"
         add_command "make test-doc-examples"
         add_command "make doc-ratchet-selftest"
         add_command "make sandbox-parity"
         add_command "make checked-mir-verify"
         add_command "make checked-mir-run"
         add_command "make ll-diff"
+        add_command "make ll-identity-selftest"
         add_command "make hew-check-all"
         add_command "make test-cabi"
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
         add_command "make corpus-floor-check"
+        add_command "make test-leak-oracle-selftest"
         add_command "make test-ux-examples"
         add_command "make test-surface-examples"
         add_command "make test-package-install"

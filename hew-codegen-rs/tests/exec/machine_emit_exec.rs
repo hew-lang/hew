@@ -92,6 +92,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .collect::<Vec<_>>();
     let machine_layout = MachineLayout {
         name: machine_name.clone(),
+        event_name: format!("{machine_name}Event"),
         tag_width: 1,
         variants,
         events,
@@ -176,9 +177,11 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
                 instructions: Vec::new(),
                 terminator: Terminator::Call {
                     callee: format!("{machine_name}__step"),
-                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                         "{machine_name}__step",
-                    ),
+                    ))
+                    .map(hew_mir::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                     args: vec![Place::Local(0), Place::Local(1)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -227,8 +230,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

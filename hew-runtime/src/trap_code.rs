@@ -151,10 +151,10 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 ///
 /// Native implements the exported symbol in `supervisor.rs` because it routes
 /// through the longjmp recovery seam. wasm32 has no longjmp seam, so the bridge
-/// stamps the current actor's `error_code` and panics; the cooperative
-/// scheduler's `catch_unwind` activation boundary transitions the actor to
-/// `Crashed` and leaves the discriminator observable through
-/// `ExitReason::from_error_code`.
+/// stamps the current actor's `error_code` and panics. The production
+/// wasm32-wasip1 sysroot is `panic=abort`, making this a module-fatal trap; it
+/// is not a contained actor crash. Host-side parity builds may unwind only to
+/// test bookkeeping that production reaches through non-panic failure edges.
 ///
 /// Outside an actor context, canonical Hew trap codes become WASI process exit
 /// statuses. Unknown codes return so the caller's following `llvm.trap` remains
@@ -167,7 +167,8 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 /// duration of the call.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub unsafe extern "C" fn hew_trap_with_code(code: c_int) {
+pub unsafe extern "C-unwind" fn hew_trap_with_code(code: c_int) {
+    crate::cont::abort_if_crash_cleanup_finalizer_trap("WASM cooperative trap");
     if stamp_current_actor_error_code(code) {
         panic!("hew_trap_with_code: trap code {code}");
     }

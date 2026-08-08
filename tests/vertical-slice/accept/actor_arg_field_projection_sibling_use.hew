@@ -1,0 +1,38 @@
+// Precision pin for place-level consumption: transferring ONE field to an
+// actor must not cost the record its other fields. `holder.sock` moves;
+// `holder.count` and `holder.name` are separate storage with separate owners
+// and stay readable. A binding-keyed move fact cannot express this — it would
+// either miss the transfer or reject the siblings.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+type Holder {
+    sock: Socket;
+    count: i64;
+    name: string;
+}
+
+actor Sink {
+    receive fn take(s: Socket) -> i64 {
+        return s.detach();
+    }
+}
+
+fn main() {
+    let sink = spawn Sink;
+    let holder = Holder { sock: Socket { fd: 7 }, count: 3, name: "held" };
+    match await sink.take(holder.sock) {
+        Ok(fd) => println(f"fd={fd}"),
+        Err(_) => println("take failed"),
+    }
+    println(f"count={holder.count} name={holder.name}");
+}

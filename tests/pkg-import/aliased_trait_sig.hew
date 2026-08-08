@@ -6,12 +6,13 @@
 // returning the CORRECT type spelled through its module qualifier
 // (`closableerr.CloseError`).
 //
-// After resolving the aliased trait `C` to its SOURCE identity
-// (`closableerr.Closable`), the trait side's bare `CloseError` qualifies to
-// `closableerr.CloseError` and the impl side's `closableerr.CloseError` keeps its
-// qualifier; the two name the one type and the comparison must ACCEPT. A broken
-// alias resolution would either miss the signature lookup (and accept anything)
-// or qualify the trait side wrong and falsely reject this correct impl.
+// The selective import also retains the lexical module qualifier
+// `closableerr -> hew.closableerr`. After resolving the aliased trait `C` to
+// its source identity, both the trait's bare `CloseError` and the impl's
+// `closableerr.CloseError` canonicalize to
+// `hew.closableerr.CloseError`. A broken alias resolution would either miss the
+// signature lookup (and accept anything) or compare a short name with a full
+// declaration identity and falsely reject this correct impl.
 //
 // Harness verb: hew check (positive — see run.sh).
 import hew::closableerr::{Closable as C};

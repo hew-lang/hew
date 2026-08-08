@@ -1,5 +1,42 @@
 use super::*;
-use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+use hew_hir::IntentKind;
+use hew_mir::{
+    BasicBlock, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind, DecisionFact,
+    IrPipeline, MirStatement,
+};
+use inkwell::values::AnyValue;
+
+#[test]
+fn actor_state_transaction_classifier_is_explicit_for_every_handler_phase() {
+    for kind in [
+        ActorHandlerKind::Receive,
+        ActorHandlerKind::Exit,
+        ActorHandlerKind::Down,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::Required,
+            "{kind:?} must retain scheduler-domain validation"
+        );
+    }
+    for kind in [
+        ActorHandlerKind::Init,
+        ActorHandlerKind::Start,
+        ActorHandlerKind::Stop,
+        ActorHandlerKind::Crash,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::LifecycleOutsideDispatch,
+            "{kind:?} must not address an absent or foreign scheduler state domain"
+        );
+    }
+    assert_eq!(
+        actor_state_store_transaction_for_kind(None),
+        ActorStateStoreTransaction::Required,
+        "unknown/hand-built MIR must fail closed rather than inherit lifecycle permission"
+    );
+}
 
 #[test]
 fn owned_config_field_collections_are_fail_closed_backstop() {
@@ -400,9 +437,66 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
+}
+
+#[test]
+fn ordinary_mixed_width_integer_move_fails_closed() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let main = &mut pipeline.raw_mir[0];
+    main.locals = vec![ResolvedTy::I32, ResolvedTy::I64];
+    main.blocks[0].instructions = vec![
+        Instr::ConstI64 {
+            dest: Place::Local(0),
+            value: -1,
+        },
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::Local(0),
+        },
+        Instr::Move {
+            dest: Place::ReturnSlot,
+            src: Place::Local(1),
+        },
+    ];
+
+    let ctx = Context::create();
+    let err = build_module(&ctx, &pipeline, "mixed_width_move")
+        .expect_err("ordinary i32 -> i64 Move must not guess signedness");
+    let message = match err {
+        CodegenError::FailClosed(message) => message,
+        other => panic!("expected FailClosed, got {other:?}"),
+    };
+    assert!(
+        message.contains("Move type mismatch"),
+        "mismatched ordinary integer Move must fail at the typed boundary: {message}"
+    );
+}
+
+#[test]
+fn wasm_wasi_main_adapter_normalizes_source_integer_width() {
+    let ctx = Context::create();
+    let pipeline = empty_pipeline_with_const_42();
+    let machine =
+        target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
+    let module =
+        build_module_for_target(&ctx, &pipeline, "wasi_main_adapter", Some(&machine), None)
+            .expect("WASI main adapter module must build");
+    let ir = module.print_to_string().to_string();
+
+    assert!(
+        ir.contains("define i32 @__hew_wasi_main()"),
+        "WASI runtime entry adapter must have the canonical () -> i32 ABI:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i64 @__original_main()"),
+        "adapter must call the source-shaped i64 main implementation:\n{ir}"
+    );
+    assert!(
+        ir.contains("trunc i64") && ir.contains("to i32"),
+        "adapter must normalize the source exit value to the WASI status width:\n{ir}"
+    );
 }
 
 /// Build `empty_pipeline_with_const_42` for `triple` with a `-g` debug input
@@ -467,6 +561,240 @@ fn non_windows_debug_build_omits_codeview_module_flag() {
         ir.contains("\"Debug Info Version\""),
         "linux `-g` IR must carry the Debug Info Version flag:\n{ir}"
     );
+}
+
+#[test]
+fn debug_subroutine_keeps_unresolved_parameter_slot_order() {
+    let source = "fn handler(pid: LocalPid<Source>, value: i64) -> i64 { value }\n";
+    let actor_ty = ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![ResolvedTy::Named {
+            name: "Source".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }],
+        builtin: Some(BuiltinType::LocalPid),
+        is_opaque: false,
+    };
+    let mut pipeline = empty_pipeline_with_const_42();
+    let handler = &mut pipeline.raw_mir[0];
+    handler.source_origin = SourceOrigin::RootUnit;
+    handler.name = "handler".to_string();
+    handler.params = vec![actor_ty.clone(), ResolvedTy::I64];
+    handler.locals = vec![actor_ty, ResolvedTy::I64];
+    handler.local_names = vec![Some("pid".to_string()), Some("value".to_string())];
+    handler.local_scopes = vec![None, None];
+    handler.local_decl_bytes = vec![Some(11), Some(34)];
+    handler.span = Some((
+        0,
+        u32::try_from(source.len()).expect("source length fits u32"),
+    ));
+    handler.blocks[0].instructions = vec![Instr::Move {
+        dest: Place::ReturnSlot,
+        src: Place::Local(1),
+    }];
+
+    let ctx = Context::create();
+    let debug = DebugInput {
+        source_path: Path::new("handler.hew"),
+        source_text: source,
+    };
+    let module = build_module_for_target(&ctx, &pipeline, "handler_param_slots", None, Some(debug))
+        .expect("handler debug module");
+    let ir = module.print_to_string().to_string();
+    let signature_tuple = ir
+        .lines()
+        .find(|line| {
+            line.contains(" = !{")
+                && line
+                    .split_once(" = !{")
+                    .and_then(|(_, fields)| fields.split_once('}'))
+                    .is_some_and(|(fields, _)| {
+                        let slots: Vec<_> = fields.split(", ").collect();
+                        slots.len() == 3 && slots.get(1) == Some(&"null")
+                    })
+        })
+        .unwrap_or_else(|| {
+            panic!("expected return + unresolved LocalPid + i64 slots without repacking; IR:\n{ir}")
+        });
+    assert!(
+        signature_tuple.contains(", null, "),
+        "the unresolved first parameter must retain its unspecified slot: {signature_tuple}"
+    );
+}
+
+#[test]
+fn debug_recursive_enum_relocated_composite_replaces_cache_identity() {
+    let ctx = Context::create();
+    let module = ctx.create_module("recursive_enum_di_cache");
+    let (di_builder, compile_unit) = module.create_debug_info_builder(
+        true,
+        DWARFSourceLanguage::Rust,
+        "recursive.hew",
+        ".",
+        "hew test",
+        false,
+        "",
+        0,
+        "",
+        DWARFEmissionKind::Full,
+        0,
+        false,
+        false,
+        "",
+        "",
+    );
+    let file = compile_unit.get_file();
+    let scope = compile_unit.as_debug_info_scope();
+    let tag_ty = di_builder
+        .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .expect("tag type")
+        .as_type();
+    let placeholder = di_builder
+        .create_struct_type(
+            scope,
+            "List",
+            file,
+            0,
+            128,
+            64,
+            DIFlags::PUBLIC,
+            None,
+            &[],
+            0,
+            None,
+            "List",
+        )
+        .as_type();
+    let discriminator = di_builder
+        .create_member_type(scope, "", file, 0, 8, 8, 0, DIFlags::ARTIFICIAL, tag_ty)
+        .as_type();
+    let recursive_pointer = di_builder
+        .create_pointer_type("List", placeholder, 64, 0, AddressSpace::default())
+        .as_type();
+    let tail = di_builder
+        .create_member_type(
+            scope,
+            "tail",
+            file,
+            0,
+            64,
+            64,
+            64,
+            DIFlags::PUBLIC,
+            recursive_pointer,
+        )
+        .as_type();
+    let cons = di_builder
+        .create_struct_type(
+            scope,
+            "Cons",
+            file,
+            0,
+            128,
+            64,
+            DIFlags::PUBLIC,
+            None,
+            &[tail],
+            0,
+            None,
+            "List::Cons",
+        )
+        .as_type();
+    let variant_member = create_di_variant_member_type(
+        &di_builder,
+        scope,
+        "Cons",
+        file,
+        128,
+        64,
+        0,
+        ctx.i8_type().const_zero(),
+        cons,
+    )
+    .expect("recursive variant member");
+    let variant_part = create_di_variant_part(
+        &di_builder,
+        scope,
+        "",
+        file,
+        128,
+        64,
+        discriminator,
+        &[variant_member],
+    )
+    .expect("recursive variant part");
+    let cache = RefCell::new(HashMap::from([("enum:List".to_string(), placeholder)]));
+
+    let completed = set_cached_di_composite_type_variant_part(
+        &di_builder,
+        &cache,
+        "enum:List".to_string(),
+        placeholder,
+        variant_part,
+    )
+    .expect("recursive composite replacement");
+    let cached = cache
+        .borrow()
+        .get("enum:List")
+        .copied()
+        .expect("relocated composite cached");
+    assert_eq!(
+        cached.as_mut_ptr(),
+        completed.as_mut_ptr(),
+        "the cache must hold the live composite returned by replaceArrays"
+    );
+
+    di_builder.finalize();
+    module.verify().expect("recursive debug graph must verify");
+}
+
+#[test]
+fn debug_variant_part_rejects_wrong_metadata_kind() {
+    let ctx = Context::create();
+    let module = ctx.create_module("variant_part_metadata_reject");
+    let (di_builder, compile_unit) = module.create_debug_info_builder(
+        true,
+        DWARFSourceLanguage::Rust,
+        "reject.hew",
+        ".",
+        "hew test",
+        false,
+        "",
+        0,
+        "",
+        DWARFEmissionKind::Full,
+        0,
+        false,
+        false,
+        "",
+        "",
+    );
+    let wrong_discriminator = di_builder
+        .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .expect("basic type")
+        .as_type();
+
+    assert!(
+        create_di_variant_part(
+            &di_builder,
+            compile_unit.as_debug_info_scope(),
+            "",
+            compile_unit.get_file(),
+            8,
+            8,
+            wrong_discriminator,
+            &[],
+        )
+        .is_none(),
+        "wrong-typed metadata must be rejected instead of unchecked-cast"
+    );
+
+    di_builder.finalize();
+    module
+        .verify()
+        .expect("rejected metadata must leave valid IR");
 }
 
 /// Decode the architecture tag from a relocatable object's header without
@@ -1030,8 +1358,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -1045,9 +1372,9 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         "default-callconv CallClosure must pass a non-null fallback context:\n{ir}"
     );
     assert!(
-            !ir.contains("hew_require_execution_context"),
-            "default-callconv CallClosure must not ask runtime TLS for a context that main does not install:\n{ir}"
-        );
+        !ir.contains("hew_require_execution_context"),
+        "default-callconv CallClosure must not ask runtime TLS for a context that main does not install:\n{ir}"
+    );
 }
 
 fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
@@ -1057,8 +1384,9 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            // Probe callee: codegen-internal synthetic, no catalog family.
-            builtin: None,
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::HashMap,
+            )),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -1125,8 +1453,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1170,16 +1497,16 @@ fn hashmap_layout_descriptors_use_target_usize_width() {
 
     let native_value = descriptor_line(&native, "@__hew_map_value_layout_rec_PtrPayload_8_8_owned");
     assert!(
-            native_value.contains("{ i64, i64, i8, ptr, ptr }")
-                && native_value.contains("{ i64 8, i64 8, i8 2,"),
-            "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
-        );
+        native_value.contains("{ i64, i64, i8, ptr, ptr }")
+            && native_value.contains("{ i64 8, i64 8, i8 2,"),
+        "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
+    );
     let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_rec_PtrPayload_4_4_owned");
     assert!(
-            wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
-                && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
-            "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
-        );
+        wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
+            && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
+        "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
+    );
     assert!(
         !wasm.contains("@__hew_map_value_layout_rec_PtrPayload_8_8_owned"),
         "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
@@ -1198,7 +1525,9 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
-            builtin: None,
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::Vec,
+            )),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -1257,8 +1586,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1372,8 +1700,7 @@ fn pipeline_with_user_const_load(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1504,8 +1831,7 @@ fn pipeline_with_float_return() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1641,8 +1967,7 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m =
@@ -1730,8 +2055,7 @@ fn context_field_actor_offset_emits_gep_and_load() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -1813,8 +2137,7 @@ fn string_literal_return_builds_and_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "string_lit_test").expect("StringLit module must build");
@@ -2098,8 +2421,7 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -2139,10 +2461,10 @@ fn select_stream_next_arm_emits_readiness_proxy() {
         "stream callback must reply with the loaded item value, not the item pointer; ir:\n{ir}"
     );
     assert_eq!(
-            ir.matches("call void @free(ptr %1)").count(),
-            1,
-            "stream callback must free the malloc'd stream buffer once via the shared free block; ir:\n{ir}"
-        );
+        ir.matches("call void @free(ptr %1)").count(),
+        1,
+        "stream callback must free the malloc'd stream buffer once via the shared free block; ir:\n{ir}"
+    );
     assert!(ir.contains("call void @hew_stream_cancel_pending_read("));
     assert!(ir.contains("call i32 @hew_select_first("));
 }
@@ -2316,8 +2638,7 @@ fn pipeline_with_select_arms(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -2345,16 +2666,15 @@ fn pipeline_with_select_actor_handler_arms(
     pipeline
 }
 
-/// Helper: a `ResolvedTy::Named { name: "Duplex", .. }` so the
-/// codegen treats local 0 as an actor handle (the same shape
-/// `Place::DuplexHandle` references via `load_duplex_handle`).
+/// Checker-stamped Duplex identity with a deliberately non-canonical
+/// presentation name. Select/join fixtures therefore exercise the carried
+/// builtin discriminator rather than accidentally relying on the spelling.
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin(
+        "renamed.DuplexPresentation",
+        BuiltinType::Duplex,
+        Vec::new(),
+    )
 }
 
 fn task_ty() -> ResolvedTy {
@@ -2496,6 +2816,97 @@ fn join_null_reply_edge_diagnoses_then_traps_with_code() {
     assert!(
         null_region.contains("call void @hew_trap_with_code(i32 211)"),
         "the null edge must trap with HEW_TRAP_JOIN_BRANCH_FAILED (211); ir:\n{ir}"
+    );
+}
+
+#[test]
+fn join_owned_replies_stage_until_atomic_result_publication() {
+    let branches = (0..2)
+        .map(|index| hew_mir::JoinBranch {
+            actor: Place::DuplexHandle(0),
+            stable_role: None,
+            method: format!("owned_{index}"),
+            args: Vec::new(),
+            msg_type: 7 + index,
+            value: Place::Local(3),
+            cleanup_plan: None,
+            reply_dest: Place::Local(1 + index as u32),
+            reply_ty: ResolvedTy::String,
+        })
+        .collect();
+    let result_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]);
+    let locals = vec![
+        duplex_ty(),
+        ResolvedTy::String,
+        ResolvedTy::String,
+        ResolvedTy::Unit,
+        result_ty.clone(),
+    ];
+    let mut pipeline = pipeline_with_join_branches(branches, locals, Place::Local(4), 99);
+    pipeline.elaborated_mir = vec![hew_mir::ElaboratedMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            hew_mir::ExitPath::Return { block: 99 },
+            hew_mir::DropPlan {
+                drops: vec![hew_mir::ElabDrop {
+                    place: Place::Local(4),
+                    ty: result_ty,
+                    drop_fn: None,
+                    kind: hew_mir::DropKind::TupleInPlace,
+                    guard: None,
+                }],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    }];
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "join_owned_staging")
+        .expect("owned join staging module must build");
+    module.verify().expect("owned join staging module verify");
+    let main = module
+        .get_function("main")
+        .expect("main")
+        .print_to_string()
+        .to_string();
+
+    let first_stage = main
+        .find("%join_reply_wait_0 = call ptr @hew_reply_wait")
+        .expect("first successful wait must stage its raw reply buffer");
+    let second_stage = main
+        .find("%join_reply_wait_1 = call ptr @hew_reply_wait")
+        .expect("second successful wait must stage its raw reply buffer");
+    let publish = main
+        .find("%join_reply_value_0 = load ptr")
+        .expect("final tuple publication");
+    let arm = main
+        .find("call i64 @hew_cont_crash_cleanup_arm")
+        .expect("fully initialized join result must arm typed cleanup");
+    assert!(
+        first_stage < second_stage && second_stage < publish && publish < arm,
+        "no final result field may be published before every reply is staged, \
+         and cleanup may arm only after publication:\n{main}"
+    );
+    assert_eq!(
+        main.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        1,
+        "the final tuple is the join's only published crash-cleanup owner"
+    );
+
+    let second_failure = main
+        .find("join_reply_null_1:")
+        .map(|start| &main[start..])
+        .expect("second-branch failure block");
+    assert!(
+        second_failure.contains("call void @__hew_reply_drop_string(")
+            && second_failure.contains("call void @free(ptr %join_err_prior_reply_load_1_0)"),
+        "a later branch failure must destroy and free every earlier staged \
+         owned reply before trapping:\n{second_failure}"
     );
 }
 
@@ -3322,8 +3733,7 @@ fn generic_enum_local_resolves_by_mangled_key() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -3413,8 +3823,7 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -3578,8 +3987,7 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -3652,12 +4060,12 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
     let fields = field_tys
         .iter()
         .map(|ty| {
-            hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                 ty,
                 &record_layouts,
                 &[],
                 &[],
-                &[],
+                fn_ctx.lifecycle_registry,
             )
             .map(hew_mir::GeneratorEnvFieldPlan::Owned)
             .expect("owned generator field must classify")
@@ -3672,7 +4080,7 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
         .builder
         .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
         .expect("shallow seed memcpy");
-    let thunk = emit_generator_env_owned_clones(
+    let thunk = emit_generator_env_owned_fields(
         &fn_ctx,
         "__hew_gen_body_owned_test",
         &plan,
@@ -3721,6 +4129,168 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
     assert!(rc_drop < vec_drop && vec_drop < string_drop);
     assert!(!ir.contains("__hew_record_drop_inplace___hew_gen_env_owned_test"));
     assert!(module.verify().is_ok(), "generator env clone IR:\n{ir}");
+}
+
+#[test]
+fn generator_env_move_skips_clone_but_keeps_drop_and_rollback() {
+    let env_ty = ResolvedTy::named_user("__hew_gen_env_move_test", vec![]);
+    let field_tys = vec![ResolvedTy::String, ResolvedTy::String];
+    let env_layout = MirRecordLayout {
+        name: "__hew_gen_env_move_test".to_string(),
+        field_tys: field_tys.clone(),
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&env_layout), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert("__hew_gen_env_move_test".to_string(), field_tys);
+    let module = ctx.create_module("generator_env_move_test");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, src_ty) = fn_ctx.locals[&0];
+    let BasicTypeEnum::StructType(env_struct) = src_ty else {
+        panic!("generator env move test local must lower to a struct");
+    };
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        &ResolvedTy::String,
+        &record_layouts,
+        &[],
+        &[],
+        fn_ctx.lifecycle_registry,
+    )
+    .expect("string generator field must classify");
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields: vec![
+            hew_mir::GeneratorEnvFieldPlan::OwnedMove(string_plan.clone()),
+            hew_mir::GeneratorEnvFieldPlan::Owned(string_plan),
+        ],
+    };
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    emit_generator_env_owned_fields(
+        &fn_ctx,
+        "__hew_gen_body_move_test",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect("generator env owned fields must emit")
+    .expect("owned environment must produce a drop thunk");
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "only the borrowed capture may be cloned:\n{ir}"
+    );
+    let thunk_start = ir
+        .find("define private void @__hew_generator_env_drop___hew_gen_body_move_test")
+        .expect("env drop thunk definition");
+    let thunk_ir = &ir[thunk_start..];
+    let thunk_ir = &thunk_ir[..thunk_ir.find("\n}").expect("env thunk end")];
+    assert_eq!(
+        thunk_ir.matches("call void @hew_string_drop").count(),
+        2,
+        "both the moved and cloned fields must be released by the env thunk"
+    );
+    let rollback_start = ir
+        .find("gen_env_clone_0_rollback:")
+        .expect("clone rollback block");
+    let rollback_ir = &ir[rollback_start..];
+    let rollback_ir = &rollback_ir[..rollback_ir.find("\n\n").unwrap_or(rollback_ir.len())];
+    assert_eq!(
+        rollback_ir.matches("call void @hew_string_drop").count(),
+        1,
+        "clone failure must release the already-moved field exactly once"
+    );
+    assert!(module.verify().is_ok(), "generator env move IR:\n{ir}");
+}
+
+#[test]
+fn generator_env_pointer_backed_indirect_enum_clone_fails_closed() {
+    let enum_layout = fixture_indirect_node_layout();
+    let env_name = "__hew_gen_env_indirect_clone_backstop";
+    let env_ty = ResolvedTy::named_user(env_name, vec![]);
+    let tree_ty = ResolvedTy::named_user("Node", vec![]);
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, &[], std::slice::from_ref(&enum_layout));
+    let env_struct = ctx.opaque_struct_type(env_name);
+    env_struct.set_body(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+    harness
+        .record_layouts
+        .insert(env_name.to_string(), env_struct);
+    harness
+        .record_field_resolved_tys
+        .insert(env_name.to_string(), vec![tree_ty]);
+
+    let module = ctx.create_module("generator_env_indirect_clone_backstop");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.enum_layouts = std::slice::from_ref(&enum_layout);
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, _) = fn_ctx.locals[&0];
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        &ResolvedTy::named_user("Node", vec![]),
+        &record_layouts,
+        std::slice::from_ref(&enum_layout),
+        &[],
+        fn_ctx.lifecycle_registry,
+    )
+    .expect("indirect enum must classify as an owned snapshot");
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields: vec![hew_mir::GeneratorEnvFieldPlan::Owned(tree_plan)],
+    };
+
+    let err = emit_generator_env_owned_fields(
+        &fn_ctx,
+        "__hew_gen_body_indirect_clone_backstop",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect_err("pointer-backed indirect-enum snapshot must fail closed");
+    assert!(
+        matches!(
+            err,
+            CodegenError::FailClosed(ref message)
+                if message.contains("pointer-backed")
+                    && message.contains("no indirect-enum deep-clone helper")
+        ),
+        "unexpected clone backstop diagnostic: {err:?}"
+    );
 }
 
 #[test]
@@ -3901,8 +4471,7 @@ fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -4179,8 +4748,7 @@ fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
     let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -4252,8 +4820,7 @@ fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
     verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -4311,11 +4878,15 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::DUPLEX,
+        "duplex drop must retain its manifest capability identity"
+    );
     assert!(
         found.starts_with("hew_duplex_"),
         "found symbol must be the hew_duplex_ C-ABI: got {found}"
@@ -4348,9 +4919,35 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
+}
+
+#[test]
+fn wasm_runtime_family_exclusions_return_manifest_capability_identity() {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+
+    let cases = [
+        (F::DuplexPair, wasm_capability_ids::DUPLEX),
+        (
+            F::SupervisorChildGet,
+            wasm_capability_ids::SUPERVISION_TREES,
+        ),
+        (F::TaskNew, wasm_capability_ids::TASKS),
+        (F::TaskScopeNew, wasm_capability_ids::STRUCTURED_CONCURRENCY),
+    ];
+    for (family, expected) in cases {
+        assert_eq!(
+            wasm_excluded_call_family(family),
+            Some(expected),
+            "{family:?} must retain a stable manifest capability identity"
+        );
+    }
+    assert_eq!(
+        wasm_excluded_call_family(F::ActorSpawn),
+        None,
+        "a wasm-available family must not acquire an authority-free exclusion"
+    );
 }
 
 /// Code-2 (NEW-4 wasm fail-closed): a `select{}` arm that receives from a
@@ -4413,6 +5010,11 @@ fn wasm_exclusion_scan_flags_select_channel_recv_arm_as_channel_poll() {
     let pipeline = raw_mir_only_pipeline(body);
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a select{} ChannelRecv arm must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+        "channel receive carrier must map to the checker-owned capability"
+    );
     assert_eq!(
         found, "hew_channel_poll",
         "WASM exclusion scan must surface `hew_channel_poll` for a \
@@ -4563,6 +5165,11 @@ fn wasm_exclusion_scan_flags_suspending_stream_next_as_await_next() {
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed StreamNext suspend carrier must be flagged as WASM-excluded");
     assert_eq!(
+        found.capability,
+        wasm_capability_ids::STREAMS,
+        "stream carrier must map to the manifest streams capability"
+    );
+    assert_eq!(
         found, "hew_stream_await_next",
         "WASM exclusion scan must surface `hew_stream_await_next` for a \
              `Terminator::SuspendingStreamNext` carrier; got `{found}`"
@@ -4634,6 +5241,11 @@ fn wasm_exclusion_scan_flags_suspending_task_await() {
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed TaskAwait suspend carrier must be flagged as WASM-excluded");
     assert_eq!(
+        found.capability,
+        wasm_capability_ids::TASKS,
+        "task-await carrier must map to the manifest tasks capability"
+    );
+    assert_eq!(
         found, "hew_task_await_suspend",
         "WASM exclusion scan must surface `hew_task_await_suspend` for a \
              `Terminator::SuspendingTaskAwait` carrier; got `{found}`"
@@ -4699,6 +5311,11 @@ fn wasm_exclusion_scan_flags_suspending_sleep() {
     let pipeline = raw_mir_only_pipeline(body);
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed Sleep suspend carrier must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::TIMER_SUSPENSION,
+        "suspending sleep must name the manifest timer-suspension gap"
+    );
     assert_eq!(
         found, "hew_await_cancel_schedule_deadline_ms",
         "WASM exclusion scan must surface `hew_await_cancel_schedule_deadline_ms` \
@@ -4973,8 +5590,7 @@ fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     assert!(
         uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -5040,13 +5656,17 @@ struct CompositeHelperHarness<'ctx> {
     record_layouts: RecordLayoutMap<'ctx>,
     machine_layouts: MachineLayoutMap<'ctx>,
     fn_symbols: FnSymbolMap<'ctx>,
+    frame_cleanup_thunks: RefCell<FrameCleanupThunkCache<'ctx>>,
     machine_step_symbols: HashSet<String>,
+    representation_loan_params: HashMap<String, Vec<u32>>,
+    param_boundary_modes: HashMap<String, Vec<Option<ParamBoundaryMode>>>,
     actor_layouts: Vec<ActorLayout>,
     /// Empty for these fixtures — no struct hash thunks are exercised by
     /// the composite-helper unit tests, so no bool-field defence path is
     /// taken. Carried so the FnCtx field stays populated.
     record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
     const_globals: ConstGlobalMap<'ctx>,
+    lifecycle_registry: hew_hir::LifecycleRegistry,
 }
 
 /// Build a `Result<(), SendError>` `EnumLayout` matching the
@@ -5103,6 +5723,39 @@ fn fixture_send_error_layout() -> MirEnumLayout {
                 field_names: vec![],
             },
         ],
+        is_indirect: false,
+    }
+}
+
+fn fixture_result_unit_attach_error_layout() -> MirEnumLayout {
+    MirEnumLayout {
+        name: "Result$$unit$$AttachError".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Ok".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+            MachineVariantLayout {
+                name: "Err".to_string(),
+                field_tys: vec![ResolvedTy::named_user("AttachError", vec![])],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }
+}
+
+fn fixture_attach_error_layout() -> MirEnumLayout {
+    MirEnumLayout {
+        name: "AttachError".to_string(),
+        tag_width: 1,
+        variants: vec![MachineVariantLayout {
+            name: "Refused".to_string(),
+            field_tys: vec![],
+            field_names: vec![],
+        }],
         is_indirect: false,
     }
 }
@@ -5215,7 +5868,15 @@ fn build_harness<'ctx>(
     record_fixtures: &[MirRecordLayout],
     enum_fixtures: &[MirEnumLayout],
 ) -> CompositeHelperHarness<'ctx> {
-    let target_data = host_target_data();
+    build_harness_with_target_data(ctx, record_fixtures, enum_fixtures, host_target_data())
+}
+
+fn build_harness_with_target_data<'ctx>(
+    ctx: &'ctx Context,
+    record_fixtures: &[MirRecordLayout],
+    enum_fixtures: &[MirEnumLayout],
+    target_data: TargetData,
+) -> CompositeHelperHarness<'ctx> {
     let mut record_layouts: RecordLayoutMap<'ctx> =
         crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
             .expect("named-layout predeclaration must succeed");
@@ -5242,10 +5903,14 @@ fn build_harness<'ctx>(
         record_layouts,
         machine_layouts,
         fn_symbols: HashMap::new(),
+        frame_cleanup_thunks: RefCell::new(FrameCleanupThunkCache::default()),
         machine_step_symbols: HashSet::new(),
+        representation_loan_params: HashMap::new(),
+        param_boundary_modes: HashMap::new(),
         actor_layouts: Vec::new(),
         record_field_resolved_tys: HashMap::new(),
         const_globals: HashMap::new(),
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -5283,23 +5948,31 @@ fn make_test_fn_ctx<'a, 'ctx>(
         emit_lambda_drain_epilogue: false,
         target_data: &harness.target_data,
         builder,
+        representation_loan_params: &harness.representation_loan_params,
+        param_boundary_modes: &harness.param_boundary_modes,
         return_slot,
         return_ty: i32_ty.into(),
         return_resolved_ty: ResolvedTy::I32,
         execution_context: None,
+        explicit_actor_state_ptr: None,
         closure_call_fallback_context: None,
         execution_context_is_actor_handler: false,
         actor_state_ty: None,
         actor_state_field_kinds: None,
+        // Hand-built helper MIR carries no proven lifecycle identity, so it
+        // keeps the fail-closed scheduler-domain requirement.
+        actor_state_store_transaction: ActorStateStoreTransaction::Required,
+        actor_state_replacement_slots: RefCell::new(HashMap::new()),
+        alloca_prologue: entry,
         locals: HashMap::new(),
         local_tys: HashMap::new(),
         blocks: HashMap::new(),
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts: &harness.record_layouts,
         fn_symbols: &harness.fn_symbols,
+        frame_cleanup_thunks: &harness.frame_cleanup_thunks,
         machine_step_symbols: &harness.machine_step_symbols,
-        resource_record_close: &[],
-        resource_opaque_close: &[],
+        lifecycle_registry: &harness.lifecycle_registry,
         actor_layouts: &harness.actor_layouts,
         machine_layouts: &harness.machine_layouts,
         enum_layouts: &[],
@@ -5325,7 +5998,9 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // Composite-helper unit tests inline `Instr::Drop`; no elaborated
         // drop plans and no suspend carrier to key an abandon plan off.
         drop_plans: &[],
+        helper_crash_cleanup_owners: HashMap::new(),
         suspend_abandon_block: std::cell::Cell::new(0),
+        elab_drop_slot_override: std::cell::Cell::new(None),
     }
 }
 
@@ -5347,6 +6022,268 @@ fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
 fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
     let zero = fn_ctx.ctx.i32_type().const_zero();
     fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
+}
+
+#[test]
+fn tcp_attach_status_materialises_result_instead_of_discarding_refusal() {
+    let ctx = Context::create();
+    let module = ctx.create_module("tcp_attach_result_test");
+    let harness = build_harness(
+        &ctx,
+        &[],
+        &[
+            fixture_attach_error_layout(),
+            fixture_result_unit_attach_error_layout(),
+        ],
+    );
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "drv");
+    alloc_local(
+        &mut fn_ctx,
+        0,
+        ResolvedTy::named_user("Result$$unit$$AttachError", vec![]),
+    );
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .expect("fixture function parent");
+    let next = ctx.append_basic_block(parent, "tcp_attach_next");
+    fn_ctx.blocks.insert(1, next);
+
+    let refused = ctx.i32_type().const_int(u64::MAX, true);
+    emit_tcp_attach_result(&fn_ctx, refused, Some(&Place::Local(0)), 1)
+        .expect("TCP attach status must lower to Result<(), AttachError>");
+    fn_ctx.builder.position_at_end(next);
+    finish_test_fn(&fn_ctx);
+
+    assert!(
+        module.verify().is_ok(),
+        "TCP attach Result module must verify:\n{}",
+        module.print_to_string().to_string()
+    );
+    let ir = module.print_to_string().to_string();
+    assert!(
+        ir.contains("tcp_attach_ok_bb") && ir.contains("tcp_attach_err_bb"),
+        "runtime status must branch into explicit Ok and Err construction:\n{ir}"
+    );
+    assert!(
+        ir.contains("store i8 0") && ir.contains("store i8 1"),
+        "TCP attach must materialise both Result tags:\n{ir}"
+    );
+    assert!(
+        ir.contains("zeroinitializer"),
+        "the refusal branch must store AttachError::Refused:\n{ir}"
+    );
+}
+
+#[test]
+fn failed_actor_sender_transfer_closes_the_prepared_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("failed_actor_sender_transfer_cleanup");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "sender_cleanup");
+    let sender_ty = ResolvedTy::named_builtin(
+        "channel.Sender",
+        hew_types::BuiltinType::Sender,
+        vec![ResolvedTy::I64],
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let slot = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "local_0")
+        .expect("Sender carrier slot");
+    fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+    fn_ctx.local_tys.insert(0, sender_ty.clone());
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        &sender_ty,
+        &[],
+        &[],
+        &[],
+        fn_ctx.lifecycle_registry,
+    )
+    .expect("Sender must have the canonical prepared-carrier plan");
+
+    emit_prepared_carrier_drop(
+        &fn_ctx,
+        Place::Local(0),
+        &plan,
+        hew_mir::PreparedCarrierBoundary::Actor,
+    )
+    .expect("a failed actor submission must close its transferred Sender owner");
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call void @hew_channel_sender_close").count(),
+        1,
+        "the undelivered Sender must close exactly once:\n{ir}"
+    );
+    assert!(
+        ir.contains("store ptr null, ptr %local_0"),
+        "prepared Sender cleanup must disarm the local carrier slot:\n{ir}"
+    );
+    assert!(module.verify().is_ok(), "sender cleanup IR:\n{ir}");
+}
+
+#[test]
+fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_array");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "array_retain_probe");
+    // Array surface lowering is not implemented yet, so construct the
+    // classifier-admitted LLVM slot directly to pin this recursive backend arm.
+    let array_ty = ctx.ptr_type(AddressSpace::default()).array_type(3);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(array_ty, "local_0")
+        .expect("array fixture alloca");
+    fn_ctx.locals.insert(0, (slot, array_ty.into()));
+    fn_ctx
+        .local_tys
+        .insert(0, ResolvedTy::Array(Box::new(ResolvedTy::String), 3));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "array_probe")
+        .expect("fixed-array string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "array retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        3,
+        "one retain per fixed-array string occurrence; ir:\n{ir}"
+    );
+    for idx in 0..3 {
+        assert!(
+            ir.contains(&format!("array_probe_d0_array_e{idx}")),
+            "array element {idx} must be reached by the recursive walk; ir:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_borrowed_ingress_treats_channel_sender_as_non_string_terminal() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_sender");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "sender_retain_probe");
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let tuple_ty = ctx.struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(tuple_ty, "sender_tuple")
+        .expect("sender tuple alloca");
+    let kind = StateFieldCloneKind::Tuple {
+        elems: vec![
+            StateFieldCloneKind::String,
+            StateFieldCloneKind::ChannelSender,
+        ],
+    };
+    retain_strings_in_aggregate_slot(
+        &fn_ctx,
+        slot,
+        tuple_ty.into(),
+        &kind,
+        0,
+        "sender_tuple_probe",
+    )
+    .expect("string-only retain walk must skip the Sender handle");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "sender retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the string sibling needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hew_channel_sender_clone"),
+        "the string-only walker must leave Sender ownership to its descriptor path; ir:\n{ir}"
+    );
+}
+
+#[test]
+fn aggregate_borrowed_ingress_qualified_generic_record_uses_clone_kind_key() {
+    let key = hew_hir::mangle_layout_key("qualified.Box", &[ResolvedTy::String]);
+    let record = MirRecordLayout {
+        name: key.clone(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_generic_record");
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&record), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert(key, vec![ResolvedTy::String]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "generic_record_retain_probe");
+    alloc_local(
+        &mut fn_ctx,
+        0,
+        ResolvedTy::named_user("qualified.Box", vec![ResolvedTy::String]),
+    );
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "generic_record_probe")
+        .expect("qualified generic record must resolve through its clone-kind key");
+    finish_test_fn(&fn_ctx);
+    assert!(
+        m.verify().is_ok(),
+        "qualified generic record retain module must verify"
+    );
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the generic record's substituted string field needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("generic_record_probe_d0_record_f0"),
+        "the clone-kind record key must drive the field walk; ir:\n{ir}"
+    );
+}
+
+#[test]
+fn aggregate_borrowed_ingress_enum_invalid_tag_traps_fail_closed() {
+    let enum_fixtures = vec![MirEnumLayout {
+        name: "Payload".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Hold".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_enum_oob");
+    let harness = build_harness(&ctx, &[], &enum_fixtures);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "enum_retain_probe");
+    fn_ctx.enum_layouts = &enum_fixtures;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Payload", vec![]));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "enum_probe")
+        .expect("inline enum string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "enum retain module must verify");
+    let ir = m.print_to_string().to_string();
+    let oob_start = ir
+        .find("enum_probe_d0_enum_tag_oob:")
+        .expect("enum retain must emit an invalid-tag block");
+    let variant_start = ir[oob_start..]
+        .find("enum_probe_d0_enum_v0:")
+        .map(|offset| oob_start + offset)
+        .expect("enum retain must emit its first variant block");
+    let oob = &ir[oob_start..variant_start];
+    assert!(
+        oob.contains("call void @hew_trap_with_code")
+            && oob.contains("call void @llvm.trap")
+            && oob.contains("unreachable"),
+        "invalid enum tags must trap fail-closed; block:\n{oob}"
+    );
 }
 
 /// W5.011 Slice 1: a `DropKind::CowHeap { release: String }`
@@ -5481,6 +6418,187 @@ fn borrow_gated_drop_emits_copy_only_conditional_region() {
         ir.matches("call void @hew_string_drop(").count(),
         1,
         "the borrow-gated drop body must appear exactly once; got:\n{ir}"
+    );
+}
+
+#[test]
+fn borrow_tainted_crash_cleanup_arms_only_in_copy_mode() {
+    let ctx = Context::create();
+    let module = ctx.create_module("borrow_gated_crash_cleanup_arm");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let borrow_mode_slot = fn_ctx
+        .builder
+        .build_alloca(ctx.i32_type(), "borrow_mode")
+        .expect("borrow-mode slot");
+    fn_ctx
+        .builder
+        .build_store(borrow_mode_slot, ctx.i32_type().const_zero())
+        .expect("borrow-mode init");
+    fn_ctx.borrow_mode = Some(
+        fn_ctx
+            .builder
+            .build_load(ctx.i32_type(), borrow_mode_slot, "borrow_mode_value")
+            .expect("borrow-mode load")
+            .into_int_value(),
+    );
+    fn_ctx.borrow_drop_tainted.insert(0);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![frame_cleanup_string_descriptor(Place::Local(0)).into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("borrow-tainted cleanup owner");
+
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0))
+        .expect("borrow-gated cleanup arm");
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("borrow-gated arm module verify");
+    let ir = module.print_to_string().to_string();
+    assert!(
+        ir.contains("helper_crash_cleanup_borrow_is_copy")
+            && ir.contains("helper_crash_cleanup_guard_live")
+            && ir.contains("call i64 @hew_cont_crash_cleanup_arm"),
+        "borrow-tainted storage must reach the arm only through the \
+         borrow_mode == 0 lifecycle gate:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_skips_planned_owner_but_drops_unplanned_live_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("mixed_return_cleanup_owners");
+    let harness = build_harness(&ctx, &[], &[]);
+    let planned = frame_cleanup_string_descriptor(Place::Local(0));
+    let residual = frame_cleanup_string_descriptor(Place::Local(1));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![planned.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![planned.clone().into(), residual.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("mixed return cleanup owners");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm planned owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(1))
+        .expect("arm residual owner");
+
+    emit_one_elab_drop(&fn_ctx, &planned).expect("ordinary Return-plan drop");
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("residual return sweep");
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("mixed return cleanup module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("mixed return cleanup driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        2,
+        "the planned and residual owners must each have exactly one destructor site:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_1")
+            && !ir.contains("helper_crash_cleanup_return_drop_0")
+            && ir.contains("helper_crash_cleanup_return_retire_0"),
+        "the planned owner needs only its stale-token retirement path, while only \
+         the unplanned live owner belongs to the residual destructor sweep:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_uses_only_the_current_return_blocks_plan() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_block_discrimination");
+    let harness = build_harness(&ctx, &[], &[]);
+    let owner = frame_cleanup_string_descriptor(Place::Local(0));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 1 },
+        hew_mir::DropPlan {
+            drops: vec![owner.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![owner.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("return cleanup owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm owner");
+
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("current-block return sweep");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .expect("return block discrimination module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("return block discrimination driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        1,
+        "a plan belonging to another Return block must not suppress this block's residual drop:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_0"),
+        "a descriptor planned only by another Return block must retain this block's active-gated destructor path:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_rejects_same_place_descriptor_drift() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_descriptor_drift");
+    let harness = build_harness(&ctx, &[], &[]);
+    let registered = frame_cleanup_string_descriptor(Place::Local(0));
+    let mut drifted = registered.clone();
+    drifted.kind = hew_mir::DropKind::CowHeap {
+        release: hew_mir::CowHeapRelease::Bytes,
+    };
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![drifted],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![registered.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("registered cleanup owner");
+
+    let error = emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect_err("same-place descriptor drift must fail closed");
+    assert!(
+        matches!(error, CodegenError::FailClosed(ref message) if message.contains("return drop descriptor drift")
+            && message.contains("Local(0)")),
+        "unexpected drift error: {error:?}"
     );
 }
 
@@ -5886,7 +7004,7 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         is_opaque: false,
     };
     // Identical to the MIR `is_owned_vec_element` table — keep in lockstep.
-    let table: [(ResolvedTy, bool); 11] = [
+    let table: [(ResolvedTy, bool); 13] = [
         (ResolvedTy::String, false),
         (ResolvedTy::Bytes, false),
         (ResolvedTy::I64, false),
@@ -5918,6 +7036,24 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         ),
         (vec_of(ResolvedTy::I64), true),
         (vec_of(fn_elem.clone()), false),
+        (
+            ResolvedTy::Named {
+                name: "Sender".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Sender),
+                is_opaque: true,
+            },
+            true,
+        ),
+        (
+            ResolvedTy::Named {
+                name: "Receiver".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                is_opaque: true,
+            },
+            true,
+        ),
         (fn_elem, false),
         (closure_elem, false),
     ];
@@ -5953,14 +7089,26 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
         ResolvedTy::Duration,
     ] {
         assert_eq!(
-            cbor_vec_elem_kind(&s, &no_recs, &no_enums, &no_machines),
+            cbor_vec_elem_kind(
+                &s,
+                &no_recs,
+                &no_enums,
+                &no_machines,
+                &hew_hir::LifecycleRegistry::default()
+            ),
             CborVecElemKind::Plain,
             "{s:?} must be a Plain element"
         );
     }
     // `string` → Str.
     assert_eq!(
-        cbor_vec_elem_kind(&ResolvedTy::String, &no_recs, &no_enums, &no_machines),
+        cbor_vec_elem_kind(
+            &ResolvedTy::String,
+            &no_recs,
+            &no_enums,
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default()
+        ),
         CborVecElemKind::Str
     );
 
@@ -5975,7 +7123,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_user("Inner", vec![]),
             &[inner],
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy,
         "a heap-free record element is the layout-aware BitCopy vec `Vec::new` builds"
@@ -5993,7 +7142,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_user("Owns", vec![]),
             std::slice::from_ref(&owns),
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Owned,
         "a string-bearing record element rides the owned Vec ABI (thunk key resolves)"
@@ -6006,7 +7156,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::I64]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy
     );
@@ -6015,7 +7166,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::String]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer
     );
@@ -6030,7 +7182,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "a nested Vec element fails closed until the base owned nested-Vec ABI lands"
@@ -6050,7 +7203,13 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
         ),
     ] {
         assert_eq!(
-            cbor_vec_elem_kind(&b, &no_recs, &no_enums, &no_machines),
+            cbor_vec_elem_kind(
+                &b,
+                &no_recs,
+                &no_enums,
+                &no_machines,
+                &hew_hir::LifecycleRegistry::default()
+            ),
             CborVecElemKind::Defer,
             "{b:?} must fail closed (no CBOR value arm / no owned-vec support)"
         );
@@ -6078,7 +7237,8 @@ fn cbor_owning_record_element_rides_owned_abi_never_bitcopy_leak() {
             &ResolvedTy::named_user("WithTok", vec![]),
             std::slice::from_ref(&rec),
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Owned,
         "a CancellationToken-bearing record rides the owned ABI (real drop_fn, no \
@@ -6130,6 +7290,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             &no_recs,
             std::slice::from_ref(&indirect),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "an indirect-enum element is a heap-owned pointer — must fail closed, not BitCopy"
@@ -6147,6 +7308,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             std::slice::from_ref(&wrapper),
             std::slice::from_ref(&indirect),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "a record transitively containing an indirect enum must fail closed"
@@ -6179,6 +7341,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             &no_recs,
             std::slice::from_ref(&direct),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy,
         "a heap-free direct enum must stay BitCopy — the fix must not over-defer"
@@ -6238,6 +7401,111 @@ fn owned_vec_element_walker_treats_tokens_and_generators_as_heap_owning() {
     assert!(
         !resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &plain_tuple),
         "an all-BitCopy tuple must not be classified heap-owning"
+    );
+}
+
+#[test]
+fn owned_vec_resource_descriptor_is_drop_only_and_uses_exact_close() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_descriptor");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "resource_vec_probe");
+
+    assert!(resolved_ty_element_owns_heap_for_owned_vec(
+        &fn_ctx,
+        &resource_ty
+    ));
+    crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect("exact resource lifecycle must produce a drop-only Vec descriptor");
+
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("__hew_vec_elem_layout_resource_std$net$Connection_drop_only")
+            && ir.contains("ptr null"),
+        "resource Vec descriptor must carry no clone callback:\n{ir}"
+    );
+    let drop_start = ir
+        .find("define internal void @\"__hew_vec_resource_std$net$Connection_drop_inplace\"")
+        .expect("resource Vec drop wrapper");
+    let drop_body = &ir[drop_start..];
+    assert!(
+        drop_body.contains("call void @\"std__net__Connection::close\"")
+            && drop_body.contains("store ptr null"),
+        "resource Vec drop wrapper must call the exact close once and neutralise its slot:\n{drop_body}"
+    );
+}
+
+#[test]
+fn owned_vec_resource_descriptor_rejects_non_unit_close_abi() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_wrong_close_abi");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.i64_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "wrong_close_abi_probe");
+    let error = crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect_err("non-Unit close return must fail closed");
+    assert!(
+        error.to_string().contains("Hew Unit i8(ptr)"),
+        "unexpected wrong-close-ABI diagnostic: {error}"
     );
 }
 
@@ -6397,7 +7665,17 @@ fn hashmap_layout_ops_reject_user_named_collision() {
         BuiltinType::Option,
         vec![ResolvedTy::I64],
     );
-    alloc_local(&mut fn_ctx, 0, user_map_ty);
+    // Deliberately bypass `resolve_ty`: the type-lowering boundary now rejects
+    // this same-spelling user nominal before an alloca can be created. This
+    // malformed pointer slot exercises the map-operation boundary's own
+    // defence in depth without restoring the old nominal-name admission.
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let slot = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "user_hashmap_shadow")
+        .expect("allocate malformed user HashMap fixture slot");
+    fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+    fn_ctx.local_tys.insert(0, user_map_ty);
     alloc_local(&mut fn_ctx, 1, point_ty);
     alloc_local(&mut fn_ctx, 2, option_i64_ty);
 
@@ -7050,6 +8328,7 @@ fn record_field_of_machine_type_resolves_via_predeclared_opaque() {
     }];
     let machine_fixtures = vec![hew_mir::MachineLayout {
         name: "Worker".to_string(),
+        event_name: "WorkerEvent".to_string(),
         tag_width: 1,
         variants: vec![MachineVariantLayout {
             name: "Idle".to_string(),
@@ -7933,6 +9212,133 @@ fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
     assert_eq!(st, dyn_trait_fat_ptr_ty(&ctx));
 }
 
+#[test]
+fn resolve_ty_uses_pointer_builtin_identity_without_admitting_user_shadows() {
+    let ctx = Context::create();
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    let pointer_builtins = [
+        BuiltinType::Vec,
+        BuiltinType::HashMap,
+        BuiltinType::HashSet,
+        BuiltinType::Rc,
+        BuiltinType::Weak,
+        BuiltinType::Sender,
+        BuiltinType::Receiver,
+        BuiltinType::Duplex,
+        BuiltinType::Stream,
+        BuiltinType::Sink,
+        BuiltinType::SendHalf,
+        BuiltinType::RecvHalf,
+        BuiltinType::LocalPid,
+        BuiltinType::LambdaPid,
+        BuiltinType::Generator,
+        BuiltinType::AsyncGenerator,
+    ];
+
+    for builtin in pointer_builtins {
+        let lowered = resolve_ty(
+            &ctx,
+            &target_data,
+            &ResolvedTy::named_builtin(
+                format!("renamed.{}Presentation", builtin.canonical_name()),
+                builtin,
+                Vec::new(),
+            ),
+            &record_layouts,
+        )
+        .expect("typed builtin identity must lower to its pointer representation");
+        let _ = lowered.into_pointer_type();
+
+        let err = resolve_ty(
+            &ctx,
+            &target_data,
+            &ResolvedTy::named_user(builtin.canonical_name(), Vec::new()),
+            &record_layouts,
+        )
+        .expect_err("same-spelling user nominal must remain outside the runtime handle ABI");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+            "{builtin:?} user shadow must retain the D10 fail-closed boundary, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn resolve_ty_uses_opaque_identity_for_synthetic_task_scope() {
+    let ctx = Context::create();
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    let lowered = resolve_ty(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_opaque("renamed.HewTaskScope", Vec::new()),
+        &record_layouts,
+    )
+    .expect("typed opaque task scope must lower to its pointer representation");
+    let _ = lowered.into_pointer_type();
+
+    let direct = primitive_to_llvm(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_opaque("renamed.HewTaskScope", Vec::new()),
+    )
+    .expect("direct thunk ABI lowering must agree on typed opaque handles");
+    let _ = direct.into_pointer_type();
+
+    let err = resolve_ty(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_user("HewTaskScope", Vec::new()),
+        &record_layouts,
+    )
+    .expect_err("same-spelling user task scope must not acquire the runtime handle ABI");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+        "user task-scope shadow must retain the D10 fail-closed boundary, got {err:?}"
+    );
+
+    let direct_err = primitive_to_llvm(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_user("HewTaskScope", Vec::new()),
+    )
+    .expect_err("direct thunk ABI lowering must reject a non-opaque user shadow");
+    assert!(
+        matches!(direct_err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+        "direct user task-scope shadow must retain D10, got {direct_err:?}"
+    );
+}
+
+#[test]
+fn builtin_named_args_uses_identity_not_presentation() {
+    for builtin in [
+        BuiltinType::Option,
+        BuiltinType::Vec,
+        BuiltinType::HashMap,
+        BuiltinType::HashSet,
+        BuiltinType::LocalPid,
+        BuiltinType::RemotePid,
+    ] {
+        let arg = ResolvedTy::named_user("Payload", Vec::new());
+        let renamed = ResolvedTy::named_builtin(
+            format!("renamed.{}Presentation", builtin.canonical_name()),
+            builtin,
+            vec![arg.clone()],
+        );
+        assert_eq!(builtin_named_args(&renamed, builtin), Some(&[arg][..]));
+
+        let shadow = ResolvedTy::named_user(builtin.canonical_name(), vec![ResolvedTy::I64]);
+        assert_eq!(
+            builtin_named_args(&shadow, builtin),
+            None,
+            "same-spelling {builtin:?} user nominal must not satisfy the builtin gate"
+        );
+    }
+}
+
 /// `Instr::CoerceToDynTrait` now emits the
 /// fat-pointer aggregate. This test pins the emitted IR shape:
 /// (1) the canonical `%hew.dyn.fat_ptr` named struct is used at
@@ -8031,8 +9437,7 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-ok-")
@@ -8082,6 +9487,13 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         ll.contains(&format!("@{drop_symbol}")),
         "vtable initializer must reference the drop-in-place fn `@{drop_symbol}`; got:\n{ll}"
     );
+    assert!(
+        ll.contains("call ptr @hew_dyn_box_alloc(")
+            && ll.contains("call void @llvm.memcpy")
+            && ll.contains("%dyn_data = insertvalue %hew.dyn.fat_ptr undef, ptr %dyn_box, 0"),
+        "coercion must transfer the concrete value into persistent HeapBoxed \
+         storage before constructing the fat pointer; got:\n{ll}"
+    );
     // Two insertvalue steps assemble the fat pointer in `main`.
     let insert_count = ll.matches("insertvalue %hew.dyn.fat_ptr").count();
     assert!(
@@ -8097,8 +9509,305 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
     drop(tmp);
 }
 
+#[test]
+fn dyn_box_alloc_free_abi_is_shared_by_escaping_closure_and_dyn_coercion() {
+    let source = r#"
+trait Named {
+    fn name(val: Self) -> string;
+}
+type Person { tag: string }
+impl Person {
+    fn name(val: Person) -> string { val.tag }
+}
+fn make_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+fn main() {
+    let nested = make_nested("closure-owner".to_upper());
+    let funcs: Vec<fn() -> i64> = Vec::new();
+    funcs.push(nested);
+    let recovered = funcs.pop();
+    let person = Person { tag: "dyn-owner".to_upper() };
+    let _erased: dyn Named = person;
+    println(recovered());
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "combined dyn/closure parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "combined dyn/closure pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    for (triple, usize_ir) in [
+        (native_emission_triple(), "i64"),
+        ("wasm32-wasi".to_string(), "i32"),
+    ] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "dyn_closure_shared_box_abi",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: combined module build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: combined module verify: {error}"));
+        let ir = module.print_to_string().to_string();
+        let alloc_decl = format!("declare ptr @hew_dyn_box_alloc({usize_ir}, {usize_ir})");
+        let free_decl = format!("declare void @hew_dyn_box_free(ptr, {usize_ir}, {usize_ir})");
+        assert!(
+            ir.contains(&alloc_decl) && ir.contains(&free_decl),
+            "{triple}: every dyn-box consumer must share the target-usize ABI:\n{ir}"
+        );
+        assert!(
+            ir.matches("call ptr @hew_dyn_box_alloc(").count() >= 2,
+            "{triple}: fixture must exercise both closure-env and dyn coercion boxes:\n{ir}"
+        );
+        let (pointer_size, pair_size) = if usize_ir == "i32" { (4, 8) } else { (8, 16) };
+        assert!(
+            ir.contains(&format!(
+                "%closure_env_box = call ptr @hew_dyn_box_alloc({usize_ir} {}, {usize_ir} {pointer_size})",
+                pointer_size * 2
+            )) && ir.contains(&format!(
+                "%closure_env_data = getelementptr inbounds i8, ptr %closure_env_box, i64 {pointer_size}"
+            )) && ir.contains(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr align {pointer_size} %closure_env_data, ptr align {pointer_size} %local_1, i64 {pointer_size}, i1 false)"
+            )),
+            "{triple}: closure env header, payload offset, and copy width must use \
+             the target pointer layout:\n{ir}"
+        );
+        assert!(
+            ir.contains(&format!(
+                "%closure_pair_box = call ptr @hew_dyn_box_alloc({usize_ir} {pair_size}, {usize_ir} {pointer_size})"
+            )) && ir.contains(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr align {pointer_size} %closure_pair_box, ptr align {pointer_size}"
+            )) && ir.contains(&format!(
+                "call void @hew_dyn_box_free(ptr %vec_pop_pair, {usize_ir} {pair_size}, {usize_ir} {pointer_size})"
+            )),
+            "{triple}: closure-pair Vec boxing, copy, and pop free must use the \
+             target two-pointer layout:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn borrowed_dyn_coercion_temp_drops_in_caller_native_and_wasm32() {
+    let source = r#"
+trait Value {
+    fn value(val: Self) -> i64;
+}
+type Number { n: i64 }
+impl Number {
+    fn value(val: Number) -> i64 { val.n }
+}
+fn inspect(value: dyn Value) {
+    value.value();
+}
+fn main() {
+    inspect(Number { n: 42 });
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "borrowed dyn temp parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "borrowed dyn temp pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    for (triple, usize_ir, fat_size, fat_align) in [
+        (native_emission_triple(), "i64", 16, 8),
+        ("wasm32-wasi".to_string(), "i32", 8, 4),
+    ] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module =
+            build_module_for_target(&ctx, &pipeline, "borrowed_dyn_temp", Some(&machine), None)
+                .unwrap_or_else(|error| {
+                    panic!("{triple}: borrowed dyn temp module build: {error:?}")
+                });
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: borrowed dyn temp verify: {error}"));
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains(&format!(
+                "%dyn_box = call ptr @hew_dyn_box_alloc({usize_ir} 8, {usize_ir} 8)"
+            )),
+            "{triple}: direct call argument must heap-promote its concrete payload:\n{ir}"
+        );
+        assert!(
+            ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
+                && ir.contains(&format!(
+                    ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
+                )),
+            "{triple}: the caller-owned fat-pointer temporary must arm typed crash cleanup \
+             with the target layout:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @hew_dyn_box_free(ptr %dyn_drop_data_ptr"),
+            "{triple}: caller scope exit must release the borrowed coercion's dyn box:\n{ir}"
+        );
+
+        let inspect_start = ir
+            .find("define internal i8 @inspect(")
+            .expect("inspect function definition");
+        let inspect_tail = &ir[inspect_start..];
+        let inspect_end = inspect_tail
+            .find("\n}\n")
+            .expect("inspect function closing brace");
+        let inspect_ir = &inspect_tail[..inspect_end];
+        assert!(
+            !inspect_ir.contains("dyn_drop_")
+                && !inspect_ir.contains("@hew_dyn_box_free")
+                && !inspect_ir.contains("@hew_cont_crash_cleanup_arm"),
+            "{triple}: borrowing callee must not acquire or release the caller's dyn box:\n\
+             {inspect_ir}"
+        );
+    }
+}
+
 /// Fail-closed boundary on the registry side of `Instr::CoerceToDynTrait`.
 ///
+#[test]
+fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_type() {
+    use hew_mir::{BasicBlock, DynVtableInstance, FunctionCallConv, Terminator};
+    use hew_types::ResolvedTraitBound;
+
+    let trait_obj = ResolvedTy::TraitObject {
+        traits: vec![ResolvedTraitBound {
+            trait_name: "Display".to_string(),
+            args: vec![],
+            assoc_bindings: vec![],
+        }],
+    };
+    let main = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "main".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![trait_obj.clone(), trait_obj],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::CoerceToDynTrait {
+                value: Place::Local(0),
+                dest: Place::Local(1),
+                trait_name: "Display".to_string(),
+                concrete_type: ResolvedTy::I64,
+                method_table: vec![],
+                vtable_entries: vec![],
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+    let pipeline = IrPipeline {
+        thir: vec![],
+        raw_mir: vec![main],
+        checked_mir: vec![],
+        elaborated_mir: vec![],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
+        diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
+        opaque_handle_names: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![DynVtableInstance {
+            vtable_id: 0,
+            symbol: hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64),
+            trait_name: "Display".to_string(),
+            concrete_type: ResolvedTy::I64,
+            method_table: vec![],
+            vtable_entries: vec![],
+        }],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
+    };
+    let tmp = tempfile::Builder::new()
+        .prefix("hew-dyn-coerce-slot-mismatch-")
+        .tempdir()
+        .expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "coerce_dyn_trait_slot_mismatch",
+        out_dir: tmp.path(),
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: OptLevel::O0,
+        source_path: None,
+    };
+
+    let err = emit_module(&pipeline, &options)
+        .expect_err("mismatched source and concrete layouts must fail closed");
+    match err {
+        CodegenError::FailClosed(msg) => assert!(
+            msg.contains("LLVM slot type") && msg.contains("mismatched drop layout"),
+            "diagnostic must identify the slot/vtable layout mismatch; got: {msg}"
+        ),
+        other => panic!("expected FailClosed for a dyn coercion layout mismatch; got {other:?}"),
+    }
+}
+
 /// This test pins the surviving fail-closed gate from the
 /// fat-pointer type substrate: an `Instr::CoerceToDynTrait` whose
 /// `(trait_name, concrete_type, vtable_entries)` triple has no
@@ -8185,8 +9894,7 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-miss-")
@@ -8211,6 +9919,747 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
              the originating trait; got: {msg}"
     );
     drop(tmp);
+}
+
+fn frame_cleanup_string_descriptor(place: Place) -> ElabDrop {
+    ElabDrop {
+        place,
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: hew_mir::DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::String,
+        },
+        guard: None,
+    }
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_reuses_only_an_exact_descriptor_and_slot_type() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_exact_reuse");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+
+    let first = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, first_slot_ty) = place_pointer(&fn_ctx, first.place).expect("first string slot");
+    let thunk = get_or_emit_frame_cleanup_thunk(&fn_ctx, &first, first_slot_ty)
+        .expect("first exact descriptor must create a thunk");
+
+    // Place and guard are caller-frame facts, so a second string owner with
+    // the same ritual and the same LLVM slot type must reuse the exact cache
+    // entry rather than manufacture a duplicate function.
+    let second = frame_cleanup_string_descriptor(Place::Local(1));
+    let (_, second_slot_ty) = place_pointer(&fn_ctx, second.place).expect("second string slot");
+    let reused = get_or_emit_frame_cleanup_thunk(&fn_ctx, &second, second_slot_ty)
+        .expect("equal descriptor and slot type must reuse the thunk");
+    assert_eq!(
+        thunk, reused,
+        "equal cleanup descriptor + LLVM slot type must reuse exactly one thunk"
+    );
+    assert_eq!(harness.frame_cleanup_thunks.borrow().entries.len(), 1);
+
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("exact-reuse module must verify");
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("define internal void @__hew_frame_cleanup_")
+            .count(),
+        1,
+        "the exact cache must synthesize one internal cleanup thunk:\n{ir}"
+    );
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_rejects_descriptor_slot_type_drift() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_slot_drift");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
+    get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect("initial descriptor registration");
+
+    let err = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, ctx.i64_type().into())
+        .expect_err("a descriptor must not be rebound to an i64 storage slot");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message) if message.contains("slot-type drift")
+            && message.contains("ptr") && message.contains("i64")),
+        "slot drift must fail closed with both LLVM storage types: {err:?}"
+    );
+    assert_eq!(harness.frame_cleanup_thunks.borrow().entries.len(), 1);
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_rejects_unregistered_generated_name_collision() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_name_collision");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
+    // The generated name is content-derived, so pre-register whatever name
+    // this exact descriptor/slot-type pair would generate to force the
+    // collision, rather than assuming a first-use-counter value.
+    let expected_name = frame_cleanup_thunk_name(&FrameCleanupThunkKey::new(&descriptor, slot_ty));
+    module.add_function(
+        &expected_name,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+
+    let err = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect_err("an unregistered generated symbol must not be reused");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message)
+            if message.contains(&expected_name) && message.contains("not registered")),
+        "generated-name collision must fail closed rather than borrowing a foreign function: {err:?}"
+    );
+    assert!(harness.frame_cleanup_thunks.borrow().entries.is_empty());
+}
+
+#[test]
+fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    // `StringLit` is intentionally not named by codegen. MIR's exhaustive
+    // instruction write-set classifies its whole-slot destination, and the
+    // generic before/after lowering hooks must therefore admit it without a
+    // producer-specific whitelist entry.
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "unsupported_string_literal_owner".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::String],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::StringLit {
+                bytes: b"owner".to_vec(),
+                dest: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let elab = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![frame_cleanup_string_descriptor(Place::Local(0))],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    let descriptors = collect_helper_crash_cleanup_descriptors(
+        &raw,
+        Some(&elab),
+        false,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashSet::new(),
+    )
+    .expect("the exhaustive instruction write-set must admit StringLit");
+    assert_eq!(
+        descriptors
+            .into_iter()
+            .map(|entry| entry.descriptor)
+            .collect::<Vec<_>>(),
+        [frame_cleanup_string_descriptor(Place::Local(0))]
+    );
+}
+
+#[test]
+fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "guarded_receive_parameter".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![ResolvedTy::Bytes],
+        locals: vec![ResolvedTy::Bytes, ResolvedTy::I64],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let guarded = ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::Bytes,
+        drop_fn: None,
+        kind: hew_mir::DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::Bytes,
+        },
+        guard: Some(Place::Local(1)),
+    };
+    let mut entry_cancel = guarded.clone();
+    entry_cancel.guard = None;
+
+    for entry_first in [true, false] {
+        let plans = if entry_first {
+            vec![
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+            ]
+        } else {
+            vec![
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![guarded.clone()],
+                    },
+                ),
+                (
+                    ExitPath::Cancel { block: 0 },
+                    DropPlan {
+                        drops: vec![entry_cancel.clone()],
+                    },
+                ),
+            ]
+        };
+        let elab = ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: plans,
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let descriptors = collect_helper_crash_cleanup_descriptors(
+            &raw,
+            Some(&elab),
+            false,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+        )
+        .expect("entry cancellation and guarded exits share one owner ritual");
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(
+            descriptors[0].descriptor, guarded,
+            "the guarded descriptor must drive crash-snapshot lifecycle"
+        );
+    }
+}
+
+#[test]
+fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
+    use hew_mir::model::NeutralizeAuthority;
+
+    let owner = Place::Local(1);
+    let projected = Place::EnumVariant {
+        local: 0,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: owner,
+                src: projected,
+            },
+            Instr::ConstI64 {
+                dest: Place::Local(2),
+                value: 0,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: projected,
+                transferee: Some(owner),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&block, 0, owner),
+        "the projected byte copy is still an alias"
+    );
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&block, 1, owner),
+        "unrelated guard/publication writes cannot mint the alias"
+    );
+    assert!(
+        !helper_owner_arm_waits_for_projection_transfer(&block, 2, owner),
+        "the exact source neutralize transfers cleanup authority"
+    );
+
+    let mut borrowed_only = block.clone();
+    borrowed_only.instructions.pop();
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&borrowed_only, 1, owner),
+        "an unneutralized match binder remains owned by its source carrier"
+    );
+}
+
+#[test]
+fn helper_crash_cleanup_consumed_guard_proof_is_conservative() {
+    let mut raw = platform_int_identity_fn("consumed_guard", ResolvedTy::I64);
+    raw.params.clear();
+    raw.return_ty = ResolvedTy::Unit;
+    raw.locals = vec![ResolvedTy::I64; 3];
+    raw.blocks = vec![BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::ConstI64 {
+                dest: Place::Local(1),
+                value: 1,
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            },
+        ],
+        terminator: Terminator::Return,
+    }];
+
+    assert!(helper_crash_cleanup_guard_is_always_consumed(
+        &raw,
+        Place::Local(1)
+    ));
+    assert!(helper_crash_cleanup_guard_is_always_consumed(
+        &raw,
+        Place::Local(2)
+    ));
+
+    raw.blocks[0].instructions.push(Instr::ConstI64 {
+        dest: Place::Local(1),
+        value: 0,
+    });
+    assert!(
+        !helper_crash_cleanup_guard_is_always_consumed(&raw, Place::Local(1)),
+        "one live write must retain the cleanup descriptor"
+    );
+    assert!(
+        !helper_crash_cleanup_guard_is_always_consumed(&raw, Place::Local(0)),
+        "a parameter or unwritten guard remains unknown"
+    );
+}
+
+#[test]
+fn whole_owner_neutralize_transfers_crash_cleanup_authority() {
+    use hew_mir::model::NeutralizeAuthority;
+
+    let instr = Instr::NeutralizePayloadSlot {
+        place: Place::Local(0),
+        transferee: Some(Place::Local(1)),
+        authority: NeutralizeAuthority::WholeCarrierConsume,
+    };
+    assert!(helper_whole_owner_was_transferred(&instr, Place::Local(0)));
+    assert!(!helper_whole_owner_was_transferred(&instr, Place::Local(1)));
+
+    let no_transferee = Instr::NeutralizePayloadSlot {
+        place: Place::Local(0),
+        transferee: None,
+        authority: NeutralizeAuthority::WholeCarrierConsume,
+    };
+    assert!(!helper_whole_owner_was_transferred(
+        &no_transferee,
+        Place::Local(0)
+    ));
+}
+
+#[test]
+fn helper_crash_cleanup_aggregate_owner_arms_after_final_payload_store() {
+    let owner = Place::Local(0);
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: Place::EnumTag(0),
+                src: Place::Local(1),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+                src: Place::Local(2),
+            },
+            Instr::Move {
+                dest: Place::EnumVariant {
+                    local: 0,
+                    variant_idx: 0,
+                    field_idx: 1,
+                },
+                src: Place::Local(3),
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 0, owner
+    ));
+    assert!(helper_owner_arm_waits_for_aggregate_publication(
+        &block, 1, owner
+    ));
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &block, 2, owner
+    ));
+
+    let payload_free = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::EnumTag(0),
+            src: Place::Local(1),
+        }],
+        terminator: Terminator::Return,
+    };
+    assert!(!helper_owner_arm_waits_for_aggregate_publication(
+        &payload_free,
+        0,
+        owner
+    ));
+}
+
+#[test]
+fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
+    use hew_mir::{
+        DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv, SelectArm, SelectArmKind,
+    };
+
+    let ctx = Context::create();
+    let module = ctx.create_module("crash_cleanup_terminator_admission");
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let real_value = module.add_function("real_owner", ptr_ty.fn_type(&[], false), None);
+    let real_symbol = FnSymbol::Real {
+        value: real_value,
+        return_ty: ptr_ty.into(),
+        returns_unit: false,
+        extern_record_ret: None,
+        extern_malloc_string_ret: false,
+    };
+    let symbols = HashMap::from([
+        ("real_owner".to_string(), real_symbol),
+        // A direct extern may legitimately choose a spelling that an internal
+        // runtime operation also uses.  It must stay on the generic Real tail.
+        ("hew_bytes_get".to_string(), real_symbol),
+    ]);
+    let cases = [
+        (
+            "generic real-call common tail",
+            Terminator::Call {
+                callee: "real_owner".to_string(),
+                authority: Default::default(),
+                args: vec![],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "Vec clone initialized tail",
+            Terminator::Call {
+                callee: "hew_vec_get_clone".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                        hew_types::runtime_call::VecGetElem::Clone,
+                    ),
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "HashMap index initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_get_clone_layout".to_string(),
+                authority: hew_mir::CallAuthority::Compiler(
+                    hew_mir::CompilerCallKind::HashMapGetCloneLayoutIndex,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "HashMap clone initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_clone_layout".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapCloneLayout,
+                ),
+                args: vec![Place::Local(1)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "HashMap get initialized tail",
+            Terminator::Call {
+                callee: "hew_hashmap_get_layout".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapGetLayout,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "actor ask Result publication",
+            Terminator::Ask {
+                actor: Place::Local(1),
+                stable_role: None,
+                msg_type: 0,
+                value: Place::Local(2),
+                arg_modes: vec![],
+                cleanup_plan: None,
+                result_dest: Place::Local(0),
+                reply_dest: Place::Local(3),
+                error_dest: Place::Local(4),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "remote ask Result publication",
+            Terminator::RemoteAsk {
+                actor: Place::Local(1),
+                msg_type: 0,
+                value: Place::Local(2),
+                timeout_ms: Place::Local(3),
+                result_dest: Place::Local(0),
+                reply_dest: Place::Local(4),
+                error_dest: Place::Local(5),
+                reply_ty: ResolvedTy::String,
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "shared select winner tail",
+            Terminator::Select {
+                arms: vec![SelectArm {
+                    kind: SelectArmKind::TaskAwait {
+                        task: Place::Local(1),
+                    },
+                    body_block: 1,
+                    binding: Some(Place::Local(0)),
+                }],
+                next: 2,
+            },
+            None,
+            true,
+        ),
+        (
+            "join wait-all final publication",
+            Terminator::Join {
+                branches: vec![],
+                result: Place::Local(0),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "collapsed TaskAwait ready destination",
+            Terminator::Suspend {
+                resume: 1,
+                cleanup: 2,
+                is_final: false,
+            },
+            Some(hew_mir::SuspendKind::TaskAwait {
+                scope: Place::Local(1),
+                task: Place::Local(2),
+                result_dest: Some(Place::Local(0)),
+            }),
+            true,
+        ),
+        (
+            "direct extern collision uses the generic tail",
+            Terminator::Call {
+                callee: "hew_bytes_get".to_string(),
+                authority: Default::default(),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "typed runtime BytesGet needs a post-write hook",
+            Terminator::Call {
+                callee: "hew_bytes_get".to_string(),
+                authority: hew_mir::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::BytesGet,
+                ),
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            false,
+        ),
+        (
+            "generator construction initialized tail",
+            Terminator::MakeGenerator {
+                dest: Place::Local(0),
+                body_fn: "__test_generator".to_string(),
+                next: 1,
+                env: None,
+            },
+            None,
+            true,
+        ),
+    ];
+
+    for (label, terminator, suspend_kind, admitted) in cases {
+        let raw = RawMirFunction {
+            source_origin: SourceOrigin::Unknown,
+            name: format!("terminator_{label}"),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::String],
+            local_names: vec![],
+            local_scopes: vec![],
+            local_decl_bytes: vec![],
+            scope_table: vec![],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator,
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: HashMap::new(),
+            suspend_kinds: suspend_kind
+                .map(|kind| HashMap::from([(0, kind)]))
+                .unwrap_or_default(),
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+        let elab = ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![descriptor.clone()],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let result = collect_helper_crash_cleanup_descriptors(
+            &raw,
+            Some(&elab),
+            false,
+            &HashMap::new(),
+            &[],
+            &symbols,
+            &HashSet::new(),
+        );
+        if admitted {
+            assert_eq!(
+                result
+                    .unwrap_or_else(|error| panic!("{label} must be admitted: {error:?}"))
+                    .into_iter()
+                    .map(|entry| entry.descriptor)
+                    .collect::<Vec<_>>(),
+                [descriptor],
+                "{label}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(CodegenError::FailClosed(ref message))
+                        if message.contains("has no lifecycle hook")
+                ),
+                "{label} must remain fail-closed until its real initialized edge \
+                 gains matching deactivate/arm hooks: {result:?}"
+            );
+        }
+    }
 }
 
 // -----------------------------------------------------------------
@@ -8297,6 +10746,7 @@ fn vtable_definition_fails_closed_when_method_thunk_missing() {
             extern_symbol: None,
             requires_mutable_receiver: false,
             consumes_receiver: false,
+            returns_receiver_identity: false,
             is_builtin_variant: false,
         },
     }];
@@ -8585,8 +11035,7 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-frame-owned-drop-fail-")
@@ -8723,8 +11172,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -9108,8 +11556,7 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -9142,9 +11589,9 @@ fn actor_using_main_emits_drain_epilogue() {
         "actor-using main must emit the shared native runtime cleanup tail:\n{ir}"
     );
     assert!(
-            !ir.contains("call void @hew_sched_shutdown"),
-            "ordinary actor main must rely on graceful shutdown, not the immediate supervisor path:\n{ir}"
-        );
+        !ir.contains("call void @hew_sched_shutdown"),
+        "ordinary actor main must rely on graceful shutdown, not the immediate supervisor path:\n{ir}"
+    );
 }
 
 /// For a wasm32 actor-using program, the `main` function's IR must contain
@@ -9214,21 +11661,80 @@ fn non_actor_main_omits_drain_epilogue() {
     );
 }
 
+fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
+    RawMirFunction {
+        source_origin,
+        name: "CrashStateActor__on_crash".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::ActorHandler,
+        // The two MIR-visible parameters are the raw CrashInfo ingress fields.
+        // The actor-state pointer is a codegen-only trailing ABI argument.
+        params: vec![ResolvedTy::I64, ResolvedTy::String],
+        locals: vec![ResolvedTy::I64, ResolvedTy::String, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::EnterContext,
+                Instr::ActorStateFieldLoad {
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(2),
+                    mode: ActorStateLoadMode::Borrowed,
+                },
+                Instr::ActorStateFieldStore {
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(2),
+                    handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+                Instr::ExitContext,
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
 #[test]
-fn connection_actor_state_clone_returns_null() {
-    let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
-    let actor = ActorLayout {
-        name: "ConnActor".to_string(),
+fn on_crash_definition_consumes_trailing_actor_state_pointer() {
+    let actor_key = "CrashStateActor";
+    let mut pipeline = minimal_pipeline_with_unit_main(false);
+    pipeline.raw_mir.push(crash_state_probe_fn(
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Crash,
+            actor_layout_key: actor_key.to_string(),
+        },
+    ));
+    pipeline.record_layouts = vec![RecordLayout {
+        name: actor_key.to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    }];
+    pipeline.actor_layouts = vec![ActorLayout {
+        name: actor_key.to_string(),
         defining_module: None,
-        state_field_names: vec!["conn".to_string()],
-        state_field_tys: vec![conn_ty.clone()],
+        state_field_names: vec!["value".to_string()],
+        state_field_tys: vec![ResolvedTy::I64],
         state_field_defaults: vec![None],
         init_param_names: vec![],
         init_param_tys: vec![],
         init_symbol: None,
         on_start_symbol: None,
         on_stop_symbols: vec![],
-        on_crash_symbol: None,
+        on_crash_symbol: Some("CrashStateActor__on_crash".to_string()),
         on_exit_symbol: None,
         on_down_symbol: None,
         max_heap_bytes: None,
@@ -9237,33 +11743,83 @@ fn connection_actor_state_clone_returns_null() {
         overflow_policy: None,
         coalesce_key_plan: None,
         handlers: vec![],
-        state_clone_fn_symbol: Some("__hew_state_clone_ConnActor".to_string()),
-        state_drop_fn_symbol: Some("__hew_state_drop_ConnActor".to_string()),
-        state_field_clone_kinds: Some(vec![StateFieldCloneKind::IoHandle {
-            kind: hew_mir::IoHandleKind::Connection,
-        }]),
-    };
-    let mut pipeline = minimal_pipeline_with_unit_main(false);
-    pipeline.opaque_handle_names = vec!["Connection".to_string()];
-    pipeline.record_layouts = vec![RecordLayout {
-        name: "ConnActor".to_string(),
-        field_tys: vec![conn_ty],
-        field_names: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
     }];
-    pipeline.actor_layouts = vec![actor];
 
     let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "connection_state_clone")
-        .expect("Connection actor-state clone module must build");
+    let module = build_module(&ctx, &pipeline, "crash_state_pointer")
+        .expect("crash-state ABI probe must build");
     module
         .verify()
-        .unwrap_or_else(|e| panic!("Connection actor-state clone module failed verify: {e}"));
+        .unwrap_or_else(|e| panic!("crash-state ABI probe failed verify: {e}"));
     let ir = module.print_to_string().to_string();
+    let signature =
+        "define internal i64 @CrashStateActor__on_crash(ptr %0, i64 %1, ptr %2, ptr %3)";
+    let start = ir
+        .find(signature)
+        .unwrap_or_else(|| panic!("crash hook must take the fourth state pointer:\n{ir}"));
+    let body = &ir[start..];
+    let end = body
+        .find("\n}")
+        .expect("crash hook definition has a closing brace");
+    let body = &body[..end];
+
     assert!(
-            ir.contains("define ptr @__hew_state_clone_ConnActor(ptr")
-                && ir.contains("ret ptr null"),
-            "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
-        );
+        body.lines().any(|line| {
+            line.contains("getelementptr")
+                && line.contains("%CrashStateActor")
+                && line.contains("ptr %3")
+        }),
+        "actor-state field access must GEP from the explicit fourth argument:\n{body}"
+    );
+    assert!(
+        !body.contains("ctx_actor_ptr_slot") && !body.contains("actor_state_slot"),
+        "crash hook must not recover the supervisor actor's state through ctx:\n{body}"
+    );
+    assert!(
+        !body.contains("hew_dispatch_state_cleanup_"),
+        "crash-hook stores target a child restart template outside the supervisor's active dispatch transaction:\n{body}"
+    );
+}
+
+#[test]
+fn crash_abi_fourth_parameter_is_source_origin_gated() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("crash_source_origin_gate");
+    let target_data = host_target_data();
+    let layouts = RecordLayoutMap::new();
+
+    let exact = crash_state_probe_fn(SourceOrigin::SynthesizedActorHandler {
+        kind: ActorHandlerKind::Crash,
+        actor_layout_key: "CrashStateActor".to_string(),
+    });
+    let exact_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &exact, &layouts, &[], false)
+            .expect("declare proven crash handler");
+    let (exact_fn, _, _) = exact_symbol
+        .real(&exact.name, "crash source-origin test")
+        .expect("real exact crash symbol");
+    assert_eq!(
+        exact_fn.get_type().count_param_types(),
+        4,
+        "proven crash identity must carry ctx, code, message, and state"
+    );
+
+    let mut spoof = crash_state_probe_fn(SourceOrigin::Unknown);
+    spoof.name = "NameOnly__on_crash".to_string();
+    let spoof_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &spoof, &layouts, &[], false)
+            .expect("declare name-only actor handler");
+    let (spoof_fn, _, _) = spoof_symbol
+        .real(&spoof.name, "crash source-origin test")
+        .expect("real spoof symbol");
+    assert_eq!(
+        spoof_fn.get_type().count_param_types(),
+        3,
+        "a crash-like symbol name without carried identity must keep the ordinary actor ABI"
+    );
 }
 
 // ── Stackless suspend substrate (R326/R327, W6.007) ──────────────────────
@@ -9361,8 +11917,7 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -9386,8 +11941,12 @@ fn suspend_carrier_lowers_to_presplit_coroutine() {
         "must emit coro.id + coro.suspend:\n{ir}"
     );
     assert!(
-        ir.contains(crate::coro::CONT_FRAME_ALLOC),
-        "frame allocation must route through hew_cont_frame_alloc:\n{ir}"
+        ir.contains(crate::coro::CONT_FRAME_ALLOC_TRACKED),
+        "coroutine frame allocation must route through the tracked sibling:\n{ir}"
+    );
+    assert!(
+        ir.contains(crate::coro::CONT_FRAME_HANDOFF),
+        "every normal ramp return must hand its tracked frame to the caller:\n{ir}"
     );
     assert!(
         crate::coro::module_has_coroutines(&module),
@@ -9396,6 +11955,23 @@ fn suspend_carrier_lowers_to_presplit_coroutine() {
     module
         .verify()
         .unwrap_or_else(|e| panic!("pre-split coroutine module failed verify: {e}"));
+}
+
+fn llvm_defined_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let marker = format!("@{name}(");
+    let start = ir
+        .match_indices("define ")
+        .find_map(|(start, _)| {
+            let line_end = ir[start..].find('\n').map(|offset| start + offset)?;
+            ir[start..line_end].contains(&marker).then_some(start)
+        })
+        .unwrap_or_else(|| panic!("missing LLVM function `{name}`:\n{ir}"));
+    let tail = &ir[start..];
+    let end = tail
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("unterminated LLVM function `{name}`"))
+        + 3;
+    &tail[..end]
 }
 
 /// Build a coroutine `IrPipeline` whose bb0 carries a `SuspendKind::StreamSend`
@@ -9487,8 +12063,7 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -9572,6 +12147,24 @@ fn assert_coro_splits_clean_for_triple(triple: &str) {
         ir.contains("@__hew_coro_probe.destroy"),
         "{triple}: CoroSplit must produce a .destroy outline:\n{ir}"
     );
+    let ramp = llvm_defined_function_body(&ir, "__hew_coro_probe");
+    assert!(
+        ramp.contains("call ptr @hew_cont_frame_alloc_tracked("),
+        "{triple}: the post-CoroSplit ramp must allocate through the tracked \
+         coroutine-only allocator:\n{ramp}"
+    );
+    assert!(
+        ramp.contains("call void @hew_cont_frame_handoff("),
+        "{triple}: the post-CoroSplit ramp must hand off before returning its \
+         handle:\n{ramp}"
+    );
+    let resume = llvm_defined_function_body(&ir, "__hew_coro_probe.resume");
+    assert!(
+        resume.contains("call void @hew_cont_frame_handoff("),
+        "{triple}: CoroSplit must preserve the shared-return handoff call in the \
+         resume outline; the runtime phase tag makes this clone a no-op before \
+         `hew_cont_resume` performs the authoritative Resume leave:\n{resume}"
+    );
     module
         .verify()
         .unwrap_or_else(|e| panic!("{triple}: post-split coroutine module failed verify: {e}"));
@@ -9585,6 +12178,1353 @@ fn suspend_coroutine_splits_clean_native() {
 #[test]
 fn suspend_coroutine_splits_clean_wasm32() {
     assert_coro_splits_clean_for_triple("wasm32-wasi");
+}
+
+fn pipeline_from_suspending_closure_cleanup_source(capture_strings: bool) -> IrPipeline {
+    let owners = if capture_strings {
+        (
+            r#"let outer_owner = "outer-owner".to_upper();"#,
+            r#"if outer_owner == "never" { panic("outer"); }"#,
+            r#"let middle_owner = "middle-owner".to_upper();"#,
+            r#"if middle_owner == "never" { panic("middle"); }"#,
+            r#"let inner_owner = "inner-owner".to_upper();"#,
+            r#"if inner_owner == "never" { panic("inner"); }"#,
+        )
+    } else {
+        ("", "", "", "", "", "")
+    };
+    let source = format!(
+        r#"
+actor Gate {{
+    receive fn tick() -> i64 {{ 1 }}
+}}
+
+actor Probe {{
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {{
+        {outer_decl}
+        let outer = |outer_gate: LocalPid<Gate>| {{
+            {outer_use}
+            {middle_decl}
+            let middle = |middle_gate: LocalPid<Gate>| {{
+                {middle_use}
+                {inner_decl}
+                let inner = |inner_gate: LocalPid<Gate>| {{
+                    {inner_use}
+                    let value = match await inner_gate.tick() {{
+                        Ok(n) => n,
+                        Err(_) => 0,
+                    }};
+                    value
+                }};
+                inner(middle_gate)
+            }};
+            middle(outer_gate)
+        }};
+        outer(gate)
+    }}
+}}
+"#,
+        outer_decl = owners.0,
+        outer_use = owners.1,
+        middle_decl = owners.2,
+        middle_use = owners.3,
+        inner_decl = owners.4,
+        inner_use = owners.5,
+    );
+    let parsed = hew_parser::parse(&source);
+    assert!(
+        parsed.errors.is_empty(),
+        "suspending-closure cleanup source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "suspending-closure cleanup pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+fn suspending_call_closure_cleanup_drop_count(pipeline: &IrPipeline) -> usize {
+    pipeline
+        .raw_mir
+        .iter()
+        .filter_map(|raw| {
+            let elab = pipeline
+                .elaborated_mir
+                .iter()
+                .find(|candidate| candidate.name == raw.name)?;
+            Some(
+                raw.blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            raw.suspend_kinds.get(&block.id),
+                            Some(hew_mir::SuspendKind::CallClosure { .. })
+                        )
+                    })
+                    .map(|block| {
+                        elab.drop_plans
+                            .iter()
+                            .find_map(|(exit, plan)| {
+                                matches!(
+                                    exit,
+                                    hew_mir::ExitPath::Suspend {
+                                        block: plan_block,
+                                        ..
+                                    } if *plan_block == block.id
+                                )
+                                .then_some(plan.drops.len())
+                            })
+                            .unwrap_or(0)
+                    })
+                    .sum::<usize>(),
+            )
+        })
+        .sum()
+}
+
+fn pipeline_from_fresh_string_suspending_closure_source() -> IrPipeline {
+    let source = r#"
+actor Gate {
+    receive fn tick() -> i64 { 1 }
+}
+
+actor Probe {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let child = |child_gate: LocalPid<Gate>, value: string| {
+            let waited = match await child_gate.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            value.len() + waited
+        };
+        child(gate, "fresh-ledger-owner".to_upper())
+    }
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "fresh-string pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+fn pipeline_from_typed_owner_suspending_closure_source(
+    declarations: &str,
+    owner_decl: &str,
+    owner_use: &str,
+) -> IrPipeline {
+    let source = format!(
+        r#"
+{declarations}
+
+actor Gate {{
+    receive fn tick() -> i64 {{ 1 }}
+}}
+
+actor Probe {{
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {{
+        {owner_decl}
+        let child = |child_gate: LocalPid<Gate>| {{
+            {owner_use}
+            match await child_gate.tick() {{
+                Ok(n) => n,
+                Err(_) => 0,
+            }}
+        }};
+        child(gate)
+    }}
+}}
+"#
+    );
+    let parsed = hew_parser::parse(&source);
+    assert!(
+        parsed.errors.is_empty(),
+        "typed-owner source parse errors: {:?}\n{source}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "typed-owner pipeline diagnostics: {:#?}\n{source}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+fn pipeline_from_resumed_root_owner_source() -> IrPipeline {
+    let source = r#"
+actor Gate {
+    receive fn tick() -> i64 {
+        sleep(5ms);
+        1
+    }
+}
+
+actor Probe {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let root_string = "root-string".to_upper();
+        let root_bytes = "root-bytes".to_bytes();
+        let child = |child_gate: LocalPid<Gate>| {
+            let value = match await child_gate.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            panic("crash after resume");
+            value
+        };
+        let value = child(gate);
+        if root_string.len() + root_bytes.len() == -1 {
+            panic("root owner guard");
+        }
+        value
+    }
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "resumed-root pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+fn suspending_call_closure_drops(pipeline: &IrPipeline) -> Vec<&hew_mir::ElabDrop> {
+    let mut drops = Vec::new();
+    for raw in &pipeline.raw_mir {
+        let Some(elab) = pipeline
+            .elaborated_mir
+            .iter()
+            .find(|candidate| candidate.name == raw.name)
+        else {
+            continue;
+        };
+        for block in &raw.blocks {
+            if !matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(hew_mir::SuspendKind::CallClosure { .. })
+            ) {
+                continue;
+            }
+            if let Some(plan) = elab.drop_plans.iter().find_map(|(exit, plan)| {
+                matches!(
+                    exit,
+                    hew_mir::ExitPath::Suspend {
+                        block: plan_block,
+                        ..
+                    } if *plan_block == block.id
+                )
+                .then_some(plan)
+            }) {
+                drops.extend(&plan.drops);
+            }
+        }
+    }
+    drops
+}
+
+#[test]
+fn resumed_root_owners_register_typed_slots() {
+    let pipeline = pipeline_from_resumed_root_owner_source();
+    let drops = suspending_call_closure_drops(&pipeline);
+    assert_eq!(
+        drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
+        vec![
+            hew_mir::DropKind::CowHeap {
+                release: hew_mir::CowHeapRelease::Bytes,
+            },
+            hew_mir::DropKind::CowHeap {
+                release: hew_mir::CowHeapRelease::String,
+            },
+        ],
+        "the handler/root Suspend plan must carry both unrelated owners in LIFO order"
+    );
+    let ctx = Context::create();
+    let module =
+        build_module(&ctx, &pipeline, "resumed_root_owner_cleanup").expect("root owner module");
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        2,
+        "two root owners must each acquire one lifecycle token"
+    );
+    assert_eq!(
+        ir.matches("define internal void @__hew_frame_cleanup_")
+            .count(),
+        2,
+        "string and Bytes require distinct cached typed thunks"
+    );
+}
+
+#[test]
+fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
+    let cases = [
+        (
+            "bytes",
+            pipeline_from_typed_owner_suspending_closure_source(
+                "",
+                r#"let owner = "bytes-owner".to_bytes();"#,
+                r#"if owner.len() == -1 { panic("bytes"); }"#,
+            ),
+            vec![hew_mir::DropKind::CowHeap {
+                release: hew_mir::CowHeapRelease::Bytes,
+            }],
+            vec!["call void @hew_bytes_drop("],
+        ),
+        (
+            "record",
+            pipeline_from_typed_owner_suspending_closure_source(
+                "record Packet { text: string, data: bytes }",
+                r#"let owner = Packet {
+                    text: "record-owner".to_upper(),
+                    data: "record-bytes".to_bytes(),
+                };"#,
+                r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
+            ),
+            // The fresh bytes producer hands its sole owner directly to
+            // `Packet`; only the record owns a release at suspension.
+            vec![hew_mir::DropKind::RecordInPlace],
+            vec!["call void @__hew_record_drop_inplace_Packet("],
+        ),
+        (
+            "closure",
+            pipeline_from_typed_owner_suspending_closure_source(
+                r#"fn make_nested(label: string) -> fn() -> i64 {
+                    || label.len()
+                }"#,
+                r#"let owner = make_nested("nested-owner".to_upper());"#,
+                r#"if owner() == -1 { panic("closure"); }"#,
+            ),
+            // The callee retains the String captured by the closure env. The
+            // caller keeps the original fresh argument until the suspended
+            // call completes, so both owners need independent cleanup.
+            vec![
+                hew_mir::DropKind::ClosurePair,
+                hew_mir::DropKind::CowHeap {
+                    release: hew_mir::CowHeapRelease::String,
+                },
+            ],
+            vec!["closure_drop_env_free_thunk", "call void @hew_string_drop("],
+        ),
+    ];
+
+    for (label, pipeline, expected_kinds, rituals) in cases {
+        if label == "record" {
+            let ingress_retain_count = pipeline
+                .raw_mir
+                .iter()
+                .filter(|function| function.name == "Probe__recv__run")
+                .flat_map(|function| &function.blocks)
+                .flat_map(|block| &block.instructions)
+                .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
+                .count();
+            assert_eq!(
+                ingress_retain_count, 0,
+                "fresh Bytes aggregate ingress transfers its existing owner; a retain would create an unbalanced producer generation"
+            );
+        }
+        let drops = suspending_call_closure_drops(&pipeline);
+        assert_eq!(
+            drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
+            expected_kinds,
+            "{label}: grounded Suspend plan selected the wrong typed rituals: {drops:#?}"
+        );
+        let ctx = Context::create();
+        let module = build_module(&ctx, &pipeline, &format!("{label}_frame_cleanup"))
+            .unwrap_or_else(|error| panic!("{label}: module build failed: {error:?}"));
+        let ir = module.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+            expected_kinds.len(),
+            "{label}: every owner must acquire one lifecycle token:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("define internal void @__hew_frame_cleanup_")
+                .count(),
+            expected_kinds.len(),
+            "{label}: every distinct typed descriptor must synthesize one cached thunk"
+        );
+        let thunk_bodies = ir
+            .match_indices("define internal void @__hew_frame_cleanup_")
+            .map(|(start, _)| {
+                let tail = &ir[start..];
+                &tail[..tail.find("\n}\n").expect("terminated typed thunk") + 3]
+            })
+            .collect::<Vec<_>>();
+        for ritual in rituals {
+            assert!(
+                thunk_bodies.iter().any(|thunk| thunk.contains(ritual)),
+                "{label}: no typed thunk reused expected ritual `{ritual}`:\n{thunk_bodies:#?}"
+            );
+        }
+        assert!(
+            thunk_bodies
+                .iter()
+                .all(|thunk| !thunk.contains("@hew_dyn_box_free(")),
+            "{label}: frame-slot cleanup must not guess dyn-box ownership:\n{thunk_bodies:#?}"
+        );
+    }
+}
+
+#[test]
+fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
+    let pipeline = pipeline_from_fresh_string_suspending_closure_source();
+    let mut exact_suspend_string_drops = 0;
+    for raw in &pipeline.raw_mir {
+        let Some(elab) = pipeline
+            .elaborated_mir
+            .iter()
+            .find(|candidate| candidate.name == raw.name)
+        else {
+            continue;
+        };
+        for block in &raw.blocks {
+            if !matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(hew_mir::SuspendKind::CallClosure { .. })
+            ) {
+                continue;
+            }
+            let plan = elab.drop_plans.iter().find_map(|(exit, plan)| {
+                matches!(
+                    exit,
+                    hew_mir::ExitPath::Suspend {
+                        block: plan_block,
+                        ..
+                    } if *plan_block == block.id
+                )
+                .then_some(plan)
+            });
+            if let Some(plan) = plan {
+                exact_suspend_string_drops += plan
+                    .drops
+                    .iter()
+                    .filter(|drop| {
+                        drop.ty == hew_types::ResolvedTy::String
+                            && matches!(
+                                drop.kind,
+                                hew_mir::DropKind::CowHeap {
+                                    release: hew_mir::CowHeapRelease::String
+                                }
+                            )
+                    })
+                    .count();
+            }
+        }
+    }
+    assert_eq!(
+        exact_suspend_string_drops, 1,
+        "the grounded MIR Suspend plan must carry the fresh string's single \
+         typed cleanup obligation"
+    );
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "fresh_string_cleanup_authority")
+        .expect("fresh-string cleanup module");
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        1,
+        "the fresh string's Real-call destination must acquire one typed-slot authority"
+    );
+}
+
+#[test]
+fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
+    let captured = pipeline_from_suspending_closure_cleanup_source(true);
+    let capture_free = pipeline_from_suspending_closure_cleanup_source(false);
+    assert_eq!(
+        suspending_call_closure_cleanup_drop_count(&captured),
+        3,
+        "the three capture-bearing caller frames must expose exactly their three \
+         existing Suspend-plan string owners"
+    );
+    assert_eq!(
+        suspending_call_closure_cleanup_drop_count(&capture_free),
+        0,
+        "capture-free caller frames must invent no cleanup obligation"
+    );
+
+    let ctx = Context::create();
+    let captured_module =
+        build_module(&ctx, &captured, "captured_frame_cleanup").expect("captured module");
+    let captured_ir = captured_module.print_to_string().to_string();
+    let arm = "call i64 @hew_cont_crash_cleanup_arm";
+    assert_eq!(
+        captured_ir.matches(arm).count(),
+        3,
+        "each of three obligations must acquire one lifecycle token:\n{captured_ir}"
+    );
+    assert_eq!(
+        captured_ir
+            .matches("define internal void @__hew_frame_cleanup_")
+            .count(),
+        1,
+        "all three string owners must share one typed string cleanup thunk:\n{captured_ir}"
+    );
+    let thunk_start = captured_ir
+        .find("define internal void @__hew_frame_cleanup_")
+        .expect("typed frame-cleanup thunk");
+    let thunk = &captured_ir[thunk_start..];
+    let thunk = &thunk[..thunk.find("\n}\n").expect("terminated cleanup thunk") + 3];
+    assert!(
+        thunk.contains("call void @hew_string_drop("),
+        "the cached thunk must reuse the typed string-drop ritual:\n{thunk}"
+    );
+    assert!(
+        !thunk.contains("invoke ")
+            && !thunk.contains("landingpad")
+            && !thunk.contains("personality"),
+        "generated cleanup thunks use a plain direct-call policy, not an LLVM unwind quarantine; \
+         a Rust panic in the plain-C runtime callee is process-fatal:\n{thunk}"
+    );
+
+    let free_module =
+        build_module(&ctx, &capture_free, "capture_free_frame_cleanup").expect("free module");
+    let free_ir = free_module.print_to_string().to_string();
+    assert_eq!(free_ir.matches(arm).count(), 0);
+    assert!(!free_ir.contains("define internal void @__hew_frame_cleanup_"));
+}
+
+fn assert_helper_snapshot_cleanup_arm_for_triple(triple: &str) {
+    use hew_mir::{CowHeapRelease, DropKind};
+
+    let ctx = Context::create();
+    let machine = target_machine_for_triple(triple)
+        .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+    let target_data = machine.get_target_data();
+    let expected_size = target_data.get_store_size(&ctx.ptr_type(AddressSpace::default()));
+    let expected_align =
+        u64::from(target_data.get_abi_alignment(&ctx.ptr_type(AddressSpace::default())));
+    let module = ctx.create_module("helper_snapshot_cleanup_arm");
+    module.set_triple(&TargetTriple::create(triple));
+    module.set_data_layout(&target_data.get_data_layout());
+    let harness = build_harness_with_target_data(&ctx, &[], &[], target_data);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "ordinary_helper");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let descriptor = ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: CowHeapRelease::String,
+        },
+        guard: None,
+    };
+    let (slot, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("helper string slot");
+    let thunk = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect("helper cleanup thunk");
+
+    let frame_interior_error = emit_crash_cleanup_arm(
+        &fn_ctx,
+        ctx.i64_type().const_zero(),
+        slot,
+        slot_ty,
+        thunk,
+        CrashCleanupStorage::Snapshot,
+        1,
+    )
+    .expect_err("a helper snapshot must reject frame-interior relocation");
+    assert!(
+        matches!(
+            frame_interior_error,
+            CodegenError::FailClosed(ref message)
+                if message.contains("frame-owned trait object")
+        ),
+        "{triple}: helper FrameOwned refusal must name the unsupported ownership: \
+         {frame_interior_error:?}"
+    );
+
+    emit_crash_cleanup_arm(
+        &fn_ctx,
+        ctx.i64_type().const_zero(),
+        slot,
+        slot_ty,
+        thunk,
+        CrashCleanupStorage::Snapshot,
+        0,
+    )
+    .expect("bitwise helper snapshot arm");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .unwrap_or_else(|error| panic!("{triple}: helper snapshot module verify: {error}"));
+    let ir = module.print_to_string().to_string();
+    let arm_lines = ir
+        .lines()
+        .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arm_lines.len(),
+        1,
+        "{triple}: helper must emit exactly one accepted snapshot arm:\n{ir}"
+    );
+    let arm = arm_lines[0];
+    assert!(
+        arm.contains(&format!(
+            "i64 0, ptr %local_0, i64 {expected_size}, i64 {expected_align}, ptr @__hew_frame_cleanup_"
+        )) && arm.contains(", i32 1, i32 0)"),
+        "{triple}: helper arm must use the stack alloca, target ABI size/alignment, \
+         SNAPSHOT storage, and bitwise relocation:\n{arm}"
+    );
+    assert!(
+        ir.contains(&format!("%local_0 = alloca ptr, align {expected_align}")),
+        "{triple}: helper proof must originate at an ordinary stack slot:\n{ir}"
+    );
+}
+
+#[test]
+fn helper_snapshot_cleanup_arm_is_target_correct_native_and_wasm32() {
+    assert_helper_snapshot_cleanup_arm_for_triple(&native_emission_triple());
+    assert_helper_snapshot_cleanup_arm_for_triple("wasm32-wasi");
+}
+
+fn pipeline_from_helper_snapshot_raw_trap_source() -> IrPipeline {
+    let source = r#"
+record Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_trap() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap::new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table["missing"]
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run() -> i64 {
+        let _ = await gate.tick();
+        helper_trap()
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run();
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "helper snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "helper snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_snapshot_raw_trap_source();
+    let helper_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "helper_trap")
+        .expect("helper_trap raw MIR");
+    assert!(
+        matches!(helper_raw.locals.get(9), Some(ResolvedTy::Bytes))
+            && helper_raw.local_names.get(9).and_then(Option::as_deref)
+                == Some("__hew_produced_value"),
+        "local 9 is the produced bytes owner transferred into Bundle.data"
+    );
+    let helper_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "helper_trap")
+        .expect("helper_trap elaborated MIR");
+    let mut owner_locals = helper_elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter_map(|drop| match drop.place {
+            Place::Local(local) => Some(local),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    owner_locals.sort_unstable();
+    owner_locals.dedup();
+    assert_eq!(
+        owner_locals,
+        [2, 5, 11, 14, 17, 19, 21],
+        "grounded helper owner topology drifted"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "ordinary_helper_snapshot_lifecycle",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: helper lifecycle build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: helper lifecycle verify: {error}"));
+        let helper = module
+            .get_function("helper_trap")
+            .expect("helper_trap LLVM function")
+            .print_to_string()
+            .to_string();
+        assert_eq!(
+            helper
+                .lines()
+                .filter(|line| {
+                    line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
+                })
+                .count(),
+            7,
+            "{triple}: every exact owner needs one stable token alloca:\n{helper}"
+        );
+        let arms = helper
+            .lines()
+            .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arms.len(),
+            7,
+            "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
+        );
+        assert!(
+            arms.iter().all(|line| line.contains(", i32 1, i32 0)")),
+            "{triple}: every helper owner must use SNAPSHOT+bitwise relocation:\n{arms:#?}"
+        );
+        assert_eq!(
+            helper
+                .matches("call i1 @hew_cont_crash_cleanup_deactivate")
+                .count(),
+            7,
+            "{triple}: every destination write must gate stale authority before replacement"
+        );
+        assert!(
+            helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire")
+                && !helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_active_trap"),
+            "{triple}: ordinary drops own every destructor site while the return \
+             sweep only retires stale lexical tokens:\n{helper}"
+        );
+    }
+}
+
+fn pipeline_from_helper_owner_transfer_source() -> IrPipeline {
+    let source = r#"
+fn helper_transfer() -> i64 {
+    let source = "transfer-owner".to_upper();
+    if source.len() == -1 { panic("keep source live before transfer"); }
+    let destination = source;
+    destination.len()
+}
+fn main() { println(helper_transfer()); }
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "transfer pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_owner_move_deactivates_source_and_retires_stale_token() {
+    let pipeline = pipeline_from_helper_owner_transfer_source();
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "helper_transfer")
+        .expect("helper_transfer raw MIR");
+    let elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "helper_transfer")
+        .expect("helper_transfer elaborated MIR");
+    let owner_places = elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .map(|drop| drop.place)
+        .collect::<HashSet<_>>();
+    let transfer = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instr| match instr {
+            Instr::Move { dest, src }
+                if owner_places.contains(dest) && owner_places.contains(src) =>
+            {
+                Some((*src, *dest))
+            }
+            _ => None,
+        })
+        .expect("source-owner to destination-owner Move");
+    assert_ne!(transfer.0, transfer.1);
+
+    let ctx = Context::create();
+    let module =
+        build_module(&ctx, &pipeline, "helper_owner_transfer").expect("transfer module build");
+    module.verify().expect("transfer module verify");
+    let helper = module
+        .get_function("helper_transfer")
+        .expect("helper_transfer LLVM function")
+        .print_to_string()
+        .to_string();
+    assert!(
+        helper
+            .matches("call i1 @hew_cont_crash_cleanup_deactivate")
+            .count()
+            >= 3,
+        "initial destination gates plus the owner-to-owner Move must deactivate \
+         both destination and source:\n{helper}"
+    );
+    assert_eq!(
+        helper
+            .lines()
+            .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+            .count(),
+        2,
+        "source and destination must each acquire their own lexical snapshot token"
+    );
+    let Place::Local(source_local) = transfer.0 else {
+        panic!("transfer source must be a local")
+    };
+    assert!(
+        helper.contains(&format!(
+            "helper_crash_cleanup_return_retire_{source_local}_call"
+        )),
+        "normal return must retire the inactive source token left by transfer:\n{helper}"
+    );
+}
+
+fn pipeline_from_helper_projection_snapshot_transfer_source() -> IrPipeline {
+    let source = r#"
+#[opaque]
+type RawWitness {}
+#[resource]
+type Witness { handle: RawWitness }
+impl Witness {
+    fn close(self) {
+        unsafe { hew_xml_free(self.handle); }
+    }
+}
+extern "C" {
+    fn hew_xml_parse(source: string) -> RawWitness;
+    fn hew_xml_free(handle: RawWitness);
+}
+enum Pair { Both(Witness, string); Nothing; }
+fn consume(p: Pair, trigger: i64) -> i64 {
+    match p {
+        Pair::Both(witness, text) => {
+            witness.close();
+            if trigger != 0 { panic("crash after explicit close"); }
+            text.len()
+        },
+        Pair::Nothing => 0,
+    }
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        let pair = Pair::Both(
+            Witness {
+                handle: unsafe { hew_xml_parse("<x/>") },
+            },
+            "helper-projection".to_upper(),
+        );
+        consume(pair, trigger) + seed
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run(0);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "projection snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "projection snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_projection_snapshot_transfer_source();
+    let consume_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume raw MIR");
+    assert!(
+        consume_raw
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot { .. } | Instr::AggregateProjectionNeutralize { .. }
+            )),
+        "the source must retain a projection-neutralize ownership handoff: {consume_raw:#?}"
+    );
+    // Since 06a241f40 (discharge affine resources exactly once), an
+    // explicit `witness.close()` is lowered as `IntentKind::Discharge`: the
+    // affine resource's release ritual runs at the discharge site itself,
+    // so the parameter carries no exit-cleanup drop-plan entry — an empty
+    // `drop_plans` for this local is the correct post-06a241f40 shape, not
+    // a regression. The dataflow fact under test moves from "retains a
+    // drop-plan descriptor" to "the checker recorded the discharge".
+    let consume_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume elaborated MIR");
+    assert!(
+        consume_elab.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::Use {
+                name,
+                intent: IntentKind::Discharge,
+                ..
+            } if name == "witness"
+        )),
+        "the projected witness binding must discharge its affine resource \
+         exactly once (IntentKind::Discharge), not retain a separate \
+         exit-cleanup drop-plan descriptor: {consume_elab:#?}"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "helper_projection_snapshot_transfer",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: projection snapshot build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: projection snapshot verify: {error}"));
+        let helper = module
+            .get_function("consume")
+            .expect("consume LLVM function")
+            .print_to_string()
+            .to_string();
+
+        // Since 06a241f40, a Discharge-intent parameter runs its release
+        // ritual unconditionally at the discharge site itself, before the
+        // crash-triggering branch is even reached — there is no later
+        // window in which crash-cleanup replay could observe (and
+        // double-release) this resource, so no snapshot escrow is
+        // registered for it. `projected_resource_close_then_crash_releases_source_snapshot_once`
+        // (hew-cli/tests/enum_resource_variant_leak_oracle.rs) proves the
+        // equivalent enum-payload shape end to end under MallocScribble
+        // (exit 0, exact stdout, both the normal and the handled-crash
+        // path) — the invariant under test here (neutralize before close)
+        // stays covered; only the escrow bookkeeping it used to route
+        // through is gone.
+        let neutralize = helper
+            .find("store %Witness zeroinitializer")
+            .unwrap_or_else(|| panic!("{triple}: missing projected payload neutralize:\n{helper}"));
+        let close = helper
+            .find("call i8 @\"Witness::close\"")
+            .unwrap_or_else(|| panic!("{triple}: missing transferred owner close:\n{helper}"));
+
+        assert!(
+            neutralize < close,
+            "{triple}: the projected payload must be neutralized before the \
+             transferred owner closes it:\n{helper}"
+        );
+        assert!(
+            !helper.contains("hew_cont_crash_cleanup"),
+            "{triple}: a Discharge-intent parameter closes its resource at the \
+             discharge site itself and must not register a separate \
+             crash-cleanup escrow for it:\n{helper}"
+        );
+        assert!(
+            helper.contains("@hew_panic_msg") && helper.contains("cancel_exit"),
+            "{triple}: the same helper must retain the panic and \
+             actor-cancellation cooperate paths:\n{helper}"
+        );
+    }
+}
+
+fn pipeline_from_helper_bytes_mutation_source() -> IrPipeline {
+    let source = r#"
+fn clear_then_maybe_crash(trigger: i64) -> i64 {
+    let value: bytes = "owned-bytes".to_bytes();
+    value.clear();
+    if trigger != 0 {
+        panic("crash after bytes.clear");
+    }
+    value.len()
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        clear_then_maybe_crash(trigger) + seed
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run(0);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "bytes snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "bytes snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_bytes_mutation_source();
+    let helper_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "clear_then_maybe_crash")
+        .expect("bytes helper raw MIR");
+    let clear = helper_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find(|instr| {
+            matches!(
+                instr,
+                Instr::CallRuntimeAbi(call)
+                    if call.family()
+                        == hew_types::runtime_call::RuntimeCallFamily::BytesClear
+            )
+        })
+        .expect("bytes helper must call the typed clear family");
+    let Instr::CallRuntimeAbi(clear_call) = clear else {
+        unreachable!("filtered to CallRuntimeAbi above")
+    };
+    let receiver = *clear_call
+        .args()
+        .first()
+        .expect("bytes clear has one receiver");
+    assert_eq!(
+        hew_mir::dataflow::instr_interior_write_places(clear),
+        vec![receiver],
+        "the owned bytes local is the in-place runtime mutation authority"
+    );
+    let helper_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "clear_then_maybe_crash")
+        .expect("bytes helper elaborated MIR");
+    assert!(
+        helper_elab
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| drop.place == receiver),
+        "the owned bytes local must retain a typed cleanup descriptor: {helper_elab:#?}"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "helper_bytes_snapshot_mutation",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: bytes snapshot build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: bytes snapshot verify: {error}"));
+        let helper = module
+            .get_function("clear_then_maybe_crash")
+            .expect("bytes helper LLVM function")
+            .print_to_string()
+            .to_string();
+
+        let clear = helper
+            .find("call void @hew_bytes_clear")
+            .unwrap_or_else(|| panic!("{triple}: missing bytes clear call:\n{helper}"));
+        let deactivate = helper[..clear]
+            .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing snapshot deactivate before bytes clear:\n{helper}")
+            });
+        let refresh = helper[clear..]
+            .find("call i64 @hew_cont_crash_cleanup_arm")
+            .map(|offset| clear + offset)
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing snapshot refresh after bytes clear:\n{helper}")
+            });
+        assert!(
+            deactivate < clear && clear < refresh,
+            "{triple}: bytes snapshot must deactivate before the runtime mutation \
+             and refresh afterward:\n{helper}"
+        );
+        assert!(
+            helper[refresh..].contains(", i32 1, i32 0)"),
+            "{triple}: refreshed bytes owner must remain a Snapshot escrow:\n{helper}"
+        );
+        assert!(
+            helper.contains("@hew_panic_msg")
+                && !helper.contains("helper_crash_cleanup_return_drop")
+                && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire")
+                && helper.contains("cancel_exit"),
+            "{triple}: normal return, crash, and cancellation cleanup must remain \
+             present without a duplicate return destructor:\n{helper}"
+        );
+    }
+}
+
+fn assert_suspending_closure_frame_cleanup_splits_for_triple(triple: &str) {
+    let ctx = Context::create();
+    let pipeline = pipeline_from_suspending_closure_cleanup_source(true);
+    let machine = target_machine_for_triple(triple)
+        .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+    let module = build_module_for_target(
+        &ctx,
+        &pipeline,
+        "suspending_closure_frame_cleanup_split",
+        Some(&machine),
+        None,
+    )
+    .unwrap_or_else(|error| panic!("{triple}: cleanup module build: {error:?}"));
+    for function in module.get_functions() {
+        let name = function.get_name().to_string_lossy();
+        if function.count_basic_blocks() > 0
+            && (name == "Probe__recv__run"
+                || name.starts_with("__hew_closure_invoke_Probe__recv__run"))
+        {
+            function.set_linkage(Linkage::External);
+        }
+    }
+    crate::coro::run_coro_passes(&module, &machine)
+        .unwrap_or_else(|error| panic!("{triple}: coro passes: {error:?}"));
+    module
+        .verify()
+        .unwrap_or_else(|error| panic!("{triple}: post-CoroSplit verify: {error}"));
+    let ir = module.print_to_string().to_string();
+    let arm = "call i64 @hew_cont_crash_cleanup_arm";
+    assert_eq!(
+        ir.matches(arm).count(),
+        3,
+        "{triple}: three callers must each retain one lifecycle arm after \
+         CoroSplit:\n{ir}"
+    );
+    assert_eq!(
+        ir.matches("define internal void @__hew_frame_cleanup_")
+            .count(),
+        1,
+        "{triple}: equal string drop descriptors must retain one cached typed thunk"
+    );
+    let expected_slot_size = u64::from(machine.get_target_data().get_pointer_byte_size(None));
+    let expected_slot_align = expected_slot_size;
+    assert_eq!(
+        ir.lines()
+            .filter(|line| {
+                line.contains(arm)
+                    && line.contains(&format!(
+                        "i64 {expected_slot_size}, i64 {expected_slot_align}, ptr @__hew_frame_cleanup_"
+                    ))
+                    && line.contains(", i32 0, i32 0)")
+            })
+            .count(),
+        3,
+        "{triple}: every direct-frame arm must carry the target's string-slot \
+         width/alignment plus bitwise relocation in the target-neutral ABI:\n{ir}"
+    );
+    let mut arm_functions = 0;
+    for function in module.get_functions() {
+        let name = function.get_name().to_string_lossy();
+        if function.count_basic_blocks() == 0 || name.starts_with("__hew_frame_cleanup_") {
+            continue;
+        }
+        let body = function.print_to_string().to_string();
+        if body.contains(arm) {
+            arm_functions += 1;
+            assert!(
+                body.contains("getelementptr inbounds")
+                    && (body.contains("Frame") || body.contains(".resume")),
+                "{triple}: direct arm slot must be derived from the split coroutine \
+                 frame, not an unrelated allocation:\n{body}"
+            );
+        }
+    }
+    assert_eq!(
+        arm_functions, 3,
+        "{triple}: each caller must retain one frame-derived lifecycle arm:\n{ir}"
+    );
+}
+
+#[test]
+fn suspending_closure_frame_cleanup_splits_native() {
+    assert_suspending_closure_frame_cleanup_splits_for_triple(&native_emission_triple());
+}
+
+#[test]
+fn suspending_closure_frame_cleanup_splits_wasm32() {
+    assert_suspending_closure_frame_cleanup_splits_for_triple("wasm32-wasi");
 }
 
 /// Build an `IrPipeline` with a coroutine carrying TWO non-final suspends
@@ -9686,8 +13626,7 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -9882,8 +13821,7 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -9978,6 +13916,116 @@ fn suspendable_handler_fn(symbol: &str) -> RawMirFunction {
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
+    }
+}
+
+fn suspendable_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    let ptr_ty = ResolvedTy::Pointer {
+        is_mutable: true,
+        pointee: Box::new(ResolvedTy::Unit),
+    };
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ptr_ty,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::I64],
+        locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                ],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: true,
+                },
+            },
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
+fn owned_string_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::String],
+        locals: vec![ResolvedTy::String],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            },
+            // This disconnected trap block supplies the crash-only drop-plan
+            // authority for the incoming owner without adding a normal-return
+            // source drop after the state-store consumes it.
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow,
+                },
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
     }
 }
 
@@ -10104,8 +14152,7 @@ fn pipeline_with_actor_handlers(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -10186,6 +14233,163 @@ fn dispatch_trampoline_drives_suspendable_handler() {
     module
         .verify()
         .unwrap_or_else(|e| panic!("suspend dispatch module failed verify: {e}"));
+}
+
+#[test]
+fn coroutine_state_replacement_scratch_stays_in_alloca_prologue() {
+    let ctx = Context::create();
+    let symbol = "SuspendStateActor__recv__work";
+    let mut layout = unit_suspendable_layout(symbol, 17);
+    layout.param_tys = vec![ResolvedTy::I64];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "SuspendStateActor",
+        vec![(layout, suspendable_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::I64];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds =
+        Some(vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_SuspendStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_SuspendStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "SuspendStateActor".to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    });
+
+    let module = build_module(&ctx, &pipeline, "suspend_state_scratch")
+        .expect("suspendable state-store handler must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let prologue_start = body
+        .find("\nalloca.prologue:")
+        .unwrap_or_else(|| panic!("coroutine must carry an alloca.prologue:\n{body}"));
+    let coro_id = body
+        .find("@llvm.coro.id")
+        .unwrap_or_else(|| panic!("coroutine must initialize its coroutine id:\n{body}"));
+    let coro_begin = body
+        .find("@llvm.coro.begin")
+        .unwrap_or_else(|| panic!("coroutine must begin before its alloca prologue:\n{body}"));
+    assert!(
+        coro_id < coro_begin && coro_begin < prologue_start,
+        "coro.id and coro.begin must remain ordered in the real entry block before alloca.prologue:\n{body}"
+    );
+    let entry = &body[..prologue_start];
+    assert!(
+        entry.contains("@llvm.coro.id") && entry.contains("@llvm.coro.begin"),
+        "coro.id/coro.begin must remain in the real entry block:\n{body}"
+    );
+    assert!(
+        !entry.contains("state_f0_replacement"),
+        "replacement scratch must not precede coro.begin:\n{body}"
+    );
+    let prologue_tail = &body[prologue_start..];
+    let prologue_end = prologue_tail
+        .find("\nbb0:")
+        .unwrap_or_else(|| panic!("missing first MIR block after alloca prologue:\n{body}"));
+    let prologue = &prologue_tail[..prologue_end];
+    assert_eq!(
+        prologue
+            .matches("%state_f0_replacement = alloca i64")
+            .count(),
+        1,
+        "coroutine replacement scratch must be allocated once in alloca.prologue:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("suspend state scratch module failed verify: {e}"));
+}
+
+#[test]
+fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
+    let ctx = Context::create();
+    let symbol = "OwnedStateActor__recv__replace";
+    let mut layout = unit_suspendable_layout(symbol, 23);
+    layout.param_tys = vec![ResolvedTy::String];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "OwnedStateActor",
+        vec![(layout, owned_string_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::String];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds = Some(vec![StateFieldCloneKind::String]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_OwnedStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_OwnedStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "OwnedStateActor".to_string(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec!["value".to_string()],
+    });
+    pipeline
+        .elaborated_mir
+        .push(hew_mir::ElaboratedMirFunction {
+            name: symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: Vec::new(),
+            decisions: Vec::new(),
+            blocks: Vec::new(),
+            drop_plans: vec![(
+                hew_mir::ExitPath::Panic { block: 1 },
+                hew_mir::DropPlan {
+                    drops: vec![frame_cleanup_string_descriptor(Place::Local(0))],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: Vec::new(),
+        });
+
+    let module = build_module(&ctx, &pipeline, "owned_state_transfer")
+        .expect("owned state transfer module must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let begin = body
+        .find("@hew_dispatch_state_cleanup_begin_replace")
+        .expect("fatal begin-replace call");
+    let materialize_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("ptr %state_f0_replacement"))
+        .unwrap_or_else(|| panic!("missing exact replacement materialization:\n{body}"));
+    let materialize = body
+        .find(materialize_line)
+        .expect("materialization line belongs to function body");
+    let old_release = body
+        .find("call void @hew_string_drop")
+        .expect("old state owner release");
+    let transfer = body
+        .find("@hew_dispatch_state_cleanup_prepare_transfer")
+        .expect("source-token replacement preparation");
+    let live_store_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
+        .unwrap_or_else(|| panic!("missing live actor-state store:\n{body}"));
+    let live_store = body
+        .find(live_store_line)
+        .expect("live store line belongs to function body");
+    assert!(
+        begin < materialize
+            && materialize < old_release
+            && old_release < transfer
+            && transfer < live_store,
+        "token path must order begin < materialize < old release < prepare-transfer < live store:\n{body}"
+    );
+    let rejected = body
+        .find("state_f0_crash_prepare_transfer_rejected:")
+        .expect("explicit rejected-transfer block");
+    let rejected_tail = &body[rejected..];
+    assert!(
+        rejected_tail.contains("call void @hew_dispatch_state_cleanup_abort_invariant()")
+            && rejected_tail.contains("unreachable"),
+        "prepare-transfer false must terminate the process, never resume actor recovery:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("owned state transfer module failed verify: {e}"));
 }
 
 /// A run-to-completion handler's trampoline arm is byte-identical to the
@@ -10898,6 +15102,111 @@ fn main() {
     hew_mir::lower_hir_module(&output.module)
 }
 
+#[test]
+fn generator_env_indirect_enum_field_uses_value_abi_pointer_layout() {
+    let source = r#"
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    receive gen fn emit(tree: Tree) -> i64 {
+        yield 1;
+        match tree {
+            Leaf(value) => yield value,
+            Node(_, _) => yield 2,
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    let tree = Node(Leaf(1), Leaf(2));
+    let _stream = streamer.emit(tree);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&tc_output);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator indirect-enum pipeline must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let env_name = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => match &env.ty {
+                ResolvedTy::Named { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("receive generator must carry a named environment");
+    let value_abi_records =
+        value_abi_record_names(&pipeline).expect("value-ABI record discovery must succeed");
+    assert!(
+        value_abi_records.contains(env_name),
+        "generator environment `{env_name}` must be classified as a value-ABI record"
+    );
+    let env_layout = pipeline
+        .record_layouts
+        .iter()
+        .find(|layout| layout.name == env_name)
+        .expect("generator environment record layout");
+    let tree_field = env_layout
+        .field_tys
+        .iter()
+        .position(|ty| matches!(ty, ResolvedTy::Named { name, .. } if name == "Tree"))
+        .expect("generator environment must contain the captured Tree");
+
+    let ctx = Context::create();
+    let target_data = host_target_data();
+    let layouts = crate::layout::predeclare_named_layouts(
+        &ctx,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+        &pipeline.machine_layouts,
+        &pipeline.opaque_handle_names,
+    )
+    .expect("named layouts must predeclare");
+    crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &pipeline.record_layouts,
+        &layouts,
+        &target_data,
+        &pipeline.enum_layouts,
+        &value_abi_records,
+    )
+    .expect("generator environment body must use value-ABI field lowering");
+    let tree_field = u32::try_from(tree_field).expect("field index fits u32");
+    assert!(
+        matches!(
+            layouts[env_name].get_field_type_at_index(tree_field),
+            Some(BasicTypeEnum::PointerType(_))
+        ),
+        "captured indirect enum must occupy a pointer field in the generator environment"
+    );
+}
+
 /// S2/E9: a real `SuspendingAsk` carrier (the `await` in `Coordinator.run`)
 /// — including the abandon-cleanup edge that frees the reply channel on
 /// `coro.destroy` — must build, CoroSplit, and pass `module.verify()` on the
@@ -10935,9 +15244,9 @@ fn assert_suspending_ask_splits_clean_for_triple(triple: &str) {
     // the shared coro cleanup (S2 — without it `ch` leaks on abandon).
     let ir_pre = module.print_to_string().to_string();
     assert!(
-            ir_pre.contains("suspending_ask_abandon_cleanup:"),
-            "{triple}: the SuspendingAsk destroy edge must route through the abandon-cleanup block:\n{ir_pre}"
-        );
+        ir_pre.contains("suspending_ask_abandon_cleanup:"),
+        "{triple}: the SuspendingAsk destroy edge must route through the abandon-cleanup block:\n{ir_pre}"
+    );
     assert!(
         ir_pre.contains("call void @hew_reply_channel_cancel(ptr %suspending_ask_ch)")
             && ir_pre.contains("call void @hew_reply_channel_free(ptr %suspending_ask_ch)"),
@@ -10948,13 +15257,13 @@ fn assert_suspending_ask_splits_clean_for_triple(triple: &str) {
     // binds AskError::OrphanedAsk (= 11) when set, instead of the TLS
     // last-error slot — matching the blocking-ask path's error semantics.
     assert!(
-            ir_pre.contains("call i32 @hew_reply_channel_is_orphaned(ptr %suspending_ask_ch)"),
-            "{triple}: the SuspendingAsk null-reply edge must read the channel orphaned flag:\n{ir_pre}"
-        );
+        ir_pre.contains("call i32 @hew_reply_channel_is_orphaned(ptr %suspending_ask_ch)"),
+        "{triple}: the SuspendingAsk null-reply edge must read the channel orphaned flag:\n{ir_pre}"
+    );
     assert!(
-            ir_pre.contains("select i1 %suspending_ask_orphaned_flag, i32 11,"),
-            "{triple}: a null reply on an orphaned channel must bind AskError::OrphanedAsk (11):\n{ir_pre}"
-        );
+        ir_pre.contains("select i1 %suspending_ask_orphaned_flag, i32 11,"),
+        "{triple}: a null reply on an orphaned channel must bind AskError::OrphanedAsk (11):\n{ir_pre}"
+    );
 
     // Keep the awaiting ramp externally visible so CoroSplit's CGSCC walk
     // processes it (same probe-reachability handling as the sibling tests).
@@ -11003,7 +15312,7 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
     let mut record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
     // Register the per-instantiation struct under its mangled key, mirroring
     // `register_record_layouts` for a generic record.
-    let key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+    let key = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
     let st = ctx.opaque_struct_type(&key);
     st.set_body(
         &[
@@ -11028,7 +15337,7 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
     // the heap decision belongs to the gate's record-aware outer guard, which
     // excludes it for owning no heap. (Pre-split this predicate folded the
     // heap check in; the gate now owns it — `dedup-semantic-boundary`.)
-    let bc_key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
+    let bc_key = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
     let bc_st = ctx.opaque_struct_type(&bc_key);
     bc_st.set_body(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
     record_layouts.structs.insert(bc_key, bc_st);
@@ -11052,8 +15361,8 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
 }
 
 /// Slice 3 — `record_inplace_drop_name` resolves the per-instantiation
-/// helper name. A bare-name monomorphic record keeps its (prefix-stripped)
-/// name; a generic INSTANTIATION mangles to the same `hew_hir::mangle`d key
+/// helper name. A monomorphic record keeps its full canonical owner; a generic
+/// INSTANTIATION mangles to the same `hew_hir::mangle_layout_key` key
 /// the MIR admit authority and the synthesis seed use (`Pair$$i64$string`),
 /// so the `__hew_record_drop_inplace_<key>` call resolves the synthesised
 /// body. A non-record type fails closed.
@@ -11064,13 +15373,13 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         record_inplace_drop_name(&ResolvedTy::named_user("PairIS", vec![])).unwrap(),
         "PairIS",
     );
-    // Imported bare name: module prefix stripped.
+    // Imported monomorphic record: canonical owner is preserved.
     assert_eq!(
         record_inplace_drop_name(&ResolvedTy::named_user("process.CommandOutput", vec![])).unwrap(),
-        "CommandOutput",
+        "process.CommandOutput",
     );
     // Generic instantiation: mangled to the registered layout key.
-    let expected = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+    let expected = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
     assert_eq!(
         record_inplace_drop_name(&ResolvedTy::named_user(
             "Pair",
@@ -11078,6 +15387,43 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         ))
         .unwrap(),
         expected,
+    );
+    // Compiler cursors use the discriminator-selected synthetic record key;
+    // a same-leaf user record cannot select this helper namespace.
+    let cursor_args = vec![ResolvedTy::I64, ResolvedTy::String];
+    let cursor_expected =
+        hew_hir::synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &cursor_args)
+            .unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "HashMapIter",
+            hew_types::BuiltinType::HashMapIter,
+            cursor_args.clone(),
+        ))
+        .unwrap(),
+        cursor_expected,
+    );
+    assert_ne!(
+        record_inplace_drop_name(&ResolvedTy::named_user("HashMapIter", cursor_args)).unwrap(),
+        cursor_expected,
+    );
+    // Fixed-shape compiler records share the same disjoint namespace. A user
+    // record with the source-facing leaf `CrashInfo` keeps its own ordinary
+    // helper key and therefore cannot inherit the builtin message-field drop.
+    let crash_info_expected =
+        hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[]).unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "CrashInfo",
+            hew_types::BuiltinType::CrashInfo,
+            vec![],
+        ))
+        .unwrap(),
+        crash_info_expected,
+    );
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_user("CrashInfo", vec![])).unwrap(),
+        "CrashInfo",
     );
     // A non-record type fails closed (never a dangling helper name).
     assert!(matches!(
@@ -11370,14 +15716,30 @@ fn empty_drop_witnesses<'a, 'ctx>(
     machine_layouts: &'a MachineLayoutMap<'ctx>,
     record_structs: &'a RecordLayoutMap<'ctx>,
 ) -> DropSynthWitnesses<'a, 'ctx> {
+    static EMPTY_LIFECYCLES: std::sync::LazyLock<hew_hir::LifecycleRegistry> =
+        std::sync::LazyLock::new(hew_hir::LifecycleRegistry::default);
     DropSynthWitnesses {
         enum_layouts: &[],
         machine_layouts,
         target_data,
         record_layouts: &[],
         record_structs,
-        resource_record_close: &[],
+        lifecycle_registry: &EMPTY_LIFECYCLES,
     }
+}
+
+fn test_user_close(name: &str, symbol: &str) -> ResourceCloseAuthority {
+    ResourceCloseAuthority::User(Box::new(hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new(name),
+        close_declaration: hew_types::DefId::new(symbol),
+        release_declaration: hew_types::DefId::new(symbol),
+        close_symbol: symbol.to_string(),
+        release_symbol: symbol.to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    }))
 }
 
 /// Happy path: parent struct field 0 IS the `{ ptr, i32, i32 }` Bytes-
@@ -11577,6 +15939,121 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
     }
 }
 
+#[test]
+fn builtin_resource_field_drop_interns_typed_runtime_release() {
+    for (name, descriptor, return_bits) in [
+        (
+            "Receiver",
+            hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            None,
+        ),
+        (
+            "LambdaPid",
+            hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+            Some(32),
+        ),
+    ] {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "builtin_resource_field_drop");
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
+
+        emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Resource {
+                name: name.to_string(),
+                close: ResourceCloseAuthority::Runtime(descriptor),
+            },
+            &w,
+        )
+        .unwrap_or_else(|error| panic!("{name} resource drop failed: {error}"));
+        builder
+            .build_return(Some(&ctx.i32_type().const_zero()))
+            .expect("host return");
+
+        let close_fn = llvm_mod
+            .get_function(descriptor.c_symbol())
+            .unwrap_or_else(|| panic!("{} runtime declaration missing", descriptor.c_symbol()));
+        assert_eq!(close_fn.count_params(), 1);
+        assert_eq!(
+            close_fn
+                .get_type()
+                .get_return_type()
+                .map(|ty| ty.into_int_type().get_bit_width()),
+            return_bits,
+            "{} must retain its runtime ABI return type",
+            descriptor.c_symbol()
+        );
+        assert!(
+            llvm_mod.verify().is_ok(),
+            "{name} resource drop module must verify"
+        );
+        let ir = llvm_mod.print_to_string().to_string();
+        let call_prefix = if return_bits.is_some() {
+            "call i32"
+        } else {
+            "call void"
+        };
+        assert!(
+            ir.contains(&format!("{call_prefix} @{}", descriptor.c_symbol())),
+            "{name} drop must call its typed runtime release; IR:\n{ir}",
+        );
+    }
+}
+
+#[test]
+fn user_resource_field_drop_uses_generated_hew_function() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+    let (llvm_mod, builder, slot, _) =
+        bytes_field_drop_test_harness(&ctx, parent_st, "user_resource_field_drop");
+    llvm_mod.add_function(
+        "Pattern::free",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let td = host_target_data();
+    let ml = MachineLayoutMap::new();
+    let rs = RecordLayoutMap::new();
+    let w = empty_drop_witnesses(&td, &ml, &rs);
+
+    emit_field_drop_step(
+        &ctx,
+        &llvm_mod,
+        &builder,
+        Some(parent_st),
+        slot,
+        0,
+        &StateFieldCloneKind::Resource {
+            name: "Pattern".to_string(),
+            close: test_user_close("Pattern", "Pattern::free"),
+        },
+        &w,
+    )
+    .expect("user resource drop must resolve the generated Hew function");
+    builder
+        .build_return(Some(&ctx.i32_type().const_zero()))
+        .expect("host return");
+
+    assert!(llvm_mod.verify().is_ok());
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("call void @\"Pattern::free\""),
+        "user resource drop must call the generated Hew function; IR:\n{ir}",
+    );
+}
+
 // ── overwrite-release synthesis (record / enum state-field re-store) ──
 //
 // The synthesised `__hew_{record,enum}_overwrite_release_<Name>(old, new)`
@@ -11586,6 +16063,130 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
 // unchanged — an unguarded drop is a use-after-free), and (b) fail
 // closed on classification drift instead of emitting a walk over the
 // wrong shape.
+
+#[test]
+fn builtin_handle_field_overwrite_fails_closed_before_store() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("builtin_handle_field_overwrite_refusal");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(
+        &ctx,
+        &llvm_mod,
+        &harness,
+        "builtin_handle_field_overwrite_probe",
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let field_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "old_handle_slot")
+        .expect("old handle slot");
+    let src_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "new_handle_slot")
+        .expect("new handle slot");
+    let src_val = fn_ctx
+        .builder
+        .build_load(ptr_ty, src_ptr, "new_handle")
+        .expect("new handle load");
+
+    for kind in [
+        IoHandleKind::Stream,
+        IoHandleKind::Sink,
+        IoHandleKind::Generator,
+        IoHandleKind::CancellationToken,
+    ] {
+        let err = emit_field_overwrite_release(
+            &fn_ctx,
+            field_ptr,
+            ptr_ty.into(),
+            src_ptr,
+            src_val,
+            &StateFieldCloneKind::IoHandle { kind: kind.clone() },
+            "record_f0",
+            false,
+        )
+        .expect_err("un-clonable builtin handle overwrite must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("source-slot neutralisation") && msg.contains(&format!("{kind:?}")),
+                "refusal must name the missing move protocol and handle kind; got: {msg}"
+            ),
+            other => panic!("expected FailClosed for {kind:?}, got {other:?}"),
+        }
+    }
+    let receiver_err = emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            ),
+        },
+        "record_receiver_f0",
+        false,
+    )
+    .expect_err("builtin Receiver overwrite must fail closed");
+    assert!(
+        matches!(
+            receiver_err,
+            CodegenError::FailClosed(ref msg)
+                if msg.contains("builtin resource Receiver")
+                    && msg.contains("source-slot neutralisation")
+        ),
+        "Receiver refusal must name the builtin and missing move protocol; got {receiver_err:?}"
+    );
+    emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close: test_user_close("user.Receiver", "user$Receiver$close"),
+        },
+        "user_receiver_f0",
+        false,
+    )
+    .expect("a user resource shadow must not acquire builtin Receiver semantics");
+
+    finish_test_fn(&fn_ctx);
+    assert!(
+        llvm_mod.verify().is_ok(),
+        "defense-in-depth refusal must leave valid surrounding IR"
+    );
+}
+
+#[test]
+fn record_field_overwrite_builtin_backstop_tracks_the_typed_close_set() {
+    for info in hew_types::builtin_types() {
+        let ty = ResolvedTy::named_builtin(info.canonical_name, info.kind, vec![]);
+        let expected = info.close_method.is_some()
+            || matches!(
+                info.kind,
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            );
+        assert_eq!(
+            is_unclonable_builtin_record_field(&ty),
+            expected,
+            "record overwrite backstop drifted for {:?}",
+            info.kind,
+        );
+    }
+    assert!(is_unclonable_builtin_record_field(
+        &ResolvedTy::CancellationToken
+    ));
+    for shadow in ["Sender", "Receiver", "LambdaPid", "MonitorRef"] {
+        assert!(
+            !is_unclonable_builtin_record_field(&ResolvedTy::named_user(shadow, vec![])),
+            "user shadow `{shadow}` must not acquire builtin close semantics",
+        );
+    }
+}
 
 /// Give the in-place drop helper a trivial body so the module verifies
 /// (internal-linkage declarations without bodies are invalid IR; in the
@@ -11964,63 +16565,48 @@ fn overwrite_heap_leaf_capacity_sums_records_and_maxes_enums() {
     assert_eq!(cap, 6, "capacity must sum records and max enum variants");
 }
 
-/// `mangle_with_shortened_args` is the single codegen layout-key authority:
-/// every layout-map lookup key must shorten the WHOLE type-arg spine to bare
-/// names before mangling, matching the enum/record layout-REGISTRATION spine.
-/// This pins that the authority is byte-identical to the (now-removed) inline
-/// "shorten `effective_args`, then `mangle`" path the `resolve_ty` lookup keys
-/// used to build — so the structural-purity reroute through the authority is
-/// proven behaviour-preserving, not just asserted. A nested qualified payload
-/// (`Result<Vec<fs.Foo>, _>`) is shortened at every depth.
+/// `mangle_with_shortened_args` is the codegen façade over HIR's canonical
+/// layout-key authority. It must preserve the declaration owner and every
+/// nested nominal argument so same-leaf generic layouts cannot collide.
 #[test]
-fn mangle_authority_matches_inline_shortened_mangle() {
-    // The inline path `resolve_ty` previously used at the layout-key sites:
-    // compute `effective_args` by shortening every arg when ANY needs it,
-    // then `mangle`. The authority must reproduce this byte-for-byte.
-    fn inline_legacy_key(name: &str, args: &[ResolvedTy]) -> String {
-        let effective: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization) {
-            std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
-        } else {
-            std::borrow::Cow::Borrowed(args)
-        };
-        mangle(name, &effective)
-    }
-
+fn mangle_authority_preserves_full_nominal_identity() {
     let q = |n: &str, a: Vec<ResolvedTy>| ResolvedTy::named_user(n, a);
     let cases: Vec<(&str, Vec<ResolvedTy>)> = vec![
-        // bare (no normalisation needed) — Cow::Borrowed branch
         ("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
-        // top-level qualified payload — `fs.IoError` must shorten to `IoError`
         (
-            "Result",
-            vec![q("Listener", vec![]), q("fs.IoError", vec![])],
-        ),
-        // NESTED qualified payload — shortened at depth, not just top level
-        (
-            "Result",
+            "left.render.Result",
             vec![
-                ResolvedTy::named_user("Vec", vec![q("fs.Foo", vec![])]),
+                q("left.render.Listener", vec![]),
+                q("left.render.Error", vec![]),
+            ],
+        ),
+        (
+            "right.render.Result",
+            vec![
+                ResolvedTy::named_user("Vec", vec![q("right.render.Foo", vec![])]),
                 q("string", vec![]),
             ],
         ),
-        // mixed: one qualified, one already-bare arg
-        ("Option", vec![q("json.Value", vec![])]),
     ];
 
     for (name, args) in &cases {
         assert_eq!(
             mangle_with_shortened_args(name, args),
-            inline_legacy_key(name, args),
-            "authority diverged from the inline shortened-mangle path for `{name}` {args:?}"
-        );
-        // And the short-name spelling (the fallback key) must match too.
-        let short = short_name(name);
-        assert_eq!(
-            mangle_with_shortened_args(short, args),
-            inline_legacy_key(short, args),
-            "authority diverged on the short-name fallback key for `{name}` {args:?}"
+            hew_hir::mangle_layout_key(name, args),
+            "codegen must delegate layout-key construction to HIR for `{name}` {args:?}"
         );
     }
+    assert_ne!(
+        mangle_with_shortened_args(
+            "left.render.Box",
+            &[ResolvedTy::named_user("left.render.Payload", vec![])],
+        ),
+        mangle_with_shortened_args(
+            "right.render.Box",
+            &[ResolvedTy::named_user("right.render.Payload", vec![])],
+        ),
+        "same-leaf generic layouts must retain both declaration owners"
+    );
 }
 
 /// Structural-purity guard: every layout-key mangle inside `resolve_ty` must
@@ -12080,58 +16666,140 @@ fn resolve_ty_layout_keys_route_through_mangle_authority() {
     );
 }
 
-/// `record_struct_for` resolves a record's LLVM struct from
-/// `fn_ctx.record_layouts`, which registration keys on the BARE (short)
-/// outer name. A record reached through a module-qualified spelling
-/// (`shapes.Point` under qualified-by-default) misses the primary key, so
-/// the lookup MUST retry under `short_name(name)`. This guard brace-matches
-/// the function body and asserts the short-name fallback survives — a future
-/// edit that drops it re-opens the qualified-spine record-layout miss class
-/// for `RecordInit` / `RecordFieldLoad`, the codegen mirror of the lower.rs
-/// field-store / field-read shortening.
+/// Record layouts are keyed by the complete nominal owner. Same-leaf records
+/// must retain distinct LLVM layouts, and an unqualified leaf must never pick
+/// one by accident.
 #[test]
-fn record_struct_for_retries_under_short_name() {
-    let src = include_str!("llvm.rs");
-    let sig = "fn record_struct_for<'ctx>(";
-    let sig_at = src.find(sig).expect("record_struct_for signature present");
-    let body_open = src[sig_at..]
-        .find('{')
-        .map(|o| sig_at + o)
-        .expect("record_struct_for opening brace");
-    let mut depth = 0usize;
-    let mut body_end = body_open;
-    for (i, ch) in src[body_open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    body_end = body_open + i;
-                    break;
-                }
-            }
-            _ => {}
+fn record_struct_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let left = ctx.opaque_struct_type("left.render.Box");
+    left.set_body(&[ctx.i64_type().into()], false);
+    let right = ctx.opaque_struct_type("right.render.Box");
+    right.set_body(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+
+    let mut records = RecordLayoutMap::new();
+    records.insert("left.render.Box".to_string(), left);
+    records.insert("right.render.Box".to_string(), right);
+
+    assert_eq!(
+        record_struct_raw("left.render.Box", &records).expect("left owner resolves"),
+        left
+    );
+    assert_eq!(
+        record_struct_raw("right.render.Box", &records).expect("right owner resolves"),
+        right
+    );
+    assert!(
+        record_struct_raw("Box", &records).is_err(),
+        "an unqualified same-leaf record must not select either owner"
+    );
+}
+
+/// Tagged-union layouts are equally nominal: an unqualified same-leaf enum
+/// must fail rather than use an unrelated owner's layout.
+#[test]
+fn indirect_enum_layout_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let make_layout = |name: &str| {
+        let outer = ctx.opaque_struct_type(name);
+        outer.set_body(
+            &[ctx.i8_type().into(), ctx.i8_type().array_type(8).into()],
+            false,
+        );
+        MachineCodegenLayout {
+            outer_struct: outer,
+            tag_int_ty: ctx.i8_type(),
+            variant_struct_tys: vec![ctx.struct_type(&[], false)],
+            variant_field_tys: vec![vec![]],
+            state_name_table: None,
         }
+    };
+    let mut layouts = MachineLayoutMap::new();
+    layouts.insert("left.render.Result".to_string(), make_layout("left_result"));
+    layouts.insert(
+        "right.render.Result".to_string(),
+        make_layout("right_result"),
+    );
+
+    assert!(indirect_enum_layout_by_key(&layouts, "left.render.Result").is_ok());
+    assert!(indirect_enum_layout_by_key(&layouts, "right.render.Result").is_ok());
+    assert!(
+        indirect_enum_layout_by_key(&layouts, "Result").is_err(),
+        "an unqualified same-leaf enum must not select either owner"
+    );
+}
+
+/// Debug DIEs display short enum names, but their storage attachment must use
+/// the full owner so similarly named enums cannot borrow each other's layout.
+#[test]
+fn enum_debug_layout_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let left = ctx.opaque_struct_type("left.render.Result");
+    left.set_body(&[ctx.i8_type().into()], false);
+    let right = ctx.opaque_struct_type("right.render.Result");
+    right.set_body(&[ctx.i64_type().into()], false);
+    let mut records = RecordLayoutMap::new();
+    records.insert("left.render.Result".to_string(), left);
+    records.insert("right.render.Result".to_string(), right);
+
+    assert_eq!(
+        enum_debug_outer_struct(&records, "left.render.Result"),
+        Some(left)
+    );
+    assert_eq!(
+        enum_debug_outer_struct(&records, "right.render.Result"),
+        Some(right)
+    );
+    assert_eq!(
+        enum_debug_outer_struct(&records, "Result"),
+        None,
+        "a short display name must not attach either same-leaf enum layout"
+    );
+}
+
+/// Resource-close dispatch receives the exact canonical method symbol from
+/// MIR; it must not fall back from `left.render.Conn::close` to `Conn::close`.
+#[test]
+fn resource_close_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let m = ctx.create_module("resource_close_exact_owner");
+    let void_ty = ctx.void_type();
+    let fn_ty = void_ty.fn_type(&[], false);
+    let bare = m.add_function("Conn::close", fn_ty, None);
+    let exact = m.add_function("left.render.Conn::close", fn_ty, None);
+    let mut symbols = FnSymbolMap::new();
+    for (symbol, value) in [("Conn::close", bare), ("left.render.Conn::close", exact)] {
+        symbols.insert(
+            symbol.to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty: ctx.i64_type().into(),
+                returns_unit: true,
+                extern_record_ret: None,
+                extern_malloc_string_ret: false,
+            },
+        );
     }
+    match resolve_drop_fn(
+        &hew_mir::DropFnSpec::UserClose("left.render.Conn::close".to_string()),
+        &symbols,
+    )
+    .expect("exact resource close resolves")
+    {
+        DropDispatch::UserFn { value, symbol } => {
+            assert_eq!(value, exact);
+            assert_eq!(symbol, "left.render.Conn::close");
+        }
+        DropDispatch::RuntimeSymbol(symbol) => panic!("unexpected runtime close {symbol}"),
+    }
+    symbols.remove("left.render.Conn::close");
     assert!(
-        body_end > body_open,
-        "failed to brace-match record_struct_for body"
-    );
-    let body = &src[body_open..=body_end];
-    // The body must route the outer name through `short_name` on the
-    // fallback path — both the monomorphic retry and the generic retry that
-    // also shortens the type-arg spine.
-    assert!(
-        body.contains("short_name(name)"),
-        "record_struct_for must retry the record-layout lookup under \
-             `short_name(name)` so a module-qualified record resolves its \
-             bare-keyed layout; the short-name fallback is missing"
-    );
-    assert!(
-        body.contains("mangle_with_shortened_args(short_name(name), args)"),
-        "record_struct_for's generic fallback must shorten BOTH the outer \
-             name and the type-arg spine via \
-             `mangle_with_shortened_args(short_name(name), args)`"
+        resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("left.render.Conn::close".to_string()),
+            &symbols,
+        )
+        .is_err(),
+        "a qualified close must fail closed instead of falling back to Conn::close"
     );
 }
 

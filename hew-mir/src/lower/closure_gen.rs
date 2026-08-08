@@ -4,12 +4,16 @@ use super::{
     finalize_bytes_ownership, finalize_string_ownership, terminator_is_suspend_carrier,
     ActorStateLoadMode, BindingId, Builder, BuiltinType, CaptureEnvSource, CheckedMirFunction,
     ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership, DropKind, ElabDrop,
-    FieldOffset, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind, LambdaCapture,
-    LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin, StreamProducerPumpCtx,
-    SuspendKind, Terminator, ThirFunction, ValueClass,
+    FieldOffset, HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, Instr, IntentKind,
+    LambdaCapture, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SourceOrigin,
+    StreamProducerPumpCtx, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
+
+fn is_lambda_pid_ty(ty: &ResolvedTy) -> bool {
+    ty.is_builtin(BuiltinType::LambdaPid)
+}
 
 impl Builder {
     /// True when `ty` may be snapshotted into a generator environment with a
@@ -27,19 +31,19 @@ impl Builder {
             return captures.is_empty();
         }
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .and_then(|plan| {
             plan.is_clone_total(
                 &record_layouts,
                 &self.enum_layouts,
                 &self.opaque_handle_names,
-                &self.resource_opaque_close,
+                &self.lifecycle_registry,
             )
         })
         .unwrap_or(false)
@@ -52,14 +56,15 @@ impl Builder {
             return Some(GeneratorEnvFieldPlan::TrivialCopy);
         }
         let record_layouts = self.record_layouts_for_classification();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let classified = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
-        )
-        .ok()?;
+            &self.lifecycle_registry,
+        );
+        // JUSTIFIED: `None` feeds the caller's fail-closed capture diagnostic; it admits nothing.
+        let plan = classified.ok()?;
         if matches!(
             plan.root(),
             crate::state_clone::StateFieldCloneKind::BitCopy { .. }
@@ -357,10 +362,7 @@ impl Builder {
             // checker's `check_call`; if MIR sees one here, the checker gate
             // was bypassed by a new source form. Fail closed rather than
             // misrouting to `hew_duplex_send` (wrong runtime ABI).
-            if matches!(
-                &capture.ty,
-                ResolvedTy::Named { name, .. } if name == "LambdaPid"
-            ) {
+            if is_lambda_pid_ty(&capture.ty) {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::ClosureCapturesDuplexHandle {
                         name: capture.name.clone(),
@@ -491,10 +493,18 @@ impl Builder {
             // inside a closure shim / lambda-actor / gen body classifies the
             // handle as `Resource` (runs its close), not the empty-registry
             // `OpaqueHandle` no-op that would leak it.
-            resource_opaque_close: self.resource_opaque_close.clone(),
+            lifecycle_registry: self.lifecycle_registry.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            // Direct calls in nested user bodies keep the checker-selected
+            // declaration, so their linker projection must cross the frame
+            // boundary with the rest of the module facts.  In particular, an
+            // imported generic free function may be first called from a
+            // closure/lambda/task body; reconstructing a name from its DefId
+            // here would let a same-leaf declaration win.  The parent already
+            // received this exact declaration-to-emitted-symbol map from HIR.
+            direct_call_symbols: self.direct_call_symbols.clone(),
             param_ownership: self.param_ownership.clone(),
             // U2 — the proven-foreign ledger CROSSES the frame boundary with the
             // captures. `BindingId`s are globally unique, so carrying the
@@ -575,6 +585,21 @@ impl Builder {
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             ..self.child_builder_tables()
         };
+        if matches!(ret_ty, ResolvedTy::String)
+            && !self.closure_body_returns_owned_string_carrier(body, params, captures)
+        {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "closure string return without an owned-return contract".to_string(),
+                    site: body.site,
+                },
+                note: "a `fn(...) -> string` closure must return one independently \
+                       releasable share; this body can reach an ownership-opaque \
+                       string producer, so admitting its invoke result would \
+                       manufacture a caller drop obligation"
+                    .to_string(),
+            });
+        }
 
         let env_place = builder.alloc_local(env_ptr_ty.clone());
         for (idx, capture) in captures.iter().enumerate() {
@@ -603,6 +628,18 @@ impl Builder {
         }
         for param in params {
             let place = builder.alloc_local(param.ty.clone());
+            if let Place::Local(local) = place {
+                // Closure-invoke arguments use the same borrowed by-value ABI
+                // as ordinary Hew `string` parameters. Mirror `lower_params`
+                // here so return ownership derivation can distinguish the
+                // borrowed entry definition from a fresh producer: returning
+                // this slot must retain one share for the caller, while a
+                // fresh string result must not be retained again.
+                builder.parameter_locals.insert(local);
+                if matches!(builder.subst_ty(&param.ty), ResolvedTy::String) {
+                    builder.borrowed_string_param_locals.insert(local);
+                }
+            }
             builder.binding_locals.insert(param.id, place);
             builder.seed_fn_param_provenance(param);
         }
@@ -632,11 +669,25 @@ impl Builder {
         });
 
         let mut blocks = builder.finalize_blocks(Terminator::Return);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
         apply_nested_fresh_string_temp_drops(
             &mut blocks,
-            &builder.suspend_kinds,
+            &mut builder.suspend_kinds,
             &builder.locals,
-            &builder.binding_locals,
+            &nested_temp_binding_locals,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
+            &mut builder.suspend_abandon_extra_drops,
             &mut builder.instr_spans,
         );
         // #2542 — mirror the closure-shim ramp's string splice for the bytes
@@ -645,9 +696,10 @@ impl Builder {
             &mut blocks,
             &builder.suspend_kinds,
             &builder.locals,
-            &builder.binding_locals,
+            &nested_temp_binding_locals,
             &mut builder.instr_spans,
         );
+        builder.consume_typed_publication_owners_at_inline_release(&blocks);
         let thir_statements: Vec<MirStatement> = blocks
             .iter()
             .flat_map(|b| b.statements.iter().cloned())
@@ -684,6 +736,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -708,8 +761,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -719,7 +772,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -727,6 +780,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -813,7 +867,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: fn_symbol.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places.clone(),
             dest: Some(Place::ReturnSlot),
             next: ret_block_id,
@@ -866,6 +920,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -890,8 +945,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -901,7 +956,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -909,6 +964,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -1083,6 +1139,10 @@ impl Builder {
         //     its copy and the caller's binding remains the owner of the
         //     original. The env drop releases the clone via
         //     `hew_string_drop` exactly once at actor shutdown.
+        //   - Strong `LambdaPid`: as with string, the frame store is only an
+        //     alias. Codegen replaces it with `hew_lambda_actor_clone` in the
+        //     boxed env, and the env drop releases that independent strong
+        //     handle exactly once with `hew_lambda_actor_release`.
         //   - Anything else (Vec, HashMap, records, owned handles):
         //     `CannotMaterializeClosureCapture` — no silent shallow copy
         //     of an owned aggregate across the actor boundary.
@@ -1127,6 +1187,13 @@ impl Builder {
                     (hew_hir::HirCaptureKind::Strong, ResolvedTy::String) => {
                         crate::model::LambdaEnvFieldDrop::String
                     }
+                    (
+                        hew_hir::HirCaptureKind::Strong,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::LambdaPid),
+                            ..
+                        },
+                    ) => crate::model::LambdaEnvFieldDrop::StrongLambdaActorHandle,
                     // BitCopy scalars and pids share the no-drop class. A pid
                     // is an opaque identity reference with no drop glue (its
                     // drop is a codegen no-op — see the double-free origin
@@ -1167,7 +1234,7 @@ impl Builder {
                             note: format!(
                                 "lambda-actor capture `{}` has type `{}`, which the \
                                  capture env cannot carry yet: only BitCopy scalars, \
-                                 `string`, actor pids, and the weak self-handle have \
+                                 `string`, actor pids, `LambdaPid`, and the weak self-handle have \
                                  an ownership protocol across the actor boundary. A \
                                  shallow byte copy of an owned aggregate would alias \
                                  its heap and double-free at shutdown — fail closed \
@@ -1388,6 +1455,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -1422,8 +1490,9 @@ impl Builder {
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         let string_derivation =
-            finalize_string_ownership(&mut raw, &body_builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
+            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        let bytes_derivation =
+            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
@@ -1434,7 +1503,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -1442,6 +1511,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,
@@ -1662,12 +1732,10 @@ impl Builder {
                 pointee: Box::new(ResolvedTy::Unit),
             });
             let reply_len_slot = self.alloc_local(ResolvedTy::I64);
-            let error_dest = self.alloc_local(ResolvedTy::Named {
-                name: "AskError".to_string(),
-                args: Vec::new(),
-                builtin: Some(BuiltinType::AskError),
-                is_opaque: false,
-            });
+            let error_dest = self.alloc_local(
+                hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                    .expect("generated builtin enum catalog must contain AskError"),
+            );
             crate::model::RuntimeCall::new(
                 "hew_lambda_actor_ask",
                 vec![
@@ -1772,8 +1840,10 @@ impl Builder {
         //
         // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may be
         // snapshotted into the heap env. `Terminator::MakeGenerator` shallow-
-        // seeds the record, replaces every owned field with a semantic clone,
-        // and plants the reverse-order payload-drop thunk. Admitted shapes:
+        // seeds the record, replaces borrowed owned fields with semantic
+        // clones, preserves a mailbox-delivered receive-handler parameter as
+        // a transferred owner, and plants the reverse-order payload-drop
+        // thunk. Admitted shapes:
         //   * clone-total structural values (String/Bytes/Rc/Weak, supported
         //     collections, tuples/arrays, records, and enums);
         //   * `BitCopy` scalars;
@@ -1786,6 +1856,7 @@ impl Builder {
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
         let mut env_field_plans: Vec<GeneratorEnvFieldPlan> = Vec::new();
+        let mut env_moved_bindings: Vec<BindingId> = Vec::new();
         // Capture bindings rejected below as inadmissible to the owned env. Each
         // gets a root `NotYetImplemented`; the body sub-builder reads this set
         // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
@@ -1858,9 +1929,64 @@ impl Builder {
                             && capture_field_plan.is_some() =>
                     {
                         init_fields.push((offset, src));
-                        field_tys.push(ty);
-                        env_field_plans
-                            .push(capture_field_plan.expect("generator env plan guard checked"));
+                        field_tys.push(ty.clone());
+                        let mut field_plan =
+                            capture_field_plan.expect("generator env plan guard checked");
+                        // A receive-generator shell owns each mailbox-delivered
+                        // user parameter. Its body exists only in the generated
+                        // coroutine, so construction may move that owner into
+                        // the heap environment instead of cloning it and
+                        // stranding the original in the shell. Ordinary `gen
+                        // fn` parameters and anonymous-generator captures stay
+                        // borrowed sources and retain the clone plan.
+                        let transfers_mailbox_owner = self.stream_producer_pump.is_some()
+                            && capture.source == hew_hir::HirGenCaptureSource::Local
+                            && src
+                                != self
+                                    .stream_producer_pump
+                                    .as_ref()
+                                    .expect("receive-generator pump checked")
+                                    .sink
+                            && base_local(src)
+                                .is_some_and(|local| self.parameter_locals.contains(&local));
+                        if transfers_mailbox_owner {
+                            if let GeneratorEnvFieldPlan::Owned(plan) = field_plan {
+                                field_plan = GeneratorEnvFieldPlan::OwnedMove(plan);
+                                env_moved_bindings.push(capture.binding);
+                            }
+                        }
+                        // Generator environments store each capture in its value-ABI
+                        // representation. An indirect enum is therefore a heap-node
+                        // pointer, but the only enum snapshot helper clones an INLINE
+                        // tagged union. `OwnedMove` needs no clone and is sound; an
+                        // ordinary borrowed/source snapshot must fail closed until a
+                        // pointer-backed indirect-enum deep-clone helper exists.
+                        if matches!(field_plan, GeneratorEnvFieldPlan::Owned(_))
+                            && crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
+                        {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "the cloned capture of indirect enum `{}` into a generator",
+                                        capture.name
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "cannot snapshot `{}` (type `{}`) into a generator: its \
+                                     value-ABI slot is a heap-node pointer, and no total \
+                                     pointer-backed indirect-enum clone helper exists. A \
+                                     receive-generator mailbox owner may move the value into the \
+                                     environment, but borrowed captures must remain fail-closed.",
+                                    capture.name,
+                                    ty.user_facing()
+                                ),
+                            });
+                            poisoned_captures.insert(capture.binding);
+                            all_materialisable = false;
+                            continue;
+                        }
+                        env_field_plans.push(field_plan);
                     }
                     (Some(_), Some(ty)) => {
                         // Not admissible to the owned generator env. Name the
@@ -1988,6 +2114,16 @@ impl Builder {
                     fields: init_fields,
                     dest,
                 });
+                // `OwnedMove` is a genuine whole-value escape from the
+                // receive-handler shell into the heap environment. Record the
+                // transfer in the ownership ledger after the all-or-nothing
+                // environment construction succeeds so no shell-side
+                // scope-exit authority can release the same payload. `Owned`
+                // snapshot sources are deliberately absent: they retain their
+                // own drop while codegen constructs an independent clone.
+                for binding in env_moved_bindings {
+                    self.mark_binding_moved(binding);
+                }
                 env_place = Some(dest);
                 env_ty = Some(env_resolved_ty);
             }
@@ -1997,35 +2133,19 @@ impl Builder {
         // `in_gen_body: true` enables `HirExprKind::Yield` → `Terminator::Yield`
         // construction inside the body.
         let mut body_builder = Builder {
-            type_classes: self.type_classes.clone(),
-            record_field_orders: self.record_field_orders.clone(),
-            machine_layout_names: self.machine_layout_names.clone(),
-            module_fn_names: self.module_fn_names.clone(),
-            module_generic_fn_names: self.module_generic_fn_names.clone(),
-            param_ownership: self.param_ownership.clone(),
-            // U2 — the proven-foreign ledger CROSSES the frame boundary with the
-            // captures. `BindingId`s are globally unique, so carrying the
-            // parent's set verbatim is exact: a nested body that re-derives
-            // ownership for a captured binding reads the same refusal the
-            // enclosing `let` recorded, and a binding the child cannot see is
-            // never consulted. Without this the child's ledger is empty and a
-            // captured foreign handle re-enters every mint inside the body clean.
-            proven_foreign_bindings: self.proven_foreign_bindings.clone(),
-            subst: self.subst.clone(),
-            call_site_type_args: self.call_site_type_args.clone(),
-            supervisor_child_slots: self.supervisor_child_slots.clone(),
-            pointer_width: self.pointer_width,
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::Default,
-            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
-            // #2648 — the generator body is USER code: the preflight needs the
-            // module provenance context or a `match wrap(x)` inside a gen body
-            // silently takes the unknown-item legacy fail-open mint (the same
-            // closure-shim double-free class). Local-freshness facts stay the
-            // fail-closed empty default — see `child_builder_tables`.
-            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
-            ..Builder::default()
+            // A generator body is user code and needs the same complete shared
+            // type/ownership registry as every other generated child body.
+            // In particular, enum layouts drive both tagged overwrite release
+            // and scope/abandonment drop admission. Building this child from a
+            // hand-picked table subset left those layouts empty, so an enum
+            // payload overwritten after a yield leaked even though the
+            // byte-identical non-generator body released it. Keep the
+            // fail-closed per-function defaults (including local freshness)
+            // supplied by the shared constructor.
+            ..self.child_builder_tables()
         };
         // Propagate the inadmissible-capture poison set into the body builder so
         // its `BindingRef` resolution stays silent for those bindings — the root
@@ -2088,8 +2208,9 @@ impl Builder {
         }
 
         // #2301 -- same pre-pass gap as `lower_closure_shim`: this gen body
-        // lowers via its own fresh `body_builder` (built by field list above,
-        // not `child_builder_tables`), so without this call
+        // lowers via its own fresh `body_builder`; `child_builder_tables`
+        // deliberately carries module registries but no per-body pre-pass
+        // facts, so without this call
         // `prepass_consumed_bindings`/`prepass_reassigned_bindings` stay empty
         // for every binding local to the `gen fn`/`gen {}` body and a `var`
         // consumed on one control-flow arm and overwritten on a sibling arm
@@ -2120,6 +2241,16 @@ impl Builder {
         // this represents the generator completing (returns `return_ty` which
         // S5 maps to `None` on the Iterator impl side).
         let mut blocks = body_builder.finalize_blocks(Terminator::Return);
+        let nested_temp_binding_locals: HashMap<BindingId, Place> = body_builder
+            .binding_locals
+            .iter()
+            .filter(|(binding, _)| {
+                !body_builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+            })
+            .map(|(binding, place)| (*binding, *place))
+            .collect();
 
         // W5.011 P3 — release nested fresh-`string` temporaries (f-string
         // interpolation's `to_string_*`/`string_concat` chain, `(a + b).len()`,
@@ -2137,9 +2268,13 @@ impl Builder {
         // inline drop as a read of its temp and codegen emits the release.
         apply_nested_fresh_string_temp_drops(
             &mut blocks,
-            &body_builder.suspend_kinds,
+            &mut body_builder.suspend_kinds,
             &body_builder.locals,
-            &body_builder.binding_locals,
+            &nested_temp_binding_locals,
+            &body_builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
+            &mut body_builder.suspend_abandon_extra_drops,
             &mut body_builder.instr_spans,
         );
         // #2542 — the gen-body ramp needs the identical bytes user-call-result
@@ -2150,9 +2285,10 @@ impl Builder {
             &mut blocks,
             &body_builder.suspend_kinds,
             &body_builder.locals,
-            &body_builder.binding_locals,
+            &nested_temp_binding_locals,
             &mut body_builder.instr_spans,
         );
+        body_builder.consume_typed_publication_owners_at_inline_release(&blocks);
 
         // Cross-suspend state is owned by LLVM's CoroSplit. The generator body
         // lowers to an `llvm.coro.*` switched-resume coroutine; CoroSplit
@@ -2224,6 +2360,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -2250,8 +2387,9 @@ impl Builder {
         body_diagnostics.append(&mut body_builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_fn, &body_builder, &mut body_diagnostics);
         let string_derivation =
-            finalize_string_ownership(&mut raw, &body_builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &body_builder, &dataflow_result);
+            finalize_string_ownership(&mut raw, &mut body_builder, &dataflow_result);
+        let bytes_derivation =
+            finalize_bytes_ownership(&mut raw, &mut body_builder, &dataflow_result);
 
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
@@ -2262,7 +2400,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -2270,6 +2408,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,
@@ -2367,7 +2506,7 @@ impl Builder {
         let after_peer_check = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_sink_peer_closed".to_string(),
-            builtin: Some(RuntimeCallFamily::SinkPeerClosed),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkPeerClosed),
             args: vec![sink],
             dest: Some(peer_closed),
             next: after_peer_check,
@@ -2451,6 +2590,9 @@ impl Builder {
         let drop_kind = match kind {
             crate::ownership::InPlaceReleaseKind::Record => DropKind::RecordInPlace,
             crate::ownership::InPlaceReleaseKind::Enum => DropKind::EnumInPlace,
+            crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
+                DropKind::AggregateRecursive
+            }
         };
         self.suspend_abandon_extra_drops
             .entry(suspend_block)
@@ -2539,7 +2681,7 @@ impl Builder {
         let after_register = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_register".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkRegister),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkRegister),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: after_register,
@@ -2556,12 +2698,8 @@ impl Builder {
         let (resume_bb, close_bb) = self.emit_pump_peer_closed_check(pump.sink);
 
         self.start_block(resume_bb);
-        let option_ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![pump.yield_ty.clone()],
-            builtin: None,
-            is_opaque: false,
-        };
+        let option_ty =
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![pump.yield_ty.clone()]);
         let opt_dest = self.alloc_local(option_ty);
         self.push_instr(Instr::GeneratorNext {
             dest: opt_dest,
@@ -2628,7 +2766,7 @@ impl Builder {
         let close_next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_complete".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkComplete),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkComplete),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: close_next,
@@ -2716,5 +2854,23 @@ impl Builder {
 
         // `yield` evaluates to unit in the gen body.
         None
+    }
+}
+
+#[cfg(test)]
+mod builtin_carrier_tests {
+    use super::*;
+
+    #[test]
+    fn lambda_pid_gate_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedLambdaPid",
+            BuiltinType::LambdaPid,
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        );
+        assert!(is_lambda_pid_ty(&renamed));
+
+        let shadow = ResolvedTy::named_user("LambdaPid", vec![ResolvedTy::String, ResolvedTy::I64]);
+        assert!(!is_lambda_pid_ty(&shadow));
     }
 }

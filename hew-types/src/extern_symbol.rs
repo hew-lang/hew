@@ -305,6 +305,30 @@ impl ExternSymbolTemplate {
         self.placeholders.is_empty()
     }
 
+    /// Whether `symbol` is one exact expansion of this template under Hew's
+    /// closed canonical runtime-calling-convention token vocabulary.
+    ///
+    /// This is used only to join a declarative source endpoint to generated FFI
+    /// contract rows. Call-site authorization still compares the concrete
+    /// expansion for the resolved type argument, so this predicate cannot turn
+    /// a template-shaped lookalike into an owned result.
+    #[must_use]
+    pub fn matches_canonical_expansion(&self, symbol: &str) -> bool {
+        const TOKENS: [&str; 12] = [
+            "i8", "u8", "i16", "u16", "i32", "bool", "i64", "f32", "f64", "str", "ptr", "layout",
+        ];
+        TOKENS.into_iter().any(|token| {
+            let mut expanded = String::with_capacity(self.raw.len());
+            for segment in &self.segments {
+                match segment {
+                    TemplateSegment::Literal(literal) => expanded.push_str(literal),
+                    TemplateSegment::Placeholder(_) => expanded.push_str(token),
+                }
+            }
+            expanded == symbol
+        })
+    }
+
     /// Expand this template to a concrete runtime symbol given the
     /// resolved type argument bound to `{T}`.
     ///

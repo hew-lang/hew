@@ -3,17 +3,230 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
+    block_by_id, blocks_reachable_from, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
     derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
     generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
-    ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
-    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind,
-    Terminator,
+    propagate_whole_value_alias_roots_excluding_moves, shift_instr_spans_on_insert,
+    terminator_source_places, vec_iter_record_layout_key, ActorStateLoadMode, BTreeMap, BasicBlock,
+    BindingId, Builder, BytesDropDerivation, BytesRetainPlacement, BytesRetainSite,
+    ClosureEnvFieldOwnership, DischargeSite, Disposition, DropKind, ElabDrop, FieldOffset, HashMap,
+    HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
+
+const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
+const STRING_RETURN_SOURCE_OWNED: u8 = 0b010;
+const STRING_RETURN_SOURCE_UNKNOWN: u8 = 0b100;
+
+fn instruction_carries_typed_handoff(
+    instruction: &Instr,
+    value: Place,
+    handoffs: &HashSet<(Place, Place)>,
+) -> bool {
+    handoffs.iter().any(|(source, destination)| {
+        if *source != value {
+            return false;
+        }
+        match instruction {
+            Instr::Move { dest, src } => {
+                *src == value
+                    && (*dest == *destination || base_local(*dest) == base_local(*destination))
+            }
+            Instr::TupleConstruct { elements, dest } => {
+                elements.contains(&value) && *dest == *destination
+            }
+            Instr::RecordInit { fields, dest, .. } => {
+                fields.iter().any(|(_, field)| *field == value) && *dest == *destination
+            }
+            _ => false,
+        }
+    })
+}
+
+fn aggregate_handoff_destination(instruction: &Instr, value: Place) -> Option<Place> {
+    match instruction {
+        Instr::TupleConstruct { elements, dest } if elements.contains(&value) => Some(*dest),
+        Instr::RecordInit { fields, dest, .. }
+            if fields.iter().any(|(_, field)| *field == value) =>
+        {
+            Some(*dest)
+        }
+        _ => None,
+    }
+}
+
+fn aggregate_handoff_occurrences(instruction: &Instr, value: Place) -> usize {
+    match instruction {
+        Instr::TupleConstruct { elements, .. } => {
+            elements.iter().filter(|element| **element == value).count()
+        }
+        Instr::RecordInit { fields, .. } => {
+            fields.iter().filter(|(_, field)| *field == value).count()
+        }
+        _ => 0,
+    }
+}
+
+/// Prove that `value` at the aggregate ingress is still the generation moved
+/// into its named slot by a typed publication handoff.
+///
+/// The proof accepts one exact handoff instruction and follows only a
+/// single-predecessor, single-successor chain without another read or write of
+/// the destination. This keeps the result generation-specific even when the
+/// binding's local is assigned again elsewhere in the function.
+fn typed_handoff_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    handoffs: &HashSet<(Place, Place)>,
+    value: Place,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let Some(local) = base_local(value) else {
+        return false;
+    };
+    let mut definitions = blocks.iter().flat_map(|block| {
+        block
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, instruction)| match instruction {
+                Instr::Move { dest, src }
+                    if *dest == value && handoffs.contains(&(*src, *dest)) =>
+                {
+                    Some((block.id, index))
+                }
+                _ => None,
+            })
+    });
+    let Some((mut block_id, definition_index)) = definitions.next() else {
+        return false;
+    };
+    if definitions.next().is_some() {
+        return false;
+    }
+
+    let predecessor_counts = blocks.iter().flat_map(BasicBlock::successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let mut start = definition_index.saturating_add(1);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instruction in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instruction);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = block.successors();
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
+fn typed_named_aggregate_handoff(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+    block: u32,
+    instr_index: usize,
+    value: Place,
+) -> Option<(BindingId, Place, bool)> {
+    if builder.current_function_call_conv != crate::model::FunctionCallConv::Default {
+        return None;
+    }
+    let instruction = block_by_id(blocks, block)?.instructions.get(instr_index)?;
+    let destination = aggregate_handoff_destination(instruction, value)?;
+    let mut source_bindings: HashSet<BindingId> = builder
+        .typed_produced_value_handoffs
+        .iter()
+        .filter(|(_, destination)| *destination == value)
+        .flat_map(|(source, _)| {
+            builder
+                .binding_locals
+                .iter()
+                .filter_map(move |(binding, place)| {
+                    (*place == *source
+                        && builder
+                            .typed_produced_value_owner_bindings
+                            .contains(binding))
+                    .then_some(*binding)
+                })
+        })
+        .collect();
+    source_bindings.extend(
+        builder
+            .binding_locals
+            .iter()
+            .filter_map(|(binding, place)| {
+                (*place == value
+                    && builder
+                        .typed_produced_value_owner_bindings
+                        .contains(binding))
+                .then_some(*binding)
+            }),
+    );
+    let mut source_bindings = source_bindings.into_iter();
+    let binding = source_bindings.next()?;
+    if source_bindings.next().is_some() {
+        return None;
+    }
+    if !typed_handoff_owner_reaches_site(
+        blocks,
+        &builder.suspend_kinds,
+        &builder.typed_produced_value_handoffs,
+        value,
+        block,
+        instr_index,
+    ) {
+        return None;
+    }
+    let local = base_local(value)?;
+    if fresh_generation_is_used_after(blocks, &builder.suspend_kinds, local, block, instr_index) {
+        return None;
+    }
+    let direct = builder.binding_locals.get(&binding).copied() == Some(value);
+    Some((binding, destination, direct))
+}
 
 pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
@@ -98,6 +311,50 @@ pub(super) fn finalize_string_local_share_intents(
         }
     }
 }
+
+/// Aggregate-ingress retain sites known before retain instructions are spliced
+/// into raw MIR. The escaped-projection sibling pass runs at this earlier
+/// phase, so it consumes this view instead of attempting to rediscover the
+/// later `StringRetain` markers.
+pub(super) fn aggregate_borrowed_ingress_clone_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, usize, Place)> {
+    let owned_locals = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
+    derive_cow_sole_owner(
+        blocks,
+        &builder.suspend_kinds,
+        &owned_locals,
+        &builder.binding_locals,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+        &borrowed_string_locals,
+        &builder.parameter_locals,
+        &builder.actor_message_cow_drop_flags,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    )
+    .retain_sites
+    .into_iter()
+    .filter_map(|site| {
+        matches!(
+            site.condition,
+            StringRetainCondition::AggregateBorrowedIngress
+        )
+        .then_some((site.block, site.instr_index, site.value))
+    })
+    .collect()
+}
 /// The destination of an instruction that loads an *interior pointer* out
 /// of a still-live aggregate — a record field, a tuple element, a
 /// closure-env capture, or an actor-state field. The loaded value aliases
@@ -122,11 +379,13 @@ pub(super) fn finalize_string_local_share_intents(
 /// fresh producers, so they earn exactly one balancing scope-exit drop — the
 /// same class `hew_vec_get_str` (`xs.get(i)`) already occupies. NON-string
 /// `*FieldLoad` dests (`bytes` / `Vec<T>` / nested record) are NOT retained by
-/// codegen and stay tainted here (leak, never double-free) until the
-/// retain-on-share spine lands. The two sides are coupled: if the codegen retain
-/// is ever conditionally skipped for a string field load, the taint exclusion
-/// and the fresh-producer admission must be skipped in lockstep, or the leak
-/// inverts back into a double-free.
+/// the projection load itself and stay tainted here. When a borrowed nested
+/// aggregate reaches an owning sink, `derive_cow_sole_owner` consumes that
+/// taint by emitting one recursive string-only retain; handles remain covered
+/// by overwrite neutralisation. The two sides are coupled: if the codegen
+/// retain is ever conditionally skipped for a string field load, the taint
+/// exclusion and the fresh-producer admission must be skipped in lockstep, or
+/// the leak inverts back into a double-free.
 #[must_use]
 fn projection_alias_dest(instr: &Instr) -> Option<Place> {
     match instr {
@@ -234,7 +493,483 @@ fn string_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bool {
     base_local(place)
         .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::String)))
 }
-fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
+/// String-sharing moves whose destination is proven to receive one independent
+/// retained owner.
+///
+/// `finalize_string_ownership` inserts an unconditional
+/// `StringRetain { value: src, .. }`
+/// immediately before the `Move { dest, src }` that materialises a co-owner.
+/// The pair severs projection-alias provenance: the source still aliases and is
+/// released by its parent composite, while the destination owns the explicit
+/// `+1` and must balance it independently.
+///
+/// Admission is deliberately generation- and cycle-safe:
+///
+/// - retain and move must be adjacent and name the exact same string place;
+/// - the destination must be a different string local with exactly one static
+///   defining write in the function; and
+/// - the move's block must not be on a CFG cycle, so the one static retain
+///   cannot mint multiple dynamic generations for one destination slot.
+///
+/// Any mismatch, reuse, terminator overwrite, or cyclic site keeps the ordinary
+/// projection taint and escape treatment (leak-not-double-free).
+#[must_use]
+pub(super) fn corroborated_retained_string_move_sites(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<(u32, usize)> {
+    let mut write_counts: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let (_, writes, _) = dataflow::instr_reads_writes(instr);
+            for place in writes {
+                if let Some(local) = base_local(place) {
+                    *write_counts.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *write_counts.entry(local).or_default() += 1;
+            }
+        }
+    }
+
+    let cyclic_blocks: HashSet<u32> = blocks
+        .iter()
+        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut sites = HashSet::new();
+    for block in blocks {
+        if cyclic_blocks.contains(&block.id) {
+            continue;
+        }
+        for move_index in 1..block.instructions.len() {
+            let (
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::Always,
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src,
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            )
+            else {
+                continue;
+            };
+            let Some(source) = base_local(*src) else {
+                continue;
+            };
+            if *value == *src
+                && source != *dest
+                && string_place_is_typed(*src, local_tys)
+                && string_place_is_typed(Place::Local(*dest), local_tys)
+                && write_counts.get(dest).copied() == Some(1)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
+fn corroborated_retained_string_move_dest(
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    sites: &HashSet<(u32, usize)>,
+) -> Option<u32> {
+    if !sites.contains(&(block, instr_index)) {
+        return None;
+    }
+    match instr {
+        Instr::Move { dest, .. } => base_local(*dest),
+        _ => None,
+    }
+}
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain`/`BytesRetain` of the SAME `src`.
+///
+/// `retain v; ret = move v` hands the CALLER an independent `+1` on the buffer
+/// while `v`'s original reference stays owned by whatever produced it (there,
+/// an enum composite's variant payload slot). This is the `ReturnSlot`
+/// analogue of `corroborated_retained_string_move_sites`' `Move { dest: Local,
+/// src }` shape: there the destination local is the new owner and the source
+/// stays an alias released by its parent; at a return the caller is the new
+/// owner and the composite keeps release authority. Treating the read as an
+/// ESCAPE excludes the composite's `EnumInPlace` drop, so the retain's extra
+/// reference is never balanced — one leaked payload node per call (the enum
+/// twin of the returned-member retain leak,
+/// `enum_callee_consume_drop_leak_oracle` `move_out_arm`). Consumed by
+/// `derive_enum_composite_drop_allowed`; hosted here beside its retained-move
+/// corroboration siblings.
+pub(super) fn is_retained_return_move(
+    block: &BasicBlock,
+    instr_index: usize,
+    dest: Place,
+    src: Place,
+) -> bool {
+    if !matches!(dest, Place::ReturnSlot) {
+        return false;
+    }
+    let Some(prev) = instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+    else {
+        return false;
+    };
+    matches!(
+        prev,
+        Instr::StringRetain {
+            value,
+            condition: StringRetainCondition::Always,
+        } if *value == src,
+    ) || matches!(prev, Instr::BytesRetain { value } if *value == src)
+}
+/// Whether a `Move { dest: ReturnSlot, src }` at `instr_index` is a
+/// retained-return co-owner mint: the instruction immediately before it is an
+/// unconditional `StringRetain` of the SAME `src`.
+///
+/// `string.retain v; ret = move v` hands the CALLER an independent `+1` on the
+/// buffer while `v`'s producing reference stays owned inside the callee. This is
+/// the `ReturnSlot` twin of `corroborated_retained_string_move_sites`' local
+/// share shape; `derive_enum_composite_drop_allowed` already recognises it for
+/// the enum shell drop (`is_retained_return_move`).
+fn string_move_is_retained_return(block: &BasicBlock, instr_index: usize, src: Place) -> bool {
+    instr_index
+        .checked_sub(1)
+        .and_then(|i| block.instructions.get(i))
+        .is_some_and(|prev| {
+            matches!(
+                prev,
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::Always,
+                } if *value == src,
+            )
+        })
+}
+/// Whether the corroborated retained co-owner `local` escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`), through a chain of
+/// whole-value `Move`s.
+///
+/// A corroborated retained co-owner (`string.retain x; s = move x`) carries its
+/// own independent `+1` on the buffer. When such a value reaches the caller
+/// solely through a re-retained return, the caller receives the RETURN's
+/// separate reference — not the co-owner's share — so the co-owner's mint is
+/// never transferred out and still needs its scope-exit release. Without it the
+/// share leaks one node per call (`enum_callee_consume_drop_leak_oracle`
+/// `move_out_via_let_share`).
+///
+/// Fail-closed: the co-owner's value must reach the caller ONLY via retained
+/// returns. Any other consuming use of a value on the flow — a plain move into
+/// the `ReturnSlot` (a genuine transfer whose caller owns the co-owner's share,
+/// so a local drop would double-free), a call argument, a container insert, a
+/// terminator escape — answers `false`, and the co-owner keeps its (leaking,
+/// never double-freeing) exclusion. Requires at least one retained return so a
+/// value that merely dead-ends is not spuriously admitted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors the escape-scan parameters"
+)]
+fn retained_co_owner_escapes_only_into_retained_return(
+    blocks: &[BasicBlock],
+    local: u32,
+    retained_string_moves: &HashSet<(u32, usize)>,
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+) -> bool {
+    // Forward whole-value `Move` closure from `local`: every alias that carries
+    // the co-owner's buffer onward.
+    let mut reach: HashSet<u32> = HashSet::from([local]);
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(dl), Some(sl)) = (base_local(*dest), base_local(*src)) {
+                        if reach.contains(&sl) && reach.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut saw_retained_return = false;
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            for &rl in &reach {
+                if cow_owned_string_instr_is_borrow(
+                    instr,
+                    block.id,
+                    instr_index,
+                    rl,
+                    retained_string_moves,
+                ) {
+                    continue;
+                }
+                // `rl` is consumed here. Only two consuming shapes keep the
+                // co-owner's share balanced by its own scope-exit drop:
+                //   - a whole-value move onward within the flow, or
+                //   - a re-retained return (the caller gets the retain's copy).
+                match instr {
+                    Instr::Move {
+                        dest: Place::Local(dl),
+                        src,
+                    } if base_local(*src) == Some(rl) && reach.contains(dl) => {}
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src,
+                    } if base_local(*src) == Some(rl)
+                        && string_move_is_retained_return(block, instr_index, *src) =>
+                    {
+                        saw_retained_return = true;
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        for &rl in &reach {
+            if cow_owned_string_terminator_escapes(
+                &block.terminator,
+                suspend_kinds.get(&block.id),
+                rl,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                return false;
+            }
+        }
+    }
+    saw_retained_return
+}
+fn seed_fresh_string_instruction_locals(
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    retained_string_moves: &HashSet<(u32, usize)>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> HashSet<u32> {
+    let mut fresh = HashSet::new();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            for dest in [
+                fresh_string_producer_dest(instr, owned_string_return_carrier_symbols),
+                string_field_load_producer_dest(instr, locals),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(local) = base_local(dest) {
+                    fresh.insert(local);
+                }
+            }
+            if let Some(local) = corroborated_retained_string_move_dest(
+                instr,
+                block.id,
+                instr_index,
+                retained_string_moves,
+            ) {
+                fresh.insert(local);
+            }
+        }
+    }
+    fresh
+}
+
+/// Whether `local`'s active definition at `instr_index` was minted earlier in
+/// the same block by a fresh string producer.
+///
+/// This is stronger than merely knowing that a local is producer-backed
+/// somewhere in the function: the nearest preceding write proves that every
+/// execution of a cyclic block refreshes the owner before handing it onward.
+/// Such a move is a transfer even inside a loop; retaining it would preserve a
+/// synthetic source generation that has no later drop.
+fn fresh_string_owner_defined_before(
+    block: &BasicBlock,
+    instr_index: usize,
+    local: u32,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    block.instructions[..instr_index]
+        .iter()
+        .rev()
+        .find(|instr| {
+            crate::dataflow::instr_reads_writes(instr)
+                .1
+                .iter()
+                .any(|place| base_local(*place) == Some(local))
+        })
+        .is_some_and(|instr| {
+            fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .and_then(base_local)
+                == Some(local)
+        })
+}
+
+/// Whether `local`'s active generation at a hand-off site was minted by a fresh
+/// string-producing TERMINATOR (`Terminator::Call` for a string transform, or a
+/// `SuspendKind::CallClosure` string invoke) in every normal-flow predecessor
+/// whose edge targets `block_id`.
+///
+/// This is the cross-block completion of [`fresh_string_owner_defined_before`]:
+/// a string transform (`hew_string_trim`, `slice`, …) that terminates a
+/// predecessor block writes its result into the successor, so the in-block
+/// instruction scan never sees the producing write. A block-boundary
+/// reassignment (`ver_str = c.slice(..).trim()` inside an if/else arm) is
+/// exactly this shape: the following move hands the fresh owner onward, so it
+/// must NOT mint a competing `StringRetain`.
+///
+/// Deliberately narrow: it is used only at the local-to-local hand-off site,
+/// where the moved-from source is the fresh producer's own transient result and
+/// carries no independent scope-exit drop. It is NOT used at aggregate/record
+/// ingress shares, where the source is a named binding with its own drop
+/// obligation and a loop-carried store must keep its retain (the `cyclic_blocks`
+/// guard there is load-bearing — dropping it double-frees a per-iteration record
+/// field).
+///
+/// Fail closed: a predecessor that does not fresh-produce `local` for this block
+/// (a `Goto`/`Branch` merge, a non-string call, or a terminator whose normal
+/// edge is elsewhere) makes the whole join non-fresh, so a genuinely needed
+/// retain is never dropped. `Terminator::Call`'s only CFG successor is its
+/// `next` edge (the unwind/`cancel` edge is not in `successors()`), so a
+/// matching predecessor reaches this block solely along the fresh-producing
+/// path.
+fn fresh_string_owner_defined_by_predecessor_terminator(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    local: u32,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    let mut saw_predecessor = false;
+    for pred in blocks {
+        if !pred.successors().contains(&block_id) {
+            continue;
+        }
+        saw_predecessor = true;
+        let suspend_kind = suspend_kinds.get(&pred.id);
+        let produces_local = fresh_string_producer_term_dest(
+            &pred.terminator,
+            suspend_kind,
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
+            == Some(local);
+        let normal_edge_here =
+            fresh_string_producer_term_next(&pred.terminator, suspend_kind) == Some(block_id);
+        if !(produces_local && normal_edge_here) {
+            return false;
+        }
+    }
+    saw_predecessor
+}
+
+/// Whether any instruction in `block.instructions[..instr_index]` writes to
+/// `local`, redefining it before `instr_index`.
+///
+/// Guards [`fresh_string_owner_defined_by_predecessor_terminator`]: that
+/// check proves only that a PREDECESSOR terminator freshly produced `local`
+/// on the edge into `block` — it has no visibility into `block`'s own
+/// prefix. A join block that redefines the whole local (ANY write, fresh
+/// producer or not) before the ingress retain site makes the predecessor's
+/// answer STALE: the generation actually live at the site is whatever
+/// `block`'s own prefix last wrote, not the predecessor's terminator result.
+/// [`fresh_string_owner_defined_before`] already re-derives freshness
+/// correctly for an in-block write (it walks back to the NEAREST preceding
+/// write and answers directly against it), so this guard exists solely to
+/// stop the predecessor-terminator disjunct from overriding that with a
+/// stale cross-block answer when a redefinition sits in between.
+fn local_redefined_in_block_prefix(block: &BasicBlock, instr_index: usize, local: u32) -> bool {
+    block.instructions[..instr_index].iter().any(|instr| {
+        crate::dataflow::instr_reads_writes(instr)
+            .1
+            .iter()
+            .any(|place| base_local(*place) == Some(local))
+    })
+}
+
+/// Whether the currently-live generation of `local` is read after a site
+/// before every path overwrites it.
+///
+/// [`local_is_used_after`] intentionally conflates loop iterations. That is
+/// conservative for borrowed aliases, but wrong for a fresh producer in a
+/// loop: the next iteration's write creates a new generation and cannot make
+/// the previous generation a co-owner. This walk stops a path at the first
+/// overwrite, keeping retain decisions tied to the actual allocation.
+fn fresh_generation_is_used_after(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    source_local: u32,
+    source_block: u32,
+    source_instr_index: usize,
+) -> bool {
+    let mut worklist = vec![(source_block, source_instr_index.saturating_add(1))];
+    let mut visited = HashSet::new();
+    while let Some((block_id, start)) = worklist.pop() {
+        if !visited.insert((block_id, start)) {
+            continue;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return true;
+        };
+        let mut overwritten = false;
+        for instr in block.instructions.iter().skip(start) {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                return true;
+            }
+            if writes
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                overwritten = true;
+                break;
+            }
+        }
+        if overwritten {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            return true;
+        }
+        if crate::dataflow::terminator_write_places(&block.terminator)
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            continue;
+        }
+        worklist.extend(
+            block
+                .successors()
+                .into_iter()
+                .map(|successor| (successor, 0)),
+        );
+    }
+    false
+}
+
+pub(super) fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // Fork-entry environments preserve their existing move-in contract: the
         // parent consumes each owned argument and the child environment is the
@@ -313,7 +1048,7 @@ fn actor_state_record_trace_instr(
     instr: &Instr,
     leaf_value: Place,
 ) -> Option<ActorStateRecordTraceStep> {
-    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
     if reads.iter().any(|place| state.retired.contains(place)) {
         return None;
     }
@@ -359,11 +1094,11 @@ fn actor_state_record_trace_instr(
             }
             ActorStateRecordTraceStep::Continue
         }
-        Instr::ActorStateFieldStore { field_offset, src } if *src == state.current => {
-            ActorStateRecordTraceStep::Sink {
-                state_field: *field_offset,
-            }
-        }
+        Instr::ActorStateFieldStore {
+            field_offset, src, ..
+        } if *src == state.current => ActorStateRecordTraceStep::Sink {
+            state_field: *field_offset,
+        },
         Instr::ActorStateFieldStore { field_offset, .. } => {
             if !state.state_writes_since_retain.contains(field_offset) {
                 state.state_writes_since_retain.push(*field_offset);
@@ -405,7 +1140,7 @@ fn actor_state_record_lineage_is_reused(
             return true;
         };
         for instr in &block.instructions[instr_index..] {
-            let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
             if reads.iter().any(|place| live.contains(place)) {
                 return true;
             }
@@ -575,6 +1310,7 @@ fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[StringRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<(Place, StringRetainCondition)>> = HashMap::new();
     for site in retain_sites {
@@ -610,6 +1346,18 @@ fn apply_string_retain_sites(
             rewritten.push(instr);
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
+            }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::StringLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
             }
         }
         if let Some(span) = old_spans
@@ -648,6 +1396,7 @@ pub(super) fn derive_cow_sole_owner(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     match_project_consumed_binder_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
     borrowed_param_locals: &HashSet<u32>,
     parameter_locals: &HashSet<u32>,
@@ -655,6 +1404,7 @@ pub(super) fn derive_cow_sole_owner(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> StringDropDerivation {
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
@@ -670,8 +1420,12 @@ pub(super) fn derive_cow_sole_owner(
         candidate_local_to_binding.insert(local, *binding);
     }
 
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        candidate_local_to_binding.keys().copied(),
+        &retained_string_moves,
+    );
     let entry_block = blocks.first().map(|block| block.id);
     let mut handoff_move_sites: HashSet<(u32, usize)> = HashSet::new();
     let mut handoff_bindings: HashSet<BindingId> = HashSet::new();
@@ -698,9 +1452,25 @@ pub(super) fn derive_cow_sole_owner(
             if src_binding == dest_binding {
                 continue;
             }
-            let used_after =
-                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index);
-            if !used_after && entry_block == Some(block.id) {
+            let freshly_defined_here = fresh_string_owner_defined_before(
+                block,
+                instr_index,
+                src_local,
+                locals,
+                owned_string_return_carrier_symbols,
+            );
+            let used_after = if freshly_defined_here {
+                fresh_generation_is_used_after(
+                    blocks,
+                    suspend_kinds,
+                    src_local,
+                    block.id,
+                    instr_index,
+                )
+            } else {
+                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index)
+            };
+            if !used_after && (entry_block == Some(block.id) || freshly_defined_here) {
                 handoff_move_sites.insert((block.id, instr_index));
                 let handoff_binding = candidate_local_to_binding
                     .get(&src_local)
@@ -750,23 +1520,70 @@ pub(super) fn derive_cow_sole_owner(
         }
         cyclic
     };
-    let share_needs_retain = |local: u32, block: u32, instr_index: usize| {
-        cyclic_blocks.contains(&block)
-            || local_is_used_after(blocks, suspend_kinds, local, block, instr_index)
+    let share_needs_retain = |local: u32, block: &BasicBlock, instr_index: usize| {
+        let freshly_defined_here = fresh_string_owner_defined_before(
+            block,
+            instr_index,
+            local,
+            locals,
+            owned_string_return_carrier_symbols,
+        );
+        if freshly_defined_here {
+            fresh_generation_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        } else {
+            cyclic_blocks.contains(&block.id)
+                || local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        }
     };
 
-    let borrowed_alias_of =
-        propagate_whole_value_alias_roots(blocks, borrowed_param_locals.iter().copied());
+    let borrowed_alias_of = propagate_whole_value_alias_roots_excluding_moves(
+        blocks,
+        borrowed_param_locals.iter().copied(),
+        &retained_string_moves,
+    );
     let binding_local_bases: HashSet<u32> = binding_locals
         .values()
         .filter_map(|place| base_local(*place))
         .collect();
-    let tainted =
-        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
+    let tainted = compute_projection_alias_taint(
+        blocks,
+        match_project_consumed_binder_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+    );
+    // Whole actor-state loads classified `Owned` already mint a recursive
+    // clone that their one proven whole-value escape consumes. Keep those
+    // locals tainted for scope-drop admission, but do not mint a second
+    // recursive string owner at that escape. Only genuinely borrowed
+    // projection provenance drives the aggregate-ingress retain sites.
+    let borrowed_aggregate_tainted = compute_projection_alias_taint_impl(
+        blocks,
+        match_project_consumed_binder_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+        false,
+    );
+    // A generator capture `RecordInit` is not an owning aggregate sink. It is
+    // the synthetic stack alias shell consumed immediately by
+    // `MakeGenerator`, whose per-field plan mints the independent heap owner
+    // with one semantic clone (or transfers the sole owner for `OwnedMove`).
+    // Treating this constructor like an ordinary record ingress emits a second
+    // string-only retain before codegen's structural clone. The closure owner
+    // and generator owner then provide only two matching drops, leaving that
+    // redundant retain live. Track the MIR-declared env places so the general
+    // aggregate-share pass does not invent an owner at their `RecordInit`.
+    let generator_env_stack_locals: HashSet<u32> = blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
+            _ => None,
+        })
+        .collect();
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
     let mut state_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
+    let mut aggregate_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -781,9 +1598,21 @@ pub(super) fn derive_cow_sole_owner(
                     Place::MachineVariant { .. } | Place::EnumVariant { .. }
                 ) {
                     if let Some(src_local) = base_local(*src) {
+                        if borrowed_aggregate_tainted.contains(&src_local)
+                            && !string_place_is_typed(*src, locals)
+                        {
+                            aggregate_ingress_share_sites.push(StringRetainSite {
+                                block: block.id,
+                                instr_index,
+                                value: *src,
+                                condition: StringRetainCondition::AggregateBorrowedIngress,
+                                required_bindings: Vec::new(),
+                            });
+                            continue;
+                        }
                         if let Some(&root) = alias_of.get(&src_local) {
                             if let Some(&binding) = candidate_local_to_binding.get(&root) {
-                                if share_needs_retain(src_local, block.id, instr_index) {
+                                if share_needs_retain(src_local, block, instr_index) {
                                     pending_share_sites.push((
                                         block.id,
                                         instr_index,
@@ -890,7 +1719,17 @@ pub(super) fn derive_cow_sole_owner(
                 }
             }
 
-            let share_places = string_share_sink_places(instr);
+            let is_generator_env_alias_shell = matches!(
+                instr,
+                Instr::RecordInit { dest, .. }
+                    if base_local(*dest)
+                        .is_some_and(|local| generator_env_stack_locals.contains(&local))
+            );
+            let share_places = if is_generator_env_alias_shell {
+                Vec::new()
+            } else {
+                string_share_sink_places(instr)
+            };
             if !share_places.is_empty() {
                 let mut candidate_groups: HashMap<u32, Vec<Place>> = HashMap::new();
                 let mut external_groups: HashMap<u32, (bool, Vec<Place>)> = HashMap::new();
@@ -898,7 +1737,17 @@ pub(super) fn derive_cow_sole_owner(
                     let Some(local) = base_local(place) else {
                         continue;
                     };
-                    if let Some(&root) = alias_of.get(&local) {
+                    if borrowed_aggregate_tainted.contains(&local)
+                        && !string_place_is_typed(place, locals)
+                    {
+                        aggregate_ingress_share_sites.push(StringRetainSite {
+                            block: block.id,
+                            instr_index,
+                            value: place,
+                            condition: StringRetainCondition::AggregateBorrowedIngress,
+                            required_bindings: Vec::new(),
+                        });
+                    } else if let Some(&root) = alias_of.get(&local) {
                         candidate_groups.entry(root).or_default().push(place);
                     } else if borrowed_alias_of.contains_key(&local)
                         && !matches!(instr, Instr::ActorStateFieldStore { .. })
@@ -912,13 +1761,24 @@ pub(super) fn derive_cow_sole_owner(
                         && binding_local_bases.contains(&local)
                         && !parameter_locals.contains(&local)
                     {
-                        let survives = local_is_used_after(
-                            blocks,
-                            suspend_kinds,
-                            local,
-                            block.id,
+                        let freshly_defined_here = fresh_string_owner_defined_before(
+                            block,
                             instr_index,
+                            local,
+                            locals,
+                            owned_string_return_carrier_symbols,
                         );
+                        let survives = if freshly_defined_here {
+                            fresh_generation_is_used_after(
+                                blocks,
+                                suspend_kinds,
+                                local,
+                                block.id,
+                                instr_index,
+                            )
+                        } else {
+                            local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+                        };
                         let entry = external_groups
                             .entry(local)
                             .or_insert_with(|| (survives, Vec::new()));
@@ -931,7 +1791,7 @@ pub(super) fn derive_cow_sole_owner(
                         continue;
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
-                    if share_needs_retain(source_local, block.id, instr_index) {
+                    if share_needs_retain(source_local, block, instr_index) {
                         // Follow whole-value moves and enclosing records to the
                         // state leaf while keeping the borrowed owner mint at
                         // the first leaf-bearing constructor, where the source
@@ -1120,8 +1980,208 @@ pub(super) fn derive_cow_sole_owner(
         .collect::<Vec<_>>();
 
     retain_sites.extend(state_ingress_share_sites);
+    retain_sites.extend(aggregate_ingress_share_sites);
 
-    // Returning a by-value parameter duplicates the caller's live reference.
+    // Classify each string local's possible source shares. Pointer provenance
+    // and ownership are deliberately separate here:
+    //
+    //   BORROWED — aliases a by-value parameter and still needs a +1 retain;
+    //   OWNED    — already carries one independently releasable share (fresh
+    //              producer, retained field load, or static string);
+    //   UNKNOWN  — no proof; preserve the old fail-closed retain-at-return.
+    //
+    // A join may be BORROWED|OWNED. Retaining once at the join is wrong: it is
+    // necessary on the borrowed arm but over-retains the already-retained
+    // projection arm. For such a join, push the retain back to the incoming
+    // borrowed Move(s), so every selected path establishes the same one-share
+    // postcondition before the values merge.
+    let mut return_source_bits = vec![0_u8; locals.len()];
+    for &local in borrowed_param_locals {
+        if let Some(bits) = return_source_bits.get_mut(local as usize) {
+            *bits |= STRING_RETURN_SOURCE_BORROWED;
+        }
+    }
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let owned_dest = fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .or_else(|| {
+                    corroborated_retained_string_move_dest(
+                        instr,
+                        block.id,
+                        instr_index,
+                        &retained_string_moves,
+                    )
+                    .map(Place::Local)
+                })
+                .or(match instr {
+                    Instr::StringLit { dest, .. } => Some(*dest),
+                    _ => None,
+                });
+            if let Some(local) = owned_dest.and_then(base_local) {
+                if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                    *bits |= STRING_RETURN_SOURCE_OWNED;
+                }
+            }
+        }
+        if let Some(local) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
+        {
+            if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                *bits |= STRING_RETURN_SOURCE_OWNED;
+            }
+        }
+    }
+    // Uniform owned-carrier payload transfer (D185): a `NeutralizePayloadSlot`
+    // on a variant-payload projection that names a `transferee` moves the
+    // payload OUT of the carrier and nulls the source slot — the carrier's
+    // guarded drop can no longer release it, so the transferee local carries
+    // the sole share, exactly like a fresh producer. Without this OWNED
+    // classification the legacy borrowed-publication seed on the match join
+    // strands a `+1` retain at the return write (`string.retain; ret = move`)
+    // for a payload nothing borrows any more: one leaked buffer per call.
+    // Whole-local neutralizes (send funnels, returned aggregate members) keep
+    // their own authorities and are deliberately not classified here.
+    for instr in blocks.iter().flat_map(|block| &block.instructions) {
+        let Instr::NeutralizePayloadSlot {
+            place: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+            transferee: Some(transferee),
+            ..
+        } = instr
+        else {
+            continue;
+        };
+        if let Some(bits) =
+            base_local(*transferee).and_then(|local| return_source_bits.get_mut(local as usize))
+        {
+            *bits |= STRING_RETURN_SOURCE_OWNED;
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
+                let Instr::Move { dest, src } = instr else {
+                    continue;
+                };
+                let (Some(dest_local), Some(src_local)) = (base_local(*dest), base_local(*src))
+                else {
+                    continue;
+                };
+                if !string_place_is_typed(*dest, locals) {
+                    continue;
+                }
+                if retained_string_moves.contains(&(block.id, instr_index)) {
+                    continue;
+                }
+                let src_bits = return_source_bits
+                    .get(src_local as usize)
+                    .copied()
+                    .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                let Some(dest_bits) = return_source_bits.get_mut(dest_local as usize) else {
+                    continue;
+                };
+                let next = *dest_bits | src_bits;
+                changed |= next != *dest_bits;
+                *dest_bits = next;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Push a mixed return's retain onto exactly the borrowed incoming writes.
+    // Returns false when the backward slice encounters an unclassified writer
+    // or a cycle; the caller then preserves the old retain-at-return posture.
+    let push_mixed_return_retains =
+        |return_local: u32, retain_sites: &mut Vec<StringRetainSite>| {
+            let mut work = vec![return_local];
+            let mut seen = HashSet::new();
+            let mut additions = Vec::new();
+            while let Some(local) = work.pop() {
+                if !seen.insert(local) {
+                    continue;
+                }
+                // A by-value parameter's borrowed entry definition has no MIR
+                // writer. If this same slot is conditionally overwritten, the
+                // flow-insensitive writer scan below sees only the owned
+                // reassignment and cannot place a path-specific retain for the
+                // still-borrowed entry path. Refuse the split proof so the
+                // caller falls back to a retain at the ReturnSlot. That may
+                // conservatively over-retain an overwritten arm, but it can
+                // never hand the caller an unowned alias.
+                //
+                // Only genuine parameter slots carry that writerless entry
+                // definition. A borrowed match-join PUBLICATION local (the
+                // typed borrowed-publication seed) is written by every arm's
+                // explicit `Move`, so the writer scan below sees its complete
+                // definition set — let it take the path-split proof. Bailing
+                // here for those locals pinned the retain at the ReturnSlot
+                // even when every arm's write was a neutralize-transferred
+                // (already-owned) payload, stranding one share per call.
+                if borrowed_param_locals.contains(&local) && parameter_locals.contains(&local) {
+                    return false;
+                }
+                let mut saw_definition = false;
+                for block in blocks {
+                    for (instr_index, instr) in block.instructions.iter().enumerate() {
+                        let Instr::Move { dest, src } = instr else {
+                            continue;
+                        };
+                        if base_local(*dest) != Some(local) {
+                            continue;
+                        }
+                        saw_definition = true;
+                        let Some(src_local) = base_local(*src) else {
+                            return false;
+                        };
+                        let bits = return_source_bits
+                            .get(src_local as usize)
+                            .copied()
+                            .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                        if bits & STRING_RETURN_SOURCE_UNKNOWN != 0 || bits == 0 {
+                            return false;
+                        }
+                        match bits {
+                            STRING_RETURN_SOURCE_BORROWED => additions.push(StringRetainSite {
+                                block: block.id,
+                                instr_index,
+                                value: *src,
+                                condition: StringRetainCondition::Always,
+                                required_bindings: Vec::new(),
+                            }),
+                            STRING_RETURN_SOURCE_OWNED => {}
+                            _ => work.push(src_local),
+                        }
+                    }
+                    if let Some(dest) = fresh_string_producer_term_dest(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        owned_string_return_carrier_symbols,
+                    ) {
+                        if base_local(dest) == Some(local) {
+                            saw_definition = true;
+                        }
+                    }
+                }
+                if !saw_definition {
+                    return false;
+                }
+            }
+            retain_sites.extend(additions);
+            true
+        };
+
+    // Returning a pure by-value parameter duplicates the caller's live
+    // reference. A mixed borrowed/owned join gets path-specific retains as
+    // above; never retain the already-owned arm a second time.
+    let mut path_split_return_locals = HashSet::new();
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
@@ -1131,7 +2191,30 @@ pub(super) fn derive_cow_sole_owner(
             else {
                 continue;
             };
-            if base_local(*src).is_some_and(|local| borrowed_alias_of.contains_key(&local)) {
+            let Some(src_local) = base_local(*src) else {
+                continue;
+            };
+            let bits = return_source_bits
+                .get(src_local as usize)
+                .copied()
+                .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+            let borrowed_and_owned = bits
+                & (STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED)
+                == STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED;
+            if borrowed_and_owned && bits & STRING_RETURN_SOURCE_UNKNOWN == 0 {
+                // Multiple explicit return sites may write the same joined
+                // local into `ReturnSlot`. Its incoming branch retains are
+                // properties of that local's definitions, so insert them once.
+                if path_split_return_locals.contains(&src_local)
+                    || push_mixed_return_retains(src_local, &mut retain_sites)
+                {
+                    path_split_return_locals.insert(src_local);
+                    continue;
+                }
+            }
+            if bits & STRING_RETURN_SOURCE_BORROWED != 0
+                || borrowed_alias_of.contains_key(&src_local)
+            {
                 retain_sites.push(StringRetainSite {
                     block: block.id,
                     instr_index,
@@ -1178,6 +2261,35 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
+                // A predecessor-terminator freshness verdict is trustworthy
+                // only when THIS block's own prefix never redefines
+                // `src_local` before the ingress site — a redefinition makes
+                // the predecessor's answer stale (see
+                // `local_redefined_in_block_prefix`).
+                if (fresh_string_owner_defined_before(
+                    block,
+                    instr_index,
+                    src_local,
+                    locals,
+                    owned_string_return_carrier_symbols,
+                ) || (!local_redefined_in_block_prefix(block, instr_index, src_local)
+                    && fresh_string_owner_defined_by_predecessor_terminator(
+                        blocks,
+                        suspend_kinds,
+                        block.id,
+                        src_local,
+                        owned_string_return_carrier_symbols,
+                    )))
+                    && !fresh_generation_is_used_after(
+                        blocks,
+                        suspend_kinds,
+                        src_local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
                 if !string_place_is_typed(*src, locals)
                     || !((binding_local_bases.contains(&src_local)
                         && !parameter_locals.contains(&src_local))
@@ -1378,6 +2490,9 @@ pub(super) fn classify_actor_state_load_modes(
     blocks: &mut [BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     let mut load_locals: HashSet<u32> = HashSet::new();
     for block in blocks.iter() {
@@ -1421,6 +2536,9 @@ pub(super) fn classify_actor_state_load_modes(
             &load_locals,
             &mut any_use,
             &mut all_borrow,
+            module_fn_names,
+            module_generic_fn_names,
+            extern_contracts,
         );
     }
 
@@ -1461,7 +2579,14 @@ mod actor_state_load_classifier_direction_lock_tests {
             terminator: Terminator::Return,
         }];
 
-        classify_actor_state_load_modes(&mut blocks, &HashMap::new(), &[]);
+        classify_actor_state_load_modes(
+            &mut blocks,
+            &HashMap::new(),
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+        );
 
         match &blocks[0].instructions[0] {
             Instr::ActorStateFieldLoad { mode, .. } => *mode,
@@ -1557,7 +2682,13 @@ fn record_actor_state_load_instr_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            contract.borrows_string_call_args(),
+                        ),
                     );
                 }
             }
@@ -1607,6 +2738,7 @@ fn call_arg_borrows_state_load(
     locals: &[ResolvedTy],
     arg_index: usize,
     arg_local: u32,
+    callee_borrows_string_args: bool,
 ) -> bool {
     let borrows_receiver = contract.borrows_vec_receiver()
         || contract.borrows_collection_receiver()
@@ -1614,8 +2746,7 @@ fn call_arg_borrows_state_load(
     if arg_index == 0 && borrows_receiver {
         return true;
     }
-    contract.borrows_string_call_args()
-        && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
+    callee_borrows_string_args && matches!(locals.get(arg_local as usize), Some(ResolvedTy::String))
 }
 /// The `Terminator::Call` analogue of [`record_actor_state_load_instr_uses`]
 /// — the receiver-borrow-arg[0] and string-borrow-arg positive categories
@@ -1623,6 +2754,13 @@ fn call_arg_borrows_state_load(
 /// call. Every other terminator variant falls through to
 /// [`terminator_source_places`] (closed exhaustive match), marked as a
 /// non-borrow use.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the terminator recorder consumes the same string-borrow contract axes \
+              (runtime contract, module fn tables, audited extern table) that \
+              `string_call_borrows` — the single callee-borrows-strings authority — \
+              requires"
+)]
 fn record_actor_state_load_terminator_uses(
     term: &Terminator,
     suspend_kind: Option<&SuspendKind>,
@@ -1630,10 +2768,26 @@ fn record_actor_state_load_terminator_uses(
     load_locals: &HashSet<u32>,
     any_use: &mut HashSet<u32>,
     all_borrow: &mut HashMap<u32, bool>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
 ) {
     match term {
         Terminator::Call { callee, args, .. } => {
             let contract = crate::runtime_symbols::callee_ownership_contract(callee);
+            // The string axis uses `string_call_borrows` — the same single
+            // authority `derive_cow_sole_owner` consults — so a state string
+            // passed by value to an analyzed Hew function (whose parameter is
+            // a borrow: the caller-releases convention) classifies `Borrowed`
+            // instead of minting an `Owned` clone with no balancing release.
+            // Runtime symbols resolve through their ownership contract exactly
+            // as before; unaudited externs stay fail-closed `Owned`.
+            let callee_borrows_string_args = string_call_borrows(
+                callee,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            );
             for (i, place) in args.iter().enumerate() {
                 if let Some(l) = base_local(*place) {
                     mark_actor_state_load_use(
@@ -1641,7 +2795,13 @@ fn record_actor_state_load_terminator_uses(
                         any_use,
                         all_borrow,
                         l,
-                        call_arg_borrows_state_load(contract, locals, i, l),
+                        call_arg_borrows_state_load(
+                            contract,
+                            locals,
+                            i,
+                            l,
+                            callee_borrows_string_args,
+                        ),
                     );
                 }
             }
@@ -1689,17 +2849,42 @@ fn record_actor_state_load_terminator_uses(
 /// (`retain_string_field_load`), so it is a genuine fresh `+1` owner admitted via
 /// `string_field_load_producer_dest`, not a no-retain interior alias. Excluding
 /// it from the taint is what lets `derive_cow_fresh_borrowed_owner` admit it for
-/// its one balancing drop — the two-sided coupling. Non-string `*FieldLoad` dests
-/// are NOT retained by codegen, so they stay tainted here (leak, never
-/// double-free) until the retain-on-share spine lands. This exclusion is a
-/// provable no-op for the collection/Vec callers (a string-typed local is never a
-/// Vec/owned-record/HashMap drop candidate), so threading `locals` keeps one
-/// taint authority with consistent semantics across all consumers.
+/// its one balancing drop — the two-sided coupling. Non-string `*FieldLoad`
+/// dests are not retained at the load and stay tainted; the recursive
+/// string-only retain is emitted only if that borrowed aggregate later reaches
+/// an owning sink. This exclusion is a provable no-op for the collection/Vec
+/// callers (a string-typed local is never a Vec/owned-record/HashMap drop
+/// candidate), so threading `locals` keeps one taint authority with consistent
+/// semantics across all consumers.
 #[must_use]
 pub(super) fn compute_projection_alias_taint(
     blocks: &[BasicBlock],
     exempt_seed_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
+) -> HashSet<u32> {
+    compute_projection_alias_taint_impl(
+        blocks,
+        exempt_seed_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+        true,
+    )
+}
+
+/// Shared taint engine.
+///
+/// `include_owned_actor_state_loads` is `true` for drop admission: even an
+/// `Owned` load transfers its minted clone through a single whole-value escape
+/// and must not gain a second scope-exit drop. Recursive borrowed-ingress
+/// retains call this with `false`, because that same `Owned` load already
+/// cloned every string leaf and another retain at its escape would leak.
+fn compute_projection_alias_taint_impl(
+    blocks: &[BasicBlock],
+    exempt_seed_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
+    locals: &[ResolvedTy],
+    include_owned_actor_state_loads: bool,
 ) -> HashSet<u32> {
     // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
     // owner by a projected-payload move-out. The `Move` that copies such a slot
@@ -1716,17 +2901,27 @@ pub(super) fn compute_projection_alias_taint(
         })
         .collect();
     let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, locals);
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Some(dest) = projection_alias_dest(instr) {
                 if let Some(l) = base_local(dest) {
+                    let is_owned_actor_state_load = matches!(
+                        instr,
+                        Instr::ActorStateFieldLoad {
+                            mode: ActorStateLoadMode::Owned,
+                            ..
+                        }
+                    );
                     // A `string` field-load dest is a retained fresh producer, not
                     // a no-retain alias — exclude it from the taint so its
                     // balancing drop is admitted (see the doc above).
                     let is_retained_string_field_load =
                         string_field_load_producer_dest(instr, locals).is_some();
                     if !exempt_seed_locals.contains(&l)
+                        && (include_owned_actor_state_loads || !is_owned_actor_state_load)
                         && !is_retained_string_field_load
                         && !transferred_projection_dests.contains(&l)
                     {
@@ -1740,7 +2935,9 @@ pub(super) fn compute_projection_alias_taint(
                 // alias. Skip the taint seed so its drop is admitted exactly once.
                 if place_is_interior_projection(*src) && !neutralized_sources.contains(src) {
                     if let Some(dl) = base_local(*dest) {
-                        tainted.insert(dl);
+                        if !fresh_variant_payload_binder_locals.contains(&dl) {
+                            tainted.insert(dl);
+                        }
                     }
                 }
             }
@@ -1754,10 +2951,14 @@ pub(super) fn compute_projection_alias_taint(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if tainted.contains(&sl) && tainted.insert(dl) {
+                        if !retained_string_moves.contains(&(block.id, instr_index))
+                            && !retained_bytes_moves.contains(&(block.id, instr_index))
+                            && tainted.contains(&sl)
+                            && tainted.insert(dl)
+                        {
                             changed = true;
                         }
                     }
@@ -1813,6 +3014,7 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
                 root,
                 fields,
                 transferee,
+                ..
             } if !fields.is_empty() => {
                 let mut cursor = *transferee;
                 for expected_field in fields.iter().rev().copied() {
@@ -1925,6 +3127,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -1958,6 +3161,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(11),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -1994,6 +3198,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 1],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2025,6 +3230,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2046,6 +3252,7 @@ mod aggregate_projection_transfer_dest_tests {
                 root: Place::Local(10),
                 fields: vec![],
                 transferee: Place::Local(10),
+                scope_exit_owner: None,
             }],
             terminator: Terminator::Return,
         }];
@@ -2071,6 +3278,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(2),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2097,6 +3305,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2150,6 +3359,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2185,6 +3395,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2211,6 +3422,7 @@ mod aggregate_projection_transfer_dest_tests {
                         root: Place::Local(1),
                         fields: vec![0],
                         transferee: Place::Local(10),
+                        scope_exit_owner: None,
                     },
                 ],
                 terminator: Terminator::Goto { target: 1 },
@@ -2274,7 +3486,7 @@ mod aggregate_projection_transfer_dest_tests {
 /// which pass the real `locals`.
 #[must_use]
 pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
+    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), &[]);
     // Seed the borrowing vector element getters (both lowering shapes).
     for block in blocks {
         for instr in &block.instructions {
@@ -2320,44 +3532,104 @@ pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> 
     }
     tainted
 }
-/// W5.011 P3 — the destination place of an instruction that produces a fresh,
-/// solely-owned `string` (a `+1` owner the caller must balance with exactly one
-/// `hew_string_drop`). Only the validated runtime-ABI producers
-/// whose callee contract produces a fresh owned string qualify; everything else
-/// returns `None` (the local is not seeded as fresh, so it is never admitted —
-/// fail-closed).
-fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
+/// W5.011 P3 — the destination place of an instruction that produces one
+/// independently releasable `string` share (a `+1` owner the caller must balance
+/// with exactly one `hew_string_drop`). A validated runtime-ABI producer
+/// qualifies directly; a `CallRuntimeAbi` that represents a declared extern
+/// qualifies only when the module's audited transferred-result projection
+/// carries its symbol. A `CallClosure` returning `string` qualifies through the
+/// compiler-owned `ClosureInvoke` ABI: fresh results transfer their existing
+/// share, while returned parameters and capture/field loads are retained by the
+/// shim. Everything else returns `None` (the local is not seeded as fresh, so it
+/// is never admitted — fail-closed).
+fn fresh_string_producer_dest(
+    instr: &Instr,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> Option<Place> {
     match instr {
         Instr::CallRuntimeAbi(call)
             if crate::runtime_symbols::callee_ownership_contract(call.symbol())
-                .produces_fresh_owned_string() =>
+                .produces_fresh_owned_string()
+                // `owned_string_return_carrier_symbols` is built from the
+                // declaration/arity/release/retention-audited extern table.
+                // Observe is emitted as `CallRuntimeAbi`, while ordinary
+                // externs are `Terminator::Call`; both must read this same
+                // authority and neither gets an ad hoc release path.
+                || owned_string_return_carrier_symbols.contains(call.symbol()) =>
         {
             call.dest()
+        }
+        Instr::CallClosure {
+            ret_ty: ResolvedTy::String,
+            dest,
+            ..
+        } => *dest,
+        _ => None,
+    }
+}
+/// W5.011 P3 — the terminator analogue of [`fresh_string_producer_dest`].
+///
+/// String transforms like `to_uppercase` / `slice` and the `Vec<string>`
+/// getter `hew_vec_get_str` lower to block-terminating calls. A suspending
+/// closure invocation lowers instead to a bare [`Terminator::Suspend`] whose
+/// [`SuspendKind::CallClosure`] side-table entry carries the result destination;
+/// its compiler-owned invoke ABI establishes the same independently releasable
+/// string share as [`Instr::CallClosure`].
+fn fresh_string_producer_term_dest(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> Option<Place> {
+    match term {
+        Terminator::Call { callee, dest, .. }
+            if fresh_string_producer_term_admissible(
+                callee,
+                owned_string_return_carrier_symbols,
+            ) =>
+        {
+            *dest
+        }
+        Terminator::Suspend { .. } => match suspend_kind {
+            Some(SuspendKind::CallClosure {
+                ret_ty: ResolvedTy::String,
+                result_dest,
+                ..
+            }) => *result_dest,
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn fresh_string_producer_term_next(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+) -> Option<u32> {
+    match term {
+        Terminator::Call { next, .. } => Some(*next),
+        Terminator::Suspend { resume, .. }
+            if matches!(
+                suspend_kind,
+                Some(SuspendKind::CallClosure {
+                    ret_ty: ResolvedTy::String,
+                    result_dest: Some(_),
+                    ..
+                })
+            ) =>
+        {
+            Some(*resume)
         }
         _ => None,
     }
 }
-/// W5.011 P3 — the `Terminator::Call` analogue of [`fresh_string_producer_dest`]
-/// (string transforms like `to_uppercase` / `slice` and the `Vec<string>`
-/// getter `hew_vec_get_str` lower to block-terminating calls, not `Instr`s).
-fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
-    match term {
-        Terminator::Call {
-            callee,
-            builtin: None,
-            dest,
-            ..
-        } if fresh_string_producer_term_admissible(callee) => *dest,
-        _ => None,
-    }
-}
-fn fresh_string_producer_term_admissible(callee: &str) -> bool {
+fn fresh_string_producer_term_admissible(
+    callee: &str,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
     let contract = crate::runtime_symbols::callee_ownership_contract(callee);
     if contract.returns_receiver_interior_alias() {
         return false;
     }
-    !crate::runtime_symbols::is_known_runtime_symbol(callee)
-        || contract.produces_fresh_owned_string()
+    contract.produces_fresh_owned_string() || owned_string_return_carrier_symbols.contains(callee)
 }
 /// The dest of a `string`-typed record/tuple/closure-env field load — a fresh
 /// `+1` owner once codegen retains it (`retain_string_field_load`,
@@ -2445,19 +3717,25 @@ fn is_hew_string_concat_runtime_call(call: &crate::model::RuntimeCall) -> bool {
 fn is_fresh_string_producer_def(
     def: NestedDefSite,
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     t: u32,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> bool {
     let dest = match def {
         NestedDefSite::Instr { block, idx } => block_by_id(blocks, block)
             .and_then(|b| b.instructions.get(idx))
             .and_then(|instr| {
-                fresh_string_producer_dest(instr)
+                fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
                     .or_else(|| string_field_load_producer_dest(instr, locals))
             }),
-        NestedDefSite::Term { block } => {
-            block_by_id(blocks, block).and_then(|b| fresh_string_producer_term_dest(&b.terminator))
-        }
+        NestedDefSite::Term { block } => block_by_id(blocks, block).and_then(|b| {
+            fresh_string_producer_term_dest(
+                &b.terminator,
+                suspend_kinds.get(&block),
+                owned_string_return_carrier_symbols,
+            )
+        }),
     };
     dest.and_then(base_local) == Some(t)
 }
@@ -2470,6 +3748,67 @@ fn is_borrowing_string_concat_instr_use(instr: &Instr, t: u32) -> bool {
         && crate::runtime_symbols::callee_ownership_contract(call.symbol())
             .borrows_string_call_args()
 }
+
+/// `true` when a runtime-ABI instruction reads the candidate only through an
+/// explicit string-borrow contract. This is deliberately contract-driven (not
+/// a method-name allow-list): inspectors such as `hew_string_length` and
+/// transforms share the same no-consume guarantee as concat, while a runtime
+/// call without that declaration remains an ownership transfer and is rejected.
+fn is_borrowing_string_runtime_instr_use(instr: &Instr, t: u32) -> bool {
+    matches!(
+        instr,
+        Instr::CallRuntimeAbi(call)
+            if call.args().iter().any(|place| place_refs_local(*place, t))
+                && crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .borrows_string_call_args()
+    )
+}
+
+/// `CallClosure` borrows each by-value `string` argument through the
+/// compiler-owned `ClosureInvoke` ABI. The invoke shim retains a parameter only
+/// when it must mint another owner (for example, returning that parameter), so
+/// the caller's pre-existing temporary share remains its own drop obligation.
+fn is_borrowing_string_closure_instr_use(instr: &Instr, t: u32) -> bool {
+    matches!(
+        instr,
+        Instr::CallClosure { args, .. }
+            if args.iter().any(|place| place_refs_local(*place, t))
+    )
+}
+
+/// Continuation after a terminator that borrows `t` as a string argument.
+///
+/// Suspending closure calls lower through the `SuspendKind` side table. Their
+/// current carrier deliberately shares one resume/cleanup continuation; require
+/// that shape before placing the caller's balancing release there.
+fn borrowing_string_terminator_use_next(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    t: u32,
+) -> Option<u32> {
+    match term {
+        Terminator::Call {
+            callee, args, next, ..
+        } if args.iter().any(|place| place_refs_local(*place, t))
+            && crate::runtime_symbols::callee_ownership_contract(callee)
+                .borrows_string_call_args() =>
+        {
+            Some(*next)
+        }
+        Terminator::Suspend {
+            resume, cleanup, ..
+        } if resume == cleanup => match suspend_kind {
+            Some(SuspendKind::CallClosure { args, .. })
+                if args.iter().any(|place| place_refs_local(*place, t)) =>
+            {
+                Some(*resume)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `true` when control flows from `start` to `use_block` along a chain of
 /// single-predecessor `Call`-terminated blocks — so reaching `use_block`
 /// implies the block that produced `start` ran exactly once, and every block on
@@ -2536,6 +3875,24 @@ fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
         Instr::CallClosure { .. } | Instr::CallTraitMethod { .. } => false,
         _ => generator_yield_instr_escapes(instr, local),
     }
+}
+fn cow_owned_string_instr_is_borrow(
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    local: u32,
+    retained_string_moves: &HashSet<(u32, usize)>,
+) -> bool {
+    // A corroborated retain+move is a share, not a transfer: the source
+    // keeps its existing drop obligation and the destination balances the
+    // newly minted `+1`. This is load-bearing for retained handoff chains
+    // (`a = s; b = a`) where every intermediate owner must release.
+    let retained_share_from_local = retained_string_moves.contains(&(block, instr_index))
+        && matches!(
+            instr,
+            Instr::Move { src, .. } if base_local(*src) == Some(local)
+        );
+    retained_share_from_local || !cow_owned_string_instr_escapes(instr, local)
 }
 /// W5.011 P3 — the `Terminator` analogue of [`cow_owned_string_instr_escapes`].
 /// [`generator_yield_terminator_escapes`] is the exhaustive base (it catches
@@ -2678,6 +4035,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> HashSet<BindingId> {
     // 1. Fresh-owner locals: the dest of a known fresh `string` producer,
     //    propagated forward through `Move` (a `let y = <producer temp>` rebind
@@ -2687,21 +4045,19 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     //    interior-load shape as `hew_vec_get_str` (`xs.get(i)`), so it earns the
     //    same one balancing drop. The companion taint exclusion below keeps it
     //    admissible (a string field-load dest is no longer projection-tainted).
-    let mut fresh: HashSet<u32> = HashSet::new();
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let mut fresh = seed_fresh_string_instruction_locals(
+        blocks,
+        locals,
+        &retained_string_moves,
+        owned_string_return_carrier_symbols,
+    );
     for block in blocks {
-        for instr in &block.instructions {
-            if let Some(dest) = fresh_string_producer_dest(instr) {
-                if let Some(l) = base_local(dest) {
-                    fresh.insert(l);
-                }
-            }
-            if let Some(dest) = string_field_load_producer_dest(instr, locals) {
-                if let Some(l) = base_local(dest) {
-                    fresh.insert(l);
-                }
-            }
-        }
-        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
+        if let Some(dest) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        ) {
             if let Some(l) = base_local(dest) {
                 fresh.insert(l);
             }
@@ -2751,7 +4107,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     //    consumed-binder exemption (conservative: taint strictly more). String
     //    `*FieldLoad` dests are excluded from the seed (they are retained fresh
     //    producers, admitted in step 1) via the `locals` type gate.
-    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), locals);
 
     // 3. Admit a leaf-`string` owned binding iff it is a proven fresh owner, not
     //    a projection alias, and every use is a verified borrow.
@@ -2773,7 +4129,16 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
             block
                 .instructions
                 .iter()
-                .all(|instr| !cow_owned_string_instr_escapes(instr, local))
+                .enumerate()
+                .all(|(instr_index, instr)| {
+                    cow_owned_string_instr_is_borrow(
+                        instr,
+                        block.id,
+                        instr_index,
+                        local,
+                        &retained_string_moves,
+                    )
+                })
                 && !cow_owned_string_terminator_escapes(
                     &block.terminator,
                     suspend_kinds.get(&block.id),
@@ -2789,27 +4154,146 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     }
     allowed
 }
+
+/// Splice one balancing `hew_string_drop` for every corroborated retained
+/// co-owner (`string.retain x; s = move x`) whose share escapes ONLY into a
+/// re-retained return (`string.retain v; ret = move v`).
+///
+/// Such a co-owner mints an independent `+1` on the buffer. When that value
+/// reaches the caller solely through a re-retained return, the return hands the
+/// caller its OWN reference, so the co-owner's mint is never transferred out and
+/// leaks one node per call unless released inside the callee
+/// (`enum_callee_consume_drop_leak_oracle` `move_out_via_let_share`). This is the
+/// local-share twin of the enum-shell fix G2 landed in
+/// `derive_enum_composite_drop_allowed`: G2 keeps the shell drop that frees the
+/// still-owned original; this adds the share drop that frees the co-owner's
+/// mint. The two are mutually exclusive references, so together the buffer is
+/// released exactly once per outstanding reference.
+///
+/// The release is spliced at the END of the co-owner's minting block, before its
+/// terminator, and ONLY when that block exits through a single unconditional
+/// `Goto`/`Return` edge: the value is provably still live there (it flows onward
+/// to the return) and no trap/cancel edge reaches the splice, so the frame
+/// cleanup escrow — which covers the enum shell, not this alias — cannot
+/// double-free. Fail-closed: any block shape that is not a proven single exit is
+/// skipped (leaks, never double-frees).
+pub(super) fn splice_retained_return_co_owner_drops(
+    blocks: &mut [BasicBlock],
+    locals: &[ResolvedTy],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
+) {
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    // (minting block id, co-owner local) for every co-owner that escapes only
+    // into a re-retained return.
+    let mut splices: Vec<(u32, u32)> = Vec::new();
+    for block in blocks.iter() {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Some(local) = corroborated_retained_string_move_dest(
+                instr,
+                block.id,
+                instr_index,
+                &retained_string_moves,
+            ) else {
+                continue;
+            };
+            if !retained_co_owner_escapes_only_into_retained_return(
+                blocks,
+                local,
+                &retained_string_moves,
+                suspend_kinds,
+                module_fn_names,
+                module_generic_fn_names,
+                extern_contracts,
+            ) {
+                continue;
+            }
+            // Fail-closed placement gate: a single unconditional exit proves the
+            // splice point is on the co-owner's only continuation and off every
+            // trap/cancel edge.
+            if !matches!(
+                block.terminator,
+                Terminator::Goto { .. } | Terminator::Return
+            ) {
+                continue;
+            }
+            splices.push((block.id, local));
+        }
+    }
+    if splices.is_empty() {
+        return;
+    }
+    for (block_id, local) in splices {
+        let Some(block) = blocks.iter_mut().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let at = block.instructions.len();
+        block.instructions.push(Instr::Drop {
+            place: Place::Local(local),
+            ty: ResolvedTy::String,
+            drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+        });
+        shift_instr_spans_on_insert(instr_spans, block_id, u32::try_from(at).unwrap_or(u32::MAX));
+    }
+}
+
+fn remove_consumed_cow_bindings(
+    allowed: &mut HashSet<BindingId>,
+    actor_message_flags: &HashMap<BindingId, Place>,
+    dataflow_result: &dataflow::DataflowResult,
+) {
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
+            ) && !actor_message_flags.contains_key(binding)
+            {
+                allowed.remove(binding);
+            }
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the two derivation passes bracket exact retain-site materialization"
+)]
 pub(super) fn finalize_string_ownership(
     raw: &mut RawMirFunction,
-    builder: &Builder,
+    builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> StringDropDerivation {
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_string_locals = builder
+        .borrowed_string_param_locals
+        .union(&builder.typed_borrowed_string_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_cow_sole_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
-        &builder.borrowed_string_param_locals,
+        &borrowed_string_locals,
         &builder.parameter_locals,
         &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
     );
-    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+    let mut fresh_borrowed_allowed = derive_cow_fresh_borrowed_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -2818,30 +4302,389 @@ pub(super) fn finalize_string_ownership(
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
-    ));
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
-            {
-                derivation.allowed.remove(binding);
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    );
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.condition, StringRetainCondition::Always) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::String))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
             }
         }
     }
+    let mut aggregate_handoffs = HashSet::new();
+    let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
+        if matches!(site.condition, StringRetainCondition::Always) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
+        let typed_handoff = matches!(site.condition, StringRetainCondition::Always)
+            && raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .is_some_and(|instruction| {
+                    instruction_carries_typed_handoff(
+                        instruction,
+                        site.value,
+                        &builder.typed_produced_value_handoffs,
+                    )
+                });
+        if typed_handoff {
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
+                return false;
+            }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
+        }
         site.required_bindings
             .iter()
             .all(|binding| derivation.allowed.contains(binding))
     });
+    for (binding, destination) in named_aggregate_handoffs {
+        derivation.allowed.remove(&binding);
+        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+    }
     apply_string_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
+    );
+    // Retains are explicit MIR only after the splice above. Re-run the fresh,
+    // borrow-only admission over that final instruction stream so a uniquely
+    // defined acyclic `StringRetain(src); Move(dst, src)` destination earns the
+    // balancing drop for its independent `+1`. The pre-splice run remains
+    // necessary for all established fresh producers and for retain-site gating.
+    fresh_borrowed_allowed.extend(derive_cow_fresh_borrowed_owner(
+        &raw.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    ));
+    derivation
+        .allowed
+        .extend(fresh_borrowed_allowed.iter().copied());
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    builder.synthetic_borrowed_temp_drop_bindings.extend(
+        fresh_borrowed_allowed.into_iter().filter(|binding| {
+            derivation.allowed.contains(binding)
+                && builder
+                    .synthetic_owner_publication_sites
+                    .contains_key(binding)
+                && builder.owned_locals.iter().any(|entry| {
+                    entry.binding == *binding && entry.disposition == Disposition::ScopeExit
+                })
+        }),
+    );
+    // Balance the independent `+1` of a corroborated retained co-owner that
+    // escapes only into a re-retained return. Runs last: all share and return
+    // retains are explicit in `raw.blocks`, and no in-function analysis reads
+    // the block stream after this splice.
+    splice_retained_return_co_owner_drops(
+        &mut raw.blocks,
+        &builder.locals,
+        &builder.suspend_kinds,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &mut raw.instr_spans,
     );
     derivation
 }
+struct NestedTempDataflow {
+    pred_count: HashMap<u32, usize>,
+    binding_local_ids: HashSet<u32>,
+    instr_writers: HashMap<u32, Vec<(u32, usize)>>,
+    source_uses: HashMap<u32, Vec<NestedUseSite>>,
+}
+
+fn collect_nested_temp_dataflow(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    binding_locals: &HashMap<BindingId, Place>,
+) -> NestedTempDataflow {
+    NestedTempDataflow {
+        pred_count: collect_nested_temp_predecessor_counts(blocks),
+        binding_local_ids: binding_locals
+            .values()
+            .filter_map(|place| base_local(*place))
+            .collect(),
+        instr_writers: collect_nested_temp_instruction_writers(blocks),
+        source_uses: collect_nested_temp_source_uses(blocks, suspend_kinds),
+    }
+}
+
+fn collect_nested_temp_predecessor_counts(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
+    let mut pred_count = HashMap::new();
+    for block in blocks {
+        // Count predecessor BLOCKS, not parallel CFG edges. A suspending
+        // closure's multi-suspend carrier deliberately routes both `resume`
+        // and `cleanup` to the same continuation block; reaching that block
+        // still proves its single producer block ran. Counting both edges as
+        // two predecessors would falsely reject the otherwise straight-line
+        // result/drop path.
+        let successors: HashSet<u32> = block.successors().into_iter().collect();
+        for successor in successors {
+            *pred_count.entry(successor).or_insert(0) += 1;
+        }
+    }
+    pred_count
+}
+
+fn collect_nested_temp_instruction_writers(
+    blocks: &[BasicBlock],
+) -> HashMap<u32, Vec<(u32, usize)>> {
+    let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            for place in writes {
+                if let Some(local) = base_local(place) {
+                    instr_writers
+                        .entry(local)
+                        .or_default()
+                        .push((block.id, idx));
+                }
+            }
+        }
+    }
+    instr_writers
+}
+
+/// Collect every local read by an instruction or terminator, deduplicating
+/// repeated operands in one use site. Instructions intentionally use the full
+/// dataflow reads table so borrow-excluded readers (such as `WireCodec`) cannot
+/// be mistaken for a discarded temporary and receive a premature drop.
+fn collect_nested_temp_source_uses(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+) -> HashMap<u32, Vec<NestedUseSite>> {
+    let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
+    for block in blocks {
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let mut used_locals = HashSet::new();
+            let (reads, _, _) = crate::dataflow::instr_reads_writes(instr);
+            for place in reads {
+                if let Some(local) = base_local(place) {
+                    used_locals.insert(local);
+                }
+            }
+            for local in used_locals {
+                source_uses
+                    .entry(local)
+                    .or_default()
+                    .push(NestedUseSite::Instr {
+                        block: block.id,
+                        idx,
+                    });
+            }
+        }
+        let mut used_locals = HashSet::new();
+        for place in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
+            if let Some(local) = base_local(place) {
+                used_locals.insert(local);
+            }
+        }
+        for local in used_locals {
+            source_uses
+                .entry(local)
+                .or_default()
+                .push(NestedUseSite::Term { block: block.id });
+        }
+    }
+    source_uses
+}
+
+/// Find every fresh-owned `string` producer, including retained field loads
+/// and wire-codec destinations whose `String` representation is caller-owned.
+fn collect_fresh_string_temp_defs(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> Vec<(u32, NestedDefSite)> {
+    let mut defs = Vec::new();
+    for block in blocks {
+        // A retained string `*FieldLoad` destination owns an independent +1;
+        // admit it under the same fail-closed rules as runtime producers.
+        for (idx, instr) in block.instructions.iter().enumerate() {
+            let producer_dest =
+                fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
+                    .or_else(|| string_field_load_producer_dest(instr, locals))
+                    .or_else(|| wire_codec_string_producer_dest(instr, locals));
+            if let Some(local) = producer_dest.and_then(base_local) {
+                defs.push((
+                    local,
+                    NestedDefSite::Instr {
+                        block: block.id,
+                        idx,
+                    },
+                ));
+            }
+        }
+        if let Some(local) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
+        {
+            defs.push((local, NestedDefSite::Term { block: block.id }));
+        }
+    }
+    defs
+}
+
+/// Transfer a fresh producer's authority through the single `Move` introduced
+/// when an unsafe block materializes its tail expression into a local.
+fn propagate_linear_fresh_string_moves(
+    defs: &mut Vec<(u32, NestedDefSite)>,
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    dataflow: &NestedTempDataflow,
+) {
+    let mut seen = HashSet::new();
+    let mut next_def = 0;
+    while let Some((source, _origin)) = defs.get(next_def).copied() {
+        next_def += 1;
+        if !seen.insert(source) {
+            continue;
+        }
+        let Some([NestedUseSite::Instr { block, idx }]) =
+            dataflow.source_uses.get(&source).map(Vec::as_slice)
+        else {
+            continue;
+        };
+        let Some(Instr::Move { dest, src }) =
+            block_by_id(blocks, *block).and_then(|candidate| candidate.instructions.get(*idx))
+        else {
+            continue;
+        };
+        if base_local(*src) != Some(source) {
+            continue;
+        }
+        let Some(dest_local) = base_local(*dest) else {
+            continue;
+        };
+        if dataflow.binding_local_ids.contains(&dest_local)
+            || !matches!(locals.get(dest_local as usize), Some(ResolvedTy::String))
+            || dataflow.instr_writers.get(&dest_local).map(Vec::as_slice)
+                != Some(&[(*block, *idx)][..])
+        {
+            continue;
+        }
+        defs.push((
+            dest_local,
+            NestedDefSite::Instr {
+                block: *block,
+                idx: *idx,
+            },
+        ));
+    }
+}
+
 /// W5.011 P3 — nested fresh-`string` temporary release. The bare-temp analogue
 /// of [`derive_cow_fresh_borrowed_owner`]: it releases fresh-owned `string`
 /// results that flow straight into a borrowing use (or are discarded) WITHOUT a
@@ -2853,6 +4696,7 @@ pub(super) fn finalize_string_ownership(
 ///   (a + b).len()           // concat temp, borrowed by hew_string_length
 ///   s.to_uppercase().len()  // to_uppercase temp, borrowed
 ///   xs[i].len()             // hew_vec_get_str temp (a +1 retain), borrowed
+///   identity(s.to_upper())   // ClosureInvoke borrows its string argument
 ///   a + b;                  // discarded concat temp (zero uses)
 /// ```
 ///
@@ -2881,10 +4725,11 @@ pub(super) fn finalize_string_ownership(
 ///    `instr_source_places`, also sees borrow-excluded readers such as
 ///    `Instr::WireCodec`'s operand — plus `terminator_source_places` for
 ///    terminators), and (if present) that use is verified borrowing-only: a
-///    borrowing `Terminator::Call`, a string compare instruction, or the
-///    narrowly-proven nested `hew_string_concat` → `hew_string_concat`
-///    instruction chain. Any other use (`Move`/store/return/send/user-call/
-///    `WireCodec`) excludes it (leak, never double-free) — the reads-based
+///    borrowing `Terminator::Call`, direct/suspending `CallClosure`, a string
+///    compare instruction, or the narrowly-proven nested `hew_string_concat` →
+///    `hew_string_concat` instruction chain. Any other use
+///    (`Move`/store/return/send/user-call/`WireCodec`) excludes it (leak, never
+///    double-free) — the reads-based
 ///    table is what keeps a `Packet.from_json(a + b)` operand ALIVE past the
 ///    parse instead of routing it down the discard branch;
 /// 5. the drop site is provably dominated by the def and entered exactly once
@@ -2898,6 +4743,10 @@ pub(super) fn finalize_string_ownership(
 ///        terminator) or a terminator `Call(next = U)` of the immediately
 ///        preceding block (require `U` single-predecessor) → drop at the front
 ///        of `T` (require `T` single-predecessor).
+///      * direct `CallClosure` instruction → drop immediately after the invoke;
+///        suspending `CallClosure` → drop at its single shared normal
+///        continuation, plus a mutually-exclusive twin in the suspend's
+///        destroy-while-parked exit plan.
 ///
 /// Any other CFG shape fails closed (the temp leaks, as before this fix). The
 /// return is a list of `(block_id, insert_index, place, ty)` inline-drop
@@ -2911,157 +4760,74 @@ fn collect_nested_fresh_string_temp_drops(
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Vec<(u32, usize, Place, ResolvedTy)> {
-    // A drop spliced at the FRONT of a block is sound only if that block is
-    // entered from exactly one place — otherwise it could fire on a path where
-    // the temp was never produced (free of an uninitialised slot / double-free).
-    let mut pred_count: HashMap<u32, usize> = HashMap::new();
-    for block in blocks {
-        for succ in block.successors() {
-            *pred_count.entry(succ).or_insert(0) += 1;
-        }
-    }
-
-    // Binding/parameter locals are released by the scope-exit `derive_cow_*`
-    // drops; never double-claim one here.
-    let binding_local_ids: HashSet<u32> = binding_locals
-        .values()
-        .filter_map(|p| base_local(*p))
-        .collect();
-
-    // Instruction writers per local (rule 3): the sole admissible writer of an
-    // instr-produced temp is its producer; a terminator-produced temp has none.
-    let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
-    for block in blocks {
-        for (idx, instr) in block.instructions.iter().enumerate() {
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
-            for w in writes {
-                if let Some(l) = base_local(w) {
-                    instr_writers.entry(l).or_default().push((block.id, idx));
-                }
-            }
-        }
-    }
-
-    // Use sites per local (rule 4), deduplicated within each
-    // instruction/terminator so a temp referenced twice by one call counts once.
-    //
-    // Instruction uses come from the full dataflow READS
-    // (`dataflow::instr_reads_writes(..).0`), NOT from `instr_source_places` —
-    // the same hidden-borrow-reader correction as the bytes collector
-    // (`collect_nested_fresh_bytes_temp_drops`). `instr_source_places`
-    // deliberately excludes borrow-only readers (`Instr::WireCodec`'s operand,
-    // borrow-only `ClosureEnvInit` fields) so a NAMED binding keeps its
-    // scope-exit drop past those reads; for a bare temp that exclusion
-    // registered ZERO uses, took the discard branch, and spliced
-    // `hew_string_drop` immediately after the producer — freeing the buffer
-    // BEFORE the hidden reader ran. `Packet.from_json(a + b)` parsed a freed
-    // buffer this way: a silent wrong-result (`Err`), while the named
-    // `let joined = a + b` sibling was correct. With the reads table a hidden
-    // reader is a real use-site the borrowing-use classification rejects, so
-    // the temp fails CLOSED to the leak direction. Terminator uses keep
-    // `terminator_source_places` (no borrow-exclusions for any reading
-    // variant; `MakeGenerator`'s env — see its arm's note — never carries a
-    // leaf string/bytes temp directly).
-    let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
-    for block in blocks {
-        for (idx, instr) in block.instructions.iter().enumerate() {
-            let mut here: HashSet<u32> = HashSet::new();
-            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
-            for p in reads {
-                if let Some(l) = base_local(p) {
-                    here.insert(l);
-                }
-            }
-            for l in here {
-                source_uses
-                    .entry(l)
-                    .or_default()
-                    .push(NestedUseSite::Instr {
-                        block: block.id,
-                        idx,
-                    });
-            }
-        }
-        let mut here: HashSet<u32> = HashSet::new();
-        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
-            if let Some(l) = base_local(p) {
-                here.insert(l);
-            }
-        }
-        for l in here {
-            source_uses
-                .entry(l)
-                .or_default()
-                .push(NestedUseSite::Term { block: block.id });
-        }
-    }
-
-    let mut result: Vec<(u32, usize, Place, ResolvedTy)> = Vec::new();
-    let mut seen: HashSet<u32> = HashSet::new();
-    for block in blocks {
-        // Producer defs in this block: instruction producers first, then the
-        // block-terminating producer (transform / Vec getter).
-        let mut defs: Vec<(u32, NestedDefSite)> = Vec::new();
-        for (idx, instr) in block.instructions.iter().enumerate() {
-            // A runtime-ABI fresh producer (`hew_string_concat`/`…_to_uppercase`/…)
-            // OR a retained string `*FieldLoad` dest — the #54 interior-alias
-            // clone-out. `r.name` loaded out of a match-bound nested-record payload
-            // is retained by codegen (`retain_string_field_load` →
-            // `hew_string_clone`, a `+1` owner of the field's buffer); when it is
-            // consumed only by a borrowing transform (`r.name.to_upper()` feeds
-            // `hew_string_to_uppercase`, which reads its operand and allocates a
-            // fresh result) the field-load temp keeps an unbalanced `+1` and leaks.
-            // The parent composite's `EnumInPlace` drop frees the OTHER share (the
-            // payload buffer), so this `+1` retain needs its own single balancing
-            // drop. It is the identical fresh-`+1`-used-by-a-borrow shape this
-            // collector already releases for runtime producers; admit it under the
-            // SAME fail-closed rules (single def, at-most-one borrowing use, def
-            // dominates the drop), so a temp that escapes
-            // (Move/store/return/owning call) stays excluded (leak, never
-            // double-free). `string_field_load_producer_dest`'s `string` type gate
-            // is the exact congruence with the codegen retain — a non-string field
-            // load is never seeded.
-            if let Some(dest) = fresh_string_producer_dest(instr)
-                .or_else(|| string_field_load_producer_dest(instr, locals))
-                .or_else(|| wire_codec_string_producer_dest(instr, locals))
-            {
-                if let Some(t) = base_local(dest) {
-                    defs.push((
-                        t,
-                        NestedDefSite::Instr {
-                            block: block.id,
-                            idx,
-                        },
-                    ));
-                }
-            }
-        }
-        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
-            if let Some(t) = base_local(dest) {
-                defs.push((t, NestedDefSite::Term { block: block.id }));
-            }
-        }
-        for (t, def) in defs {
-            if !seen.insert(t) {
-                continue;
-            }
-            if let Some(ins) = nested_fresh_string_temp_drop(
-                t,
+    let dataflow = collect_nested_temp_dataflow(blocks, suspend_kinds, binding_locals);
+    let mut defs = collect_fresh_string_temp_defs(
+        blocks,
+        suspend_kinds,
+        locals,
+        owned_string_return_carrier_symbols,
+    );
+    propagate_linear_fresh_string_moves(&mut defs, blocks, locals, &dataflow);
+    defs.into_iter()
+        .filter_map(|(local, def)| {
+            nested_fresh_string_temp_drop(
+                local,
                 def,
                 blocks,
                 locals,
-                &pred_count,
-                &binding_local_ids,
-                &instr_writers,
-                &source_uses,
-            ) {
-                result.push(ins);
-            }
-        }
-    }
-    result
+                &dataflow.pred_count,
+                &dataflow.binding_local_ids,
+                &dataflow.instr_writers,
+                &dataflow.source_uses,
+                suspend_kinds,
+                owned_string_return_carrier_symbols,
+            )
+        })
+        .collect()
 }
+
+/// The suspend block whose destroy-while-parked edge bypasses the normal
+/// continuation drop for `place`.
+///
+/// A suspending closure call borrows its string argument. Normal completion
+/// reaches the shared `resume == cleanup` MIR continuation, but LLVM coroutine
+/// case-1 abandonment runs the suspend block's [`crate::model::ExitPath::Suspend`]
+/// plan and branches directly to the coroutine cleanup outline. Find that
+/// suspend so [`apply_nested_fresh_string_temp_drops`] can register an
+/// abandon-only twin of the normal inline drop. Require one unambiguous match;
+/// anything else remains fail-closed.
+fn suspending_closure_argument_abandon_block(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    continuation: u32,
+    place: Place,
+) -> Option<u32> {
+    let local = base_local(place)?;
+    let mut matches = blocks.iter().filter_map(|block| {
+        let Terminator::Suspend {
+            resume,
+            cleanup,
+            is_final: false,
+        } = block.terminator
+        else {
+            return None;
+        };
+        if resume != continuation || cleanup != continuation {
+            return None;
+        }
+        matches!(
+            suspend_kinds.get(&block.id),
+            Some(SuspendKind::CallClosure { args, .. })
+                if args.iter().any(|arg| place_refs_local(*arg, local))
+        )
+        .then_some(block.id)
+    });
+    let suspend_block = matches.next()?;
+    matches.next().is_none().then_some(suspend_block)
+}
+
 /// Per-candidate admission for [`collect_nested_fresh_string_temp_drops`].
 /// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
 /// the fresh-`string` temp `t` (defined at `def`) satisfies every fail-closed
@@ -3082,6 +4848,8 @@ fn nested_fresh_string_temp_drop(
     binding_local_ids: &HashSet<u32>,
     instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
     source_uses: &HashMap<u32, Vec<NestedUseSite>>,
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Option<(u32, usize, Place, ResolvedTy)> {
     // 1. leaf `string` — bail unless this resolves to a leaf drop symbol.
     let ty = locals.get(t as usize)?;
@@ -3118,107 +4886,65 @@ fn nested_fresh_string_temp_drop(
         // Discarded terminator producer `Call(next = N)`: drop at the front of
         // its single-predecessor continuation.
         (NestedDefSite::Term { block }, None) => {
-            let n = call_terminator_next(&block_by_id(blocks, block)?.terminator)?;
+            let producer_block = block_by_id(blocks, block)?;
+            let n = fresh_string_producer_term_next(
+                &producer_block.terminator,
+                suspend_kinds.get(&block),
+            )?;
             (pred_count.get(&n).copied().unwrap_or(0) == 1).then_some((n, 0, drop_place, drop_ty))
         }
-        // Single use: it must be a borrowing terminator `Call`, and the def must
-        // dominate it (so the drop runs iff the temp was produced).
+        // Single use: it must be a borrowing runtime `Call` or a typed
+        // suspending `CallClosure`, and the def must dominate it (so the drop
+        // runs iff the temp was produced).
         (_, Some(NestedUseSite::Term { block: use_block })) => {
             let ub = *use_block;
-            let Terminator::Call {
-                callee, args, next, ..
-            } = &block_by_id(blocks, ub)?.terminator
-            else {
-                return None;
-            };
-            if !args.iter().any(|p| place_refs_local(*p, t)) {
-                return None;
-            }
-            if !crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
-            {
+            let use_block = block_by_id(blocks, ub)?;
+            let next = borrowing_string_terminator_use_next(
+                &use_block.terminator,
+                suspend_kinds.get(&ub),
+                t,
+            )?;
+            if pred_count.get(&next).copied().unwrap_or(0) != 1 {
                 return None;
             }
-            if pred_count.get(next).copied().unwrap_or(0) != 1 {
-                return None;
-            }
-            let def_dominates = match def {
-                // Instruction def in the use's own block precedes the terminator;
-                // otherwise the def block's `Call` continuation must reach the
-                // use block along a single-predecessor chain (see below).
-                NestedDefSite::Instr { block, .. } => {
-                    block == ub
-                        || block_by_id(blocks, block)
-                            .and_then(|b| call_terminator_next(&b.terminator))
-                            .is_some_and(|start| {
-                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
-                            })
-                }
-                // Terminator def `Call(next = U)`: `U` (and every block up to the
-                // use) is reached only from the def block along a
-                // single-predecessor chain, so the def ran. The multi-step chain
-                // is the #2726 f-string case, where a `to_string_*` conversion
-                // block splits the concat chain between the producing and
-                // consuming concats.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
-                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
-                    )
-                }
-            };
-            def_dominates.then_some((*next, 0, drop_place, drop_ty))
+            let def_dominates =
+                nested_fresh_string_def_dominates(def, blocks, suspend_kinds, pred_count, ub, None);
+            def_dominates.then_some((next, 0, drop_place, drop_ty))
         }
         // Single instruction use: admit ONLY known borrowing instruction uses:
-        // a borrowing string compare (`xs[i] == "hello"`, `xs[i] != s`, and
-        // the ordering family) or the reproduced nested-concat chain where a
-        // fresh `hew_string_concat` instruction result is immediately borrowed
-        // by another `hew_string_concat` instruction (`first + " " + last`).
+        // a string compare (`xs[i] == "hello"`, `xs[i] != s`, and the ordering
+        // family), a wire-codec read, a direct `CallClosure`, or a runtime ABI
+        // call carrying the exact string-borrow contract (including nested
+        // concat and `string.len()`).
         // Any other instruction use stays fail-closed (leak, never
-        // double-free): a `Move`/store/user-call/closure-call/unknown runtime
+        // double-free): a `Move`/store/trait-call/unknown runtime
         // call may take ownership, and the conservative leak is the safe side.
         (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
             let ub = *ub;
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
                 || is_wire_codec_borrowing_string_use(use_instr, t)
-                || (is_fresh_string_producer_def(def, blocks, locals, t)
-                    && is_borrowing_string_concat_instr_use(use_instr, t));
+                || is_borrowing_string_runtime_instr_use(use_instr, t)
+                || is_borrowing_string_closure_instr_use(use_instr, t)
+                || (is_fresh_string_producer_def(
+                    def,
+                    blocks,
+                    suspend_kinds,
+                    locals,
+                    t,
+                    owned_string_return_carrier_symbols,
+                ) && is_borrowing_string_concat_instr_use(use_instr, t));
             if !borrowing_use {
                 return None;
             }
-            let def_dominates = match def {
-                // Instruction def dominates the use when EITHER:
-                //   * it is an EARLIER instruction in the use's own block —
-                //     same-block straight-line execution means reaching the use
-                //     (which reads `t`) implies the def ran; OR
-                //   * the def block's terminator is a `Call` whose sole
-                //     continuation is the use block, and the use block has that
-                //     single predecessor. The def is an instruction in the def
-                //     block, which runs straight-line to its terminator; the
-                //     terminator's normal edge reaches the use block, whose only
-                //     predecessor is the def block — so reaching the use implies
-                //     the def ran. This is the multi-interpolation f-string
-                //     shape (#2726): a `to_string_*` conversion lowers to a
-                //     block-terminating `Call` that SPLITS the concat chain, so
-                //     the concat consuming an intermediate result lands one
-                //     block past that split. Same single-step domination the
-                //     terminator-def arm below already proves.
-                NestedDefSite::Instr { block, idx } => {
-                    (block == ub && idx < *ui)
-                        || block_by_id(blocks, block)
-                            .and_then(|b| call_terminator_next(&b.terminator))
-                            .is_some_and(|start| {
-                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
-                            })
-                }
-                // Terminator def `Call(next = U)`: `U` (and every block up to the
-                // use) is reached only from the def block along a
-                // single-predecessor chain, so the def ran before the use.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
-                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
-                    )
-                }
-            };
+            let def_dominates = nested_fresh_string_def_dominates(
+                def,
+                blocks,
+                suspend_kinds,
+                pred_count,
+                ub,
+                Some(*ui),
+            );
             // Drop immediately after the compare instruction (straight-line in
             // its block), so the release runs exactly once on the path that
             // produced and borrowed the temp.
@@ -3226,6 +4952,39 @@ fn nested_fresh_string_temp_drop(
         }
     }
 }
+
+/// Prove that a fresh-string definition executes before its sole borrowing use.
+///
+/// `use_instr_idx = None` denotes a terminator use, which follows every
+/// instruction in its block. Cross-block admission requires a chain whose
+/// blocks each have one distinct predecessor, so reaching the use implies that
+/// the producer ran.
+fn nested_fresh_string_def_dominates(
+    def: NestedDefSite,
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    pred_count: &HashMap<u32, usize>,
+    use_block: u32,
+    use_instr_idx: Option<usize>,
+) -> bool {
+    match def {
+        NestedDefSite::Instr { block, idx } => {
+            (block == use_block && use_instr_idx.is_none_or(|use_idx| idx < use_idx))
+                || block_by_id(blocks, block)
+                    .and_then(|b| call_terminator_next(&b.terminator))
+                    .is_some_and(|start| {
+                        dominates_use_via_single_pred_chain(blocks, start, use_block, pred_count)
+                    })
+        }
+        NestedDefSite::Term { block } => block_by_id(blocks, block).is_some_and(|producer_block| {
+            fresh_string_producer_term_next(&producer_block.terminator, suspend_kinds.get(&block))
+                .is_some_and(|start| {
+                    dominates_use_via_single_pred_chain(blocks, start, use_block, pred_count)
+                })
+        }),
+    }
+}
+
 /// W5.011 P3 — splice the inline `hew_string_drop`s computed by
 /// [`collect_nested_fresh_string_temp_drops`] into `blocks`. Applied during
 /// lowering BEFORE `check_function` / drop elaboration so the dataflow observes
@@ -3234,18 +4993,47 @@ fn nested_fresh_string_temp_drop(
 /// earlier splice does not shift a later (lower-index) one.
 pub(super) fn apply_nested_fresh_string_temp_drops(
     blocks: &mut [BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
+    suspend_kinds: &mut HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+    suspend_abandon_extra_drops: &mut HashMap<u32, Vec<ElabDrop>>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
-    let insertions =
-        collect_nested_fresh_string_temp_drops(blocks, suspend_kinds, locals, binding_locals);
+    let insertions = collect_nested_fresh_string_temp_drops(
+        blocks,
+        suspend_kinds,
+        locals,
+        binding_locals,
+        owned_string_return_carrier_symbols,
+    );
     if insertions.is_empty() {
         return;
     }
     let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
     for (bid, idx, place, ty) in insertions {
+        if let Some(suspend_block) =
+            suspending_closure_argument_abandon_block(blocks, suspend_kinds, bid, place)
+        {
+            // Coroutine abandonment never reaches `bid`: `emit_suspend_point`
+            // runs this suspend exit plan after the CallClosure driver's child
+            // and reply-channel teardown, then branches directly to
+            // `coro.cleanup`. Register the anonymous argument's congruent drop
+            // there. Normal completion instead reaches the inline drop below,
+            // so the two releases are mutually exclusive.
+            suspend_abandon_extra_drops
+                .entry(suspend_block)
+                .or_default()
+                .push(ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: None,
+                    kind: DropKind::CowHeap {
+                        release: crate::ownership::CowHeapRelease::String,
+                    },
+                    guard: None,
+                });
+        }
         by_block.entry(bid).or_default().push((idx, place, ty));
     }
     for block in blocks.iter_mut() {
@@ -3313,7 +5101,7 @@ mod nested_fresh_string_temp_drop_admission {
     fn fresh_string_call(callee: &str, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![Place::Local(0)],
             dest: Some(Place::Local(dest)),
             next,
@@ -3341,7 +5129,22 @@ mod nested_fresh_string_temp_drop_admission {
         locals: &[ResolvedTy],
         binding_locals: &HashMap<BindingId, Place>,
     ) -> Vec<(u32, usize, Place, ResolvedTy)> {
-        collect_nested_fresh_string_temp_drops(blocks, &HashMap::new(), locals, binding_locals)
+        collect_with_suspend(blocks, &HashMap::new(), locals, binding_locals)
+    }
+
+    fn collect_with_suspend(
+        blocks: &[BasicBlock],
+        suspend_kinds: &HashMap<u32, SuspendKind>,
+        locals: &[ResolvedTy],
+        binding_locals: &HashMap<BindingId, Place>,
+    ) -> Vec<(u32, usize, Place, ResolvedTy)> {
+        collect_nested_fresh_string_temp_drops(
+            blocks,
+            suspend_kinds,
+            locals,
+            binding_locals,
+            &HashSet::new(),
+        )
     }
 
     fn nested_concat_blocks() -> Vec<BasicBlock> {
@@ -3390,10 +5193,423 @@ mod nested_fresh_string_temp_drop_admission {
         );
     }
 
+    #[test]
+    fn fresh_string_argument_to_direct_closure_gets_one_drop_after_call() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![Instr::CallClosure {
+                    callee: Place::Local(0),
+                    args: vec![Place::Local(2)],
+                    ret_ty: ResolvedTy::Unit,
+                    dest: None,
+                }],
+                Terminator::Return,
+            ),
+        ];
+
+        assert_eq!(
+            collect(&blocks, &locals_with(&[]), &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::String)],
+            "the ClosureInvoke shim borrows a by-value string argument; the \
+             caller must release its fresh temporary share exactly once after \
+             the direct call completes"
+        );
+    }
+
+    #[test]
+    fn fresh_string_argument_to_suspending_closure_gets_one_drop_on_resume() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![(2, 0, Place::Local(2), ResolvedTy::String)],
+            "the shared resume/cleanup continuation balances the fresh argument \
+             share after a suspending ClosureInvoke completes"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_fresh_argument_gets_resume_and_abandon_xor_drops() {
+        let mut blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let mut suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+        let mut abandon_drops = HashMap::new();
+
+        apply_nested_fresh_string_temp_drops(
+            &mut blocks,
+            &mut suspend_kinds,
+            &locals_with(&[]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &mut abandon_drops,
+            &mut BTreeMap::new(),
+        );
+
+        assert!(matches!(
+            blocks[2].instructions.as_slice(),
+            [Instr::Drop {
+                place: Place::Local(2),
+                ty: ResolvedTy::String,
+                ..
+            }]
+        ));
+        assert_eq!(
+            abandon_drops.get(&1),
+            Some(&vec![ElabDrop {
+                place: Place::Local(2),
+                ty: ResolvedTy::String,
+                drop_fn: None,
+                kind: DropKind::CowHeap {
+                    release: crate::ownership::CowHeapRelease::String,
+                },
+                guard: None,
+            }]),
+            "normal resume and destroy-while-parked are mutually exclusive, \
+             so each edge must carry one congruent release for the fresh arg"
+        );
+        assert!(matches!(
+            suspend_kinds.get(&1),
+            Some(SuspendKind::CallClosure { .. })
+        ));
+    }
+
+    #[test]
+    fn suspending_closure_balances_fresh_argument_and_borrowed_string_result() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            block(
+                2,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_string_length".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![Place::Local(3)],
+                    dest: Some(Place::Local(4)),
+                    next: 3,
+                },
+            ),
+            ret_block(3),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(3)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(
+                &blocks,
+                &suspend_kinds,
+                &locals_with(&[(4, ResolvedTy::I64)]),
+                &HashMap::new(),
+            ),
+            vec![
+                (2, 0, Place::Local(2), ResolvedTy::String),
+                (3, 0, Place::Local(3), ResolvedTy::String),
+            ],
+            "the argument's original share and the closure's returned share \
+             are distinct obligations, each balanced after its last borrow"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_balances_fresh_argument_and_discarded_string_result() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(3)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![
+                (2, 0, Place::Local(2), ResolvedTy::String),
+                (2, 0, Place::Local(3), ResolvedTy::String),
+            ],
+            "a shared continuation can release both the borrowed argument share \
+             and an otherwise-discarded returned share exactly once"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_argument_with_split_cleanup_stays_fail_closed() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 3,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+            ret_block(3),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+
+        assert!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),)
+                .is_empty(),
+            "a split cleanup path has no single exactly-once release site and \
+             must remain fail-closed"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_string_temp_gets_one_drop_after_borrowing_runtime_use() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_string_length".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![Place::Local(2)],
+                    dest: Some(Place::Local(3)),
+                    next: 2,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            0,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(2)),
+            },
+        )]);
+
+        let drops = collect_with_suspend(
+            &blocks,
+            &suspend_kinds,
+            &locals_with(&[(3, ResolvedTy::I64)]),
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            drops,
+            vec![(2, 0, Place::Local(2), ResolvedTy::String)],
+            "a SuspendKind::CallClosure string result carries one independent \
+             share and must be released exactly once after `.len()` borrows it"
+        );
+    }
+
+    #[test]
+    fn discarded_suspending_closure_string_temp_gets_one_drop_on_resume() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            ret_block(1),
+        ];
+        let suspend_kinds = HashMap::from([(
+            0,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(2)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![(1, 0, Place::Local(2), ResolvedTy::String)],
+            "a discarded suspending closure string result must release its one \
+             independent share at the single-predecessor resume"
+        );
+    }
+
+    #[test]
+    fn unproven_suspend_results_are_not_laundered_as_string_producers() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            ret_block(1),
+        ];
+        let cases = [
+            ("missing side-table", HashMap::new()),
+            (
+                "no result destination",
+                HashMap::from([(
+                    0,
+                    SuspendKind::CallClosure {
+                        callee: Place::Local(0),
+                        args: Vec::new(),
+                        ret_ty: ResolvedTy::String,
+                        result_dest: None,
+                    },
+                )]),
+            ),
+            (
+                "non-string result",
+                HashMap::from([(
+                    0,
+                    SuspendKind::CallClosure {
+                        callee: Place::Local(0),
+                        args: Vec::new(),
+                        ret_ty: ResolvedTy::Bytes,
+                        result_dest: Some(Place::Local(2)),
+                    },
+                )]),
+            ),
+            (
+                "non-closure suspend",
+                HashMap::from([(
+                    0,
+                    SuspendKind::TaskAwait {
+                        scope: Place::Local(0),
+                        task: Place::Local(1),
+                        result_dest: Some(Place::Local(2)),
+                    },
+                )]),
+            ),
+        ];
+
+        for (label, suspend_kinds) in cases {
+            assert!(
+                collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),)
+                    .is_empty(),
+                "{label}: only a typed CallClosure result destination grants \
+                 the narrow string-carrier authority"
+            );
+        }
+    }
+
     fn concat_term(lhs: u32, rhs: u32, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: "hew_string_concat".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![Place::Local(lhs), Place::Local(rhs)],
             dest: Some(Place::Local(dest)),
             next,
@@ -3489,7 +5705,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![concat(0, 1, 2)],
                 Terminator::Call {
                     callee: "hew_vec_push_owned".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5), Place::Local(2)],
                     dest: None,
                     next: 1,
@@ -3680,7 +5896,7 @@ mod nested_fresh_string_temp_drop_admission {
                 vec![concat(0, 1, 2)],
                 Terminator::Call {
                     callee: "user_takes_string".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(2)],
                     dest: None,
                     next: 1,
@@ -3851,7 +6067,7 @@ fn collect_nested_fresh_bytes_temp_drops(
     let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(l) = base_local(w) {
                     instr_writers.entry(l).or_default().push((block.id, idx));
@@ -3883,7 +6099,7 @@ fn collect_nested_fresh_bytes_temp_drops(
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
-            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
+            let (reads, _, _) = crate::dataflow::instr_reads_writes(instr);
             for p in reads {
                 if let Some(l) = base_local(p) {
                     here.insert(l);
@@ -3987,7 +6203,6 @@ fn fresh_bytes_producer_defs_in_block(
     }
     if let Terminator::Call {
         callee,
-        builtin: None,
         dest: Some(dest),
         ..
     } = &block.terminator
@@ -4000,6 +6215,104 @@ fn fresh_bytes_producer_defs_in_block(
     }
     defs
 }
+
+/// Prove that `local` at `target_block:target_instr_index` is still the exact
+/// owner minted by one fresh bytes producer.
+///
+/// Terminator calls often split aggregate construction across several blocks
+/// (`to_bytes()` followed by another field producer, then `RecordInit`). Walk
+/// only a single-predecessor, single-successor chain and reject every intervening
+/// read or overwrite. This keeps the proof allocation-specific without relying
+/// on source-level binding names or loop-wide liveness.
+fn fresh_bytes_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    local: u32,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let mut defs = blocks
+        .iter()
+        .flat_map(|block| fresh_bytes_producer_defs_in_block(block, locals))
+        .filter(|(candidate, _)| *candidate == local);
+    let Some((_, def)) = defs.next() else {
+        return false;
+    };
+    if defs.next().is_some() {
+        return false;
+    }
+
+    let predecessor_counts = blocks.iter().flat_map(BasicBlock::successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let (mut block_id, mut start) = match def {
+        NestedDefSite::Instr { block, idx } => (block, idx.saturating_add(1)),
+        NestedDefSite::Term { block } => {
+            let Some(next) = block_by_id(blocks, block)
+                .and_then(|producer| call_terminator_next(&producer.terminator))
+            else {
+                return false;
+            };
+            if predecessor_counts.get(&next).copied().unwrap_or(0) != 1 {
+                return false;
+            }
+            (next, 0)
+        }
+    };
+
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instr in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = block.successors();
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
 /// The destination place of an `Instr::CallRuntimeAbi` whose ownership contract
 /// classifies its result as a fresh, solely-owned `bytes` (`hew_bytes_slice`) —
 /// a `+1` owner the caller must balance with exactly one `hew_bytes_drop`. Only
@@ -4277,7 +6590,7 @@ mod nested_fresh_bytes_temp_drop_admission {
     fn user_call(callee: &str, dest: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![],
             dest: Some(Place::Local(dest)),
             next,
@@ -4483,7 +6796,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_string_to_bytes".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -4513,7 +6826,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_slice".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -4541,7 +6854,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_get".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(5)],
                     dest: Some(Place::Local(2)),
                     next: 1,
@@ -4624,7 +6937,7 @@ mod nested_fresh_bytes_temp_drop_admission {
                 vec![],
                 Terminator::Call {
                     callee: "hew_bytes_get".to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![Place::Local(2), Place::Local(6)],
                     dest: Some(Place::Local(7)),
                     next: 2,
@@ -4846,6 +7159,74 @@ pub(super) fn bytes_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bo
     base_local(place)
         .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::Bytes)))
 }
+/// Final-MIR retain/move pairs that prove the destination owns an independent
+/// bytes reference.
+///
+/// `finalize_bytes_ownership` inserts `BytesRetain(source)` immediately before
+/// the local copy that materialises a co-owner. The pair severs
+/// projection-alias provenance only when it is exact, the destination is a
+/// distinct bytes local with one static write, and the block cannot re-execute
+/// on a CFG cycle. Any mismatch, reuse, terminator overwrite, or cyclic site
+/// preserves ordinary projection taint (leak, never double-free).
+#[must_use]
+pub(super) fn corroborated_retained_bytes_move_sites(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<(u32, usize)> {
+    let mut write_counts: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in dataflow::instr_reads_writes(instr).1 {
+                if let Some(local) = base_local(place) {
+                    *write_counts.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *write_counts.entry(local).or_default() += 1;
+            }
+        }
+    }
+
+    let cyclic_blocks: HashSet<u32> = blocks
+        .iter()
+        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut sites = HashSet::new();
+    for block in blocks {
+        if cyclic_blocks.contains(&block.id) {
+            continue;
+        }
+        for move_index in 1..block.instructions.len() {
+            let (
+                Instr::BytesRetain {
+                    value: Place::Local(retained_source),
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(move_source),
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            )
+            else {
+                continue;
+            };
+            if retained_source == move_source
+                && retained_source != dest
+                && bytes_place_is_typed(Place::Local(*retained_source), local_tys)
+                && bytes_place_is_typed(Place::Local(*dest), local_tys)
+                && write_counts.get(dest).copied() == Some(1)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
 pub(super) fn bytes_interior_producer_dest(
     instr: &Instr,
     local_tys: &[ResolvedTy],
@@ -4973,6 +7354,7 @@ fn apply_bytes_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[BytesRetainSite],
+    neutralize_after: &HashMap<(u32, usize), Vec<Place>>,
 ) {
     let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
     let mut after: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
@@ -5011,6 +7393,18 @@ fn apply_bytes_retain_sites(
             if let Some(span) = span {
                 new_spans.insert((block.id, new_index), span);
             }
+            if let Some(values) = neutralize_after.get(&(block.id, old_index)) {
+                for value in values {
+                    let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+                    rewritten.push(Instr::BytesLit {
+                        bytes: Vec::new(),
+                        dest: *value,
+                    });
+                    if let Some(span) = span {
+                        new_spans.insert((block.id, new_index), span);
+                    }
+                }
+            }
             if let Some(values) = after.get(&(block.id, old_index)) {
                 for value in values {
                     let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
@@ -5042,42 +7436,317 @@ fn apply_bytes_retain_sites(
     }
     *instr_spans = new_spans;
 }
+
+/// Per-binding map from an owned local `bytes` candidate to the block(s)
+/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
+/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
+/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
+/// `suspend_kinds`) — the forwarding transfer
+/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
+/// `allowed`, whole-function, the moment any block reads it there.
+///
+/// That exclusion is sound for every exit reachable from the transfer block,
+/// but not for a cancellation branch taken before the handler reaches the
+/// transfer. The elaborator uses this map to distinguish those regions.
+///
+/// Fail-closed: an unlocated transfer maps to nothing and stays under the
+/// path-insensitive exclusion. Over-recording only narrows re-admission;
+/// every actor-mailbox carrier and collapsed-suspend side-table entry is
+/// scanned to prevent under-recording.
+pub(super) fn derive_bytes_actor_transfer_blocks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashMap<BindingId, HashSet<u32>> {
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashMap::new();
+    }
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        let values: Vec<Place> = match &block.terminator {
+            Terminator::Send { value, .. }
+            | Terminator::Ask { value, .. }
+            | Terminator::RemoteAsk { value, .. } => vec![*value],
+            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
+                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
+                    vec![*value]
+                }
+                _ => continue,
+            },
+            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
+                .iter()
+                .filter_map(|arm| match &arm.kind {
+                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
+                    SelectArmKind::StreamNext { .. }
+                    | SelectArmKind::TaskAwait { .. }
+                    | SelectArmKind::ChannelRecv { .. }
+                    | SelectArmKind::AfterTimer { .. } => None,
+                })
+                .collect(),
+            Terminator::Join { branches, .. } => {
+                branches.iter().map(|branch| branch.value).collect()
+            }
+            _ => continue,
+        };
+        for value in values {
+            let Some(local) = base_local(value) else {
+                continue;
+            };
+            let Some(&root) = alias_of.get(&local) else {
+                continue;
+            };
+            let Some(&binding) = candidate_local_to_binding.get(&root) else {
+                continue;
+            };
+            transfer_blocks.entry(binding).or_default().insert(block.id);
+        }
+    }
+    transfer_blocks
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the derivation, exact handoff proof, and retain splice form one ownership boundary"
+)]
 pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
-    builder: &Builder,
+    builder: &mut Builder,
     dataflow_result: &dataflow::DataflowResult,
 ) -> BytesDropDerivation {
     let owned_locals_snapshot = builder.owned_locals_snapshot();
+    let borrowed_bytes_locals = builder
+        .borrowed_bytes_param_locals
+        .union(&builder.typed_borrowed_bytes_publication_locals)
+        .copied()
+        .collect();
     let mut derivation = derive_local_bytes_drop_allowed(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.locals,
-        &builder.borrowed_bytes_param_locals,
+        &borrowed_bytes_locals,
     );
-    for states in dataflow_result.exit_states.values() {
-        for (binding, state) in states {
-            if matches!(
-                state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
-                derivation.allowed.remove(binding);
+    // A mailbox-owned `bytes` parameter conditionally transferred on one CFG
+    // path is deliberately visible to the path-insensitive escape scan, which
+    // excludes its whole alias root. Its actor-message runtime flag is the
+    // stronger path-sensitive authority: the source remains a drop candidate,
+    // the consume edge sets the flag to one, and the sibling live edge observes
+    // zero. Re-admit only exact registered Bytes bindings carrying that flag;
+    // ordinary locals and unguarded actor parameters remain under the
+    // fail-closed escape scan.
+    derivation.allowed.extend(
+        owned_locals_snapshot
+            .iter()
+            .filter(|(binding, _, ty)| {
+                matches!(ty, ResolvedTy::Bytes)
+                    && builder.actor_message_cow_drop_flags.contains_key(binding)
+            })
+            .map(|(binding, _, _)| *binding),
+    );
+    remove_consumed_cow_bindings(
+        &mut derivation.allowed,
+        &builder.actor_message_cow_drop_flags,
+        dataflow_result,
+    );
+    let retain_site_counts = derivation.retain_sites.iter().fold(
+        HashMap::<(u32, usize, Place), usize>::new(),
+        |mut counts, site| {
+            if matches!(site.placement, BytesRetainPlacement::Before) {
+                *counts
+                    .entry((site.block, site.instr_index, site.value))
+                    .or_default() += 1;
+            }
+            counts
+        },
+    );
+    let mut neutralize_after = HashMap::<(u32, usize), Vec<Place>>::new();
+    for (binding, value) in &builder.binding_locals {
+        if !builder
+            .typed_produced_value_owner_bindings
+            .contains(binding)
+            || !owned_locals_snapshot
+                .iter()
+                .any(|(candidate, _, ty)| candidate == binding && matches!(ty, ResolvedTy::Bytes))
+        {
+            continue;
+        }
+        for block in &raw.blocks {
+            for (instr_index, instruction) in block.instructions.iter().enumerate() {
+                let Some(local) = base_local(*value) else {
+                    continue;
+                };
+                if aggregate_handoff_destination(instruction, *value).is_none()
+                    || fresh_generation_is_used_after(
+                        &raw.blocks,
+                        &builder.suspend_kinds,
+                        local,
+                        block.id,
+                        instr_index,
+                    )
+                {
+                    continue;
+                }
+                neutralize_after
+                    .entry((block.id, instr_index))
+                    .or_default()
+                    .push(*value);
             }
         }
     }
+    let mut aggregate_handoffs = HashSet::new();
+    let mut named_aggregate_handoffs = Vec::new();
     derivation.retain_sites.retain(|site| {
-        site.required_bindings
-            .iter()
-            .all(|binding| derivation.allowed.contains(binding))
+        if matches!(site.placement, BytesRetainPlacement::Before) {
+            if let Some((binding, destination, direct)) = typed_named_aggregate_handoff(
+                &raw.blocks,
+                builder,
+                site.block,
+                site.instr_index,
+                site.value,
+            ) {
+                if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                    return true;
+                }
+                let instruction = raw
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .and_then(|block| block.instructions.get(site.instr_index))
+                    .expect("proven aggregate handoff instruction must remain live");
+                if direct {
+                    let values = neutralize_after
+                        .entry((site.block, site.instr_index))
+                        .or_default();
+                    if !values.contains(&site.value) {
+                        values.push(site.value);
+                    }
+                } else {
+                    named_aggregate_handoffs.push((binding, destination));
+                }
+                return retain_site_counts
+                    .get(&(site.block, site.instr_index, site.value))
+                    .is_some_and(|count| {
+                        *count < aggregate_handoff_occurrences(instruction, site.value)
+                    });
+            }
+        }
+        let typed_handoff = matches!(site.placement, BytesRetainPlacement::Before)
+            && raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .is_some_and(|instruction| {
+                    instruction_carries_typed_handoff(
+                        instruction,
+                        site.value,
+                        &builder.typed_produced_value_handoffs,
+                    )
+                });
+        if typed_handoff {
+            let instruction = raw
+                .blocks
+                .iter()
+                .find(|block| block.id == site.block)
+                .and_then(|block| block.instructions.get(site.instr_index))
+                .expect("typed handoff instruction must remain live");
+            let occurrences = aggregate_handoff_occurrences(instruction, site.value);
+            if occurrences == 0 {
+                return false;
+            }
+            if !aggregate_handoffs.insert((site.block, site.instr_index, site.value)) {
+                return true;
+            }
+            return retain_site_counts
+                .get(&(site.block, site.instr_index, site.value))
+                .is_some_and(|count| *count < occurrences);
+        }
+        let fresh_handoff = matches!(site.placement, BytesRetainPlacement::Before)
+            && base_local(site.value).is_some_and(|local| {
+                fresh_bytes_owner_reaches_site(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    &builder.locals,
+                    local,
+                    site.block,
+                    site.instr_index,
+                ) && !fresh_generation_is_used_after(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    local,
+                    site.block,
+                    site.instr_index,
+                )
+            });
+        if fresh_handoff {
+            return false;
+        }
+        bytes_retain_site_is_required(
+            &raw.blocks,
+            &builder.actor_message_cow_drop_flags,
+            &derivation.allowed,
+            site,
+        )
     });
+    for (binding, destination) in named_aggregate_handoffs {
+        derivation.allowed.remove(&binding);
+        builder.set_owned_local_consumed(binding, Some(destination), DischargeSite::BindingMoved);
+    }
     apply_bytes_retain_sites(
         &mut raw.blocks,
         &mut raw.instr_spans,
         &derivation.retain_sites,
+        &neutralize_after,
     );
     derivation
 }
+
+fn bytes_retain_site_is_required(
+    blocks: &[BasicBlock],
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
+    allowed: &HashSet<BindingId>,
+    site: &BytesRetainSite,
+) -> bool {
+    // Once an actor-message COW flag is armed, the mailbox reference is being
+    // handed off to the sink and the guarded handler-frame drop is suppressed.
+    // Retaining that same handoff would leave an extra reference with no
+    // matching release.
+    let armed_handoff = site.required_bindings.iter().any(|binding| {
+        actor_message_cow_drop_flags
+            .get(binding)
+            .is_some_and(|flag| {
+                blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .is_some_and(|block| {
+                        actor_message_cow_flag_armed_before(block, site.instr_index, *flag)
+                    })
+            })
+    });
+    !armed_handoff
+        && site
+            .required_bindings
+            .iter()
+            .all(|binding| allowed.contains(binding))
+}
+
 #[cfg(test)]
 mod cow_sole_owner_derivation {
     //! Direct structural tests for `derive_cow_sole_owner` — the fail-closed
@@ -5099,6 +7768,122 @@ mod cow_sole_owner_derivation {
         }
     }
 
+    fn concat(lhs: u32, rhs: u32, dest: u32) -> Instr {
+        Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_string_concat",
+                vec![Place::Local(lhs), Place::Local(rhs)],
+                Some(Place::Local(dest)),
+            )
+            .expect("hew_string_concat is an allowlisted runtime call"),
+        )
+    }
+
+    fn bytes_retain_site(binding: BindingId, instr_index: usize) -> BytesRetainSite {
+        BytesRetainSite {
+            block: 0,
+            instr_index,
+            placement: BytesRetainPlacement::Before,
+            value: Place::Local(7),
+            required_bindings: vec![binding],
+        }
+    }
+
+    #[test]
+    fn actor_message_bytes_retain_site_is_removed_only_after_handoff_flag_arms() {
+        let binding = BindingId(1);
+        let flag = Place::Local(90);
+        let actor_flags = HashMap::from([(binding, flag)]);
+        let allowed = HashSet::from([binding]);
+        let sink = Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        };
+
+        let flag_after_site = block(vec![
+            sink.clone(),
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+        ]);
+        assert!(
+            bytes_retain_site_is_required(
+                &[flag_after_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 0),
+            ),
+            "an actor-message bytes share still needs its retain before the handoff flag arms"
+        );
+
+        let flag_before_site = block(vec![
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+            sink,
+        ]);
+        assert!(
+            !bytes_retain_site_is_required(
+                &[flag_before_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 1),
+            ),
+            "an armed actor-message handoff suppresses the source drop, so its extra retain must be removed"
+        );
+    }
+
+    #[test]
+    fn ordinary_bytes_retain_site_survives_without_actor_handoff_authority() {
+        let binding = BindingId(1);
+        let blocks = [block(vec![Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        }])];
+        assert!(
+            bytes_retain_site_is_required(
+                &blocks,
+                &HashMap::new(),
+                &HashSet::from([binding]),
+                &bytes_retain_site(binding, 0),
+            ),
+            "a non-actor bytes overwrite/share still needs an independent retained reference"
+        );
+    }
+
+    #[test]
+    fn typed_publication_handoff_reaches_aggregate_through_transfer_local() {
+        let binding = BindingId(9);
+        let source = Place::Local(7);
+        let transfer = Place::Local(8);
+        let aggregate = Place::Local(9);
+        let blocks = [block(vec![
+            Instr::Move {
+                dest: transfer,
+                src: source,
+            },
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Payload", vec![]),
+                fields: vec![(FieldOffset(0), transfer)],
+                dest: aggregate,
+            },
+        ])];
+        let mut builder = Builder::default();
+        builder.binding_locals.insert(binding, source);
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        builder
+            .typed_produced_value_handoffs
+            .insert((source, transfer));
+
+        assert_eq!(
+            typed_named_aggregate_handoff(&blocks, &builder, 0, 1, transfer),
+            Some((binding, aggregate, false)),
+            "the typed source generation stays authoritative after its transfer local"
+        );
+    }
+
     /// A `string` owned local whose backing local is never touched by any
     /// instruction is the canonical sole owner — it must be admitted.
     #[test]
@@ -5114,6 +7899,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5121,6 +7907,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
@@ -5171,6 +7958,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5178,6 +7966,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
@@ -5225,6 +8014,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5232,12 +8022,294 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
             allowed.is_empty(),
             "the enum-variant binder and the local it is moved into both alias \
              parent storage and must be excluded; got {allowed:?}"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_severs_only_the_destination_alias() {
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let local_tys = vec![ResolvedTy::String; 42];
+
+        assert_eq!(
+            corroborated_retained_string_move_sites(&blocks, &local_tys),
+            HashSet::from([(0, 2)]),
+            "the exact retain+move pair mints one independent destination owner"
+        );
+        let tainted =
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys);
+        assert!(
+            tainted.contains(&40) && !tainted.contains(&41),
+            "the payload binder stays parent-owned while its retained copy is independent; \
+             got {tainted:?}"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_chain_admits_every_minted_owner() {
+        let first = BindingId(42);
+        let second = BindingId(43);
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+            Instr::StringRetain {
+                value: Place::Local(41),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(42),
+                src: Place::Local(41),
+            },
+            Instr::IntCmp {
+                dest: Place::Local(43),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(41),
+                rhs: Place::Local(42),
+            },
+        ])];
+        let mut local_tys = vec![ResolvedTy::String; 43];
+        local_tys.push(ResolvedTy::Bool);
+        let allowed = derive_cow_fresh_borrowed_owner(
+            &blocks,
+            &HashMap::new(),
+            &[
+                (first, "first".to_string(), ResolvedTy::String),
+                (second, "second".to_string(), ResolvedTy::String),
+            ],
+            &HashMap::from([(first, Place::Local(41)), (second, Place::Local(42))]),
+            &local_tys,
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            allowed,
+            HashSet::from([first, second]),
+            "each explicit retain in the chain needs one balancing local drop"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_mismatch_rewrite_and_cycle() {
+        let seed = Instr::Move {
+            dest: Place::Local(40),
+            src: Place::EnumVariant {
+                local: 3,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        };
+        let handoff = Instr::Move {
+            dest: Place::Local(41),
+            src: Place::Local(40),
+        };
+        let mut local_tys = vec![ResolvedTy::String; 42];
+        local_tys[39] = ResolvedTy::Bool;
+        let mismatched = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(39),
+                condition: StringRetainCondition::Always,
+            },
+            handoff.clone(),
+        ])];
+        let nonadjacent = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::IntCmp {
+                dest: Place::Local(39),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(40),
+                rhs: Place::Local(40),
+            },
+            handoff.clone(),
+        ])];
+        let conditional = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::ActorStateRecordBorrowedIngress {
+                    state_field: FieldOffset(0),
+                    record_path: vec![FieldOffset(0)],
+                },
+            },
+            handoff.clone(),
+        ])];
+        let rewritten = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            handoff.clone(),
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let cyclic = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                seed,
+                Instr::StringRetain {
+                    value: Place::Local(40),
+                    condition: StringRetainCondition::Always,
+                },
+                handoff,
+            ],
+            terminator: Terminator::Goto { target: 0 },
+        }];
+        for (label, blocks) in [
+            ("mismatched retain", mismatched),
+            ("nonadjacent retain", nonadjacent),
+            ("runtime-conditional retain", conditional),
+            ("multiply-written destination", rewritten),
+            ("cyclic generation", cyclic),
+        ] {
+            assert!(
+                corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
+                "{label} must not mint independent ownership"
+            );
+            let tainted = compute_projection_alias_taint(
+                &blocks,
+                &HashSet::new(),
+                &HashSet::new(),
+                &local_tys,
+            );
+            assert!(
+                tainted.contains(&41),
+                "{label} must preserve fail-closed projection taint; got {tainted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_terminator_overwrite() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::Move {
+                        dest: Place::Local(40),
+                        src: Place::EnumVariant {
+                            local: 3,
+                            variant_idx: 0,
+                            field_idx: 0,
+                        },
+                    },
+                    Instr::StringRetain {
+                        value: Place::Local(40),
+                        condition: StringRetainCondition::Always,
+                    },
+                    Instr::Move {
+                        dest: Place::Local(41),
+                        src: Place::Local(40),
+                    },
+                ],
+                terminator: Terminator::Call {
+                    callee: "produce".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![],
+                    dest: Some(Place::Local(41)),
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let local_tys = vec![ResolvedTy::String; 42];
+        assert!(
+            corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
+            "a terminator-overwritten destination cannot hold one stable generation"
+        );
+        assert!(
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys,)
+                .contains(&41),
+            "a terminator-overwritten destination must retain projection taint"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_wrong_type() {
+        let wrong_type = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let bytes_tys = vec![ResolvedTy::Bytes; 42];
+        assert!(
+            corroborated_retained_string_move_sites(&wrong_type, &bytes_tys).is_empty(),
+            "a string opcode cannot grant retained ownership to bytes or another aggregate"
+        );
+        assert!(
+            compute_projection_alias_taint(
+                &wrong_type,
+                &HashSet::new(),
+                &HashSet::new(),
+                &bytes_tys,
+            )
+            .contains(&41),
+            "the wrong-type destination must retain projection taint"
         );
     }
 
@@ -5273,6 +8345,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5280,6 +8353,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(
             derivation.allowed.contains(&src) && derivation.allowed.contains(&dst),
@@ -5320,6 +8394,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[
                 ResolvedTy::String,
                 ResolvedTy::String,
@@ -5332,6 +8407,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(derivation.allowed.contains(&source));
         assert_eq!(
@@ -5343,6 +8419,180 @@ mod cow_sole_owner_derivation {
                 condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn cyclic_fresh_record_ingress_transfers_each_allocation_without_retain() {
+        let source = BindingId(72);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut loop_block = block(vec![
+            concat(1, 2, 3),
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Holder", vec![]),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+        ]);
+        loop_block.terminator = Terminator::Goto { target: 0 };
+
+        let derivation = derive_cow_sole_owner(
+            &[loop_block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::named_user("Holder", vec![]),
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the next loop iteration overwrites the source with a new allocation; \
+             the current generation is handed to the record"
+        );
+    }
+
+    #[test]
+    fn unbound_fresh_temp_moves_into_owned_capture_without_retain() {
+        let produced = BindingId(u32::MAX - 64);
+        let capture = BindingId(73);
+        let owned = vec![(capture, "capture".to_string(), ResolvedTy::String)];
+        let binding_locals =
+            HashMap::from([(produced, Place::Local(3)), (capture, Place::Local(4))]);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![
+                    concat(1, 2, 3),
+                    Instr::Move {
+                        dest: Place::Local(4),
+                        src: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "an unbound fresh result transfers its only owner into the capture"
+        );
+    }
+
+    #[test]
+    fn generator_env_alias_shell_defers_string_clone_to_make_generator() {
+        let source = BindingId(71);
+        let env_ty = ResolvedTy::named_user("__hew_gen_env_test_0", vec![]);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut constructor = block(vec![
+            Instr::RecordInit {
+                ty: env_ty.clone(),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+            // Keep the source live after the alias-shell construction. An
+            // ordinary RecordInit at this site must retain; MakeGenerator's
+            // declared structural clone is the independent owner here.
+            Instr::IntCmp {
+                dest: Place::Local(6),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(3),
+                rhs: Place::Local(3),
+            },
+        ]);
+        constructor.terminator = Terminator::MakeGenerator {
+            dest: Place::Local(5),
+            body_fn: "__hew_gen_body_test_0".to_string(),
+            next: 1,
+            env: Some(crate::model::GeneratorEnvPlan {
+                place: Place::Local(4),
+                ty: env_ty.clone(),
+                fields: Vec::new(),
+            }),
+        };
+        let blocks = vec![
+            constructor,
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ];
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                env_ty,
+                ResolvedTy::Unit,
+                ResolvedTy::Bool,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the generator stack env is an alias shell; MakeGenerator's field \
+             plan is the sole clone authority, got {:?}",
+            derivation.retain_sites
         );
     }
 
@@ -5361,6 +8611,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             &[ResolvedTy::String, ResolvedTy::String, ResolvedTy::String],
             &HashSet::from([2]),
             &HashSet::new(),
@@ -5368,6 +8619,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert_eq!(
             derivation.retain_sites,
@@ -5381,6 +8633,90 @@ mod cow_sole_owner_derivation {
         );
     }
 
+    /// A mutable by-value parameter has a borrowed entry definition that is
+    /// represented only by the ABI parameter slot, not by an MIR writer. A
+    /// conditional reassignment therefore makes the slot BORROWED|OWNED, but
+    /// the backward writer slice must not mistake the owned `Move` for complete
+    /// definition coverage and skip the entry-path retain.
+    #[test]
+    fn conditionally_reassigned_string_param_falls_back_to_return_retain() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(1),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![
+                    Instr::StringLit {
+                        bytes: b"replacement".to_vec(),
+                        dest: Place::Local(3),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(0),
+                        src: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(0),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::String,
+                ResolvedTy::Bool,
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+            ],
+            &HashSet::from([0]),
+            &HashSet::from([0, 1]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![StringRetainSite {
+                block: 3,
+                instr_index: 0,
+                value: Place::Local(0),
+                condition: StringRetainCondition::Always,
+                required_bindings: Vec::new(),
+            }],
+            "an unrepresented borrowed entry definition must force the safe \
+             ReturnSlot retain instead of accepting an incomplete writer slice"
+        );
+    }
+
     #[test]
     fn explicit_string_drop_call_excludes_the_released_owner() {
         let binding = BindingId(80);
@@ -5390,7 +8726,7 @@ mod cow_sole_owner_derivation {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: "hew_string_drop".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![Place::Local(3)],
                 dest: None,
                 next: 1,
@@ -5401,6 +8737,7 @@ mod cow_sole_owner_derivation {
             &HashMap::new(),
             &[(binding, "value".to_string(), ResolvedTy::String)],
             &HashMap::from([(binding, Place::Local(3))]),
+            &HashSet::new(),
             &HashSet::new(),
             &[
                 ResolvedTy::String,
@@ -5414,10 +8751,121 @@ mod cow_sole_owner_derivation {
             &HashSet::from(["hew_string_drop".to_string()]),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(
             !derivation.allowed.contains(&binding),
             "an explicit release owns the drop; scope exit must not release again"
+        );
+    }
+}
+#[cfg(test)]
+mod fresh_string_owner_join_prefix_redefinition {
+    //! `fresh_string_owner_defined_by_predecessor_terminator` proves only that
+    //! a PREDECESSOR terminator freshly produced a local on the edge into the
+    //! join block — it has no visibility into the join block's own prefix. A
+    //! join block that redefines the whole local (a plain hand-off from a
+    //! BORROWED source) before the ingress retain site makes that answer
+    //! stale: the generation actually live at the site is the redefinition's,
+    //! not the predecessor's fresh result. `local_redefined_in_block_prefix`
+    //! guards against exactly this — these tests hand-build the redefine-in-
+    //! prefix shape and the handoff shape it must leave unaffected.
+    use super::*;
+
+    fn fresh_trim_call(dest: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: "hew_string_trim".to_string(),
+            authority: crate::model::CallAuthority::default(),
+            args: vec![Place::Local(7)],
+            dest: Some(Place::Local(dest)),
+            next,
+        }
+    }
+
+    fn locals() -> Vec<ResolvedTy> {
+        vec![ResolvedTy::String; 8]
+    }
+
+    fn derive(join_instructions: Vec<Instr>) -> StringDropDerivation {
+        let dest_binding = BindingId(60);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: fresh_trim_call(5, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: join_instructions,
+                terminator: Terminator::Return,
+            },
+        ];
+        derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &[(dest_binding, "d".to_string(), ResolvedTy::String)],
+            &HashMap::from([(dest_binding, Place::Local(6))]),
+            &HashSet::new(),
+            &HashSet::new(),
+            &locals(),
+            &HashSet::from([7]),
+            &HashSet::from([7]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        )
+    }
+
+    /// The join block's FIRST instruction redefines the predecessor-fresh
+    /// local (`local5 = local7`, a plain hand-off from a borrowed param, NOT
+    /// itself a fresh producer) before the ingress site
+    /// (`local6 = local5`). The active generation at the ingress site is the
+    /// redefinition's — a borrowed alias — so the retain must be minted
+    /// there, not elided on the stale predecessor-terminator answer.
+    #[test]
+    fn redefinition_in_join_prefix_mints_the_ingress_retain() {
+        let derivation = derive(vec![
+            Instr::Move {
+                dest: Place::Local(5),
+                src: Place::Local(7),
+            },
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::Local(5),
+            },
+        ]);
+        assert!(
+            derivation.retain_sites.iter().any(|site| site.block == 1
+                && site.instr_index == 1
+                && site.value == Place::Local(5)),
+            "a join-prefix redefinition must not suppress the ingress retain; \
+             got {:?}",
+            derivation.retain_sites
+        );
+    }
+
+    /// The existing handoff shape — no redefinition, the predecessor's fresh
+    /// terminator result flows straight into the ingress `Move` — must still
+    /// elide the retain. Confirms the prefix guard is precise: it fires only
+    /// on an actual redefinition, never on the ordinary cross-block handoff.
+    #[test]
+    fn undisturbed_predecessor_handoff_still_elides_the_retain() {
+        let derivation = derive(vec![Instr::Move {
+            dest: Place::Local(6),
+            src: Place::Local(5),
+        }]);
+        assert!(
+            !derivation
+                .retain_sites
+                .iter()
+                .any(|site| site.block == 1 && site.instr_index == 0),
+            "the undisturbed predecessor-fresh handoff must not mint a retain; \
+             got {:?}",
+            derivation.retain_sites
         );
     }
 }
@@ -5584,7 +9032,7 @@ fn main() {}
             args: vec![Place::Local(9)],
             dest: None,
             next: 1,
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
         };
         assert!(
             !crate::lower::string_binder_read_is_user_fn_borrow(
@@ -5608,7 +9056,7 @@ fn main() {}
             args: vec![Place::Local(9)],
             dest: None,
             next: 1,
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
         };
         assert!(
             crate::lower::string_binder_read_is_user_fn_borrow(

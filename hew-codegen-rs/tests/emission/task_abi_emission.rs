@@ -33,12 +33,7 @@ fn pipeline_with_task_abi_call(
     dest: Option<Place>,
     extra_locals: Vec<ResolvedTy>,
 ) -> IrPipeline {
-    let mut locals = vec![ResolvedTy::Named {
-        name: "HewTask".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }];
+    let mut locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     locals.extend(extra_locals);
 
     let raw_blocks = vec![BasicBlock {
@@ -115,8 +110,7 @@ fn pipeline_with_task_abi_call(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -234,8 +228,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -344,8 +337,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -483,8 +475,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -631,12 +622,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         ],
         terminator: Terminator::Return,
     }];
-    let locals = vec![ResolvedTy::Named {
-        name: "HewTask".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }];
+    let locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {
@@ -701,8 +687,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

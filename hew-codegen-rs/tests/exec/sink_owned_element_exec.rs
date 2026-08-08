@@ -144,16 +144,58 @@ fn compile_expect_refusal(stem: &str, source: &str) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
-/// Count direct `call ... @<symbol>(` sites across the WHOLE emitted module.
-/// The moved-handle close fires through the actor's `state_drop_fn`; the
-/// module-wide count must be EXACTLY ONE. A presence oracle (`contains`) is
-/// blind to a double-free masked by the runtime's null-guard — only the count
-/// distinguishes exactly-once.
-fn count_calls_in_module(ir: &str, symbol: &str) -> usize {
+/// Return one LLVM function body by symbol. Keeping an ownership assertion
+/// within the function that owns the handle prevents unrelated stdlib helpers
+/// from changing its count.
+fn llvm_function_body<'a>(ir: &'a str, function: &str) -> &'a str {
+    let needle = format!("@{function}(");
+    let start = ir
+        .find(&needle)
+        .unwrap_or_else(|| panic!("LLVM function `{function}` not found\n{ir}"));
+    let body = &ir[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("LLVM function `{function}` has no closing brace\n{body}"));
+    &body[..end]
+}
+
+/// Count direct `call ... @<symbol>(` sites in the one LLVM function that owns
+/// the relevant handle. A presence oracle (`contains`) is blind to a
+/// double-free masked by the runtime's null-guard — this exact local count is
+/// not.
+fn count_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
+    let body = llvm_function_body(ir, function);
     let needle = format!("@{symbol}(");
-    ir.lines()
+    body.lines()
         .filter(|line| line.contains(&needle) && line.contains("call "))
         .count()
+}
+
+/// Count source-call sites, excluding elaborated drop-path calls whose loaded
+/// operand is deliberately named `<symbol> drop`. A function may carry one
+/// close on each mutually-exclusive cancellation/trap/return exit while still
+/// having exactly one source `sink.close()` call on the success path.
+fn count_source_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
+    let body = llvm_function_body(ir, function);
+    let needle = format!("@{symbol}(");
+    let drop_label = format!("\"{symbol} drop");
+    body.lines()
+        .filter(|line| {
+            line.contains(&needle) && line.contains("call ") && !line.contains(&drop_label)
+        })
+        .count()
+}
+
+#[test]
+fn close_count_is_scoped_to_its_owner_function() {
+    let ir = "define void @owner() {\n  call void @hew_sink_close(ptr null)\n}\n\
+              \ndefine void @unrelated() {\n  call void @hew_sink_close(ptr null)\n  call void @hew_sink_close(ptr null)\n}\n";
+    assert_eq!(count_calls_in_function(ir, "owner", "hew_sink_close"), 1);
+    assert_eq!(
+        count_calls_in_function(ir, "unrelated", "hew_sink_close"),
+        2,
+        "counterfactual: a second close in the owner must remain visible"
+    );
 }
 
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
@@ -356,7 +398,7 @@ fn main() {
     );
     let ir = emit_llvm_ir("sink_half_ir", source);
     assert_eq!(
-        count_calls_in_module(&ir, "hew_sink_close"),
+        count_calls_in_function(&ir, "__hew_state_drop_Writer", "hew_sink_close"),
         1,
         "the moved Sink half must be closed EXACTLY once (state_drop_fn); a \
          second close is a double-free"
@@ -407,14 +449,15 @@ fn main() {
     );
     let ir = emit_llvm_ir("stream_half_ir", source);
     assert_eq!(
-        count_calls_in_module(&ir, "hew_stream_close"),
+        count_calls_in_function(&ir, "__hew_state_drop_Consumer", "hew_stream_close"),
         1,
         "the moved Stream half must be closed EXACTLY once (state_drop_fn)"
     );
     assert_eq!(
-        count_calls_in_module(&ir, "hew_sink_close"),
+        count_source_calls_in_function(&ir, "main", "hew_sink_close"),
         1,
-        "the main-side local sink must be closed EXACTLY once"
+        "main must contain exactly one source sink.close() call; elaborated \
+         cleanup exits are mutually exclusive and covered by the scribble run"
     );
 }
 
@@ -586,6 +629,15 @@ fn main() {
 /// D5 (consume): explicitly closing an owned handle held in ACTOR STATE
 /// (`sink.close()` on the bare state field) is refused fail-closed — the actor's
 /// `state_drop_fn` is the single owner, so an explicit close would double-free.
+///
+/// The refusal now arrives from the checker instead of MIR: consuming an actor
+/// state field without re-initialising it is refused for every affine state
+/// field, and that rule reaches this program first. The property under test is
+/// unchanged — a state-held handle cannot be explicitly closed — only the layer
+/// that says so. The MIR authority keeps its own pin in
+/// `explicit_close_of_state_field_handle_is_refused_by_mir_after_reinit`, whose
+/// shape the checker rule admits, so the MIR refusal cannot rot behind the
+/// earlier one.
 #[test]
 fn explicit_close_of_state_field_handle_is_refused() {
     let source = r#"import std::stream;
@@ -612,8 +664,49 @@ fn main() {
 "#;
     let stderr = compile_expect_refusal("state_field_close_refused", source);
     assert!(
-        stderr.contains("closing an owned handle held in actor state") && stderr.contains("Sink"),
+        stderr.contains("actor state `sink` is consumed here and never re-initialised")
+            && stderr.contains("actor state outlives the handler that consumed it"),
         "explicit close of a state-held handle must be refused fail-closed; got:\n{stderr}"
+    );
+}
+
+/// D5 (consume), MIR authority: the same refusal, reached through a shape the
+/// checker's state-hole rule admits.
+///
+/// Re-initialising `sink` plugs the hole the checker cares about, so the
+/// program gets past it and MIR still refuses the close on its own grounds —
+/// the actor's `state_drop_fn` is the single owner. Without this pin the MIR
+/// refusal would be shadowed by the checker's and could regress unobserved.
+#[test]
+fn explicit_close_of_state_field_handle_is_refused_by_mir_after_reinit() {
+    let source = r#"import std::stream;
+
+actor Producer {
+    var sink: stream.Sink<string>;
+
+    receive fn go() {
+        sink.send("x");
+        sink.close();
+        let (fresh, _unused) = stream.pipe(2);
+        sink = fresh;
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.pipe(2);
+    let p = spawn Producer(sink: sink);
+    p.go();
+    sleep(100ms);
+    match input.recv() {
+        Some(s) => println(s),
+        None => println("eof"),
+    }
+}
+"#;
+    let stderr = compile_expect_refusal("state_field_close_reinit_refused", source);
+    assert!(
+        stderr.contains("closing an owned handle held in actor state") && stderr.contains("Sink"),
+        "the MIR refusal for a state-held handle close must still fire; got:\n{stderr}"
     );
 }
 

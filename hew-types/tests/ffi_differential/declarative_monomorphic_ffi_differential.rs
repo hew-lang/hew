@@ -97,8 +97,8 @@ fn lambda_actor_handle_methods_resolve_through_extern_symbol_annotations() {
             let _: i32 = handle.send(payload);
             let _: i32 = handle.ask(bytes::new());
             let _: lambda_actor.LambdaActorHandle = handle.clone();
-            let _: i32 = handle.release();
             let _: lambda_actor.LambdaActorWeakHandle = handle.downgrade();
+            let _: i32 = handle.release();
             let _: i32 = weak.send(bytes::new());
             let _: lambda_actor.LambdaActorWeakHandle = weak.clone();
             let _: i32 = weak.release();

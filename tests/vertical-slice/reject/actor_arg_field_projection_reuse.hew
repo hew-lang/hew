@@ -1,0 +1,33 @@
+// A field projection sent to an actor transfers THAT PLACE, not the whole
+// record: `await sink.take(holder.sock)` moves the socket into the handler
+// frame, so detaching it again through the same projection is a second
+// consume of one value. The checker recorded consumption per binding name, so
+// the projection left no fact behind and this was accepted.
+#[resource]
+type Socket {
+    fd: i64;
+}
+
+impl Socket {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+type Holder {
+    sock: Socket;
+}
+
+actor Sink {
+    receive fn take(s: Socket) -> i64 {
+        return s.detach();
+    }
+}
+
+fn main() -> i64 {
+    let sink = spawn Sink;
+    let holder = Holder { sock: Socket { fd: 7 } };
+    let _ = await sink.take(holder.sock);
+    return holder.sock.detach();
+}

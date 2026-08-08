@@ -7,12 +7,12 @@
 //! reference differential (`hew-mir` `coarse_verdict_differential`) proves the
 //! boolean verdicts byte-identical; this harness proves the EMITTED elaborated
 //! MIR (including drop plans) of the fixtures that exercise those consumers is
-//! identical to baselines generated at the scanner-ownership implementation
-//! revision (`82a23b19b`,
-//! `hew compile --dump-mir elab`) under ONE normalization rule: the dump's
-//! FUNCTION ORDER is nondeterministic (map iteration), so both sides are
-//! split into per-function chunks and sorted by signature line before the
-//! byte comparison; intra-function text must match exactly.
+//! identical to baselines generated at the revision recorded in the manifest
+//! (`hew compile --dump-mir elab`) under only recorded normalizations: the
+//! dump's FUNCTION ORDER is nondeterministic (map iteration), so both sides
+//! are split into per-function chunks and sorted by signature line before the
+//! byte comparison; and the emitter's terminal blank line is discarded.
+//! Intra-function text must otherwise match exactly.
 //!
 //! Fail-closed manifest discipline:
 //! - every manifest row's fixture AND baseline file must exist (missing →
@@ -113,7 +113,7 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
         assert!(
             live_norm == expected_norm,
             "elaborated MIR for `{fixture}` diverged from the committed baseline \
-             `{baseline}` (generated at 82a23b19b). A funcupdate/reassign consumer's \
+             `{baseline}` (revision recorded in manifest.tsv). A funcupdate/reassign consumer's \
              lowering or drop plan CHANGED — this is the Coarse-drift signal the boolean \
              differential cannot see. If the change is intended and reviewed, regenerate \
              the baseline per the manifest header. First differing line (after \
@@ -128,11 +128,13 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
 /// header), and rejoin: (1) sort chunks by signature line because dump
 /// FUNCTION ORDER is nondeterministic (map iteration); (2) renumber
 /// `BindingId(n)` / `SiteId(n)` values within each chunk in first-occurrence
-/// order because they depend on module iteration order. Within-chunk content
-/// order is preserved, so a reordered drop inside a chunk remains detectable;
-/// everything else must match byte-for-byte — opcodes, drop plans, local
-/// structure.
+/// order because they depend on module iteration order; and (3) drop only
+/// trailing newline bytes because the dump emitter may add one final empty
+/// line. Within-chunk content order is preserved, so a reordered drop inside a
+/// chunk remains detectable; everything else must match byte-for-byte —
+/// opcodes, drop plans, local structure.
 fn normalize_fn_order(dump: &str) -> String {
+    let dump = dump.trim_end_matches('\n');
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();
     for line in dump.lines() {
@@ -194,4 +196,19 @@ fn first_diff(expected: &str, live: &str) -> String {
         expected.lines().count(),
         live.lines().count()
     )
+}
+
+#[test]
+fn terminal_blank_normalization_does_not_hide_intra_function_drift() {
+    let baseline = "fn probe -> ()\n  statements:\n    eval site=SiteId(1) ty=()\n";
+    assert_eq!(
+        normalize_fn_order(baseline),
+        normalize_fn_order(&format!("{baseline}\n")),
+        "the optional final empty dump line is non-semantic"
+    );
+    assert_ne!(
+        normalize_fn_order(baseline),
+        normalize_fn_order("fn probe -> ()\n\n  statements:\n    eval site=SiteId(1) ty=()\n"),
+        "only terminal newlines are normalized; an interior blank remains MIR drift"
+    );
 }

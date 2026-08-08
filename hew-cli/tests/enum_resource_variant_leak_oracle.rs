@@ -59,6 +59,104 @@ fn main() {\n\
     }\n\
 }\n";
 
+const XML_PROJECTED_HELPER_CRASH_SOURCE: &str = r#"
+import std::encoding::xml;
+
+enum Pair {
+    Both(xml.Node, string);
+    Nothing;
+}
+
+fn consume(pair: Pair, trigger: i64) -> i64 {
+    match pair {
+        Pair::Both(node, text) => {
+            node.close();
+            if trigger != 0 {
+                panic("crash after explicit close");
+            }
+            text.len()
+        },
+        Pair::Nothing => 0,
+    }
+}
+
+actor Helper {
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+actor Crasher {
+    let helper: LocalPid<Helper>;
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await helper.ping() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        let pair = Pair::Both(xml.parse("<x/>"), "hi");
+        consume(pair, trigger) + seed
+    }
+}
+
+fn main() {
+    let helper = spawn Helper;
+    let crasher = spawn Crasher(helper: helper);
+    match await crasher.run(0) {
+        Ok(value) => println(f"ok={value}"),
+        Err(_) => println("bad"),
+    }
+    match await crasher.run(1) {
+        Ok(value) => println(f"unexpected={value}"),
+        Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}
+"#;
+
+const BYTES_MUTATING_HELPER_CRASH_SOURCE: &str = r#"
+fn clear_then_maybe_crash(trigger: i64) -> i64 {
+    let value: bytes = "owned-bytes".to_bytes();
+    value.clear();
+    if trigger != 0 {
+        panic("crash after bytes.clear");
+    }
+    value.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        7
+    }
+}
+
+actor Runner {
+    let gate: LocalPid<Gate>;
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        clear_then_maybe_crash(trigger) + seed
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    match await runner.run(0) {
+        Ok(value) => println(f"ok={value}"),
+        Err(_) => println("bad"),
+    }
+    match await runner.run(1) {
+        Ok(value) => println(f"unexpected={value}"),
+        Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}
+"#;
+
 fn assert_exact_zero_leaks(bin: &Path, shape: &str) {
     require_leaks_tool();
     let (count, bytes) = measure_leaks_exact(bin);
@@ -159,6 +257,70 @@ fn xml_string_return_temporary_is_released() {
         "<a><b>hi</b></a>\n"
     );
     assert_exact_zero_leaks(&bin, "xml_string_return_temporary");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn projected_resource_close_then_crash_releases_source_snapshot_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("enum-resource-helper-crash-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        XML_PROJECTED_HELPER_CRASH_SOURCE,
+        dir.path(),
+        "xml_projected_helper_crash",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "projected resource close followed by a handled actor crash must not \
+         double-release the source snapshot:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ok=9\nhandled-crash\nsurvived\n",
+        "the normal and crash paths must both complete before main survives"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn bytes_runtime_mutation_then_crash_releases_refreshed_snapshot_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("bytes-helper-mutation-crash-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        BYTES_MUTATING_HELPER_CRASH_SOURCE,
+        dir.path(),
+        "bytes_mutating_helper_crash",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "bytes.clear followed by a handled actor crash must not release the \
+         helper's pre-mutation snapshot:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ok=7\nhandled-crash\nsurvived\n",
+        "the normal and crash paths must both complete before main survives"
+    );
+    #[cfg(target_os = "macos")]
+    assert_exact_zero_leaks(&bin, "bytes_mutating_helper_crash");
 }
 
 fn function_body(ll: &str, needle: &str) -> Option<String> {

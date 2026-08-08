@@ -22,6 +22,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
+#[cfg(not(target_arch = "wasm32"))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
@@ -32,7 +33,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::mailbox_header::{HewSysMsg, Origin};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_remove,
-    hew_timer_wheel_schedule_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
+    timer_wheel_schedule_at_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
 };
 
 static WASM_CLEANUP_RAN: AtomicBool = AtomicBool::new(false);
@@ -64,10 +65,6 @@ fn trace_actor_stop_lifecycle(
     // WASM-R37-S2: WASM stop/on(stop) paths must be observable through the
     // same lifecycle trace event as native before invoking terminate_fn.
     //
-    // WASM-TODO(#1451) / WASM-R37-S9: drain-time actor_type_id remains zero on
-    // WASM until codegen emits handler-name/type registration. Keep the stop
-    // lifecycle event itself observable now; the actor_type_id regression flips
-    // with Slice 5.
     let installed_trace_context =
         crate::execution_context::current_context().is_null() && !trace_context.is_null();
     let prev_context = if installed_trace_context {
@@ -152,6 +149,10 @@ pub struct HewActor {
     // The SYSTEM dispatch entry point; mirrors the canonical tail so the
     // layout parity this module asserts holds.
     pub sys_dispatch: Option<crate::internal::types::HewSysDispatchFn>,
+    // One-shot typed state-drop authority; see the canonical actor field.
+    pub state_drop_consumed: AtomicBool,
+    // Supervisor shallow-template provenance; mirrors the canonical tail.
+    pub state_drop_borrowed: AtomicBool,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -230,6 +231,8 @@ const _: () = {
     assert!(offset_of!(W, local_pid_id) == offset_of!(N, local_pid_id));
     assert!(offset_of!(W, spawn_serial) == offset_of!(N, spawn_serial));
     assert!(offset_of!(W, sys_dispatch) == offset_of!(N, sys_dispatch));
+    assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
+    assert!(offset_of!(W, state_drop_borrowed) == offset_of!(N, state_drop_borrowed));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -649,15 +652,12 @@ unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
     // Allocate the callback context (Box-owned; freed by callback or cancel).
     let ctx = Box::into_raw(Box::new(WasmSleepCtx { actor }));
 
-    // Compute delay: deadline_ms is absolute; the wheel takes a relative delay.
-    // SAFETY: hew_now_ms has no preconditions.
-    let now = unsafe { hew_now_ms() };
-    let delay_ms = deadline_ms.saturating_sub(now);
-
-    // Schedule on the wheel and register the handle for O(1) cancel.
+    // Schedule the absolute request directly. The cooperative host may leave
+    // the wheel cursor stale between ticks, so translating through a separately
+    // sampled relative delay can shift the effective deadline under load.
     // SAFETY: wheel is valid; ctx and actor are live.
     let handle =
-        unsafe { hew_timer_wheel_schedule_handle(wheel, delay_ms, wasm_sleep_cb, ctx.cast()) };
+        unsafe { timer_wheel_schedule_at_handle(wheel, deadline_ms, wasm_sleep_cb, ctx.cast()) };
 
     if handle.entry.is_null() {
         // Wheel rejected the schedule (e.g. entry allocation failure) — fail
@@ -1258,6 +1258,13 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 /// [`hew_wasm_sched_tick`].  Useful for JS hosts that receive
 /// `setTimeout` callbacks with a precise timestamp, or for WASI
 /// programs that advance the clock via `clock_time_get`.
+///
+/// `now_ms` must use the same monotonic clock and epoch as the host's
+/// `hew_now_ms` import, which supplies timer deadlines at registration. A
+/// later-epoch value can advance the wheel past those deadlines and cause
+/// subsequent registrations to be clamped to the cursor and fire immediately;
+/// an earlier-epoch value can delay delivery until it reaches the stored
+/// deadlines.
 ///
 /// Returns the number of actors woken; a return value > 0 indicates
 /// that there is new work in the run queue ready for [`hew_wasm_sched_tick`].
@@ -1993,7 +2000,36 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // substrate is dormant), or the `coro.begin` handle when a
                 // handler suspended. The handle is captured here; the production
                 // wasm park edge (commit 4) consumes a non-null handle.
-                let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                let crash_state_drop = if a.state_drop_borrowed.load(Ordering::Acquire) {
+                    None
+                } else {
+                    match (a.state_clone_fn, a.state_drop_fn) {
+                        (Some(_), Some(drop)) => Some(drop),
+                        (None, None) => None,
+                        _ => panic!("actor state has half-registered clone/drop classifier proof"),
+                    }
+                };
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                if !unsafe {
+                    crate::cont::begin_dispatch_crash_cleanup(
+                        a.state,
+                        a.state_size,
+                        // Paired clone/drop registration is the MIR
+                        // classifier's proof that the wrapper is safe to
+                        // relocate into the crash escrow.
+                        crash_state_drop,
+                    )
+                } {
+                    panic!("could not establish WASM actor dispatch crash cleanup");
+                }
+                #[allow(
+                    unused_mut,
+                    reason = "wasm32 invokes this FnMut directly; host catch_unwind consumes it"
+                )]
+                let mut invoke_dispatch = || match dispatch {
                     DispatchTarget::User(user_dispatch) =>
                     // SAFETY: `user_dispatch` is the actor's registered
                     // application trampoline; message fields come from a
@@ -2006,7 +2042,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                             msg_ref.data,
                             msg_ref.data_size,
                             // P5-RX sub-stage 1: copy-mode receipt only.
-                            // WASM-TODO(#1451): envelope-mode (aliased) receive
+                            // WASM-TODO(alias-messaging): envelope-mode (aliased) receive
                             // routing on the WASM scheduler is deferred to the
                             // WASM send gate; this path stays copy-mode (0).
                             0,
@@ -2026,7 +2062,19 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         }
                         std::ptr::null_mut()
                     }
-                }));
+                };
+                // Host-side parity tests unwind so they can inspect the
+                // scheduler's recovery bookkeeping. The production
+                // wasm32-wasip1 sysroot is panic=abort: invoke directly so
+                // this source does not imply an actor-containment boundary
+                // that the artifact cannot provide.
+                // WASM-TODO(actor-crash-containment): provide a target/runtime
+                // unwind or explicit status ABI before treating handler panic
+                // as a recoverable actor failure on Tier 2.
+                #[cfg(not(target_arch = "wasm32"))]
+                let dispatch_result = catch_unwind(AssertUnwindSafe(invoke_dispatch));
+                #[cfg(target_arch = "wasm32")]
+                let dispatch_result: Result<*mut c_void, ()> = Ok(invoke_dispatch());
                 // D-A.2: the suspend handle the trampoline returned (null on the
                 // run-to-completion path — every handler today). A non-null
                 // handle is parked after the loop + global restore (below).
@@ -2043,6 +2091,18 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     )
                 };
                 if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                    // SAFETY: dispatch returned and this activation owns the
+                    // still-open cleanup scope.
+                    let outcome =
+                        unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(true) };
+                    if outcome.state_authority_consumed {
+                        // SAFETY: cooperative activation exclusively owns actor.
+                        unsafe {
+                            crate::actor::record_dispatch_state_drop_consumed(
+                                actor.cast::<crate::actor::HewActor>(),
+                            );
+                        }
+                    }
                     a.actor_state
                         .store(HewActorState::Crashed as i32, Ordering::Release);
                     execution_context.reply_channel = std::ptr::null_mut();
@@ -2057,7 +2117,8 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     break;
                 }
 
-                if dispatch_result.is_err() {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Err(panic_payload) = dispatch_result {
                     crate::set_last_error("actor dispatch panicked");
                     // Tagged-crash surfacing: if the dispatch (or anything
                     // it called, e.g. `hew_arena_malloc` on cap exhaustion)
@@ -2068,10 +2129,33 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     // the WASM counterpart of the native longjmp seam,
                     // which jumps directly out of dispatch with the code
                     // already installed.
-                    if a.error_code.load(Ordering::Acquire) != 0 {
+                    let cooperative_crash = a.error_code.load(Ordering::Acquire) != 0;
+                    // SAFETY: catch_unwind proves the dispatch stack is
+                    // abandoned and transfers its cleanup scope here.
+                    let outcome = unsafe {
+                        crate::cont::recover_dispatch_crash_cleanup_with_outcome(cooperative_crash)
+                    };
+                    if outcome.state_authority_consumed {
+                        // SAFETY: cooperative activation exclusively owns actor.
+                        unsafe {
+                            crate::actor::record_dispatch_state_drop_consumed(
+                                actor.cast::<crate::actor::HewActor>(),
+                            );
+                        }
+                    }
+                    if cooperative_crash {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
+                    crate::util::quarantine_panic_payload(panic_payload);
+                // SAFETY: normal dispatch return matches the scope opened
+                // immediately before handler entry.
+                } else if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                    panic!("WASM actor dispatch returned with live crash-cleanup owners");
+                }
+                #[cfg(target_arch = "wasm32")]
+                if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                    panic!("WASM actor dispatch returned with live crash-cleanup owners");
                 }
 
                 let reply_consumed = (execution_context.flags
@@ -2452,7 +2536,7 @@ pub use crate::execution_context::hew_get_reply_channel;
 /// while still allowing wait-loop callers (ask/await/reply) to drive the
 /// scheduler to completion.
 ///
-/// WASM-TODO(#1451): native `hew_actor_cooperate` yields to the OS scheduler instead
+/// WASM-TODO(cooperative-yield): native `hew_actor_cooperate` yields to the OS scheduler instead
 /// of suppressing progress. Replace this depth cap with a stack-safe,
 /// non-recursive cooperative driver so yielding never returns `1` without a
 /// scheduler tick.
@@ -2502,7 +2586,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // WASM-TODO(#1451): cross-task cancel_token / task_scope are
+        // WASM-TODO(scope): cross-task cancel_token / task_scope are
         // native-only until the WASI task-scope follow-on lands. The actor
         // task-state observation below covers the in-handler cancel source
         // that does exist on WASM (handler calls `hew_actor_stop_self`,
@@ -2645,6 +2729,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 
@@ -2822,22 +2908,17 @@ mod tests {
     /// on drop.
     ///
     /// WHY: the wasm timer tests drive `hew_wasm_timer_tick` / `drain_timed_work`
-    /// with explicit deadlines derived from `hew_now_ms()`. On the real clock
-    /// the test's anchor `now`, the wheel's `current_ms` captured at lazy
-    /// creation, and `park_actor_sleep`'s `deadline - now` delay are three
-    /// independent monotonic reads that drift apart under CPU load — flipping
-    /// the exact-deadline assertions (the `timer_tick_wakes_at_exact_deadline`
-    /// abort under wasmtime). Pinning a fixed virtual `now` collapses all three
-    /// to one value, making the wake boundary exact without weakening any
-    /// assertion (no tolerance, no sleeps).
+    /// with explicit deadlines derived from `hew_now_ms()`. Pinning a fixed
+    /// virtual `now` makes their exact-boundary assertions independent of host
+    /// execution time without weakening them with tolerances or sleeps.
     ///
     /// WHY wasm32-only: the virtual-clock seam lives in `wasm_stubs` (a
     /// wasm32-only module) and only the wasm `hew_now_ms` consults it. The wasm
     /// cooperative harness is single-threaded, so the seam needs no locking.
     /// Native runs these tests multi-threaded (num-cpus) but reads a different
-    /// clock (`io_time::hew_now_ms`), and the fast native clock already makes
-    /// the boundary reliable — so on native the guard is inert and the real
-    /// clock is left untouched.
+    /// clock (`io_time::hew_now_ms`). Absolute timer scheduling preserves the
+    /// requested boundary there, so the guard is inert and the real clock is
+    /// left untouched.
     struct VirtualClock;
 
     impl VirtualClock {
@@ -3496,8 +3577,8 @@ mod tests {
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // Scratch frame: Ready on the 2nd resume.
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         // SAFETY: actor owned on this single thread; scratch handle live.
         assert!(unsafe { park_suspended_activation_wasm(actor_ptr, handle) });
@@ -3556,8 +3637,23 @@ mod tests {
         _data_size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
+    }
+
+    /// Test-only borrowed-frame variant for witnesses that need to inspect the
+    /// frame after the runtime has invoked its destroy outline. Unlike the
+    /// production-shaped helper above, its destroy outline releases the inner
+    /// guard only; the test remains responsible for the outer `Box`.
+    #[cfg(target_arch = "wasm32")]
+    unsafe extern "C-unwind" fn suspend_once_dispatch_test_owned_wasm(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        crate::coro_exec::test_support::ScratchFrameOwner::new(1).into_handle()
     }
 
     /// Actual-target WASM continuation probe whose destroy outline frees its
@@ -3854,8 +3950,7 @@ mod tests {
         unsafe {
             let _ = crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
         }
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// Park an actor inside an `ask` whose handler suspended, and hand back the
@@ -4011,7 +4106,7 @@ mod tests {
     /// HARNESS LIMIT, stated rather than papered over: this drives
     /// `cancel_parked_activation_for_free_wasm`, the branch the fix adds, NOT
     /// the whole of `actor_free_wasm_impl`. That function's tail calls
-    /// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources_with_options`
+    /// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources`
     /// resolves to the NATIVE body under `cfg(test)` and frees a wasm mailbox
     /// with the native destructor. End-to-end coverage of the wasm free needs a
     /// real wasm32 runner, not another native test.
@@ -4078,7 +4173,7 @@ mod tests {
             );
         }
 
-        // A second sweep — `free_actor_resources_wasm_with_options` runs one on
+        // A second sweep — `free_actor_resources_wasm` runs one on
         // every free route — must be a no-op, not a second release.
         crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
         // SAFETY: the test still holds its own reference to `ch`.
@@ -4120,8 +4215,8 @@ mod tests {
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
         let a = as_native_actor(actor_ptr);
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: the scratch frame remains live for the complete test.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4235,8 +4330,8 @@ mod tests {
             let a = as_native_actor(actor_ptr);
             // SAFETY: this test creates and exclusively owns the mailbox.
             actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
-            let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+            let handle = frame.handle();
             assert!(crate::coro_exec::begin_park(a).is_ok());
             // SAFETY: frame stays live until the successful cleanup below.
             unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4339,8 +4434,8 @@ mod tests {
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
         let a = as_native_actor(actor_ptr);
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: the scratch frame remains live for the complete test.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4456,8 +4551,8 @@ mod tests {
         let waiter_ptr: *mut HewActor = (&raw const waiter_actor).cast_mut();
         let waiter_native = as_native_actor(waiter_ptr);
         let retiring_native = as_native_actor((&raw const retiring_actor).cast_mut());
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(waiter_native).is_ok());
         // SAFETY: scratch frame is live and exclusively owned for the test.
         unsafe { crate::coro_exec::finish_park(waiter_native, handle) };
@@ -4539,8 +4634,8 @@ mod tests {
         let waiter_actor = stub_actor();
         let waiter_ptr: *mut HewActor = (&raw const waiter_actor).cast_mut();
         let waiter_native = as_native_actor(waiter_ptr);
-        let mut waiter_frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let waiter_handle = (&raw mut *waiter_frame).cast::<c_void>();
+        let waiter_frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let waiter_handle = waiter_frame.handle();
         assert!(crate::coro_exec::begin_park(waiter_native).is_ok());
         // SAFETY: waiter_frame is live and exclusively owned for the test.
         unsafe { crate::coro_exec::finish_park(waiter_native, waiter_handle) };
@@ -4558,7 +4653,7 @@ mod tests {
         let (callee_ptr, reply) = unsafe {
             park_wasm_ask(
                 std::ptr::from_mut(&mut callee_actor),
-                suspend_once_dispatch_wasm,
+                suspend_once_dispatch_test_owned_wasm,
             )
         };
         let callee_native = as_native_actor(callee_ptr);
@@ -4640,14 +4735,14 @@ mod tests {
         // increment it.
         assert_eq!(unsafe { read_tasks_spawned() }, 0);
 
-        // Reclaim the caller-side authorities and the two scratch-frame boxes
-        // under the test's sole ownership.
+        // Reclaim the caller-side authorities and the two tracked scratch-frame
+        // allocations under the test's sole ownership.
         // SAFETY: every pointer remains live and exclusively test-owned.
         unsafe {
             crate::reply_channel_wasm::hew_reply_channel_free(reply);
             crate::actor::cancel_parked_activation_for_free_wasm(waiter_native);
             crate::mailbox_wasm::hew_mailbox_free(callee_actor.mailbox.cast());
-            drop(Box::from_raw(callee_frame));
+            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(callee_handle));
         }
         assert_eq!(waiter_frame.destroyed.load(Ordering::Acquire), 1);
         assert_eq!(
@@ -6769,7 +6864,6 @@ mod tests {
         // SAFETY: actor remains tracked and parked.
         let handle = unsafe { (*actor).suspended_cont.load(Ordering::Acquire) };
         assert!(!handle.is_null());
-        let frame = handle.cast::<crate::coro_exec::test_support::ScratchFrame>();
         assert_eq!(
             unsafe { (*actor).actor_state.load(Ordering::Acquire) },
             HewActorState::Suspended as i32
@@ -6791,8 +6885,6 @@ mod tests {
                 (*actor).cont_tag.load(Ordering::Acquire),
                 crate::internal::types::ContTag::Parked as i32
             );
-            assert_eq!((*frame).destroyed.load(Ordering::Acquire), 0);
-            assert!(!(*frame).heap_guard.load(Ordering::Acquire).is_null());
         }
 
         hew_runtime_cleanup();
@@ -6803,13 +6895,15 @@ mod tests {
         );
 
         // Repair the intentionally refused test state after observing the
-        // leak, then reclaim both allocations under sole test ownership.
-        // SAFETY: cleanup drained tracking without freeing actor or frame.
+        // leak, then let the executor destroy its frame and reclaim the actor.
+        // The dispatch created an executor-owned scratch frame: its destroy
+        // outline frees the outer tracked allocation, so this test must not
+        // reconstruct a `ScratchFrameOwner` after cancellation.
+        // SAFETY: cleanup drained tracking without freeing the actor.
         unsafe {
             crate::actor::cancel_parked_activation_for_free_wasm(&*actor);
-            assert_eq!((*frame).destroyed.load(Ordering::Acquire), 1);
+            assert!((*actor).suspended_cont.load(Ordering::Acquire).is_null());
             crate::actor::free_actor_resources_wasm(actor);
-            drop(Box::from_raw(frame));
         }
         assert_eq!(
             crate::actor_balance::actor_box_counts(),
@@ -6832,10 +6926,9 @@ mod tests {
         // SAFETY: real tracked zero-state actor.
         let actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
         assert!(!actor.is_null());
-        let frame = Box::into_raw(Box::new(crate::coro_exec::test_support::ScratchFrame::new(
-            1,
-        )));
-        let handle = frame.cast::<c_void>();
+        let frame_owner = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame_owner.into_handle();
+        let frame = handle.cast::<crate::coro_exec::test_support::ScratchFrame>();
         // SAFETY: actor and frame are exclusively owned by this test.
         let a = unsafe { &*actor };
         assert!(crate::coro_exec::begin_park(a).is_ok());
@@ -6878,7 +6971,7 @@ mod tests {
         unsafe {
             assert!(crate::coro_exec::destroy_parked(a).is_ok());
             crate::actor::free_actor_resources_wasm(actor);
-            drop(Box::from_raw(frame));
+            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle));
         }
         assert_eq!(
             crate::actor_balance::actor_box_counts(),
@@ -6945,8 +7038,8 @@ mod tests {
         // SAFETY: real zero-state tracked actor, owned by runtime cleanup.
         let actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
         assert!(!actor.is_null());
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         // Fabricate the exact refusal state without resuming the handle: the
         // frame remains live but its `Resuming` tag denies destroy ownership.
         // SAFETY: actor is live and exclusively owned on this WASM thread.
@@ -7541,6 +7634,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 99,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────
@@ -8241,6 +8336,36 @@ mod tests {
         unsafe { crate::mailbox_wasm::hew_mailbox_free(mailbox) };
     }
 
+    #[test]
+    fn sleep_deadline_ignores_a_stale_wheel_cursor() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        // SAFETY: the runtime owns one live wheel and this test serializes access.
+        let wheel = unsafe { wasm_timer_wheel() };
+        // Model a cursor that differs from the clock sampled by the sleep request.
+        // SAFETY: wheel is live and exclusively accessed by this test.
+        unsafe { crate::timer_wheel::timer_wheel_advance_cursor_for_test(wheel, 100) };
+
+        let mut actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw mut actor);
+        // SAFETY: hew_now_ms has no preconditions and actor is live.
+        let deadline = unsafe { hew_now_ms() }.saturating_add(500);
+        // SAFETY: actor remains live until the scheduler is shut down below.
+        unsafe { park_actor_sleep(actor_ptr, deadline) };
+
+        // SAFETY: timer access is serialized by the test guard.
+        let woken = unsafe { hew_wasm_timer_tick(deadline) };
+        assert_eq!(woken, 1, "a sleeping actor must wake at its deadline");
+        assert_eq!(
+            actor.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32
+        );
+
+        hew_sched_shutdown();
+    }
+
     /// [`hew_wasm_sleeping_count`] returns 0 when no actors are sleeping.
     #[test]
     fn sleeping_count_zero_when_empty() {
@@ -8259,11 +8384,9 @@ mod tests {
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
-        // Pin the virtual clock (wasm32; see VirtualClock) so the wheel's
-        // `current_ms` at creation and the `park_actor_sleep` delay computation
-        // share one deterministic `now`. Inert on native (the seam is
-        // wasm32-only), where the exact-deadline boundary is instead recovered
-        // from the wheel's own scheduled deadline below.
+        // Pin the virtual clock (wasm32; see VirtualClock) so the requested
+        // boundary is deterministic. The seam is inert on native, where
+        // absolute scheduling preserves the requested boundary directly.
         let _clock = VirtualClock::pinned_at(VIRTUAL_BASE_MS);
 
         let mut a = stub_actor();
@@ -8277,27 +8400,9 @@ mod tests {
         // SAFETY: actor valid for duration of test.
         unsafe { park_actor_sleep(a_ptr, now + 1000) };
 
-        // Recover the actual absolute deadline the wheel scheduled, rather than
-        // re-deriving it from a fresh `hew_now_ms()` read. On native (where the
-        // VirtualClock seam is inert) the wheel's `current_ms` at creation and
-        // `park_actor_sleep`'s delay `now` are two independent monotonic reads,
-        // so the wheel fires the entry at its absolute `deadline_ms`
-        // (`wheel_current_ms + (deadline - park_now)`), which drifts from
-        // `now + 1000` under CPU load and intermittently aborted the
-        // exact-deadline assertion. Ticking to the wheel's own absolute
-        // scheduled deadline makes the wake boundary exact on every platform
-        // with no tolerance and no weakened assertion.
-        // SAFETY: wheel was created by park_actor_sleep and is non-null here.
-        let wheel = unsafe { wasm_timer_wheel_raw() };
-        assert!(
-            !wheel.is_null(),
-            "park_actor_sleep must have created the wheel"
-        );
-        // SAFETY: wheel is a valid, live HewTimerWheel pointer.
-        let deadline = unsafe { crate::timer_wheel::timer_wheel_earliest_abs_deadline_ms(wheel) }
-            .expect("a live sleep entry must have an absolute deadline");
+        let deadline = now + 1000;
 
-        // One ms before the wheel's scheduled deadline: nothing wakes.
+        // One ms before the requested deadline: nothing wakes.
         // SAFETY: Single-threaded test.
         let woken = unsafe { hew_wasm_timer_tick(deadline - 1) };
         assert_eq!(woken, 0);
@@ -9125,4 +9230,12 @@ mod tests {
         hew_sched_shutdown();
         hew_runtime_cleanup();
     }
+}
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn production_wasi_actor_panics_are_module_fatal() {
+    assert!(
+        cfg!(panic = "abort"),
+        "Tier 2 crash policy assumes the shipped wasm32-wasip1 sysroot is panic=abort"
+    );
 }

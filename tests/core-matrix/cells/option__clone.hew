@@ -1,0 +1,6 @@
+fn main() {
+    let x: Option<i64> = Some(5);
+    let y = clone x;
+    match y { Some(y_v) => println(f"some {y_v}"), None => println("none"), }
+    match x { Some(x_v) => println(f"some {x_v}"), None => println("none"), }
+}

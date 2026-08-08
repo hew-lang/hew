@@ -1,0 +1,16 @@
+type Rec {
+    a: i64;
+    b: string;
+}
+
+fn main() {
+    let a = Rec { a: 1, b: "x0" };
+    let b = Rec { a: 2, b: "x1" };
+    let v: Vec<Rec> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    let e_a = e.a;
+    let e_b = e.b;
+    println(f"{e_a} {e_b}");
+}

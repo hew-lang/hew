@@ -1,0 +1,9 @@
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() {
+    let x: Colour = Red;
+    match x { Red => println("Red"), Green => println("Green"), }
+}

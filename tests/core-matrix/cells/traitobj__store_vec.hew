@@ -1,0 +1,38 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type P {
+    n: string;
+}
+
+impl Named for P {
+    fn name(val: P) -> string {
+        val.n
+    }
+}
+
+type Q {
+    n: string;
+}
+
+impl Named for Q {
+    fn name(val: Q) -> string {
+        val.n
+    }
+}
+
+fn show_named(v: dyn Named) {
+    let s = v.name();
+    println(s);
+}
+
+fn main() {
+    let x: dyn Named = P { n: "p0" };
+    let y: dyn Named = P { n: "p1" };
+    let v: Vec<dyn Named> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

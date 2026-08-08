@@ -1,0 +1,14 @@
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() {
+    let a: Colour = Red;
+    let b: Colour = Green;
+    let v: Vec<Colour> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    match e { Red => println("Red"), Green => println("Green"), }
+}

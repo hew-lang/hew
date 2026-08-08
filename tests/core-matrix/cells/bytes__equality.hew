@@ -1,0 +1,15 @@
+fn main() {
+    let a: bytes = bytes::new();
+    a.push(65);
+    a.push(66);
+    let b: bytes = bytes::new();
+    b.push(65);
+    b.push(66);
+    let c: bytes = bytes::new();
+    c.push(65);
+    c.push(66);
+    c.push(67);
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

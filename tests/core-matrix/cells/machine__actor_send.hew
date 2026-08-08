@@ -1,0 +1,32 @@
+machine Counter {
+    events { Inc; Reset; }
+    state Zero;
+    state NonZero { value: i64; }
+    on Inc: Zero => NonZero { NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Zero }
+    default { state }
+}
+
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: Counter) -> i64 {
+        match v {
+            Zero => println("zero"),
+            NonZero { value } => println(f"n {value}"),
+        }
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    var x = Zero;
+    x.step(Inc);
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

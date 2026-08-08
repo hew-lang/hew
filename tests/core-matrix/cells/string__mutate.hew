@@ -1,0 +1,5 @@
+fn main() {
+    var x: string = "ab";
+    x = "cd";
+    println(f"{x}");
+}

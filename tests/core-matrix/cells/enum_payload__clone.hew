@@ -1,0 +1,20 @@
+enum Shape {
+    Empty;
+    Circle(i64);
+    Rect { w: i64; h: i64 }
+}
+
+fn main() {
+    let x: Shape = Circle(3);
+    let y = clone x;
+    match y {
+        Empty => println("empty"),
+        Circle(y_r) => println(f"circle {y_r}"),
+        Rect { w, h } => println(f"rect {w}x{h}"),
+    }
+    match x {
+        Empty => println("empty"),
+        Circle(x_r) => println(f"circle {x_r}"),
+        Rect { w, h } => println(f"rect {w}x{h}"),
+    }
+}

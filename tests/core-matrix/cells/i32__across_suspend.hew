@@ -1,0 +1,19 @@
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: i32) -> i64 {
+        sleep(2ms);
+        println(f"{v}");
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x: i32 = 7;
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

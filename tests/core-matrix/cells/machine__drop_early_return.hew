@@ -1,0 +1,35 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+machine Gate {
+    events { Open; Shut; }
+    state Closed;
+    state Opened { tok: Tok; }
+    on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
+    on Shut: Opened => Closed { Closed }
+    default { state }
+}
+
+fn run(early: bool) -> i64 {
+    var h = Closed;
+    h.step(Open);
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn main() {
+    let n = run(true);
+    println(f"n={n}");
+}

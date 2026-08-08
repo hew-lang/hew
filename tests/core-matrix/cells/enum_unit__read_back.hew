@@ -1,0 +1,16 @@
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() {
+    let x: Colour = Red;
+    let v: Vec<Colour> = Vec::new();
+    v.push(x);
+    match v.get(0) {
+        Some(e) => {
+            match e { Red => println("Red"), Green => println("Green"), }
+        },
+        None => println("missing"),
+    }
+}

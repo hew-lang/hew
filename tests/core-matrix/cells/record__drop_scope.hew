@@ -1,0 +1,19 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+type ResRec {
+    t: Tok;
+}
+
+fn main() {
+    let h = ResRec { t: Tok { id: 1 } };
+    println("body");
+}

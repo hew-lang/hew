@@ -1,0 +1,6 @@
+fn main() {
+    var f = |v: i64| v * 2;
+    f = |v: i64| v * 3;
+    let r = f(7);
+    println(r);
+}

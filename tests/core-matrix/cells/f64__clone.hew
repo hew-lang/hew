@@ -1,0 +1,6 @@
+fn main() {
+    let x: f64 = 3.5;
+    let y = clone x;
+    println(f"{y}");
+    println(f"{x}");
+}

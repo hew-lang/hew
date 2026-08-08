@@ -1,0 +1,24 @@
+enum Colour {
+    Red;
+    Green;
+}
+
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: Colour) -> i64 {
+        sleep(2ms);
+        match v { Red => println("Red"), Green => println("Green"), }
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x: Colour = Red;
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

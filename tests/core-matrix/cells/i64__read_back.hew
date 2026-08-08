@@ -1,0 +1,11 @@
+fn main() {
+    let x: i64 = 42;
+    let v: Vec<i64> = Vec::new();
+    v.push(x);
+    match v.get(0) {
+        Some(e) => {
+            println(f"{e}");
+        },
+        None => println("missing"),
+    }
+}

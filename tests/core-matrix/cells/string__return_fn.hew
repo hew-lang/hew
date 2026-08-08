@@ -1,0 +1,9 @@
+fn make() -> string {
+    let m: string = "ab";
+    m
+}
+
+fn main() {
+    let x = make();
+    println(f"{x}");
+}

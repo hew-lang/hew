@@ -1,0 +1,9 @@
+fn main() {
+    let a: i32 = 7;
+    let b: i32 = 9;
+    let v: Vec<i32> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    println(f"{e}");
+}

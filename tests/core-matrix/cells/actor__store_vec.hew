@@ -1,0 +1,18 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+fn main() {
+    let x = spawn Echo(seen: 0);
+    let y = spawn Echo(seen: 1);
+    let v: Vec<LocalPid<Echo>> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

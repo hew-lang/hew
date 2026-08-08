@@ -313,6 +313,79 @@ fn toplevel_fn_reserved_keyword_name_emits_single_clear_error() {
     );
 }
 
+/// A reserved word in a BINDING position must be named as reserved. The
+/// generic invalid-pattern message only echoes the raw token, which leaves a
+/// reserved word indistinguishable from a typo — the reader cannot tell "this
+/// word is off-limits" from "the parser did not recognise this token".
+#[test]
+fn let_binding_reserved_keyword_names_it_as_reserved() {
+    let result = parse("fn f() { let record = 1 }");
+    let diagnostic = result
+        .errors
+        .iter()
+        .find(|err| matches!(err.kind, ParseDiagnosticKind::InvalidPattern { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an invalid-pattern error, got: {:?}",
+                result.errors
+            )
+        });
+    assert!(
+        diagnostic.message.contains("reserved word `record`"),
+        "message must name `record` as reserved; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.contains("record")),
+        "a reserved word in a binding position must carry a rename hint; got: {:?}",
+        diagnostic.hint
+    );
+}
+
+/// The same fact through the other pattern position.
+#[test]
+fn match_arm_reserved_keyword_names_it_as_reserved() {
+    let result = parse("fn f() { match 1 { record => 0 } }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|err| err.message.contains("reserved word `record`")),
+        "expected a reserved-word pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A non-keyword token that cannot start a pattern keeps the generic message —
+/// the reserved-word arm must not swallow ordinary syntax errors.
+#[test]
+fn non_keyword_invalid_pattern_keeps_generic_message() {
+    let result = parse("fn f() { match 1 { => 0 } }");
+    let diagnostic = result
+        .errors
+        .iter()
+        .find(|err| matches!(err.kind, ParseDiagnosticKind::InvalidPattern { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an invalid-pattern error, got: {:?}",
+                result.errors
+            )
+        });
+    assert!(
+        !diagnostic.message.contains("reserved word"),
+        "a non-keyword token must not be reported as reserved; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.hint.is_none(),
+        "the generic invalid-pattern arm carries no hint; got: {:?}",
+        diagnostic.hint
+    );
+}
+
 #[test]
 fn toplevel_fn_actor_name_still_reports_reserved_word() {
     let source = "fn actor() {}";

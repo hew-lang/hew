@@ -849,6 +849,16 @@ run_accept_expect_stdout "sink_half_in_actor_state"
 # both writes must reach the caller. Exact-stdout oracle: `9` then `3`.
 run_accept_expect_stdout "var_vec_param_caller_visible"
 
+# Printing a borrowed carrier parameter. `println`/`print`/`+` on a by-value
+# `string` parameter reached MIR as `CallAuthority::Direct`, which poisoned the
+# parameter's boundary mode to `RejectUnprovenRepresentationMutation` and failed
+# closed at direct-call codegen — one stage past `hew check`, so this must stay
+# an execution oracle. Covers both print rows, `string_concat`, a non-zero
+# parameter index, `var`, a three-deep helper chain, the f-string twin, a heap
+# string still readable in the caller after eight borrows, and the `bytes` /
+# `Vec` / `HashMap` carrier classes crossing the same boundary.
+run_accept_expect_stdout "print_borrowed_carrier_param"
+
 # #2821 reverse direction: a record can contain both private value storage and
 # caller-shared collection handles. These concrete Vec/HashMap projections cross
 # the shared boundary and must remain accepted. Exact stdout: `9` then `7`.

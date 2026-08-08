@@ -195,6 +195,53 @@ impl BuiltinLinkage {
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
+
+    /// The concrete runtime ABI symbol this row's call lowers through, if any.
+    ///
+    /// This is deliberately WIDER than [`Self::runtime_symbol`] by exactly one
+    /// variant: `PrintIntercept`.  The two answer different questions.
+    ///
+    /// * [`Self::runtime_symbol`] / [`Self::trusted_ffi_symbol`] answer "which
+    ///   ABI spelling may a call-site symbol be joined against" — the identity
+    ///   join in `stdlib_shim_emitted_symbol`.  `PrintIntercept` is excluded
+    ///   because its emitted symbol (`hew_print_value`) is never the MIR callee
+    ///   spelling; codegen synthesises the `(kind, bits, newline)` call from the
+    ///   row's `kind`/`newline`, so there is no symbol to join.
+    /// * This answers "does the call cross a compiler-owned runtime ABI whose
+    ///   parameter-ownership contract is audited".  A print row does: it lands
+    ///   in `hew_print_value`, whose `PrintKind::Str` arm borrows the operand
+    ///   for `printf("%s")` and neither frees nor replaces it.
+    ///
+    /// Rows with no runtime edge at all — `CompilerIntrinsic`,
+    /// `CalleeNameDispatchOnly`, `NodeRegisterByPid`, `LayoutDescriptorSymbol`
+    /// — stay `None` and keep their consumers' fail-closed answer.
+    #[must_use]
+    pub const fn audited_runtime_abi_symbol(self) -> Option<&'static str> {
+        match self {
+            Self::PrintIntercept { runtime_symbol, .. } => Some(runtime_symbol),
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
+            Self::CompilerIntrinsic { .. }
+            | Self::CalleeNameDispatchOnly
+            | Self::NodeRegisterByPid { .. }
+            | Self::LayoutDescriptorSymbol { .. } => None,
+        }
+    }
+}
+
+/// Whether one exact catalog endpoint's call crosses an audited runtime ABI
+/// boundary — see [`BuiltinLinkage::audited_runtime_abi_symbol`].
+///
+/// The endpoint is a checker-selected closed catalog identity, so this is an
+/// identity query and not a callee-name classification: a user declaration that
+/// happens to spell an endpoint name resolves to `CallTarget::Function` or
+/// `CallTarget::Extern` and never reaches a caller of this function.
+#[must_use]
+pub fn endpoint_crosses_audited_runtime_abi(endpoint: &str) -> bool {
+    CATALOG
+        .iter()
+        .any(|entry| entry.name == endpoint && entry.linkage.audited_runtime_abi_symbol().is_some())
 }
 
 /// Return the audited ABI symbol for one exact catalog endpoint.

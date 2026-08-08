@@ -1,0 +1,23 @@
+// Reassigning a binding that holds a borrowed collection element crosses a
+// generation boundary the flow-insensitive borrow fact cannot represent: the
+// overwrite would release the collection-owned generation and the fresh
+// generation would lose its release.
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let v: Vec<Tok> = Vec::new();
+    v.push(Tok { id: 1 });
+    var e = v[0];
+    e = Tok { id: 2 };
+    let i = e.id;
+    println(f"got {i}");
+}

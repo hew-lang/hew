@@ -484,6 +484,31 @@ run_accept_expect_stdout "nested_string_concat_temp"
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
 run_accept_expect_stdout "enum_mixed_leaf_resource_drop"
 
+# Close-obligated collection borrows: `v[i]` over a `#[resource]`-bearing
+# element is a BORROW (the collection is the single release authority), and
+# every use that could carry the borrow past that authority is refused at
+# compile time. These four shapes are the review-proven unsound directions:
+# escape by return, explicit close, transfer into another collection, and
+# rebind of the alias binding. The accept-side twin is
+# `enum_mixed_leaf_resource_drop` plus the core-matrix `resource__index` cell
+# (read-only borrow: exactly-once release by the collection).
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_escape_by_return.hew" \
+  "cannot leave this function" \
+  "collection_borrow_escape_by_return"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_explicit_close.hew" \
+  "cannot be consumed or transferred" \
+  "collection_borrow_explicit_close"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_transfer.hew" \
+  "cannot be consumed or transferred" \
+  "collection_borrow_transfer"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_rebind.hew" \
+  "cannot be reassigned" \
+  "collection_borrow_rebind"
+
 # Imported std::bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.
 run_accept_expect_stdout_contains \

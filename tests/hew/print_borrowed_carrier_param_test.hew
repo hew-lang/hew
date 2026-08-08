@@ -1,0 +1,134 @@
+//! A by-value `string` parameter is borrowed — the caller keeps the drop.
+//! Printing one was rejected at direct-call codegen with "parameter 0 of `f`
+//! has rejected representation-mutation authority", because the print catalog
+//! rows and `string_concat` reached MIR as `CallAuthority::Direct` and the
+//! representation-effect fixpoint therefore could not read their (borrow-only)
+//! ownership contract.
+//!
+//! The exact-stdout twin of these cells lives in
+//! `tests/vertical-slice/accept/print_borrowed_carrier_param.hew`. This file
+//! carries the class into the ratcheted `.hew` suite and asserts the property
+//! the printed transcript cannot: that the borrowed carrier is UNCHANGED and
+//! still the caller's after the callee printed it. A callee that consumed,
+//! freed, or replaced the borrowed representation fails these assertions rather
+//! than merely compiling.
+
+import std::testing;
+
+fn print_direct(k: string) {
+    println(k);
+}
+
+fn print_without_newline(k: string) {
+    print(k);
+    println("");
+}
+
+fn concat_direct(k: string) {
+    println(k + "!");
+}
+
+fn print_second_param(tag: string, body: string) {
+    println(body);
+}
+
+fn print_var_param(var k: string) {
+    println(k);
+}
+
+fn print_chain_leaf(k: string) {
+    println(k);
+}
+
+fn print_chain_middle(k: string) {
+    print_chain_leaf(k);
+}
+
+fn print_chain_root(k: string) {
+    print_chain_middle(k);
+}
+
+fn print_interpolated(k: string) {
+    println(f"{k}");
+}
+
+fn print_bytes_param(b: bytes) {
+    println(b.len());
+}
+
+fn print_vec_param(v: Vec<string>) {
+    for name in v {
+        println(name);
+    }
+}
+
+fn print_map_param(m: HashMap<string, i64>) {
+    println(m.len());
+}
+
+#[test]
+fn direct_println_of_string_param_leaves_caller_value_intact() {
+    // A heap string, not a literal: the caller holds a real drop obligation.
+    let owned = "ab".to_upper();
+
+    print_direct(owned);
+    print_without_newline(owned);
+    concat_direct(owned);
+
+    testing.assert_eq_str(owned, "AB");
+    testing.assert_eq(owned.len(), 2);
+}
+
+#[test]
+fn print_of_string_param_at_nonzero_index_borrows_that_param() {
+    // The refusal is parameter-indexed; index 0 alone would not catch an
+    // off-by-one in the authority join.
+    let body = "payload".to_upper();
+    print_second_param("tag", body);
+    testing.assert_eq_str(body, "PAYLOAD");
+}
+
+#[test]
+fn var_string_param_print_borrows_without_consuming() {
+    let owned = "ab".to_upper();
+    print_var_param(owned);
+    testing.assert_eq_str(owned, "AB");
+}
+
+#[test]
+fn print_through_helper_chain_borrows_at_every_hop() {
+    // The representation-effect fixpoint propagates the leaf's refined boundary
+    // mode back up each call edge, so the leaf alone is not the whole path.
+    let owned = "ab".to_upper();
+    print_chain_root(owned);
+    testing.assert_eq_str(owned, "AB");
+}
+
+#[test]
+fn interpolated_and_direct_print_paths_agree() {
+    // The f-string form always compiled; pinning it beside the direct form
+    // keeps the two lowerings from drifting apart again.
+    let owned = "ab".to_upper();
+    print_interpolated(owned);
+    print_direct(owned);
+    testing.assert_eq_str(f"{owned}", "AB");
+}
+
+#[test]
+fn other_carrier_param_classes_still_cross_the_boundary() {
+    // `bytes`, `Vec<T>` and `HashMap<K, V>` parameters are caller-visible
+    // projections crossing the same boundary. Print's overload set has exactly
+    // one carrier row (`*_str`), so these reach a print through a projection
+    // rather than as the print argument itself.
+    let raw = "xyz".to_bytes();
+    print_bytes_param(raw);
+    testing.assert_eq(raw.len(), 3);
+
+    let names: Vec<string> = ["alpha", "beta"];
+    print_vec_param(names);
+    testing.assert_eq(names.len(), 2);
+
+    let counts: HashMap<string, i64> = {"a": 7};
+    print_map_param(counts);
+    testing.assert_eq(counts.len(), 1);
+}

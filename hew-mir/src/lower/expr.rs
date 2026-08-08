@@ -4145,6 +4145,36 @@ impl Builder {
                                     .filter(|symbol| *symbol == callee_symbol)
                                     .map(|_| crate::CallAuthority::Extern)
                             })
+                            .or_else(|| {
+                                // No ItemId projection fired, so the emitted
+                                // callee spelling IS the closed catalog
+                                // endpoint the checker selected — there is no
+                                // user-controlled spelling in play at all, and
+                                // the equality filter above has nothing to
+                                // compare.  Grant the ownership-contract
+                                // capability whenever that endpoint's catalog
+                                // row crosses an audited runtime ABI.
+                                //
+                                // Two row families reach MIR this way and both
+                                // previously fell to `Direct`: the print
+                                // family, whose `PrintIntercept` linkage names
+                                // `hew_print_value` rather than the callee
+                                // spelling, and `string_concat`, whose surface
+                                // name is not its `hew_string_concat` ABI
+                                // symbol.  `Direct` means "opaque callee, no
+                                // readable contract", which poisons every
+                                // caller-visible-projection parameter passed to
+                                // it into `RejectUnprovenRepresentationMutation`
+                                // — so `fn f(k: string) { println(k) }` was
+                                // rejected at direct-call codegen even though
+                                // `hew_print_value`'s audited contract borrows
+                                // its operand.
+                                (callee_symbol == endpoint.as_str()
+                                    && hew_hir::stdlib_catalog::endpoint_crosses_audited_runtime_abi(
+                                        endpoint,
+                                    ))
+                                .then_some(crate::CallAuthority::Extern)
+                            })
                             .unwrap_or_default();
                         return self.lower_direct_call_with_authority(
                             callee_symbol,

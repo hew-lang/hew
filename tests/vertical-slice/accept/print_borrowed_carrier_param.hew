@@ -1,0 +1,145 @@
+// A by-value `string` parameter is BORROWED: the caller keeps the drop and the
+// callee gets no owner of its own. Printing such a parameter is the first
+// program a new user writes, and it was rejected at direct-call codegen with
+// "parameter 0 of `f` has rejected representation-mutation authority".
+//
+// The refusal came from MIR's call-authority join, not from codegen: the print
+// catalog rows (`println_str`/`print_str`) and `string_concat` reached MIR as
+// `CallAuthority::Direct` — "opaque callee, no readable ownership contract" —
+// so the module-wide representation-effect fixpoint marked every
+// caller-visible-projection parameter passed to them `Unproven` and refined its
+// boundary mode to `RejectUnprovenRepresentationMutation`. Those endpoints are
+// checker-selected closed catalog identities whose runtime edge
+// (`hew_print_value`, `hew_string_concat`) borrows its operand, so the contract
+// was always readable; only the authority grant was missing.
+//
+// This fixture is an EXECUTION oracle on purpose. The defect passed `hew check`
+// cleanly and died one stage later, so a check-only fixture reads green over it.
+//
+// Cells, and why these:
+//   - `println` and `print` of a string parameter: both `PrintIntercept` rows.
+//   - `+` on a string parameter: `string_concat`, the other endpoint whose
+//     surface name is not its ABI symbol.
+//   - a parameter at a non-zero index: the refusal is parameter-indexed, so
+//     index 0 alone would not catch an off-by-one in the join.
+//   - `var` on a string parameter: a different initial boundary mode reaching
+//     the same refinement.
+//   - a three-deep helper chain: the fixpoint propagates the leaf's refined
+//     mode back up the call edges, so the leaf alone is not the whole path.
+//   - the f-string form beside the direct form: the two lowerings must not
+//     drift apart again.
+//   - a HEAP string (not a literal) read again in the caller after the callee
+//     printed it three times: admission alone proves nothing — a callee that
+//     wrongly freed or replaced the borrowed representation corrupts this read,
+//     and a leaked one is caught by the leak oracle.
+//   - `bytes`, `Vec<string>`, `HashMap<string, i64>` parameters: the other
+//     caller-visible-projection carrier classes crossing the same boundary.
+//     Print's overload set has exactly one carrier row (`*_str`), so these
+//     cannot be a print argument directly and reach it through a projection.
+//
+// Expected stdout:
+//   AB
+//   AB
+//   AB!
+//   AB
+//   AB
+//   AB
+//   AB
+//   AB
+//   AB
+//   2
+//   AB
+//   alpha
+//   beta
+//   2
+//   1
+//   true
+//   3
+//   xyz
+
+fn print_direct(k: string) {
+    println(k);
+}
+
+fn print_without_newline(k: string) {
+    print(k);
+    println("");
+}
+
+fn concat_direct(k: string) {
+    println(k + "!");
+}
+
+fn print_second_param(tag: string, body: string) {
+    println(body);
+}
+
+fn print_var_param(var k: string) {
+    println(k);
+}
+
+fn print_chain_leaf(k: string) {
+    println(k);
+}
+
+fn print_chain_middle(k: string) {
+    print_chain_leaf(k);
+}
+
+fn print_chain_root(k: string) {
+    print_chain_middle(k);
+}
+
+fn print_interpolated(k: string) {
+    println(f"{k}");
+}
+
+fn print_twice_then_length(k: string) {
+    println(k);
+    println(k);
+    println(k.len());
+}
+
+fn print_bytes_param(b: bytes) {
+    println(b.len());
+    println(b.to_string());
+}
+
+fn print_vec_param(v: Vec<string>) {
+    for name in v {
+        println(name);
+    }
+    println(v.len());
+}
+
+fn print_map_param(m: HashMap<string, i64>) {
+    println(m.len());
+    println(m.contains_key("a"));
+}
+
+fn main() -> i64 {
+    // A heap string, not a literal: the caller holds a real drop obligation
+    // that every borrow below must leave intact.
+    let owned = "ab".to_upper();
+
+    print_direct(owned);
+    print_without_newline(owned);
+    concat_direct(owned);
+    print_second_param("tag", owned);
+    print_var_param(owned);
+    print_chain_root(owned);
+    print_interpolated(owned);
+    print_twice_then_length(owned);
+
+    // Still the caller's value after eight borrows.
+    println(owned);
+
+    let names: Vec<string> = ["alpha", "beta"];
+    print_vec_param(names);
+
+    let counts: HashMap<string, i64> = {"a": 7};
+    print_map_param(counts);
+
+    print_bytes_param("xyz".to_bytes());
+    0
+}

@@ -774,6 +774,26 @@ run_accept_expect_status "hashmap_managed_key_drop" 0
 # fixture prints correct output, so the stdout diff alone is not the oracle —
 # the exit status is.
 run_accept_expect_stdout "hashmap_borrowed_string_key_ingress"
+# Carrier-general borrowed ingress: a by-value `bytes` parameter entering a
+# HashMap VALUE slot is retained like the string case, and a REASSIGNED
+# parameter (a fresh frame-owned generation) is consumed, not retained.
+run_accept_expect_stdout "collection_borrowed_bytes_reassign_ingress"
+# VecIter string yield binder: consuming uses lower as retain-backed shares
+# (if-conditional map ingress before an abandonment point, match-arm assign,
+# var assign in the loop, break / return exits) with exactly-once release.
+run_accept_expect_stdout "vec_iter_yield_string_share"
+# Negative cells: the retain paths must not blanket-disable the consume
+# authorities. An owned string double-inserted is still a use-after-consume...
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_owned_string_double_insert.hew" \
+  "used after it was consumed" \
+  "hashmap_owned_string_double_insert"
+# ...and a NON-CoW yield binder (Vec<i64> element) conditionally moved across
+# an abandonment point still hits the vec-iter abandonment wall.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_iter_yield_owned_conditional_move.hew" \
+  "conditionally moved VecIter yield across an abandonment point" \
+  "vec_iter_yield_owned_conditional_move"
 # Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \

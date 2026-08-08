@@ -1,0 +1,13 @@
+// Reject fixture (negative cell for the caller-borrowed ingress retain): a
+// LOCALLY-OWNED string consumed by a collection MOVE ingress transfers its
+// count — the second ingress reads a consumed binding and the move checker
+// must reject it. This cell proves the borrowed/yield retain paths did not
+// blanket-disable the ingress consume for frame-owned operands.
+
+fn main() {
+    let s = "dup" + "-key";
+    var m: HashMap<string, i64> = HashMap::new();
+    m.insert(s, 1);
+    m.insert(s, 2);
+    println(f"n={m.len()}");
+}

@@ -24,13 +24,13 @@
 //! | `MapKey` | `FailClosed` | layout-key ABI requires fixed-size Copy `record` keys |
 //! | `MapValue` | `Implemented` | layout-keyed `hew_hashmap_free_layout` value walk |
 //! | `IteratorYield` | `FailClosed` | `VecIter::next()` clones; resources have no semantic clone |
-//! | `CollectionIndexOut` | `FailClosed` | `v[i]`/`Vec::get` clone-out; resources have no semantic clone |
-//! | `TraitObjectPayload` | `FailClosed` | `dyn Trait` storage classifier rejects unclassifiable drops |
+//! | `CollectionIndexOut` | `Implemented` | `v[i]` lowers to the `hew_vec_get_owned` BORROW (never clone-out); `Vec::get`/iteration clone-out stays rejected upstream |
+//! | `TraitObjectPayload` | `Implemented` | vtable slot-0 `drop_in_place` (`DropKind::TraitObject`) runs the payload's close |
 //! | `ActorStateField` | `Implemented` | actor-state classifier (`state_clone.rs`), itself fail-closed |
-//! | `ClosureCapture` | `FailClosed` | capture admission rejects non-flat-copy owners into escaping envs |
+//! | `ClosureCapture` | `FailClosed` | a borrow capture leaves the LOCAL the owner (discharged there); an env-slot owner has no wired close |
 //! | `SuspendFrameSlot` | `Implemented` | suspend-region drop plan (`across_suspend` matrix row) |
 //! | `MachineStatePayload` | `FailClosed` | machine transition/scope drop not yet elaborated |
-//! | `AssignmentOverwrite` | `Implemented` | overwrite release (`emit_local_overwrite_release`) |
+//! | `AssignmentOverwrite` | `Implemented` | rebind is a GENERATION BOUNDARY: the overwritten value is released at the store (`emit_local_overwrite_release`), never inferred from entry-time classification |
 //!
 //! Rows marked `FailClosed` are acceptable landing states, not design goals: a
 //! rejection names the limit to the user; wiring the discharge later flips the
@@ -101,6 +101,8 @@ pub const fn position_release_support(position: ValuePosition) -> ReleaseSupport
         | ValuePosition::MapValue
         | ValuePosition::ActorStateField
         | ValuePosition::SuspendFrameSlot
+        | ValuePosition::CollectionIndexOut
+        | ValuePosition::TraitObjectPayload
         | ValuePosition::AssignmentOverwrite => ReleaseSupport::Implemented,
         ValuePosition::MapKey => ReleaseSupport::FailClosed(
             "a `#[resource]` value cannot be a map key: the layout-key ABI \
@@ -110,16 +112,6 @@ pub const fn position_release_support(position: ValuePosition) -> ReleaseSupport
             "iterating clones each element into an independent owner, but a \
              `#[resource]` value has an affine close contract and no semantic \
              clone",
-        ),
-        ValuePosition::CollectionIndexOut => ReleaseSupport::FailClosed(
-            "indexing clones the element into an independent owner, but a \
-             `#[resource]` value has an affine close contract and no semantic \
-             clone — iterate by consuming, or restructure so the element is \
-             moved out exactly once",
-        ),
-        ValuePosition::TraitObjectPayload => ReleaseSupport::FailClosed(
-            "a `#[resource]` value behind `dyn Trait` has no drop-classifiable \
-             storage yet",
         ),
         ValuePosition::ClosureCapture => ReleaseSupport::FailClosed(
             "capturing a `#[resource]` value into a closure environment is not \

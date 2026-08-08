@@ -10,6 +10,8 @@ fn main() {
     m.insert("bob", 20);
     let ks = m.keys();
     let vs = m.values();
+    let es = m.entries();
     println(ks.len());
     println(vs.len());
+    println(es.len());
 }

@@ -293,6 +293,7 @@ stable = [
   "hew_hashmap_get_layout",
   "hew_hashmap_insert_layout",
   "hew_hashmap_keys_layout",
+  "hew_hashmap_entries_layout",
   "hew_hashmap_len_layout",
   "hew_hashmap_new_with_layout",
   "hew_hashmap_remove_layout",
@@ -2138,6 +2139,14 @@ symbol = "hew_vec_new_with_layout"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free"
+discharge-depth = "deep"
+
+# HashMap.entries clones occupied K/V blobs into a fresh tuple-element Vec.
+[[ownership.contracts]]
+symbol = "hew_hashmap_entries_layout"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
 
 # hew-runtime/src/vec.rs:2320-2341 allocates a plain generic vector.

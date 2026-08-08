@@ -3737,6 +3737,7 @@ pub(crate) fn lower_call_runtime_abi(
         | F::HashMapGetLayout
         | F::HashMapInsertLayout
         | F::HashMapKeysLayout
+        | F::HashMapEntriesLayout
         | F::HashMapLenLayout
         | F::HashMapNew
         | F::HashMapNewWithLayout

@@ -1,0 +1,49 @@
+//! HashMap.entries() owns an eager, order-independent snapshot of exact pairs.
+//!
+import std::testing;
+
+fn owned_snapshot() -> Vec<(string, string)> {
+    var m: HashMap<string, string> = HashMap::new();
+    m.insert("one", "first");
+    m.insert("two", "second");
+    m.entries()
+}
+
+fn scalar_set() -> i64 {
+    var scalar: HashMap<string, i64> = HashMap::new();
+    scalar.insert("alpha", 11);
+    scalar.insert("beta", 22);
+    scalar.insert("gamma", 33);
+    let scalar_entries = scalar.entries();
+    var scalar_seen: i64 = 0;
+    for pair in scalar_entries {
+        if pair.0 == "alpha" && pair.1 == 11 { scalar_seen = scalar_seen | 1; }
+        if pair.0 == "beta" && pair.1 == 22 { scalar_seen = scalar_seen | 2; }
+        if pair.0 == "gamma" && pair.1 == 33 { scalar_seen = scalar_seen | 4; }
+    }
+    scalar_seen
+}
+
+fn owned_set() -> i64 {
+    // `owned_snapshot` drops its source map before returning. Both tuple fields
+    // remain readable and are dropped exactly once with the returned Vec.
+    let owned_entries = owned_snapshot();
+    var owned_seen: i64 = 0;
+    for pair in owned_entries {
+        if pair.0 == "one" && pair.1 == "first" { owned_seen = owned_seen | 1; }
+        if pair.0 == "two" && pair.1 == "second" { owned_seen = owned_seen | 2; }
+    }
+    owned_seen
+}
+
+fn empty_len() -> i64 {
+    let empty: HashMap<string, string> = HashMap::new();
+    empty.entries().len()
+}
+
+#[test]
+fn test_hashmap_entries_exact_sets_and_empty_map() {
+    testing.assert_eq(scalar_set(), 7);
+    testing.assert_eq(owned_set(), 3);
+    testing.assert_eq(empty_len(), 0);
+}

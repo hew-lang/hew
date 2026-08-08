@@ -144,13 +144,14 @@ pub(super) fn elaborate(
     let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
+        let fresh_owner_dest_locals = builder.fresh_owner_dest_locals();
         let mut derived = derive_cow_sole_owner(
             &checked.blocks,
             &builder.suspend_kinds,
             &owned_locals_snapshot,
             &builder.binding_locals,
             &builder.match_project_consumed_binder_locals,
-            &builder.fresh_variant_payload_binder_locals,
+            &fresh_owner_dest_locals,
             &builder.locals,
             &builder.borrowed_string_param_locals,
             &builder.parameter_locals,

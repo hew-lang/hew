@@ -589,6 +589,9 @@ fn render_instr(instr: &Instr) -> String {
             StringRetainCondition::Always => {
                 format!("string.retain {}", render_place(value))
             }
+            StringRetainCondition::FreshShare => {
+                format!("string.retain_fresh_share {}", render_place(value))
+            }
             StringRetainCondition::AggregateBorrowedIngress => {
                 format!("string.retain_aggregate {}", render_place(value))
             }

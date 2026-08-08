@@ -326,13 +326,14 @@ pub(super) fn aggregate_borrowed_ingress_clone_sites(
         .union(&builder.typed_borrowed_string_publication_locals)
         .copied()
         .collect();
+    let fresh_owner_dest_locals = builder.fresh_owner_dest_locals();
     derive_cow_sole_owner(
         blocks,
         &builder.suspend_kinds,
         &owned_locals,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
-        &builder.fresh_variant_payload_binder_locals,
+        &fresh_owner_dest_locals,
         &builder.locals,
         &borrowed_string_locals,
         &builder.parameter_locals,
@@ -542,6 +543,37 @@ pub(super) fn corroborated_retained_string_move_sites(
         .collect();
     let mut sites = HashSet::new();
     for block in blocks {
+        // A `FreshShare`-marked retain + move pair is admitted even on a
+        // cyclic block with a multiply-written destination: the lowering
+        // emits the retain INLINE immediately before the share's `Move`, so
+        // it re-executes for every dynamic generation, and each destination
+        // generation's release is owned by the var-overwrite / scope-exit
+        // machinery. The `Always` splice below keeps the strict one-static-
+        // generation proof because its single post-pass retain cannot cover
+        // a re-executing store.
+        for move_index in 1..block.instructions.len() {
+            if let (
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::FreshShare,
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src,
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            ) {
+                if *value == *src
+                    && base_local(*src).is_some_and(|source| source != *dest)
+                    && string_place_is_typed(*src, local_tys)
+                    && string_place_is_typed(Place::Local(*dest), local_tys)
+                {
+                    sites.insert((block.id, move_index));
+                }
+            }
+        }
         if cyclic_blocks.contains(&block.id) {
             continue;
         }
@@ -2243,6 +2275,20 @@ pub(super) fn derive_cow_sole_owner(
             let Some(&dest_binding) = candidate_local_to_binding.get(dest_local) else {
                 continue;
             };
+            // An inline `FreshShare` retain already minted this move's
+            // co-owner at lowering time (the yield-binder share); a second
+            // post-pass retain here would strand one count per execution.
+            if instr_index > 0
+                && matches!(
+                    &block.instructions[instr_index - 1],
+                    Instr::StringRetain {
+                        value,
+                        condition: StringRetainCondition::FreshShare,
+                    } if *value == *src
+                )
+            {
+                continue;
+            }
             if let Some(&root) = alias_of.get(&src_local) {
                 if handoff_move_sites.contains(&(block.id, instr_index)) {
                     continue;
@@ -4275,13 +4321,14 @@ pub(super) fn finalize_string_ownership(
         .union(&builder.typed_borrowed_string_publication_locals)
         .copied()
         .collect();
+    let fresh_owner_dest_locals = builder.fresh_owner_dest_locals();
     let mut derivation = derive_cow_sole_owner(
         &raw.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
-        &builder.fresh_variant_payload_binder_locals,
+        &fresh_owner_dest_locals,
         &builder.locals,
         &borrowed_string_locals,
         &builder.parameter_locals,

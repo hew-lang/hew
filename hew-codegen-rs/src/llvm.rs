@@ -13897,6 +13897,11 @@ fn lower_instruction_with_cancel_drops(
                 StringRetainCondition::Always => {
                     retain_string_value(fn_ctx, *value, "mir_share")?;
                 }
+                // FreshShare is a structural MIR marker; at runtime it is the
+                // same unconditional +1 as `Always`.
+                StringRetainCondition::FreshShare => {
+                    retain_string_value(fn_ctx, *value, "mir_share")?;
+                }
                 StringRetainCondition::AggregateBorrowedIngress => {
                     retain_strings_in_borrowed_aggregate(fn_ctx, *value, "mir_aggregate_share")?;
                 }

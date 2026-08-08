@@ -4234,6 +4234,79 @@ impl Builder {
         true
     }
 
+    /// The union of every binder-dest local class that receives a FRESH,
+    /// independently-owned value out of a variant slot: the moved-out
+    /// call-carrier payload binders (`fresh_variant_payload_binder_locals`)
+    /// and the yield/recv payload binders (`yield_binder_locals`). Both
+    /// classes answer the projection-alias question the same way — the dest
+    /// is a genuine owner, not an interior alias of a still-live aggregate —
+    /// so the `CoW` sole-owner derivation exempts both from its taint seed.
+    pub(crate) fn fresh_owner_dest_locals(&self) -> HashSet<u32> {
+        self.fresh_variant_payload_binder_locals
+            .union(&self.yield_binder_locals)
+            .copied()
+            .collect()
+    }
+
+    /// True when `place` is the slot of a yield/recv payload binder whose
+    /// consuming body is currently being lowered (`active_generator_yield_values`
+    /// holds an entry between binder registration and body end).
+    pub(crate) fn active_yield_binder_place(&self, place: Place) -> bool {
+        self.active_generator_yield_values
+            .iter()
+            .any(|(_, entry_place, ..)| *entry_place == place)
+    }
+
+    /// Retain a `CoW`-carrier (`string`/`bytes`) ACTIVE yield-binder operand
+    /// entering a `HashMap`/`HashSet` MOVE ingress. Returns `true` when the
+    /// retain was emitted and the caller must NOT record a consume; the
+    /// retained local is pushed so the ingress `Call` terminator can be
+    /// registered in `yield_share_term_exempt`.
+    ///
+    /// The binder class answers "which frame owns this binding" differently
+    /// from both an owned local and a borrowed parameter: the VALUE is
+    /// frame-owned (a fresh per-iteration count from the clone-out / recv),
+    /// but its release authority is the per-iteration BODY-END drop, not the
+    /// function-scope LIFO. A static `Consume` here suppresses no local
+    /// scope-exit drop; what it does instead is poison the dataflow —
+    /// `MaybeConsumed` at any abandonment exit inside the body region walls
+    /// the program off behind the `vec_iter_yield_abandonment` NYI, and the
+    /// body-end drop is separately suppressed by the escape scan, leaking the
+    /// binder's count on the not-taken path.
+    ///
+    /// The retain pairing keeps every count balanced with no dataflow
+    /// ambiguity: clone `+1` (binder), retain `+1` (collection's own count),
+    /// body-end drop `-1`, collection teardown `-1`. The binder stays `Live`
+    /// on every path, so the abandonment analysis has nothing conditional to
+    /// reject and the cancel/panic exit drops keep firing.
+    pub(crate) fn retain_yield_binder_cow_collection_ingress(
+        &mut self,
+        operand: &HirExpr,
+        place: Place,
+        retained_locals: &mut Vec<u32>,
+    ) -> bool {
+        let ty = self.subst_ty(&operand.ty);
+        if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            return false;
+        }
+        let Some(local) = base_local(place) else {
+            return false;
+        };
+        if !self.active_yield_binder_place(place) {
+            return false;
+        }
+        match ty {
+            ResolvedTy::String => self.push_instr(Instr::StringRetain {
+                value: place,
+                condition: crate::model::StringRetainCondition::Always,
+            }),
+            ResolvedTy::Bytes => self.push_instr(Instr::BytesRetain { value: place }),
+            _ => unreachable!("gated on String | Bytes above"),
+        }
+        retained_locals.push(local);
+        true
+    }
+
     /// Reassignment is a generation boundary for a caller-borrowed parameter
     /// slot: after `key = <rhs>` the local holds a fresh value this FRAME
     /// owns, so every "this slot holds the caller's value" registry must stop

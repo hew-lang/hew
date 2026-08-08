@@ -474,12 +474,14 @@ jobs:
       # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
       # — this lane did not, so its WASI coverage never actually ran.
       - name: Install WASI prerequisites
-        shell: pwsh
+        shell: bash
         run: |
-          winget install --id BytecodeAlliance.Wasmtime -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-          $wasmtimeBin = Join-Path $env:USERPROFILE ".wasmtime\bin"
-          if (Test-Path $wasmtimeBin) { Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin }
-          $env:PATH = "$wasmtimeBin;$env:PATH"
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          # GITHUB_PATH needs the Windows-style path so the non-bash steps that
+          # follow (cargo nextest) resolve wasmtime as well.
+          cygpath -w "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.wasmtime/bin:$PATH"
+          command -v wasmtime
           wasmtime --version
 
       - name: Run Rust workspace tests

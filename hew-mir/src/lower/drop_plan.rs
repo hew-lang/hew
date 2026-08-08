@@ -3,8 +3,8 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, blocks_reachable_from, check_duplex_split_state,
-    collection_borrow_getter_alias_locals, compute_collection_interior_alias_taint,
-    compute_projection_alias_taint, dataflow,
+    close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
+    compute_collection_interior_alias_taint, compute_projection_alias_taint, dataflow,
     derive_borrowed_builtin_handle_projection_alias_bindings, derive_bytes_actor_transfer_blocks,
     derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
     derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
@@ -794,7 +794,48 @@ pub(super) fn elaborate(
     // CFG state filter select the exact owning exits.  `BodyEndReleased`,
     // `ScopeReleased`, and interior aliases stay excluded by this view.
     let owned_locals_exit_candidates = builder.owned_locals_exit_candidates();
-    let borrow_getter_aliases = collection_borrow_getter_alias_locals(&checked.blocks);
+    // Borrowed-element aliases of a live collection, SCOPED to close-obligated
+    // element types: their LIFO drop is suppressed (the collection is the sole
+    // discharge authority), which is sound only under the use validation
+    // below. Nested-collection handle borrows keep their pre-existing
+    // exclusion machinery and are deliberately NOT in this set.
+    let mut borrow_getter_aliases = collection_borrow_getter_alias_locals(&checked.blocks);
+    borrow_getter_aliases.retain(|local| {
+        builder.locals.get(*local as usize).is_some_and(|ty| {
+            crate::model::ty_drop_obligation(
+                ty,
+                &crate::model::MirHeapLayouts {
+                    record_field_orders: &builder.record_field_orders,
+                    enum_layouts: &builder.enum_layouts,
+                },
+                builder.type_classes.lifecycle_registry(),
+            )
+            .needs_close
+        })
+    });
+    // Fail-closed floor for the suppression: every use of a close-obligated
+    // borrow must be a proven-safe read. An escape (return/store), a consume
+    // (`e.close()`, `w.push(e)`, any call argument), or a reassignment refuses
+    // the function -- suppression without this proof converted a silent
+    // double-close into a use-after-close (the alias outliving the
+    // collection's release) and stays structurally unreachable only by
+    // rejecting the unprovable shapes.
+    for violation in close_obligated_borrow_alias_violations(
+        &checked.blocks,
+        &borrow_getter_aliases,
+        &tracked_obligation_locals(builder),
+    ) {
+        elaboration_diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::DropPlanUndetermined {
+                block: ENTRY_BLOCK_ID,
+                reason: violation,
+            },
+            note: "a borrowed collection element has exactly one release authority (the \
+ collection); read fields through it, or restructure so the element is \
+ owned outside the collection"
+                .to_string(),
+        });
+    }
     let lifo_drops = build_lifo_drops(
         &owned_locals_exit_candidates,
         &builder.binding_locals,

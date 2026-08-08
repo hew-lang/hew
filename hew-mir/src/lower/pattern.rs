@@ -1525,11 +1525,59 @@ impl Builder {
             });
             return;
         }
-        // User record: release every owned field in declaration order, the same
-        // per-field route the functional-update override-drop takes. Skip the
-        // whole release unless EVERY owned field has a known leaf symbol -- a
-        // nested record/enum field has none, and a partial free would leak the
-        // rest while risking a wrong-ABI release.
+        // A record or tuple whose OLD generation transitively carries a close
+        // obligation (`Holder { tok: Tok }`, `(Tok, i64)`): release the WHOLE
+        // old value through the same in-place walk its scope-exit drop uses
+        // (`__hew_record_drop_inplace_<R>` is resource-aware close-then-
+        // teardown; the aggregate-recursive walk routes a resource element
+        // through it). The inline `InPlace` drop typed-zeroes the slot after
+        // the walk, and the immediately following `Move` installs the fresh
+        // generation -- so the binding's own scope-exit drop still releases
+        // generation 2, and no per-field load/field-drop ever addresses the
+        // root (which the sole-owner provers would read as a partial free and
+        // answer by excluding the scope-exit drop: the leak this arm replaces).
+        // The wrong-axis per-field filter previously skipped a scalar-field
+        // resource entirely, leaking one resource per reassignment.
+        let carries_close = crate::model::ty_drop_obligation(
+            &ty,
+            &crate::model::MirHeapLayouts {
+                record_field_orders: &self.record_field_orders,
+                enum_layouts: &self.enum_layouts,
+            },
+            self.type_classes.lifecycle_registry(),
+        )
+        .needs_close;
+        if carries_close && user_record_layout_key(&ty).is_some() {
+            if self.field_drop_in_place_admissible(&ty) {
+                self.push_instr(Instr::Drop {
+                    place: dest,
+                    ty,
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Record,
+                    )),
+                });
+            }
+            // Inadmissible shapes keep the fail-open skip (leak, never a
+            // partial or wrong-ABI free).
+            return;
+        }
+        if carries_close && matches!(ty, ResolvedTy::Tuple(_)) {
+            if self.field_drop_in_place_admissible(&ty) {
+                self.push_instr(Instr::Drop {
+                    place: dest,
+                    ty,
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::AggregateRecursive,
+                    )),
+                });
+            }
+            return;
+        }
+        // User record with heap-only obligations: release every owned field in
+        // declaration order, the same per-field route the functional-update
+        // override-drop takes. Skip the whole release unless EVERY owned field
+        // has a known leaf symbol -- a nested record/enum field has none, and a
+        // partial free would leak the rest while risking a wrong-ABI release.
         if user_record_layout_key(&ty).is_some() {
             let owned = self.project_record_owned_field_list(&ty);
             if owned.iter().any(|(_, fty)| {

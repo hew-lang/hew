@@ -1291,3 +1291,30 @@ fn machine_state_without_resource_payload_is_admitted() {
         "a scalar machine state payload must stay admitted: {errors:?}"
     );
 }
+
+#[test]
+fn machine_state_phantom_generic_resource_arg_is_admitted() {
+    // `Phantom<T>` never stores `T`; a machine state holding `Phantom<Tok>`
+    // carries no close obligation and must stay admitted (the raw-argument
+    // walk applies only to builtin/unregistered generics).
+    let (errors, _) = parse_and_check(concat!(
+        "#[resource]\n",
+        "type Tok { id: i64 }\n",
+        "impl Tok { fn close(self) { } }\n",
+        "type Phantom<T> { id: i64 }\n",
+        "machine Gate {\n",
+        "    events { Open; }\n",
+        "    state Closed;\n",
+        "    state Opened { p: Phantom<Tok>; }\n",
+        "    on Open: Closed => Opened { Opened { p: Phantom<Tok> { id: 1 } } }\n",
+        "    default { state }\n",
+        "}\n",
+        "fn main() { var h = Closed; h.step(Open); }\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.message.contains("machine `Gate` state")),
+        "a phantom generic argument must not be treated as stored: {errors:?}"
+    );
+}

@@ -2020,15 +2020,29 @@ fn ty_drop_obligation_inner(
                 needs_close: builtin.is_none() && closes.named_is_closeable_resource(name),
             };
             // 1. Type arguments first (fast path: `Option<string>`, etc.).
+            //
+            // The HEAP bits union unconditionally (the long-standing
+            // over-approximation: a generic argument is assumed reachable).
+            // The CLOSE bit from raw arguments applies ONLY when no registered
+            // layout resolves below: a registered record/enum's instantiated
+            // members are the authoritative storage inventory, so a PHANTOM
+            // argument (`Phantom<Tok>` where `type Phantom<T> { id: i64 }`
+            // never stores `T`) contributes no close obligation. An
+            // unregistered/builtin generic keeps the conservative argument
+            // union (over-obligation leaks/rejects, never double-frees).
+            let mut args_fact = DropObligation::NONE;
             for arg in args {
-                ownership =
-                    ownership.union(ty_drop_obligation_inner(arg, layouts, closes, visited));
+                args_fact =
+                    args_fact.union(ty_drop_obligation_inner(arg, layouts, closes, visited));
             }
+            ownership.heap = ownership.heap.union(args_fact.heap);
+            let mut layout_resolved = false;
             // 2. Record fields (DIV-1: a bare nested user-record carrying a heap
             //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
             //    walker answered `false` for because it never looked up record
             //    layouts). The consumer's adapter substitutes the field types.
             if let Some(fields) = layouts.record_field_tys(name, args, *builtin) {
+                layout_resolved = true;
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
                     // Recursive value type: the checker rejects these; force the
@@ -2045,6 +2059,7 @@ fn ty_drop_obligation_inner(
             //    fields in generic enums (`Envelope<i64>` where a separate
             //    `Message(string)` variant is unrelated to the type parameter).
             if let Some(variants) = layouts.enum_variant_field_tys(name, args) {
+                layout_resolved = true;
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
                     return ownership.union(DropObligation::HEAP);
@@ -2056,6 +2071,9 @@ fn ty_drop_obligation_inner(
                     }
                 }
                 visited.remove(&key);
+            }
+            if !layout_resolved {
+                ownership.needs_close |= args_fact.needs_close;
             }
             ownership
         }
@@ -8052,6 +8070,41 @@ mod heap_owning_tests {
         assert!(!ty_carries_drop_obligation_mir(
             &point,
             &point_orders,
+            &[],
+            &closes
+        ));
+    }
+
+    #[test]
+    fn phantom_generic_argument_contributes_no_close_obligation() {
+        // `type Phantom<T> { id: i64 }` never stores `T`: its registered
+        // instantiated fields are the storage inventory, so `Phantom<Tok>`
+        // carries NO close obligation. A builtin/unregistered generic keeps
+        // the conservative raw-argument union (`Vec<Tok>` stays obligated).
+        let mut orders = HashMap::new();
+        orders.insert(
+            "Phantom$$Tok".to_string(),
+            vec![("id".to_string(), ResolvedTy::I64)],
+        );
+        orders.insert("Tok".to_string(), vec![("id".to_string(), ResolvedTy::I64)]);
+        let closes = tok_lifecycle_registry();
+        let tok = ResolvedTy::named_user("Tok", vec![]);
+        let phantom = ResolvedTy::named_user("Phantom", vec![tok.clone()]);
+        assert!(!ty_carries_drop_obligation_mir(
+            &phantom,
+            &orders,
+            &[],
+            &closes
+        ));
+        let vec_tok = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![tok],
+            builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
+        };
+        assert!(ty_carries_drop_obligation_mir(
+            &vec_tok,
+            &orders,
             &[],
             &closes
         ));

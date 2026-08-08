@@ -1509,14 +1509,15 @@ impl Checker {
                 if self.is_type_param_in_scope(name) {
                     return None;
                 }
-                if !args.is_empty()
-                    && self
-                        .resource_marker_blocker_in_args(args, visiting)
-                        .is_some()
-                {
+                // A registered type definition's INSTANTIATED members are the
+                // authoritative storage inventory: a phantom generic argument
+                // (`Phantom<Tok>` where `T` is never stored) contributes
+                // nothing. Only a builtin/unregistered generic (Vec / Option /
+                // HashMap / ...) falls back to the conservative raw-argument
+                // walk.
+                let Some(type_def) = self.lookup_type_def(name) else {
                     return self.resource_marker_blocker_in_args(args, visiting);
-                }
-                let type_def = self.lookup_type_def(name)?;
+                };
                 let visit_key = type_def.name.clone();
                 if !visiting.insert(visit_key) {
                     return None;

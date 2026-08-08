@@ -1040,6 +1040,7 @@ fn ordinary_unique_same_block_forwarding_remains_admitted() {
         &[tuple_ty, ResolvedTy::String, ResolvedTy::String],
         &HashMap::new(),
         &[],
+        &hew_hir::LifecycleRegistry::default(),
         &[],
         &HashMap::new(),
     );

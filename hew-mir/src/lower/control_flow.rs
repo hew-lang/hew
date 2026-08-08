@@ -832,7 +832,12 @@ impl Builder {
             return Ok(None);
         };
         let ty = self.subst_ty(&scrutinee.ty);
-        if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
+        if !ty_is_heap_owning_enum_composite(
+            &ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+            self.type_classes.lifecycle_registry(),
+        ) {
             return Ok(None);
         }
 

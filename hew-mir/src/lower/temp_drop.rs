@@ -3484,6 +3484,60 @@ mod aggregate_projection_transfer_dest_tests {
 /// excluding it here changes nothing — the string exclusion belongs only to the
 /// string provers (`derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`),
 /// which pass the real `locals`.
+/// Locals whose value came from a BORROWING element getter — a runtime callee
+/// whose ownership contract `returns_receiver_interior_alias` (`hew_vec_get_owned`
+/// / `hew_vec_get_ptr`), propagated through whole-value `Move`s to a fixpoint.
+///
+/// Deliberately NARROWER than [`compute_collection_interior_alias_taint`]: no
+/// field-load / projection seeds, ONLY getter dests — so it can gate the LIFO
+/// drop of an `xs[i]` binding (`let e = v[0]` over a close-obligated element is
+/// a borrow; the collection remains the sole close authority and this binding
+/// must not fire a second one) without touching match-binder drop semantics.
+#[must_use]
+pub(super) fn collection_borrow_getter_alias_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut tainted: HashSet<u32> = HashSet::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if crate::runtime_symbols::callee_ownership_contract(call.symbol())
+                    .returns_receiver_interior_alias()
+                {
+                    if let Some(local) = call.dest().and_then(base_local) {
+                        tainted.insert(local);
+                    }
+                }
+            }
+        }
+        if let Terminator::Call { callee, dest, .. } = &block.terminator {
+            if crate::runtime_symbols::callee_ownership_contract(callee)
+                .returns_receiver_interior_alias()
+            {
+                if let Some(local) = dest.and_then(base_local) {
+                    tainted.insert(local);
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if tainted.contains(&sl) && tainted.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
 #[must_use]
 pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
     let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), &[]);

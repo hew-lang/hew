@@ -1435,8 +1435,13 @@ impl Builder {
             return None;
         }
         let ty = self.subst_ty(&expr.ty);
-        ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
-            .then_some(ty)
+        ty_is_heap_owning_enum_composite(
+            &ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+            self.type_classes.lifecycle_registry(),
+        )
+        .then_some(ty)
     }
     pub(crate) fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
         let typed_ty = self.subst_ty(&expr.ty);
@@ -1444,6 +1449,7 @@ impl Builder {
             &typed_ty,
             &self.record_field_orders,
             &self.enum_layouts,
+            self.type_classes.lifecycle_registry(),
         ) {
             return;
         }
@@ -4127,6 +4133,7 @@ impl Builder {
                 &ty,
                 &self.record_field_orders,
                 &self.enum_layouts,
+                self.type_classes.lifecycle_registry(),
             )
     }
 

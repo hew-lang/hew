@@ -1587,6 +1587,7 @@ impl Builder {
             &ty,
             &self.record_field_orders,
             &self.enum_layouts,
+            self.type_classes.lifecycle_registry(),
         ) {
             return;
         }
@@ -4045,6 +4046,7 @@ impl Builder {
                             &self.subst_ty(&scrutinee.ty),
                             &self.record_field_orders,
                             &self.enum_layouts,
+                            self.type_classes.lifecycle_registry(),
                         ))
                     .then(|| {
                         u32::try_from(*index).ok().map(|field| {

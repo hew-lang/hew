@@ -1141,6 +1141,20 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
 
+# A `#[resource]` carried through a machine `reenter` is MOVED into the state
+# the body builds, so the re-entry closes nothing and the handle closes once
+# when the machine value's scope ends. A regression that releases the source
+# state's moved-out field prints a CLOSE between the `reentered` lines and then
+# re-closes a zeroed handle on the next step.
+run_accept_expect_stdout "machine_reenter_resource_closes_once"
+
+# A machine value that ends its scope holding a `#[resource]` closes it exactly
+# once, tag-aware: held-live closes at the exit, stepped-back-to-Idle closes at
+# the transition and not again, early return closes on that path. A regression
+# that drops the machine class prints no CLOSE at all (the silent leak); one
+# that releases tag-blind prints a second CLOSE after `release`.
+run_accept_expect_stdout "machine_scope_exit_resource_closes"
+
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
 # from the shared MIR->LLVM lower; this gate pins that the wasm target

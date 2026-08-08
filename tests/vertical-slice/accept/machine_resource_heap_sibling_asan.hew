@@ -1,0 +1,67 @@
+// Leak-oracle shape for the machine payload release: a `#[resource]` handle
+// sitting BESIDE a heap-owning `string` in the same machine state, exercised
+// through a reenter that carries both through, a transition that drops both,
+// and a scope exit that holds both live.
+//
+// The mixed payload is the shape that matters: the state's release must free
+// ALL of its leaves and each exactly once. Releasing on the resource leaf and
+// skipping the string leaks the buffer (LSan); releasing the source state's
+// leaves after the reenter body moved them underflows the string refcount and
+// double-closes the handle (ASan sees the heap-use-after-free; a plain run
+// only prints a garbage fd).
+//
+// Exits 0, must stay ASan/LSan-clean.
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl Handle {
+    fn close(self) {
+        println(f"CLOSE fd={self.fd}");
+    }
+}
+
+machine Session {
+    events {
+        Open { fd: i64; }
+        Touch;
+        Shut;
+    }
+
+    state Idle;
+    state Active { h: Handle; label: string; }
+
+    on Open(fd): Idle => Active {
+        Active { h: Handle { fd: fd }, label: f"conn-{fd}" }
+    }
+    on Touch: Active => Active reenter {
+        // Carries BOTH leaves through: neither may be released here.
+        Active { h: self.h, label: self.label }
+    }
+    on Shut: Active => Idle {
+        // Leaves the state carrying nothing forward: both leaves release here.
+        Idle
+    }
+
+    default { state }
+}
+
+fn churn(shut: bool) {
+    var s = Session::Idle;
+    s.step(SessionEvent::Open { fd: 7 });
+    for i in 0 .. 4 {
+        s.step(SessionEvent::Touch);
+    }
+    if shut {
+        s.step(SessionEvent::Shut);
+    }
+    println(s.state_name());
+}
+
+fn main() {
+    for i in 0 .. 3 {
+        churn(true);
+        churn(false);
+    }
+}

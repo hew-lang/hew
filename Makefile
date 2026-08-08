@@ -800,11 +800,11 @@ test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 		-p hew-pkg
 	$(MAKE) test-opaque-resource-lifecycle-matrix
 
-test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
+test-opaque-resource-lifecycle-matrix: structural-lint-bootstrap-install wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
-test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
+test-opaque-resource-lifecycle-matrix-external: structural-lint-bootstrap-install wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 

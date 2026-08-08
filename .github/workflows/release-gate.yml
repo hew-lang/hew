@@ -474,19 +474,22 @@ jobs:
       # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
       # — this lane did not, so its WASI coverage never actually ran.
       - name: Install WASI prerequisites
-        shell: bash
+        shell: pwsh
         run: |
-          # The installer edits a shell profile after extracting the binaries
-          # and exits non-zero when none exists; the runner has no ~/.profile,
-          # so create it. The PATH that matters for later steps is GITHUB_PATH.
-          touch "$HOME/.profile"
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          # GITHUB_PATH needs the Windows-style path so the non-bash steps that
-          # follow (cargo nextest) resolve wasmtime as well.
-          cygpath -w "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.wasmtime/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
+          # Unpack the published archive rather than using the convenience
+          # installer: the installer insists on editing a shell profile and
+          # fails the step even after extracting successfully. PATH for the
+          # later steps comes from GITHUB_PATH.
+          $version = "v47.0.3"
+          $dest = Join-Path $env:RUNNER_TEMP "wasmtime"
+          $zip = Join-Path $env:RUNNER_TEMP "wasmtime.zip"
+          $url = "https://github.com/bytecodealliance/wasmtime/releases/download/$version/wasmtime-$version-x86_64-windows.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $bin = (Get-ChildItem -Path $dest -Filter wasmtime.exe -Recurse | Select-Object -First 1).DirectoryName
+          if (-not $bin) { throw "wasmtime.exe not found under $dest" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
         run: >-

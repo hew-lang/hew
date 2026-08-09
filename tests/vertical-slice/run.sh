@@ -42,7 +42,8 @@ stdout_output="${ROOT}/.tmp/vertical-slice.stdout"
 stderr_output="${ROOT}/.tmp/vertical-slice.stderr"
 old_verb_output="${ROOT}/.tmp/vertical-slice-remote-pid-old-verb.hew"
 node_lookup_identity="/tmp/hew-cap13-node-lookup-send.key"
-trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}" "${node_lookup_identity}" "${node_lookup_identity}.hew-state"' EXIT
+identity_aggregates_identity="/tmp/hew-cap13-identity-aggregates.key"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}" "${node_lookup_identity}" "${node_lookup_identity}.hew-state" "${identity_aggregates_identity}" "${identity_aggregates_identity}.hew-state"' EXIT
 
 compile_accept() {
   local fixture="$1"
@@ -4049,6 +4050,7 @@ run_accept_expect_status "node_lookup_send" 0
 
 # Accept: compiler-owned identity aggregates project, compare, hash, display,
 # and round-trip through Node::lookup without scalar reinterpretation.
+rm -f "${identity_aggregates_identity}" "${identity_aggregates_identity}.hew-state"
 run_accept_expect_status "identity_aggregates" 0
 
 # A640/S3: compile-time Serializable floor for RemotePid<T>::send.

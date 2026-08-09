@@ -128,7 +128,10 @@ fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Resu
 
     let mut lock = open_wasi_bootstrap_lock(target_dir)?;
     let _guard = lock.write().map_err(|error| {
-        format!("failed to lock WASI bootstrap in {}: {error}", target_dir.display())
+        format!(
+            "failed to lock WASI bootstrap in {}: {error}",
+            target_dir.display()
+        )
     })?;
 
     // Re-check after acquiring the lock: a sibling may have built while we waited.

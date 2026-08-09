@@ -2217,6 +2217,9 @@ struct ObligationCtx<'a> {
     /// These are shares, not transfers: the source keeps its obligation and
     /// the defining move mints an independently retained destination owner.
     retained_move_sites: &'a HashSet<(u32, usize)>,
+    /// Empty COW literals inserted immediately after an aggregate ownership
+    /// handoff to clear the moved-from publication slot.
+    cow_handoff_commit_sites: &'a HashSet<(u32, usize)>,
 }
 
 impl ObligationCtx<'_> {
@@ -2386,6 +2389,35 @@ fn collect_retained_move_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
     sites
 }
 
+fn collect_cow_handoff_commit_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
+    let mut sites = HashSet::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let value = match instruction {
+                Instr::StringLit { bytes, dest } | Instr::BytesLit { bytes, dest }
+                    if bytes.is_empty() =>
+                {
+                    *dest
+                }
+                _ => continue,
+            };
+            let handoff = block.instructions[..index].iter().rev().find(|candidate| {
+                !matches!(
+                    candidate,
+                    Instr::StringLit { bytes, .. } | Instr::BytesLit { bytes, .. }
+                        if bytes.is_empty()
+                )
+            });
+            if handoff.is_some_and(|handoff| {
+                super::temp_drop::string_share_sink_places(handoff).contains(&value)
+            }) {
+                sites.insert((block.id, index));
+            }
+        }
+    }
+    sites
+}
+
 /// Forward transfer of one instruction: discharge events first, then mint
 /// (whole-slot write) resets.
 #[allow(
@@ -2466,6 +2498,16 @@ fn apply_balance_instr(
                     // manufacture a phantom over-release; a later real defining
                     // write resets the obligation to a fresh `minted()`, so a
                     // genuine double-free on the next generation is still caught.
+                    entry.neutralized = PayloadNeutralized::Yes;
+                }
+            }
+        }
+        Instr::BytesLit { bytes, dest }
+            if bytes.is_empty() && cx.cow_handoff_commit_sites.contains(&(block, instr_index)) =>
+        {
+            if let Some(root) = cx.tracked_root(*dest) {
+                if let Some(entry) = state.get_mut(&root) {
+                    entry.confirm_transfer_discharge();
                     entry.neutralized = PayloadNeutralized::Yes;
                 }
             }
@@ -2695,7 +2737,10 @@ fn apply_balance_instr(
         // guarded no-op and therefore it never mints a heap obligation. Empty
         // literal writes over an already-minted slot are handled above as the
         // aggregate/capture transfer commit marker.
-        if matches!(instr, Instr::StringLit { dest, .. } if *dest == write) {
+        if matches!(instr, Instr::StringLit { dest, .. } if *dest == write)
+            || (cx.cow_handoff_commit_sites.contains(&(block, instr_index))
+                && matches!(instr, Instr::BytesLit { dest, .. } if *dest == write))
+        {
             continue;
         }
         if let Some(local) = mint_target_local(write) {
@@ -3081,6 +3126,7 @@ fn validate_obligation_balance_capped(
 
     let alias_to = collect_payload_alias_map(blocks);
     let retained_move_sites = collect_retained_move_sites(blocks);
+    let cow_handoff_commit_sites = collect_cow_handoff_commit_sites(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder
     // is not an independent obligation.
     let mut tracked = tracked_in.clone();
@@ -3169,6 +3215,7 @@ fn validate_obligation_balance_capped(
         alias_to: &alias_to,
         parameter_locals,
         retained_move_sites: &retained_move_sites,
+        cow_handoff_commit_sites: &cow_handoff_commit_sites,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a

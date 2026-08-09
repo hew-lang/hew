@@ -6157,3 +6157,71 @@ fn check_supervisor_init_arg_non_bitcopy_evasions_rejected() {
         "diagnostic must describe the init-closure model; got: {combined}"
     );
 }
+
+#[test]
+fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("suspended_actor_state_handoff.hew");
+    std::fs::write(
+        &source,
+        "#[resource]\n\
+         #[opaque]\n\
+         type Marker {}\n\
+         impl Marker {\n\
+         \x20   fn close(self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
+         }\n\
+         extern \"C\" {\n\
+         \x20   fn hew_deque_new() -> Marker;\n\
+         \x20   fn hew_deque_free(consume marker: Marker);\n\
+         \x20   fn hew_actor_self_stop();\n\
+         }\n\
+         actor Child {\n\
+         \x20   let label: string;\n\
+         \x20   let marker: Marker;\n\
+         \x20   receive fn stop() { unsafe { hew_actor_self_stop() }; }\n\
+         }\n\
+         actor Maker {\n\
+         \x20   receive fn go() {\n\
+         \x20       var i: i64 = 0;\n\
+         \x20       while i < 3 {\n\
+         \x20           sleep(1ms);\n\
+         \x20           let label = f\"child-{i}\";\n\
+         \x20           let child = spawn Child(\n\
+         \x20               label: label.clone(),\n\
+         \x20               marker: unsafe { hew_deque_new() },\n\
+         \x20           );\n\
+         \x20           child.stop();\n\
+         \x20           i = i + 1;\n\
+         \x20       }\n\
+         \x20       println(\"maker-done\");\n\
+         \x20   }\n\
+         }\n\
+         fn main() {\n\
+         \x20   let maker = spawn Maker;\n\
+         \x20   maker.go();\n\
+         \x20   sleep(200ms);\n\
+         }\n",
+    )
+    .expect("write suspended actor state handoff fixture");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "suspended actor state handoff must run cleanly; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.lines().filter(|line| *line == "closed").count(),
+        3,
+        "every transferred child state must close exactly once; stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout.lines().filter(|line| *line == "maker-done").count(),
+        1,
+        "the loop must resume through every suspension; stdout: {stdout}"
+    );
+}

@@ -367,6 +367,53 @@ fn standalone_retain_adds_an_owner_obligation() {
 }
 
 #[test]
+fn bytes_handoff_commit_disposes_the_moved_from_generation() {
+    let blocks = vec![block(
+        0,
+        vec![
+            mint(1),
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Carrier", vec![]),
+                fields: vec![(crate::model::FieldOffset(0), Place::Local(1))],
+                dest: Place::Local(2),
+            },
+            Instr::BytesLit {
+                bytes: Vec::new(),
+                dest: Place::Local(1),
+            },
+        ],
+        Terminator::Return,
+    )];
+    let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+    let findings = run(blocks, plans, &[(1, "published")]);
+    assert!(
+        findings.is_empty(),
+        "the empty-bytes commit clears the transferred source owner: {findings:?}"
+    );
+}
+
+#[test]
+fn ordinary_empty_bytes_literal_still_mints_an_owner() {
+    let blocks = vec![block(
+        0,
+        vec![Instr::BytesLit {
+            bytes: Vec::new(),
+            dest: Place::Local(1),
+        }],
+        Terminator::Return,
+    )];
+    let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
+    let findings = run(blocks, plans, &[(1, "literal")]);
+    assert!(
+        matches!(
+            findings.as_slice(),
+            [MirCheck::ObligationUnderReleased { block: 0, .. }]
+        ),
+        "an ordinary empty bytes allocation still needs its own release: {findings:?}"
+    );
+}
+
+#[test]
 fn conditional_string_leaf_retain_does_not_mint_whole_root_owner() {
     for condition in [
         crate::model::StringRetainCondition::AggregateBorrowedIngress,

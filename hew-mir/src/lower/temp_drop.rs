@@ -164,6 +164,127 @@ fn typed_handoff_owner_reaches_site(
     }
 }
 
+/// Prove that a direct typed publication still carries the same generation at
+/// an aggregate ingress. Direct publications include ordinary call results and
+/// values initialized only on a suspend carrier's resume edge.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the definition scan and generation walk form one fail-closed proof"
+)]
+fn direct_typed_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    value: Place,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    #[derive(Clone, Copy)]
+    enum Definition {
+        Instruction { block: u32, index: usize },
+        Terminator { successor: u32 },
+    }
+
+    let normal_successors = |block: &BasicBlock| match &block.terminator {
+        Terminator::Suspend { resume, .. } => vec![*resume],
+        _ => block.successors(),
+    };
+    let mut definitions = Vec::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instruction);
+            if writes.contains(&value) {
+                definitions.push(Definition::Instruction {
+                    block: block.id,
+                    index,
+                });
+            }
+        }
+        let writes_value = crate::dataflow::terminator_write_places(&block.terminator)
+            .contains(&value)
+            || suspend_kinds.get(&block.id).is_some_and(|kind| {
+                crate::dataflow::suspend_kind_write_places(kind).contains(&value)
+            });
+        if writes_value {
+            let successors = normal_successors(block);
+            let [successor] = successors.as_slice() else {
+                return false;
+            };
+            definitions.push(Definition::Terminator {
+                successor: *successor,
+            });
+        }
+    }
+    let [definition] = definitions.as_slice() else {
+        return false;
+    };
+
+    let predecessor_counts = blocks.iter().flat_map(&normal_successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let (mut block_id, mut start) = match *definition {
+        Definition::Instruction { block, index } => (block, index.saturating_add(1)),
+        Definition::Terminator { successor } => {
+            if predecessor_counts.get(&successor).copied().unwrap_or(0) != 1 {
+                return false;
+            }
+            (successor, 0)
+        }
+    };
+    let Some(local) = base_local(value) else {
+        return false;
+    };
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instruction in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instruction);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = normal_successors(block);
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
 fn typed_named_aggregate_handoff(
     blocks: &[BasicBlock],
     builder: &Builder,
@@ -171,9 +292,6 @@ fn typed_named_aggregate_handoff(
     instr_index: usize,
     value: Place,
 ) -> Option<(BindingId, Place, bool)> {
-    if builder.current_function_call_conv != crate::model::FunctionCallConv::Default {
-        return None;
-    }
     let instruction = block_by_id(blocks, block)?.instructions.get(instr_index)?;
     let destination = aggregate_handoff_destination(instruction, value)?;
     let mut source_bindings: HashSet<BindingId> = builder
@@ -210,21 +328,28 @@ fn typed_named_aggregate_handoff(
     if source_bindings.next().is_some() {
         return None;
     }
-    if !typed_handoff_owner_reaches_site(
-        blocks,
-        &builder.suspend_kinds,
-        &builder.typed_produced_value_handoffs,
-        value,
-        block,
-        instr_index,
-    ) {
+    let direct = builder.binding_locals.get(&binding).copied() == Some(value);
+    let reaches_site = if direct
+        && builder.current_function_call_conv != crate::model::FunctionCallConv::Default
+    {
+        direct_typed_owner_reaches_site(blocks, &builder.suspend_kinds, value, block, instr_index)
+    } else {
+        typed_handoff_owner_reaches_site(
+            blocks,
+            &builder.suspend_kinds,
+            &builder.typed_produced_value_handoffs,
+            value,
+            block,
+            instr_index,
+        )
+    };
+    if !reaches_site {
         return None;
     }
     let local = base_local(value)?;
     if fresh_generation_is_used_after(blocks, &builder.suspend_kinds, local, block, instr_index) {
         return None;
     }
-    let direct = builder.binding_locals.get(&binding).copied() == Some(value);
     Some((binding, destination, direct))
 }
 
@@ -8126,6 +8251,111 @@ mod cow_sole_owner_derivation {
             typed_named_aggregate_handoff(&blocks, &builder, 0, 1, transfer),
             Some((binding, aggregate, false)),
             "the typed source generation stays authoritative after its transfer local"
+        );
+    }
+
+    #[test]
+    fn direct_typed_call_result_handoff_covers_execution_contexts() {
+        let binding = BindingId(10);
+        let value = Place::Local(7);
+        let aggregate = Place::Local(8);
+        let blocks = [
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Call {
+                    callee: "hew_string_clone".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![Place::Local(1)],
+                    dest: Some(value),
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::RecordInit {
+                    ty: ResolvedTy::named_user("Payload", vec![]),
+                    fields: vec![(FieldOffset(0), value)],
+                    dest: aggregate,
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        for call_conv in [
+            crate::model::FunctionCallConv::ActorHandler,
+            crate::model::FunctionCallConv::ClosureInvoke,
+            crate::model::FunctionCallConv::TaskEntry,
+        ] {
+            let mut builder = Builder {
+                current_function_call_conv: call_conv,
+                ..Builder::default()
+            };
+            builder.binding_locals.insert(binding, value);
+            builder.typed_produced_value_owner_bindings.insert(binding);
+
+            assert_eq!(
+                typed_named_aggregate_handoff(&blocks, &builder, 1, 0, value),
+                Some((binding, aggregate, true)),
+                "a direct fresh owner must transfer under {call_conv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn suspend_resume_result_handoff_excludes_the_abandon_edge() {
+        let binding = BindingId(11);
+        let value = Place::Local(7);
+        let aggregate = Place::Local(8);
+        let blocks = [
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::RecordInit {
+                    ty: ResolvedTy::named_user("Payload", vec![]),
+                    fields: vec![(FieldOffset(0), value)],
+                    dest: aggregate,
+                }],
+                terminator: Terminator::Return,
+            },
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ];
+        let mut builder = Builder {
+            current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            ..Builder::default()
+        };
+        builder.binding_locals.insert(binding, value);
+        builder.typed_produced_value_owner_bindings.insert(binding);
+        builder.suspend_kinds.insert(
+            0,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(value),
+            },
+        );
+
+        assert_eq!(
+            typed_named_aggregate_handoff(&blocks, &builder, 1, 0, value),
+            Some((binding, aggregate, true)),
+            "the resumed owner transfers normally but is never minted on cleanup"
         );
     }
 

@@ -167,9 +167,9 @@ impl Checker {
     }
 
     /// Whether an arithmetic-shaped assignment value reads the binding being
-    /// replaced. A literal-backed binding already has storage at this point,
-    /// so a read-modify-write must materialize that storage's default width
-    /// before mixed-width operand normalization chooses a common type.
+    /// replaced. Such an update must preserve the binding's independently
+    /// inferred storage width rather than adopting one operand's width as if
+    /// the assignment were a fresh direct write.
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Identifier(name) => name == binding,
@@ -1414,21 +1414,6 @@ impl Checker {
                     }
                     self.env.mark_written(name);
                 }
-                if let Expr::Identifier(name) = &target.0 {
-                    let literal_binding = self.env.lookup_ref(name).and_then(|binding| {
-                        let binding_ty @ Ty::Var(_) = binding.ty.clone() else {
-                            return None;
-                        };
-                        let resolved = self.subst.resolve(&binding_ty);
-                        (resolved.is_numeric_literal()
-                            && Self::numeric_update_reads_binding(&value.0, name))
-                        .then(|| (binding_ty, resolved.materialize_literal_defaults()))
-                    });
-                    if let Some((binding_ty, default_ty)) = literal_binding {
-                        let _ =
-                            self.try_unify_inference_with_owner_identity(&default_ty, &binding_ty);
-                    }
-                }
                 let value_ty = self.check_against(&value.0, &value.1, &target_ty);
                 // An unannotated literal binding (`var best = 0`) carries a
                 // literal-defaulting `Ty::Var` that `check_against` cannot
@@ -1450,6 +1435,7 @@ impl Checker {
                             if self.subst.resolve(&binding_ty).is_numeric_literal()
                                 && !value_resolved.is_numeric_literal()
                                 && value_resolved.is_numeric()
+                                && !Self::numeric_update_reads_binding(&value.0, name)
                             {
                                 let _ = self.try_unify_inference_with_owner_identity(
                                     &value_resolved,

@@ -355,7 +355,10 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Two x86_64 runs reached the former 60-minute ceiling at 60m22s and
+    # 60m26s with workspace tests still running after 38m and 41m. 90 min
+    # adds roughly 30 minutes of finite headroom for the slower runner.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -437,6 +440,8 @@ jobs:
   gate-windows:
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
+    # This job-level value is the Windows leg's sole timeout. Its measured
+    # 39m35s pass leaves 20m25s of headroom under the finite 60-minute cap.
     timeout-minutes: 60
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
@@ -526,9 +531,9 @@ jobs:
   gate-freebsd-x86_64:
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
-    # This QEMU-backed job runs the grown Hew-suite ratchet after its release
-    # builds and workspace tests. 120 min preserves room for the slower guest
-    # while keeping the release gate's ceiling finite.
+    # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
+    # release builds and workspace tests. Its 120-minute budget preserves room
+    # for the slower guest while keeping the release gate's ceiling finite.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3

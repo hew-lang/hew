@@ -1398,7 +1398,37 @@ impl Checker {
                     }
                     self.env.mark_written(name);
                 }
-                self.check_against(&value.0, &value.1, &target_ty);
+                let value_ty = self.check_against(&value.0, &value.1, &target_ty);
+                // An unannotated literal binding (`var best = 0`) carries a
+                // literal-defaulting `Ty::Var` that `check_against` cannot
+                // promote: it resolves the expected type first, materializing
+                // `IntLiteral` and losing the var identity, so a concrete
+                // narrower RHS (`best = dp[i]` with `dp: Vec<i32>`) was
+                // accepted by literal-compat while the binding later defaulted
+                // to `i64` — handing MIR a Move whose source and destination
+                // widths disagree (codegen-front fail-closed). Unify the
+                // binding's OWN var with the concrete RHS width here, the same
+                // promotion the range-bound machinery performs, so the binding
+                // adopts the assigned width. A second assignment at a different
+                // width then fails `check_against`'s ordinary implicit-convert
+                // gate instead of drifting.
+                if let Expr::Identifier(name) = &target.0 {
+                    if let Some(binding) = self.env.lookup_ref(name) {
+                        if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
+                            let value_resolved = self.subst.resolve(&value_ty);
+                            if self.subst.resolve(&binding_ty).is_numeric_literal()
+                                && !value_resolved.is_numeric_literal()
+                                && value_resolved.is_numeric()
+                            {
+                                let _ = crate::unify::unify(
+                                    &mut self.subst,
+                                    &binding_ty,
+                                    &value_resolved,
+                                );
+                            }
+                        }
+                    }
+                }
                 // A plain `=` gives the target place a fresh owner, discharging
                 // the consume obligation on it and on everything under it. This
                 // is the escape hatch for a consumed actor state field: the

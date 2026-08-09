@@ -39,9 +39,12 @@ command_timeout_floor() {
         "make test-vertical-slice") echo 240 ;;
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
-        "make test-hew-ratchet") echo 600 ;;
+        # Isolated warm timings for 1326 tests were 1105 s for the ratchet and
+        # 1988 s for the two-pass differential check.  Keep roughly 35% cold
+        # cache and host-load headroom while retaining a finite stuck ceiling.
+        "make test-hew-ratchet") echo 1500 ;;
         "make test-core-matrix") echo 600 ;;
-        "make test-o2-differential") echo 1200 ;;
+        "make test-o2-differential") echo 2700 ;;
         "make o2-differential-selftest") echo 30 ;;
         "make doc-ratchet-selftest") echo 45 ;;
         "make test-release-workflow-contract") echo 30 ;;

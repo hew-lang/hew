@@ -28,11 +28,11 @@ fn test_hashmap() -> i32 {
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
-    let one = match m.get("one") {
+    let one: i32 = match m.get("one") {
         Some(_) => 1,
         None => 0,
     };
-    let two = match m.get("two") {
+    let two: i32 = match m.get("two") {
         Some(_) => 2,
         None => 0,
     };
@@ -41,6 +41,8 @@ fn test_hashmap() -> i32 {
     let len = m.len();
     println(one); // 1
     println(two); // 2
+    println(has_three); // true
+    println(has_four); // false
     println(len); // 3
     m.remove("two");
     let len2 = m.len();

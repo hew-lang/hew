@@ -3590,7 +3590,7 @@ impl Builder {
                         params,
                         &HashSet::new(),
                         &ResolvedTy::clone,
-                        true,
+                        &|ty, _| matches!(ty, ResolvedTy::String),
                         false,
                         &|_| false,
                     ) == WholeParamEmbedClass::None
@@ -3607,7 +3607,7 @@ impl Builder {
                         params,
                         &HashSet::new(),
                         &ResolvedTy::clone,
-                        true,
+                        &|ty, _| matches!(ty, ResolvedTy::String),
                         false,
                         &|_| false,
                     ) == WholeParamEmbedClass::None
@@ -3628,11 +3628,11 @@ impl Builder {
 
     /// Whether an owned-Vec element rvalue can transfer its one live carrier
     /// into the descriptor slot. Ordinary materialised owners use the shared
-    /// freshness proof above. A constructor that embeds a member of an owned
-    /// call carrier is also a move source: field lowering has already
-    /// transferred the member into the fresh aggregate and neutralized its
-    /// carrier slot, so COPY-IN would manufacture a second owner and leave the
-    /// fresh aggregate's structural cleanup to release the first one.
+    /// freshness proof above. A constructor that embeds an affine owned call
+    /// carrier or a registered carrier member is also a move source: field
+    /// lowering has already transferred that value into the fresh aggregate
+    /// and neutralized its carrier slot, so COPY-IN would manufacture a second
+    /// owner and leave structural cleanup to release the first one.
     pub(crate) fn expr_is_owned_vec_move_ingress_owner(&self, expr: &HirExpr) -> bool {
         if Self::expr_is_materialized_owner(
             expr,
@@ -3664,7 +3664,13 @@ impl Builder {
                 &self.funcupdate_param_ids,
                 &self.owned_carrier_param_ids,
                 &|ty| self.subst_ty(ty),
-                false,
+                &|ty, is_carrier| {
+                    is_carrier
+                        && matches!(
+                            ValueClass::of_ty(ty, &self.type_classes),
+                            ValueClass::AffineResource | ValueClass::Linear
+                        )
+                },
                 true,
                 &|ty| {
                     crate::model::ty_owns_heap_mir(
@@ -3684,14 +3690,15 @@ impl Builder {
     /// the stricter mode: every non-constructor heap-owning leaf fails closed,
     /// because a projection or unproven call result can carry an unretained alias
     /// derived from another parameter. The MOVE ingress mode additionally
-    /// rejects a whole retained string unless its parameter slot has the owned
-    /// carrier neutralization contract.
+    /// rejects a whole retained string and permits a whole registered carrier
+    /// only when its root is affine. Heap-owning record parameters keep the
+    /// prepared COPY-IN owner; registered member projections remain eligible.
     fn classify_whole_param_embeds(
         expr: &HirExpr,
         params: &HashSet<BindingId>,
         owned_carrier_params: &HashSet<BindingId>,
         resolve_ty: &impl Fn(&ResolvedTy) -> ResolvedTy,
-        allow_retained_string_params: bool,
+        param_leaf_is_independent: &impl Fn(&ResolvedTy, bool) -> bool,
         reject_unproven_owned_leaves: bool,
         owns_heap: &impl Fn(&ResolvedTy) -> bool,
     ) -> WholeParamEmbedClass {
@@ -3700,9 +3707,8 @@ impl Builder {
                 resolved: ResolvedRef::Binding(id),
                 ..
             } if params.contains(id) => {
-                if matches!(resolve_ty(&expr.ty), ResolvedTy::String)
-                    && (allow_retained_string_params || owned_carrier_params.contains(id))
-                {
+                let ty = resolve_ty(&expr.ty);
+                if param_leaf_is_independent(&ty, owned_carrier_params.contains(id)) {
                     WholeParamEmbedClass::IndependentlyOwnedOnly
                 } else {
                     WholeParamEmbedClass::UnsupportedBorrowAlias
@@ -3716,7 +3722,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
-                        allow_retained_string_params,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3727,7 +3733,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
-                        allow_retained_string_params,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3741,7 +3747,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
-                        allow_retained_string_params,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3756,7 +3762,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
-                        allow_retained_string_params,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )

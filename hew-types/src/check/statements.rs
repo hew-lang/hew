@@ -166,6 +166,22 @@ impl Checker {
         }
     }
 
+    /// Whether an arithmetic-shaped assignment value reads the binding being
+    /// replaced. A literal-backed binding already has storage at this point,
+    /// so a read-modify-write must materialize that storage's default width
+    /// before mixed-width operand normalization chooses a common type.
+    fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
+        match expr {
+            Expr::Identifier(name) => name == binding,
+            Expr::Binary { left, right, .. } => {
+                Self::numeric_update_reads_binding(&left.0, binding)
+                    || Self::numeric_update_reads_binding(&right.0, binding)
+            }
+            Expr::Unary { operand, .. } => Self::numeric_update_reads_binding(&operand.0, binding),
+            _ => false,
+        }
+    }
+
     /// Whether an assignment target crosses a compiler-proven caller-visible
     /// shared-handle boundary before reaching the storage it writes.
     ///
@@ -1397,6 +1413,21 @@ impl Checker {
                         self.env.unmark_used(name);
                     }
                     self.env.mark_written(name);
+                }
+                if let Expr::Identifier(name) = &target.0 {
+                    let literal_binding = self.env.lookup_ref(name).and_then(|binding| {
+                        let binding_ty @ Ty::Var(_) = binding.ty.clone() else {
+                            return None;
+                        };
+                        let resolved = self.subst.resolve(&binding_ty);
+                        (resolved.is_numeric_literal()
+                            && Self::numeric_update_reads_binding(&value.0, name))
+                        .then(|| (binding_ty, resolved.materialize_literal_defaults()))
+                    });
+                    if let Some((binding_ty, default_ty)) = literal_binding {
+                        let _ =
+                            self.try_unify_inference_with_owner_identity(&default_ty, &binding_ty);
+                    }
                 }
                 let value_ty = self.check_against(&value.0, &value.1, &target_ty);
                 // An unannotated literal binding (`var best = 0`) carries a

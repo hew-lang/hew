@@ -5141,7 +5141,7 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
     }
 }
 mod returned_member_flow;
-use returned_member_flow::retained_owner_values_before;
+use returned_member_flow::{compute_returned_flow_locals, retained_owner_values_before};
 
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
@@ -5232,127 +5232,6 @@ pub(super) fn derive_returned_aggregate_member_bindings(
         }
     }
     returned_members
-}
-
-/// The set of backing locals that whole-value flow into this function's
-/// `ReturnSlot` — either directly or as a member of an aggregate that does.
-/// Shared by [`derive_returned_aggregate_member_bindings`] (which maps the set
-/// back to owned bindings) and [`derive_returned_member_transfer_blocks`]
-/// (which locates the block where each member enters the flow).
-fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
-    // Seed: every owned hand-off slot (Local or handle place) whole-value
-    // moved into the ReturnSlot.
-    let mut flows_to_return: HashSet<u32> = HashSet::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            if let Instr::Move { dest, src } = instr {
-                if matches!(dest, Place::ReturnSlot) {
-                    if let Some(sl) = base_local(*src) {
-                        if place_is_owned_handoff_member(*src) {
-                            flows_to_return.insert(sl);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if flows_to_return.is_empty() {
-        return HashSet::new();
-    }
-
-    // Fixpoint: grow the set backward along whole-value Moves and downward
-    // through aggregate constructors whose dest already flows to the return.
-    // Add an owned hand-off source (Local or handle place) to the set,
-    // reporting whether it grew. Interior-projection places are rejected.
-    let add_member = |place: &Place, set: &mut HashSet<u32>| -> bool {
-        match base_local(*place) {
-            Some(local) if place_is_owned_handoff_member(*place) => set.insert(local),
-            _ => false,
-        }
-    };
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (instr_index, instr) in block.instructions.iter().enumerate() {
-                match instr {
-                    // Whole-value rebind/temp: `Move { dest: in-set, src }`
-                    // means `src` flowed onward into a local that reaches the
-                    // ReturnSlot, so `src` reaches it too.
-                    Instr::Move { dest, src }
-                        if matches!(dest, Place::Local(_))
-                            && base_local(*dest)
-                                .is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        changed |= add_member(src, &mut flows_to_return);
-                    }
-                    // Aggregate construction whose dest reaches the return: each
-                    // element source is a member handed to the caller.
-                    Instr::TupleConstruct { elements, dest }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        let retained = retained_owner_values_before(block, instr_index);
-                        for elem in elements {
-                            if !retained.contains(elem) {
-                                changed |= add_member(elem, &mut flows_to_return);
-                            }
-                        }
-                    }
-                    // Record construction whose dest reaches the return: each
-                    // field source is a member handed to the caller.
-                    Instr::RecordInit { fields, dest, .. }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        let retained = retained_owner_values_before(block, instr_index);
-                        for (_offset, field) in fields {
-                            if !retained.contains(field) {
-                                changed |= add_member(field, &mut flows_to_return);
-                            }
-                        }
-                    }
-                    Instr::ClosureEnvInit { fields, dest, .. }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        for field in fields
-                            .iter()
-                            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
-                        {
-                            changed |= add_member(&field.src, &mut flows_to_return);
-                        }
-                    }
-                    // Enum / machine variant payload store whose carrier
-                    // aggregate reaches the return: the stored source is an
-                    // owned member handed to the caller through that variant.
-                    //
-                    // A variant constructor (`Ok(s)`, a user enum variant with
-                    // an owned payload) does NOT lower to `TupleConstruct` /
-                    // `RecordInit`; it lowers to a tag store plus a
-                    // `Move { dest: Place::{Machine,Enum}Variant { local, .. },
-                    // src }` payload store into the aggregate's backing local.
-                    // That dest is an interior projection (not `Place::Local`),
-                    // so the whole-value back-prop arm above never sees it —
-                    // without this arm the returned variant's payload (the
-                    // `stream$try_to_file` Sink moved into `Result::Ok`) stays
-                    // drop-eligible and is freed by the callee before the caller
-                    // receives it (the Bug-B double-free).
-                    Instr::Move { dest, src }
-                        if matches!(
-                            dest,
-                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
-                        ) && base_local(*dest)
-                            .is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        changed |= add_member(src, &mut flows_to_return);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    flows_to_return
 }
 
 #[cfg(test)]

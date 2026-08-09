@@ -437,11 +437,11 @@ jobs:
     name: Build & test (Linux)
     needs: changes
     runs-on: ubuntu-24.04
-    # Was 90. The grown Hew-suite ratchet and O2 differential gate now consume
-    # about 52 min together on a warm target, before the rest of this job's
-    # build and corpus work. 120 min restores cold-runner headroom while
-    # retaining a finite regression ceiling.
-    timeout-minutes: 120
+    # A cancelled cold-runner job completed about 105 min of work, then spent
+    # 20 min in its final O2 differential step. That step measures about 33
+    # min warm, yielding about 138 min of expected work. 180 min leaves about
+    # 42 min for cold-runner variance while retaining a finite hung-job limit.
+    timeout-minutes: 180
     env:
       # mold is installed by the "Install build tools" step below.
       # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to

@@ -188,13 +188,17 @@ jobs:
         run: make freebsd-workflow-contract-check
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Lint — fast feedback on code quality (always runs, ~1.5 min)
+  # Lint — code quality plus 1,778-file formatter preservation
+  # (always runs; cold runners can take 15–25 min)
   # Produces SARIF output for GitHub Code Scanning inline annotations.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The formatter proof crossed 15 min on a cold runner before Clippy began.
+    # 25 min leaves bounded room for its SARIF and lint tail without masking a
+    # stuck job indefinitely.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -426,13 +430,11 @@ jobs:
     name: Build & test (Linux)
     needs: changes
     runs-on: ubuntu-24.04
-    # Was 60. Successful runs on main land at 51-56 min wall time (checked
-    # 2026-07-04 across 5 recent green runs), leaving only 4-9 min of
-    # headroom against normal runner-to-runner variance -- PRs #2396 and
-    # #2397 both got CANCELLED at exactly 60m00-16s. 90 min restores real
-    # headroom without masking a genuine regression (see the diagnosis in
-    # the commit that introduced this change).
-    timeout-minutes: 90
+    # Was 90. The grown Hew-suite ratchet and O2 differential gate now consume
+    # about 52 min together on a warm target, before the rest of this job's
+    # build and corpus work. 120 min restores cold-runner headroom while
+    # retaining a finite regression ceiling.
+    timeout-minutes: 120
     env:
       # mold is installed by the "Install build tools" step below.
       # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to

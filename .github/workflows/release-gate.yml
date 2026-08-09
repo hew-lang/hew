@@ -100,7 +100,10 @@ jobs:
   gate-linux:
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The 1,326-test Hew-suite ratchet now takes about 18.5 min warm. 90 min
+    # leaves a bounded budget for the release builds, workspace tests, and
+    # release-only evidence that surround it.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -523,7 +526,10 @@ jobs:
   gate-freebsd-x86_64:
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # This QEMU-backed job runs the grown Hew-suite ratchet after its release
+    # builds and workspace tests. 120 min preserves room for the slower guest
+    # while keeping the release gate's ceiling finite.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

@@ -48,6 +48,31 @@ use crate::util::{CondvarExt, MutexExt};
 /// Park timeout — workers recheck the shutdown flag at this interval.
 const PARK_TIMEOUT: Duration = Duration::from_millis(10);
 
+/// Default bound on how long [`teardown_workers`] waits for workers to leave
+/// their loops before giving up on the join.
+///
+/// Mirrors `shutdown::DEFAULT_DRAIN_TIMEOUT_MS` (5 s): the drain and the join
+/// are the two halves of the same wind-down, so they share a magnitude. Tunable
+/// with `HEW_WORKER_JOIN_TIMEOUT_MS`; `0` restores the historical unbounded
+/// join.
+const DEFAULT_WORKER_JOIN_TIMEOUT_MS: u64 = 5_000;
+
+/// Resolve the worker-join bound from `HEW_WORKER_JOIN_TIMEOUT_MS`.
+///
+/// `None` means "wait forever", which is both the explicit `0` setting and the
+/// pre-existing behaviour this bound replaces.
+fn worker_join_timeout() -> Option<Duration> {
+    let ms = std::env::var("HEW_WORKER_JOIN_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_WORKER_JOIN_TIMEOUT_MS);
+    if ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(ms))
+    }
+}
+
 // ── Observability counters ──────────────────────────────────────────────
 
 pub(crate) static TASKS_SPAWNED: AtomicU64 = AtomicU64::new(0);
@@ -356,6 +381,29 @@ pub(crate) struct Scheduler {
     /// `Mutex/Condvar` to avoid contention on a single global lock.
     parkers: Vec<Parker>,
     worker_count: usize,
+    /// Completion signal for the bounded worker join.
+    ///
+    /// `std::thread::JoinHandle` has no join-with-timeout, so teardown cannot
+    /// bound `join()` directly. Instead every worker decrements this counter as
+    /// it leaves `worker_loop` (from a drop guard, so a panicking worker counts
+    /// too) and notifies `exit_cond`. Teardown waits for the count to reach zero
+    /// with a deadline; once it does, every outstanding `join()` is known to be
+    /// non-blocking.
+    live_workers: Mutex<usize>,
+    exit_cond: Condvar,
+}
+
+/// Decrements the scheduler's live-worker count on every exit edge of
+/// `worker_loop`, including an unwinding panic.
+struct WorkerExitGuard<'a>(&'a Scheduler);
+
+impl Drop for WorkerExitGuard<'_> {
+    fn drop(&mut self) {
+        let mut live = self.0.live_workers.lock_or_recover();
+        *live = live.saturating_sub(1);
+        // Notify under the lock: teardown holds it across its wait predicate.
+        self.0.exit_cond.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -526,6 +574,10 @@ pub extern "C" fn hew_sched_init() -> c_int {
         stealers,
         shutdown: AtomicBool::new(false),
         parked_workers: AtomicU64::new(0),
+        // Counts up as each worker is actually spawned below, so a partial
+        // spawn failure leaves the count matching the live threads.
+        live_workers: Mutex::new(0),
+        exit_cond: Condvar::new(),
         parkers,
         worker_count,
     });
@@ -564,45 +616,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
     // Phase 2: Spawn worker threads.
     // If ANY worker fails to spawn, treat it as an initialisation failure:
     // clean up already-spawned workers and tear down the scheduler.
-    let mut handles: Vec<Option<JoinHandle<()>>> = Vec::with_capacity(worker_count);
-    let mut spawn_err: Option<std::io::Error> = None;
-
-    // The runtime we just installed owns these workers; thread its pointer into
-    // each spawn closure so the worker `enter()`s it (TLS) at loop entry. `rt_default`
-    // resolves the pointer this thread published via `install_default` above — a
-    // null here would mean a concurrent `take_default` raced cleanup against init,
-    // which `hew_sched_init`'s once-from-main-thread contract forbids; bail loudly
-    // rather than spawn an unbound worker.
-    let Some(rt) = runtime::rt_default().map(|r| WorkerRuntimePtr(r as *const RuntimeInner)) else {
-        eprintln!("hew: scheduler init failed — default runtime lost after install");
-        std::process::exit(1);
-    };
-
-    for (id, deque) in deques.into_iter().enumerate() {
-        match thread::Builder::new()
-            .name(format!("hew-worker-{id}"))
-            .spawn(move || worker_loop(id, rt, &deque))
-        {
-            Ok(handle) => handles.push(Some(handle)),
-            Err(e) => {
-                spawn_err = Some(e);
-                break;
-            }
-        }
-    }
-
-    if let Some(e) = spawn_err {
-        // Worker spawn failed — tear down everything.
-        let spawned = handles.len();
-        set_last_error(format!(
-            "hew_sched_init: failed to spawn worker {spawned}: {e}"
-        ));
-        eprintln!(
-            "hew: scheduler init failed — could not spawn worker {spawned}/{worker_count}: {e}"
-        );
-        teardown_after_spawn_failure(handles);
-        std::process::exit(1);
-    }
+    let handles = spawn_workers(deques, worker_count);
 
     // We know `SCHEDULER` was just set by us.
     let Some(sched) = get_scheduler() else {
@@ -627,6 +641,69 @@ pub extern "C" fn hew_sched_init() -> c_int {
     0
 }
 
+/// Spawn the worker threads for the just-installed scheduler.
+///
+/// Each worker is registered in the scheduler's `live_workers` completion
+/// counter **before** it is spawned, because the worker's [`WorkerExitGuard`]
+/// can run before `spawn` even returns; incrementing afterwards could leave the
+/// count permanently above zero and make every later bounded join time out.
+///
+/// A spawn failure is an initialisation failure: already-spawned workers are
+/// torn down and the process exits, matching the previous inline behaviour.
+fn spawn_workers(deques: Vec<WorkDeque>, worker_count: usize) -> Vec<Option<JoinHandle<()>>> {
+    let mut handles: Vec<Option<JoinHandle<()>>> = Vec::with_capacity(worker_count);
+    let mut spawn_err: Option<std::io::Error> = None;
+
+    // The runtime we just installed owns these workers; thread its pointer into
+    // each spawn closure so the worker `enter()`s it (TLS) at loop entry.
+    // `rt_default` resolves the pointer the caller published via
+    // `install_default` — a null here would mean a concurrent `take_default`
+    // raced cleanup against init, which `hew_sched_init`'s once-from-main-thread
+    // contract forbids; bail loudly rather than spawn an unbound worker.
+    let Some(rt) = runtime::rt_default().map(|r| WorkerRuntimePtr(r as *const RuntimeInner)) else {
+        eprintln!("hew: scheduler init failed — default runtime lost after install");
+        std::process::exit(1);
+    };
+
+    let Some(sched) = get_scheduler() else {
+        eprintln!("hew: scheduler init failed — global pointer lost after install");
+        std::process::exit(1);
+    };
+
+    for (id, deque) in deques.into_iter().enumerate() {
+        // Register BEFORE spawning; see the fn doc.
+        *sched.live_workers.lock_or_recover() += 1;
+        match thread::Builder::new()
+            .name(format!("hew-worker-{id}"))
+            .spawn(move || worker_loop(id, rt, &deque))
+        {
+            Ok(handle) => handles.push(Some(handle)),
+            Err(e) => {
+                // Roll the registration back: no thread exists to decrement it.
+                let mut live = sched.live_workers.lock_or_recover();
+                *live = live.saturating_sub(1);
+                drop(live);
+                spawn_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    if let Some(e) = spawn_err {
+        let spawned = handles.len();
+        set_last_error(format!(
+            "hew_sched_init: failed to spawn worker {spawned}: {e}"
+        ));
+        eprintln!(
+            "hew: scheduler init failed — could not spawn worker {spawned}/{worker_count}: {e}"
+        );
+        teardown_after_spawn_failure(handles);
+        std::process::exit(1);
+    }
+
+    handles
+}
+
 /// Signal, wake, and join scheduler workers, optionally detaching the owning
 /// default runtime from its slot for caller-controlled final drop.
 ///
@@ -639,11 +716,17 @@ pub extern "C" fn hew_sched_init() -> c_int {
 /// scheduler — deques, parkers, stealers — as the final teardown step). The
 /// scheduler is owned by the runtime, so detaching the runtime is what frees
 /// the scheduler.
+/// Returns `(all_workers_exited, detached_runtime)`. When the bounded wait for
+/// worker exit times out, `all_workers_exited` is false and the straggler
+/// threads are DETACHED (their `JoinHandle`s dropped) rather than joined. The
+/// caller must then treat all runtime-owned memory as still live — see
+/// [`hew_runtime_cleanup`], which fail-closes and skips the final free on that
+/// path, matching the existing supervisor-pin-drain timeout policy.
 fn teardown_workers(
     scheduler: Option<*const Scheduler>,
     handles: Option<Vec<Option<JoinHandle<()>>>>,
     take_scheduler: bool,
-) -> Option<Box<RuntimeInner>> {
+) -> (bool, Option<Box<RuntimeInner>>) {
     // Take a raw pointer (not `&'static Scheduler`): a reference argument is
     // strongly protected for the whole call, and the `take_scheduler` branch
     // below `Box::from_raw`-frees this same allocation. Freeing strongly-protected
@@ -666,12 +749,66 @@ fn teardown_workers(
         })
     });
     let current_id = thread::current().id();
+
+    // Bound the join. `JoinHandle` has no join-with-timeout, so wait on the
+    // completion counter every worker decrements as it leaves `worker_loop`.
+    // Once it reaches zero, every `join()` below is known to be non-blocking.
+    // A worker parked in a runtime-owned blocking syscall never reaches its
+    // loop-top shutdown recheck, and this is the wait that gives up on it.
+    //
+    // Self-exclusion: a caller that is itself one of the counted workers can
+    // never see zero, so discount it up front — the same reason the join loop
+    // below skips the calling thread's own handle.
+    let mut converged = true;
+    if let Some(sched_ptr) = scheduler {
+        // SAFETY: as above; the borrow ends before any free below.
+        let sched = unsafe { &*sched_ptr };
+        let self_is_worker = handles
+            .iter()
+            .flatten()
+            .any(|h| h.thread().id() == current_id);
+        let target = usize::from(self_is_worker);
+        let mut live = sched.live_workers.lock_or_recover();
+        match worker_join_timeout() {
+            None => {
+                // Explicit opt-out: historical unbounded behaviour.
+                while *live > target {
+                    live = sched.exit_cond.wait_or_recover(live);
+                }
+            }
+            Some(timeout) => {
+                let deadline = std::time::Instant::now() + timeout;
+                while *live > target {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        converged = false;
+                        break;
+                    }
+                    let (guard, _) = sched.exit_cond.wait_timeout_or_recover(live, remaining);
+                    live = guard;
+                }
+            }
+        }
+        drop(live);
+    }
+
     for handle in &mut handles {
         if let Some(ref h) = handle {
             if h.thread().id() == current_id {
                 let _ = handle.take();
                 continue;
             }
+        }
+        if !converged {
+            // At least one worker is still inside `worker_loop`. We cannot tell
+            // WHICH handle belongs to it without joining, and joining the wrong
+            // one is the unbounded hang we are here to prevent. Detach them all:
+            // dropping a `JoinHandle` is safe and merely gives up the ability to
+            // observe the thread's result. Detached workers keep running against
+            // still-live scheduler/runtime memory, which is why the caller must
+            // not free it (see the returned convergence flag).
+            let _ = handle.take();
+            continue;
         }
         if let Some(h) = handle.take() {
             if h.join().is_err() {
@@ -680,14 +817,23 @@ fn teardown_workers(
         }
     }
 
+    if !converged {
+        eprintln!(
+            "hew: scheduler worker join timed out; leaving worker threads detached and runtime memory installed"
+        );
+        // Fail closed: never hand the caller a runtime to free while a worker
+        // may still dereference it.
+        return (false, None);
+    }
+
     if !take_scheduler {
-        return None;
+        return (true, None);
     }
 
     // Detach the owning runtime from its slot. Worker teardown above ensures no
     // thread can still access it; the caller drops the runtime last so the
     // scheduler's deques/parkers/stealers free as the final step.
-    runtime::take_default()
+    (true, runtime::take_default())
 }
 
 /// Clean up after a worker spawn failure during initialisation.
@@ -695,11 +841,12 @@ fn teardown_workers(
 /// Signals shutdown, joins all successfully-spawned workers, then detaches and
 /// drops the default runtime (freeing its scheduler).
 fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
-    drop(teardown_workers(
+    let (_converged, rt) = teardown_workers(
         get_scheduler().map(|s| s as *const Scheduler),
         Some(handles),
         true,
-    ));
+    );
+    drop(rt);
 }
 
 /// Gracefully shut down the scheduler.
@@ -774,7 +921,20 @@ pub extern "C" fn hew_runtime_cleanup() {
     // (the live-actor registry, deferred-teardown join handles), so the runtime
     // must stay installed in its slot until the sweep completes. Detaching it
     // here would make `rt_current()` trap mid-cleanup.
-    teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
+    let (workers_converged, _) =
+        teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
+    if !workers_converged {
+        // The bounded worker join gave up: one or more workers are detached and
+        // still running against scheduler- and runtime-owned memory. Every step
+        // below (supervisor reclamation, `cleanup_all_actors`, the registry
+        // clear, and the final `take_default` free) documents "all workers have
+        // been joined" as its precondition, and that precondition no longer
+        // holds. Fail closed exactly as the supervisor-pin-drain timeout below
+        // does: keep the runtime installed and leak its allocations rather than
+        // free memory beneath a live worker.
+        set_last_error("runtime cleanup: worker threads did not exit within the join bound");
+        return;
+    }
 
     // A handler-initiated supervisor stop may have deferred ownership to a
     // teardown thread. Once scheduler shutdown begins, that thread returns the
@@ -1183,6 +1343,11 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // hew_sched_init, so a missing scheduler here is a hard logic error — keep
     // the loud panic (the same contract as before this fix).
     let sched = get_scheduler().expect("scheduler not initialized");
+    // Publish this worker's exit to the bounded-join completion signal on every
+    // exit edge (normal break, panic unwind). Declared before the other guards
+    // so it drops LAST — after this worker has stopped touching scheduler and
+    // runtime state, which is exactly the point teardown is allowed to observe.
+    let _exit_guard = WorkerExitGuard(sched);
     // Bind this thread to its owning runtime for the loop's lifetime. The guard
     // restores the previous (null) CURRENT_RUNTIME on every exit edge — normal
     // return, panic, or a longjmp/trap unwinding out of the loop — preserving
@@ -3285,6 +3450,8 @@ pub(crate) fn worker_less_scheduler() -> Scheduler {
         global_queue: unsafe { crate::deque::GlobalQueue::new() },
         shutdown: AtomicBool::new(false),
         parked_workers: AtomicU64::new(0),
+        live_workers: Mutex::new(0),
+        exit_cond: Condvar::new(),
     }
 }
 
@@ -4007,6 +4174,8 @@ mod tests {
             global_queue: unsafe { GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(1),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
 
         assert!(
@@ -6397,6 +6566,8 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -6449,6 +6620,8 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -6514,6 +6687,8 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler for this test's field reads;
@@ -6585,6 +6760,166 @@ mod tests {
             .access(|handles| assert!(handles.is_empty()));
 
         take_default_runtime_for_test();
+    }
+
+    /// Discriminating pair for the bounded worker join (issue #2508).
+    ///
+    /// Both halves drive the SAME `teardown_workers` call against the SAME
+    /// scheduler shape; the only difference is whether the registered worker
+    /// ever publishes its exit. This is what makes the pair evidence rather
+    /// than a test that merely passes:
+    ///
+    /// * TIMEOUT half — a worker registered in `live_workers` that never
+    ///   decrements (standing in for a thread parked in a blocking syscall,
+    ///   which never reaches the loop-top shutdown recheck). Teardown must
+    ///   RETURN within the bound and report non-convergence. Under the old
+    ///   unbounded code this half hangs forever.
+    /// * CONTROL half — a worker that exits promptly. Teardown must report
+    ///   convergence, and must do so in far less than the bound (proving it
+    ///   joined rather than waited out the deadline).
+    #[test]
+    fn teardown_worker_join_is_bounded_but_control_joins_cleanly() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        // Short bound so the timeout half is cheap; the control half must still
+        // finish well inside it.
+        const BOUND_MS: u64 = 300;
+
+        // `*const Scheduler` is `!Send`; the wrapper carries it across the spawn
+        // boundary, exactly as `WorkerRuntimePtr` does for the real worker path.
+        struct SchedPtr(*const Scheduler);
+        // SAFETY: the pointee outlives the spawned thread — `teardown_workers`
+        // joins it before the runtime is dropped.
+        unsafe impl Send for SchedPtr {}
+
+        let _sched_guard = SchedTestLock::acquire();
+
+        // SAFETY: single-threaded test setup, guarded by SchedTestLock; the
+        // variable is read only by `teardown_workers` calls this test makes.
+        unsafe { std::env::set_var("HEW_WORKER_JOIN_TIMEOUT_MS", BOUND_MS.to_string()) };
+
+        // ── TIMEOUT half ────────────────────────────────────────────────
+        let rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
+        // SAFETY: `rt_ptr` is live for this scope (held under the test lock).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
+
+        let release_stuck = Arc::new(AtomicBool::new(false));
+        let release_stuck2 = Arc::clone(&release_stuck);
+        // Register the worker in the completion counter, exactly as
+        // `hew_sched_init` does before spawning.
+        // SAFETY: the scheduler stays installed for this scope.
+        *unsafe { &*sched_ptr }.live_workers.lock_or_recover() += 1;
+        let stuck = thread::spawn(move || {
+            // Deliberately parked: never runs a `WorkerExitGuard`, so the
+            // completion counter never reaches zero.
+            while !release_stuck2.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        // SAFETY: as above.
+        unsafe { &*sched_ptr }
+            .worker_handles
+            .access(|handles| handles.push(Some(stuck)));
+
+        let started = Instant::now();
+        let (converged, detached) = teardown_workers(Some(sched_ptr), None, false);
+        let stuck_elapsed = started.elapsed();
+
+        assert!(
+            !converged,
+            "a worker that never publishes its exit must be reported as non-converged"
+        );
+        assert!(
+            detached.is_none(),
+            "a timed-out teardown must never hand back a runtime to free"
+        );
+        // The bound fired: we returned, and we returned near the deadline
+        // rather than after an unbounded join.
+        assert!(
+            stuck_elapsed < Duration::from_secs(5),
+            "teardown must return within the bound, took {stuck_elapsed:?}"
+        );
+        assert!(
+            stuck_elapsed >= Duration::from_millis(BOUND_MS / 2),
+            "the timeout path must actually have waited on the bound, took {stuck_elapsed:?}"
+        );
+        // The straggler's handle was detached, not joined.
+        // SAFETY: as above.
+        unsafe { &*sched_ptr }
+            .worker_handles
+            .access(|handles| assert!(handles.is_empty()));
+
+        // Release the straggler and reap it before freeing the runtime, so this
+        // test does not itself leave a thread running against freed memory.
+        release_stuck.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(50));
+        take_default_runtime_for_test();
+
+        // ── CONTROL half ────────────────────────────────────────────────
+        let rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
+        // SAFETY: `rt_ptr` is live for this scope (held under the test lock).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
+
+        // SAFETY: the scheduler stays installed for this scope.
+        let sched: &Scheduler = unsafe { &*sched_ptr };
+        *sched.live_workers.lock_or_recover() += 1;
+        let carried = SchedPtr(sched_ptr);
+        let prompt = thread::spawn(move || {
+            let carried = carried;
+            // SAFETY: `carried.0` outlives this thread — the test joins it (via
+            // `teardown_workers`) before dropping the runtime below.
+            let sched = unsafe { &*carried.0 };
+            let _exit_guard = WorkerExitGuard(sched);
+            // Exits immediately, publishing its exit through the guard.
+        });
+        sched
+            .worker_handles
+            .access(|handles| handles.push(Some(prompt)));
+
+        let started = Instant::now();
+        let (converged, detached) = teardown_workers(Some(sched_ptr), None, false);
+        let control_elapsed = started.elapsed();
+
+        assert!(
+            converged,
+            "a worker that exits promptly must still join cleanly with no timeout"
+        );
+        assert!(
+            detached.is_none(),
+            "take_scheduler=false must not detach the runtime"
+        );
+        assert!(
+            control_elapsed < Duration::from_millis(BOUND_MS),
+            "the control must join, not wait out the bound; took {control_elapsed:?}"
+        );
+        sched
+            .worker_handles
+            .access(|handles| assert!(handles.is_empty()));
+
+        take_default_runtime_for_test();
+        // SAFETY: single-threaded teardown under the test lock.
+        unsafe { std::env::remove_var("HEW_WORKER_JOIN_TIMEOUT_MS") };
+    }
+
+    /// The bound is opt-out: `HEW_WORKER_JOIN_TIMEOUT_MS=0` restores the
+    /// historical unbounded join, and the normal path is otherwise unchanged.
+    #[test]
+    fn worker_join_timeout_env_parses() {
+        let _sched_guard = SchedTestLock::acquire();
+        // SAFETY: single-threaded, guarded by SchedTestLock.
+        unsafe { std::env::set_var("HEW_WORKER_JOIN_TIMEOUT_MS", "0") };
+        assert_eq!(worker_join_timeout(), None, "0 must mean wait forever");
+        // SAFETY: as above.
+        unsafe { std::env::set_var("HEW_WORKER_JOIN_TIMEOUT_MS", "250") };
+        assert_eq!(worker_join_timeout(), Some(Duration::from_millis(250)));
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("HEW_WORKER_JOIN_TIMEOUT_MS") };
+        assert_eq!(
+            worker_join_timeout(),
+            Some(Duration::from_millis(DEFAULT_WORKER_JOIN_TIMEOUT_MS)),
+            "unset must fall back to the default bound"
+        );
     }
 
     #[test]
@@ -6864,6 +7199,8 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.
@@ -6962,6 +7299,8 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
+            live_workers: Mutex::new(0),
+            exit_cond: Condvar::new(),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.

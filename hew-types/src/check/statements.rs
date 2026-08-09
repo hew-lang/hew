@@ -1420,10 +1420,9 @@ impl Checker {
                                 && !value_resolved.is_numeric_literal()
                                 && value_resolved.is_numeric()
                             {
-                                let _ = crate::unify::unify(
-                                    &mut self.subst,
-                                    &binding_ty,
+                                let _ = self.try_unify_inference_with_owner_identity(
                                     &value_resolved,
+                                    &binding_ty,
                                 );
                             }
                         }

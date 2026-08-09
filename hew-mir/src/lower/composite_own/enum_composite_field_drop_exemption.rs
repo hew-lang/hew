@@ -265,6 +265,83 @@ fn mismatched_string_payload_retain_stays_fail_closed() {
     );
 }
 
+#[test]
+fn proven_borrow_payload_call_keeps_the_enum_shell_owner() {
+    let parent = BindingId(20);
+    let payload = BindingId(21);
+    let box_ty = ResolvedTy::named_user("TextBox", vec![]);
+    let binding_locals = HashMap::from([(parent, Place::Local(0)), (payload, Place::Local(1))]);
+    let binding_scope = HashMap::from([(parent, ScopeId(1)), (payload, ScopeId(2))]);
+    let layouts = vec![crate::model::EnumLayout {
+        name: "TextBox".to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Text".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let blocks = [BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        }],
+        terminator: Terminator::Call {
+            callee: "inspect".to_string(),
+            authority: crate::model::CallAuthority::default(),
+            args: vec![Place::Local(1)],
+            dest: None,
+            next: 1,
+        },
+    }];
+    let derive = |proven_borrow_call_args: &HashMap<u32, HashSet<usize>>| {
+        derive_enum_composite_drop_allowed(
+            &blocks,
+            &HashMap::new(),
+            &[(parent, "box".to_string(), box_ty.clone())],
+            &binding_locals,
+            &binding_scope,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[box_ty.clone(), ResolvedTy::String],
+            &HashMap::new(),
+            &layouts,
+            &hew_hir::TypeClassTable::default(),
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+            proven_borrow_call_args,
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+        )
+    };
+
+    let proven = HashMap::from([(0, HashSet::from([0]))]);
+    assert!(
+        derive(&proven).contains(&parent),
+        "a proven read-only payload call leaves the enum shell as the sole owner"
+    );
+    assert!(
+        !derive(&HashMap::new()).contains(&parent),
+        "an unproven payload call must remain an ownership escape"
+    );
+}
+
 fn bytes_box_ty() -> ResolvedTy {
     ResolvedTy::named_user("BytesBox", vec![])
 }

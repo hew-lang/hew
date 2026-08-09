@@ -1850,9 +1850,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         note_alias_escape(l, &mut excluded_roots);
                     }
                 }
-                // `binder_read_is_borrow_safe_terminator` subsumes the string
-                // borrow/print exemption and extends it to the collection- and
-                // bytes-receiver-borrow contracts, so a `Result<bytes, _>`
+                // The module parameter summary proves exact borrowed argument
+                // positions for Hew-bodied calls, including read-only methods
+                // on resource payloads. `binder_read_is_borrow_safe_terminator`
+                // subsumes the string borrow/print exemption and extends it to
+                // the collection- and bytes-receiver-borrow contracts, so a
+                // `Result<bytes, _>`
                 // payload binder read by `hew_bytes_to_string(b)` (a
                 // `Terminator::Call` receiver borrow) no longer excludes its
                 // composite (#2429). `string_binder_read_is_user_fn_borrow`
@@ -1895,19 +1898,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         payload_binder_candidate_root.get(&l),
                         Some(PayloadBinderRoot::Root(root))
                             if shell_drop_safe_candidate_locals.contains(root)
-                    ) && (binder_read_is_borrow_safe_terminator(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        l,
-                    ) || string_binder_read_is_user_fn_borrow(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        l,
-                        local_tys.get(l as usize),
-                        module_fn_names,
-                        module_generic_fn_names,
-                        extern_contracts,
-                    ));
+                    ) && (proven_borrow_arg_locals.contains(&l)
+                        || binder_read_is_borrow_safe_terminator(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                        )
+                        || string_binder_read_is_user_fn_borrow(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                            local_tys.get(l as usize),
+                            module_fn_names,
+                            module_generic_fn_names,
+                            extern_contracts,
+                        ));
                     if !read_is_borrow {
                         note_payload_escape(
                             &payload_binder_candidate_root,

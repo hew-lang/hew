@@ -41,7 +41,8 @@ reject_output="${ROOT}/.tmp/vertical-slice-reject-output.txt"
 stdout_output="${ROOT}/.tmp/vertical-slice.stdout"
 stderr_output="${ROOT}/.tmp/vertical-slice.stderr"
 old_verb_output="${ROOT}/.tmp/vertical-slice-remote-pid-old-verb.hew"
-trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}"' EXIT
+node_lookup_identity="/tmp/hew-cap13-node-lookup-send.key"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${old_verb_output}" "${node_lookup_identity}" "${node_lookup_identity}.hew-state"' EXIT
 
 compile_accept() {
   local fixture="$1"
@@ -4043,6 +4044,7 @@ run_accept_expect_status "tuple_heap_return" 42
 # Accept: Node::lookup(name) must expose the registered local actor as a
 # RemotePid<T>, and pid.send(msg) must deliver through the in-process
 # send-by-id path.
+rm -f "${node_lookup_identity}" "${node_lookup_identity}.hew-state"
 run_accept_expect_status "node_lookup_send" 0
 
 # Accept: compiler-owned identity aggregates project, compare, hash, display,

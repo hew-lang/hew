@@ -24,6 +24,7 @@ import std::os;
 
 extern "C" {
     fn hew_actor_self_stop();
+    fn hew_sink_shutdown(sink: Sink<bytes>);
 }
 
 // Bound buffering for peers that advertise a very large Remaining Length and
@@ -215,6 +216,9 @@ actor ClientHandler {
             registered = true;
             reader.start();
         } else {
+            unsafe {
+                hew_sink_shutdown(sink)
+            };
             reader.stop();
             unsafe {
                 hew_actor_self_stop()
@@ -439,6 +443,9 @@ actor ClientHandler {
             }
             println(f"[mqtt] connection closed for {client_id}");
             unsafe {
+                hew_sink_shutdown(sink)
+            };
+            unsafe {
                 hew_actor_self_stop()
             };
         }
@@ -450,6 +457,9 @@ actor ClientHandler {
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
+        unsafe {
+            hew_sink_shutdown(sink)
+        };
         unsafe {
             hew_actor_self_stop()
         };

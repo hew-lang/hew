@@ -1,7 +1,7 @@
 //! Backward liveness dataflow over MIR locals, and the MIR-stage lints built on
-//! it (`dead_store`). A `clean_counter` lint was considered but is deferred and
-//! deliberately NOT registered — see the decision recorded in
-//! `docs/design/lint-pass.md` (tracked in issue #2178).
+//! it (`dead_store`). The `clean_counter` lint layers a faint-variable
+//! (strong-liveness) pass on top of this one; it lives in [`crate::faint`]
+//! (issue #2178).
 //!
 //! ## Why backward, and why over the `Instr` stream
 //!
@@ -443,6 +443,7 @@ pub fn run_mir_lints(functions: &[RawMirFunction]) -> Vec<MirLint> {
         }
         let liveness = analyze_liveness(func);
         detect_dead_stores(func, &liveness, &mut out);
+        crate::faint::run_clean_counter(func, &liveness, &mut out);
     }
     dedup_by_lint_span(&mut out);
     out

@@ -8,6 +8,8 @@ mod const_descriptor;
 mod div_shift_trap;
 #[path = "diagnostics/dump_filecheck.rs"]
 mod dump_filecheck;
+#[path = "diagnostics/faint.rs"]
+mod faint;
 #[path = "diagnostics/instr_spans_line_table.rs"]
 mod instr_spans_line_table;
 #[path = "diagnostics/liveness.rs"]

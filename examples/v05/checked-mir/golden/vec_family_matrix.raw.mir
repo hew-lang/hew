@@ -568,7 +568,7 @@ fn pointer_families() -> () [conv=default]
     stmt: eval site=SiteId(212) ty=()
     stmt: use BindingId(15) values site=SiteId(216) ty=Vec<fn(i64) -> i64> intent=Read
     _10 = const.i64 0
-    _11 = call hew_vec_remove_at_ptr(_1, _10) [authority=Runtime(VecScalar { op: RemoveAt, elem: Ptr })] -> bb6
+    _11 = call hew_vec_remove_at_ptr(_1, _10) [authority=Compiler(ClosurePairVec(RemoveAt))] -> bb6
   bb6:
     stmt: eval site=SiteId(215) ty=fn(i64) -> i64
     return

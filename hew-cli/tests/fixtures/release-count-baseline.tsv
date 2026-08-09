@@ -603,7 +603,7 @@ examples/grep/grep.hew	grep_content	41
 examples/grep/grep.hew	grep_dir	23
 examples/grep/grep.hew	grep_file	18
 examples/grep/grep.hew	grep_stdin	2
-examples/grep/grep.hew	main	28
+examples/grep/grep.hew	main	43
 examples/grep/grep.hew	parse_args	38
 examples/grep/grep.hew	std$fs$read	11
 examples/grep/grep.hew	std$fs$try_read	4
@@ -630,8 +630,8 @@ examples/grep/grep.hew	std.text.regex.Pattern::capture	3
 examples/grep/grep.hew	std.text.regex.Pattern::capture_named	3
 examples/hew-orch/main.hew	collect_md_files	27
 examples/hew-orch/main.hew	extract_ids_in_line	24
-examples/hew-orch/main.hew	ingest_file	61
-examples/hew-orch/main.hew	main	68
+examples/hew-orch/main.hew	ingest_file	64
+examples/hew-orch/main.hew	main	74
 examples/hew-orch/main.hew	std$fs$read	11
 examples/hew-orch/main.hew	std$fs$try_read	4
 examples/hew-orch/main.hew	std$fs$try_read_bytes	2

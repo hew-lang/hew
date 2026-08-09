@@ -3623,6 +3623,50 @@ impl Builder {
             _ => false,
         }
     }
+
+    /// Whether an owned-Vec element rvalue can transfer its one live carrier
+    /// into the descriptor slot. Ordinary materialised owners use the shared
+    /// freshness proof above. A constructor that embeds an owned call-carrier
+    /// parameter is also a move source: field lowering has already transferred
+    /// the parameter into the fresh aggregate and neutralized the parameter
+    /// slot, so COPY-IN would manufacture a second owner and leave the fresh
+    /// aggregate's structural cleanup to release the first one.
+    pub(crate) fn expr_is_owned_vec_move_ingress_owner(&self, expr: &HirExpr) -> bool {
+        if Self::expr_is_materialized_owner(
+            expr,
+            &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            &self.funcupdate_param_ids,
+            &self.proven_foreign_bindings,
+        ) {
+            return true;
+        }
+
+        matches!(
+            &expr.kind,
+            HirExprKind::StructInit { .. }
+                | HirExprKind::TupleLiteral { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+        ) && self
+            .call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_is_free_of_opaque_foreign_provenance(expr)
+            && !crate::return_provenance::value_reads_a_proven_foreign_binding(
+                expr,
+                &self.proven_foreign_bindings,
+                self.call_scrutinee_provenance
+                    .fresh_owner_verdicts
+                    .declared_release_types(),
+            )
+            && Self::classify_whole_param_embeds(
+                expr,
+                &self.funcupdate_param_ids,
+                &self.owned_carrier_param_ids,
+                &|ty| self.subst_ty(ty),
+                false,
+                &|_| false,
+            ) == WholeParamEmbedClass::IndependentlyOwnedOnly
+    }
+
     /// Classify WHOLE by-value parameter embeds through constructors.
     ///
     /// Recurses only through constructions (struct / tuple / machine-variant

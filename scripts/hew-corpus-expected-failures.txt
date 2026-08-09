@@ -42,15 +42,6 @@
 # deferred-nyi: machine select/transition watch NYI
 examples/machine/bounded_resource.hew
 
-# deferred-nyi: MQTT broker NYI features
-# deferred-nyi: E_CODEGEN_FRONT_FAIL_CLOSED reports that representation-loan
-# argument Local(2) passed to `push_u16` has no coherent caller crash-cleanup
-# owner. The trigger is a fresh `bytes` value passed to a borrowing helper when
-# the value later transfers to `ReturnSlot`; closing this requires reshaping
-# crash-cleanup registration lifetime so the caller stays registered across the
-# helper loan while the success-path return transfer remains the sole owner.
-examples/mqtt_broker.hew
-
 # deferred-nyi: multifile compilation NYI (requires multi-file resolve)
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew

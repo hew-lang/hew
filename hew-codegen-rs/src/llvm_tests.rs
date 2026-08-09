@@ -10083,6 +10083,7 @@ fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
         &[],
         &HashMap::new(),
         &HashSet::new(),
+        &HashMap::new(),
     )
     .expect("the exhaustive instruction write-set must admit StringLit");
     assert_eq!(
@@ -10193,6 +10194,7 @@ fn helper_crash_cleanup_uses_guarded_owner_across_entry_cancel_plan() {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
         )
         .expect("entry cancellation and guarded exits share one owner ritual");
         assert_eq!(descriptors.len(), 1);
@@ -10637,6 +10639,7 @@ fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
             &[],
             &symbols,
             &HashSet::new(),
+            &HashMap::new(),
         );
         if admitted {
             assert_eq!(
@@ -13332,6 +13335,146 @@ fn main() {
         pipeline.diagnostics
     );
     pipeline
+}
+
+fn pipeline_from_returned_bytes_loan_source() -> IrPipeline {
+    let source = r#"
+fn push_then_maybe_crash(value: bytes, trigger: i64) {
+    value.push(0x40 as u8);
+    if trigger != 0 {
+        panic("crash during returned bytes loan");
+    }
+}
+fn build_packet(trigger: i64) -> bytes {
+    let value = bytes::new();
+    push_then_maybe_crash(value, trigger);
+    value
+}
+fn main() {
+    let packet = build_packet(0);
+    print(packet.len());
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "returned bytes loan source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "returned bytes loan pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn returned_bytes_keeps_crash_owner_until_return_transfer_native_and_wasm32() {
+    let pipeline = pipeline_from_returned_bytes_loan_source();
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "build_packet")
+        .expect("build_packet raw MIR");
+    let returned = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instr| match instr {
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: place @ Place::Local(_),
+            } => Some(*place),
+            _ => None,
+        })
+        .expect("bytes local transferred to ReturnSlot");
+    let loaned = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call { callee, args, .. } if callee == "push_then_maybe_crash" => {
+                args.first().copied()
+            }
+            _ => None,
+        })
+        .expect("bytes local passed to borrowing helper");
+    assert_eq!(returned, loaned, "the returned local is the borrowed owner");
+    let elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "build_packet")
+        .expect("build_packet elaborated MIR");
+    assert!(
+        elab.drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| drop.place != returned),
+        "ReturnSlot transfer must remain the sole normal-path owner: {elab:#?}"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "returned_bytes_loan_cleanup",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: returned bytes loan build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: returned bytes loan verify: {error}"));
+        let builder = module
+            .get_function("build_packet")
+            .expect("build_packet LLVM function")
+            .print_to_string()
+            .to_string();
+        let Place::Local(returned_local) = returned else {
+            unreachable!("filtered to local return source")
+        };
+        assert!(
+            builder.contains(&format!("%helper_crash_cleanup_token_{returned_local}"))
+                && builder.contains("call i1 @hew_cont_crash_cleanup_deactivate")
+                && builder.contains("call i64 @hew_cont_crash_cleanup_arm")
+                && builder.contains(&format!(
+                    "helper_crash_cleanup_return_retire_{returned_local}_call"
+                ))
+                && !builder.contains("call void @hew_bytes_drop"),
+            "{triple}: returned bytes must stay crash-owned through the loan and transfer \
+             without a success-path destructor:\n{builder}"
+        );
+        let cleanup_thunks = module
+            .get_functions()
+            .filter(|function| {
+                function
+                    .get_name()
+                    .to_string_lossy()
+                    .starts_with("__hew_frame_cleanup_")
+            })
+            .map(|function| function.print_to_string().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            cleanup_thunks
+                .iter()
+                .any(|thunk| thunk.contains("call void @hew_bytes_drop")),
+            "{triple}: crash cleanup must retain the typed bytes release ritual"
+        );
+    }
 }
 
 #[test]

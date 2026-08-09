@@ -4487,20 +4487,21 @@ pub(super) fn drop_kind_for(
     }
 }
 
-/// Materialize the ordinary typed drop ritual used by a crash-only parameter
-/// loan.  The descriptor is deliberately kept out of lexical drop plans:
-/// success retires the loan without releasing caller-owned storage, while the
-/// dynamic crash registry may invoke this ritual if the callee is abandoned.
+/// Materialize the ordinary typed drop ritual used by a crash-only
+/// representation owner. The descriptor is deliberately kept out of lexical
+/// drop plans: success transfers or retires the owner without releasing the
+/// destination storage, while the dynamic crash registry may invoke this
+/// ritual if execution is abandoned before that handoff.
 ///
 /// Keeping construction here makes the drop-plan dispatcher the only
-/// authority that maps the typed loan kind to an [`ElabDrop`]; codegen never
-/// infers the ritual from a raw parameter type or runtime symbol name.
+/// authority that maps the typed cleanup kind to an [`ElabDrop`]; codegen never
+/// infers the ritual from a raw local type or runtime symbol name.
 ///
 /// # Errors
 ///
 /// Returns an error when the typed cleanup kind is incompatible with the
-/// parameter's resolved storage shape.
-pub fn crash_only_param_loan_drop(
+/// owner's resolved storage shape.
+pub fn crash_only_cleanup_drop(
     place: Place,
     ty: &ResolvedTy,
     cleanup: ParamCrashCleanupKind,
@@ -4523,7 +4524,7 @@ pub fn crash_only_param_loan_drop(
             Ok(descriptor)
         }
         ParamCrashCleanupKind::Bytes => Err(format!(
-            "bytes crash-cleanup loan at {place:?} carried incompatible type `{ty}`"
+            "bytes crash-cleanup owner at {place:?} carried incompatible type `{ty}`"
         )),
     }
 }

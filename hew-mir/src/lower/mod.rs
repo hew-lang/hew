@@ -143,7 +143,7 @@ use self::drop_plan::{
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
     vec_iter_yield_abandonment_diagnostics, PayloadBinderRoot,
 };
-pub use self::drop_plan::{crash_only_param_loan_drop, drop_kind_for_test_only};
+pub use self::drop_plan::{crash_only_cleanup_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
 use self::machine_synth::{

@@ -352,7 +352,11 @@ fn actor_message_send_transfers_named_resource_authority_once() {
 
 #[test]
 fn carrier_helper_locals_do_not_displace_trailing_abi_parameters() {
-    assert_exact_runtime("parameter_order", PARAMETER_ORDER_BODY, "1\n");
+    assert_exact_runtime(
+        "parameter_order",
+        PARAMETER_ORDER_BODY,
+        "1\nclosing token id=13\n",
+    );
 }
 
 #[test]

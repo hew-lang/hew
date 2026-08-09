@@ -56,6 +56,7 @@ use crate::ownership::VecElementRelease;
 use crate::state_clone::StateFieldCloneKind as SnapshotFieldKind;
 
 mod actor;
+mod assign;
 mod borrowed_argument_owner;
 mod cfg_util;
 mod closure_gen;
@@ -66,6 +67,7 @@ mod drop_plan;
 mod expr;
 mod facts;
 mod for_await_drop_plan;
+mod machine_own;
 mod machine_synth;
 mod move_value;
 mod owner_mint;
@@ -177,6 +179,7 @@ use self::temp_drop::{
     apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
     bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
     bytes_share_sink_places, classify_actor_state_load_modes,
+    close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
@@ -946,6 +949,28 @@ struct Builder {
     /// inline; this bounded ledger restores authority only for abandoning
     /// exits reached while the consuming body still owns the payload.
     pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
+    /// MIR locals of every fresh per-frame yield/recv payload binder
+    /// (`for x in vec`, generator drive, receiver read — the `Some(x)` arms
+    /// that schedule a body-end release and retract the binding to
+    /// `Disposition::BodyEndReleased`). This is the binder class whose value
+    /// IS frame-owned but whose release authority is the per-iteration
+    /// body-end drop, not the function-scope LIFO. The projection-alias taint
+    /// seed exempts these dests: their `Move` out of the synthetic `Option`'s
+    /// variant slot takes a fresh clone/frame the shell no longer releases,
+    /// so a downstream retained share is a genuine co-owner, not an interior
+    /// alias of a still-live aggregate.
+    pub(crate) yield_binder_locals: HashSet<u32>,
+    /// Escape-scan exemptions for RETAIN-BACKED shares of an active yield
+    /// binder, recorded at lowering time as `(block, instr index)` of the
+    /// share `Move`. The body-shape drop-safety scan treats such a Move as a
+    /// borrow (the `+1` retain mints the destination's count), so the
+    /// binder's per-iteration body-end drop is still emitted — suppressing it
+    /// would leak the binder's own count on every path.
+    pub(crate) yield_share_instr_exempt: HashSet<(u32, usize)>,
+    /// Terminator analogue of `yield_share_instr_exempt`: `(block, local)`
+    /// pairs whose consuming collection-ingress `Call` operand was
+    /// pre-retained, making the call a borrow of the binder's count.
+    pub(crate) yield_share_term_exempt: HashSet<(u32, u32)>,
     /// Header-defined while-let scrutinee owners active while their body is
     /// lowered. Break/continue edges consume these owners and record an
     /// explicit edge drop; returns/panic/cancellation leave them Live so the
@@ -5505,6 +5530,7 @@ pub(crate) fn lower_function(
             &builder.locals,
             &builder.record_field_orders,
             &builder.enum_layouts,
+            builder.type_classes.lifecycle_registry(),
             &alias_chain,
             &aggregate_clone_sites,
             &is_owned_record,
@@ -5865,6 +5891,7 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
     );
     // Owned handle-leaf bindings moved into an actor initial-state record
     // consumed by `SpawnActor`: the actor's `state_drop_fn` is the single free
@@ -5886,6 +5913,7 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -5933,6 +5961,7 @@ pub(crate) fn lower_function(
         &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -6712,6 +6741,7 @@ impl Builder {
                     &owned_ty,
                     &self.record_field_orders,
                     &self.enum_layouts,
+                    self.type_classes.lifecycle_registry(),
                 )
             {
                 self.register_owned_param(param, owned_ty.clone(), func.body.scope);

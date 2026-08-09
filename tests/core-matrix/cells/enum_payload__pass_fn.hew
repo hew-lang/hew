@@ -1,0 +1,18 @@
+enum Shape {
+    Empty;
+    Circle(i64);
+    Rect { w: i64; h: i64 }
+}
+
+fn use_it(v: Shape) {
+    match v {
+        Empty => println("empty"),
+        Circle(v_r) => println(f"circle {v_r}"),
+        Rect { w, h } => println(f"rect {w}x{h}"),
+    }
+}
+
+fn main() {
+    let x: Shape = Circle(3);
+    use_it(x);
+}

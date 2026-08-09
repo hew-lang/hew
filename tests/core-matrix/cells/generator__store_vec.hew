@@ -1,0 +1,15 @@
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    let y = gen {
+        yield 2;
+        yield 3;
+    };
+    let v: Vec<Generator<i64, ()>> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

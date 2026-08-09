@@ -2241,6 +2241,75 @@ fn vec_indirect_enum_element_rejected_at_checker_boundary() {
 }
 
 #[test]
+fn vec_trait_object_element_rejected_at_checker_boundary() {
+    // A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
+    // thunk, scalar-index path, or push-rewrite entry, so `Vec<dyn Trait>`
+    // used to type-check clean and fail three different ways deep in
+    // codegen/HIR (VecIter clone, MethodCallNoRewrite on `.push`,
+    // VecIndexElementTypeUnsupported on `v[i]`) with internal-looking
+    // diagnostics instead of one clear checker-level reject. `dyn Trait`
+    // itself (a function parameter) is unaffected — only the `Vec` element
+    // position is rejected.
+    let output = check_source(
+        r"
+        trait Speaker {
+            fn say(self) -> string;
+        }
+
+        fn main() {
+            let v: Vec<dyn Speaker> = Vec::new();
+            let _ = v.len();
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot be a `Vec` element")
+                && e.message
+                    .contains("trait-object elements are not supported")),
+        "Vec<dyn Speaker> must be rejected AT the checker with the \
+         trait-object reason: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn dyn_trait_function_parameter_still_admitted() {
+    // Control case for `vec_trait_object_element_rejected_at_checker_boundary`:
+    // `dyn Trait` as a bare function parameter (not wrapped in `Vec`) is a
+    // supported, monomorphised-per-call-site shape and must not be caught by
+    // the `Vec`-scoped trait-object reject.
+    let output = check_source(
+        r#"
+        trait Speaker {
+            fn say(self) -> string;
+        }
+        type Cat { name: string }
+        impl Speaker for Cat {
+            fn say(c: Cat) -> string { c.name }
+        }
+        fn announce(s: dyn Speaker) {
+            let _ = s.say();
+        }
+        fn main() {
+            announce(Cat { name: "Tom" });
+        }
+        "#,
+    );
+
+    assert!(
+        !output.errors.iter().any(|e| e
+            .message
+            .contains("trait-object elements are not supported")),
+        "a bare `dyn Trait` function parameter must not be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn local_pid_actor_dispatch_uses_builtin_discriminator() {
     let output = check_source(
         r"

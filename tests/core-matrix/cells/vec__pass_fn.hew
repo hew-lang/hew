@@ -1,0 +1,12 @@
+fn use_it(v: Vec<i64>) {
+    let v_l = v.len();
+    let v_0 = v[0];
+    println(f"len={v_l} v0={v_0}");
+}
+
+fn main() {
+    let x: Vec<i64> = Vec::new();
+    x.push(10);
+    x.push(20);
+    use_it(x);
+}

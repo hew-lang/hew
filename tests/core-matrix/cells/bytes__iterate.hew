@@ -1,0 +1,10 @@
+fn main() {
+    let b: bytes = bytes::new();
+    b.push(65);
+    b.push(66);
+    var i = 0;
+    while i < b.len() {
+        println(b[i]);
+        i = i + 1;
+    }
+}

@@ -482,6 +482,32 @@ run_accept_expect_stdout "nested_string_concat_temp"
 # bindings + a helper chain) must keep compiling and produce deterministic
 # output — the D108 non-regression the return-provenance preflight protects.
 run_accept_expect_stdout "call_scrutinee_fresh_forwarder_release"
+run_accept_expect_stdout "enum_mixed_leaf_resource_drop"
+
+# Close-obligated collection borrows: `v[i]` over a `#[resource]`-bearing
+# element is a BORROW (the collection is the single release authority), and
+# every use that could carry the borrow past that authority is refused at
+# compile time. These four shapes are the review-proven unsound directions:
+# escape by return, explicit close, transfer into another collection, and
+# rebind of the alias binding. The accept-side twin is
+# `enum_mixed_leaf_resource_drop` plus the core-matrix `resource__index` cell
+# (read-only borrow: exactly-once release by the collection).
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_escape_by_return.hew" \
+  "cannot leave this function" \
+  "collection_borrow_escape_by_return"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_explicit_close.hew" \
+  "cannot be consumed or transferred" \
+  "collection_borrow_explicit_close"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_transfer.hew" \
+  "cannot be consumed or transferred" \
+  "collection_borrow_transfer"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/collection_borrow_rebind.hew" \
+  "cannot be reassigned" \
+  "collection_borrow_rebind"
 
 # Imported std::bench impl methods must carry MIR bodies across the module
 # boundary. The output timings vary, so assert the stable report fragments.
@@ -767,6 +793,33 @@ run_accept_expect_status "hashset_managed_record_elem" 0
 # Owned-key drop ratchet: insert/overwrite/remove/free churn of owned string
 # keys. Verified clean under the guard allocator (MallocScribble / GuardEdges).
 run_accept_expect_status "hashmap_managed_key_drop" 0
+# Borrowed-string ingress: a `string` key/value/element that reaches the MOVE
+# ingress through a by-value `string` parameter is retained before the move, so
+# the collection and the caller each release exactly one count. Regressing the
+# retain aborts at teardown with a `free_cstring` sentinel failure AFTER the
+# fixture prints correct output, so the stdout diff alone is not the oracle —
+# the exit status is.
+run_accept_expect_stdout "hashmap_borrowed_string_key_ingress"
+# Carrier-general borrowed ingress: a by-value `bytes` parameter entering a
+# HashMap VALUE slot is retained like the string case, and a REASSIGNED
+# parameter (a fresh frame-owned generation) is consumed, not retained.
+run_accept_expect_stdout "collection_borrowed_bytes_reassign_ingress"
+# VecIter string yield binder: consuming uses lower as retain-backed shares
+# (if-conditional map ingress before an abandonment point, match-arm assign,
+# var assign in the loop, break / return exits) with exactly-once release.
+run_accept_expect_stdout "vec_iter_yield_string_share"
+# Negative cells: the retain paths must not blanket-disable the consume
+# authorities. An owned string double-inserted is still a use-after-consume...
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_owned_string_double_insert.hew" \
+  "used after it was consumed" \
+  "hashmap_owned_string_double_insert"
+# ...and a NON-CoW yield binder (Vec<i64> element) conditionally moved across
+# an abandonment point still hits the vec-iter abandonment wall.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_iter_yield_owned_conditional_move.hew" \
+  "conditionally moved VecIter yield across an abandonment point" \
+  "vec_iter_yield_owned_conditional_move"
 # Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \
@@ -848,6 +901,16 @@ run_accept_expect_stdout "sink_half_in_actor_state"
 # caller-visible, so the widened ineffective-var guard must leave it alone and
 # both writes must reach the caller. Exact-stdout oracle: `9` then `3`.
 run_accept_expect_stdout "var_vec_param_caller_visible"
+
+# Printing a borrowed carrier parameter. `println`/`print`/`+` on a by-value
+# `string` parameter reached MIR as `CallAuthority::Direct`, which poisoned the
+# parameter's boundary mode to `RejectUnprovenRepresentationMutation` and failed
+# closed at direct-call codegen — one stage past `hew check`, so this must stay
+# an execution oracle. Covers both print rows, `string_concat`, a non-zero
+# parameter index, `var`, a three-deep helper chain, the f-string twin, a heap
+# string still readable in the caller after eight borrows, and the `bytes` /
+# `Vec` / `HashMap` carrier classes crossing the same boundary.
+run_accept_expect_stdout "print_borrowed_carrier_param"
 
 # #2821 reverse direction: a record can contain both private value storage and
 # caller-shared collection handles. These concrete Vec/HashMap projections cross
@@ -1140,6 +1203,37 @@ run_accept_expect_stdout "user_resource_close_multiple_types"
 # prints `7` twice and aborts at the resource sentinel. (Cross-eco security
 # gate bug 1.)
 run_accept_expect_stdout "resource_nonreceiver_method_arg_drops_once"
+
+# Drop-obligation lattice, `MachineStatePayload` position: a `#[resource]` /
+# `#[linear]` value in a machine state payload has no wired release on
+# transition or scope exit, so the declaration is rejected rather than leaking
+# its `close` silently. Three shapes pin the fail-closed floor: a reenter that
+# carries the handle through, a scope exit holding the handle live, and a
+# resource beside a heap-owning sibling (one diagnostic per offending state).
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_reenter.hew" \
+  'machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_reenter"
+echo "PASS machine_state_resource_payload_reenter (reject)"
+
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_scope_exit.hew" \
+  'machine `ConnSession` state `Active` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_scope_exit"
+echo "PASS machine_state_resource_payload_scope_exit (reject)"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
+  2 \
+  "machine_state_resource_payload_heap_sibling"
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew" \
+  'machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`' \
+  "machine_state_resource_payload_heap_sibling"
+echo "PASS machine_state_resource_payload_heap_sibling (reject)"
 
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
@@ -4949,6 +5043,55 @@ run_check_run_expect_stdout file_import_trait_impl
 # fail-closed with MethodCallNoRewrite. The fixture exercises both a leaf
 # default and a Self-dispatching one.
 run_check_run_expect_stdout file_import_trait_default_method
+
+# Regression: the same guarantee across a DIRECTORY MODULE. The trait and its
+# defaults are declared in the module's entry file; the implementing type and
+# its `impl` live in a peer file. Two gaps compounded: the checker published a
+# materialised default only onto the BARE `Dog` type entry, never onto the
+# declaring module's `greeting.Dog` entry a qualified receiver resolves
+# through ("no method `greet` on `greeting.Dog`"); and HIR's pre-lowering body
+# plan covered only an impl's EXPLICIT methods, so a root call to a default
+# was lowered before the module's body emission and failed closed with
+# `CallableUnsupportedInMir`. Calls from both the root and inside the module
+# are exercised.
+run_check_run_expect_stdout dir_module_trait_default/main
+
+# Regression: two peer files of a directory module that declare same-shaped
+# types at the same byte offsets must keep DISTINCT type identities. A
+# directory module assembles its peer `.hew` files into one module whose items
+# keep file-relative spans, while the checker keyed facts by
+# `(byte range, module index)` — one index per MODULE, so byte-parallel peers
+# shared keys. `make_cat` was recorded as returning `Dog` and codegen aborted
+# with `Move type mismatch: src=%zoo.Dog dest=%zoo.Cat`. The fixture's peer
+# files are byte-for-byte parallel on purpose; it covers a string leaf and a
+# scalar leaf.
+#
+# The parallelism IS the test: if the peers stop sharing byte offsets, the
+# fixture still compiles and still prints the expected output even with the
+# fix reverted, because the old per-module key no longer collides. A comment
+# asking future editors to preserve the alignment is not enough, so assert it.
+# Equal per-line byte lengths imply equal declaration offsets, and any edit
+# that shifts a span in one peer without the other fails here with a message
+# saying why the alignment matters.
+assert_peer_files_offset_aligned() {
+  local a="$1" b="$2"
+  local la lb
+  la=$(awk '{ print length($0) }' "$a")
+  lb=$(awk '{ print length($0) }' "$b")
+  if [[ "$la" != "$lb" ]]; then
+    echo "FAIL peer-offset-alignment: $a and $b no longer line up byte-for-byte." >&2
+    echo "  These peers must keep identical per-line lengths so their declarations" >&2
+    echo "  sit at identical byte offsets. That collision is what the fixture" >&2
+    echo "  exercises; without it the test passes even with the fix reverted." >&2
+    diff <(printf '%s\n' "$la") <(printf '%s\n' "$lb") >&2 || true
+    exit 1
+  fi
+}
+_peer_dir="${ROOT}/tests/vertical-slice/accept/dir_module_peer_span_identity/zoo"
+assert_peer_files_offset_aligned "$_peer_dir/dog.hew" "$_peer_dir/cat.hew"
+assert_peer_files_offset_aligned "$_peer_dir/num.hew" "$_peer_dir/cnt.hew"
+unset _peer_dir
+run_check_run_expect_stdout dir_module_peer_span_identity/main
 
 # Regression probe: a materialised default body that names TRAIT-FILE-LOCAL
 # declarations (constructs a type and calls a free function declared beside

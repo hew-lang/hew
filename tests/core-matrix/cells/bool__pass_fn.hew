@@ -1,0 +1,8 @@
+fn use_it(v: bool) {
+    println(f"{v}");
+}
+
+fn main() {
+    let x: bool = true;
+    use_it(x);
+}

@@ -1,0 +1,13 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+fn main() {
+    let x = spawn Echo(seen: 0);
+    println(f"v={x}");
+}

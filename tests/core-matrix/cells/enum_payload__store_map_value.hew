@@ -1,0 +1,21 @@
+enum Shape {
+    Empty;
+    Circle(i64);
+    Rect { w: i64; h: i64 }
+}
+
+fn main() {
+    let x: Shape = Circle(3);
+    let m: HashMap<string, Shape> = HashMap::new();
+    m.insert("k", x);
+    match m.get("k") {
+        Some(e) => {
+            match e {
+                Empty => println("empty"),
+                Circle(e_r) => println(f"circle {e_r}"),
+                Rect { w, h } => println(f"rect {w}x{h}"),
+            }
+        },
+        None => println("missing"),
+    }
+}

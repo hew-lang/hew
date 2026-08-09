@@ -1,0 +1,8 @@
+fn main() {
+    let b: bytes = bytes::new();
+    b.push(65);
+    b.push(66);
+    let a = b[0];
+    let c = b[1];
+    println(f"{a} {c}");
+}

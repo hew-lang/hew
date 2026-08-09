@@ -1,0 +1,22 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn run() -> i64 {
+    let h: Result<Tok, string> = Ok(Tok { id: 1 });
+    let v: Vec<i64> = Vec::new();
+    println("before trap");
+    v[3]
+}
+
+fn main() {
+    let n = run();
+    println(f"n={n}");
+}

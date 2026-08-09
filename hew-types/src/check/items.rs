@@ -33,6 +33,7 @@ impl Checker {
             Item::Machine(md) => {
                 if !crate::ty::is_reserved_type_name(&md.name) {
                     self.check_machine_exhaustiveness(md, span);
+                    self.check_machine_state_resource_payloads(&md.name, span);
                 }
             }
             Item::Trait(td) => {

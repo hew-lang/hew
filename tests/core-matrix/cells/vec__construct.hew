@@ -1,0 +1,8 @@
+fn main() {
+    let x: Vec<i64> = Vec::new();
+    x.push(10);
+    x.push(20);
+    let x_l = x.len();
+    let x_0 = x[0];
+    println(f"len={x_l} v0={x_0}");
+}

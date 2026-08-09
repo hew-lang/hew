@@ -1,0 +1,15 @@
+type Rec {
+    a: i64;
+    b: string;
+}
+
+fn use_it(v: Rec) {
+    let v_a = v.a;
+    let v_b = v.b;
+    println(f"{v_a} {v_b}");
+}
+
+fn main() {
+    let x = Rec { a: 1, b: "x0" };
+    use_it(x);
+}

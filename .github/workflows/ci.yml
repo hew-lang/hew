@@ -253,6 +253,9 @@ jobs:
       - name: Check .hew formatting
         run: make hew-fmt-check
 
+      - name: Prove .hew formatter behaviour preservation
+        run: make hew-fmt-property
+
       - name: Install SARIF tools
         run: |
           gh release download clippy-sarif-latest --repo psastras/sarif-rs \
@@ -644,6 +647,17 @@ jobs:
         env:
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: make test-hew-ratchet
+
+      - name: Run the core matrix (primitive x operation)
+        if: env.RUN_CODE_PATH == 'true'
+        # Every core primitive crossed with every common operation, one
+        # runnable program per cell, asserting the exact value and -- where the
+        # row carries a `#[resource]` whose close prints -- exactly-once
+        # release. tests/core-matrix/matrix.tsv records what each cell does
+        # today; this step fails on drift in either direction, so a cell cannot
+        # silently regress and a cell that starts passing forces the table to
+        # be re-recorded.
+        run: make test-core-matrix
 
       - name: Run -O0-vs-O2 differential-exec parity gate
         if: env.RUN_CODE_PATH == 'true'

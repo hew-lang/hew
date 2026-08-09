@@ -120,8 +120,8 @@ fn i64_scalar_element_admitted() {
 
 /// Build a `Builder` with a HEAP-payload `indirect enum Foo { A(string); B }`
 /// registered. Unlike the scalar-payload enum, its `A(string)` payload owns
-/// heap, so `named_elem_owns_heap(Foo)` is `true` — the case the
-/// scalar-only `!named_elem_owns_heap` guard in `elem_is_owned_abi_releasable`
+/// heap, so `named_elem_carries_drop_obligation(Foo)` is `true` — the case the
+/// scalar-only `!named_elem_carries_drop_obligation` guard in `elem_is_owned_abi_releasable`
 /// used to miss, letting a heap-payload `Vec<indirect_enum>` reach codegen
 /// with a construct/release ABI mismatch. The explicit `ty_is_indirect_enum`
 /// guard now keeps it on the fail-closed reject.
@@ -150,8 +150,8 @@ fn builder_with_heap_payload_indirect_enum() -> Builder {
 
 /// Regression (heap-payload indirect enum): a `Vec<indirect enum Foo {
 /// A(string); B }>` must be rejected. Its `A(string)` payload owns heap, so
-/// `named_elem_owns_heap(Foo)` is `true` and the element is NOT excluded by
-/// the `!named_elem_owns_heap` check — yet an indirect-enum `Vec` rides the
+/// `named_elem_carries_drop_obligation(Foo)` is `true` and the element is NOT excluded by
+/// the `!named_elem_carries_drop_obligation` check — yet an indirect-enum `Vec` rides the
 /// plain pointer ABI (`hew_vec_new_ptr`) while `hew_vec_free_owned` has no
 /// indirect-aware per-element node free, so admitting it as owned-ABI
 /// releasable would ship a construct/release ABI mismatch to codegen. The
@@ -166,7 +166,7 @@ fn heap_payload_indirect_enum_vec_element_rejected() {
     // The payload owns heap — the scalar-only guard would NOT have excluded
     // this element, so the reject depends on the explicit indirect-enum guard.
     assert!(
-        builder.named_elem_owns_heap(&foo),
+        builder.named_elem_carries_drop_obligation(&foo),
         "indirect enum Foo {{ A(string); B }}: the A(string) payload owns heap"
     );
     assert!(
@@ -448,7 +448,7 @@ fn release_bucket_partition_is_total_over_vec_elements() {
     let assert_disposition = |elem: ResolvedTy, want: VecElementRelease| {
         let v = vec_of_ty(elem.clone());
         assert!(
-            builder.named_elem_owns_heap(&v),
+            builder.named_elem_carries_drop_obligation(&v),
             "ty_owns_heap(Vec<{elem:?}>) must be true — the outer Vec owns its buffer"
         );
         assert_eq!(
@@ -485,7 +485,7 @@ fn release_bucket_partition_is_total_over_vec_elements() {
         ResolvedTy::String,
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
         // Heap-free direct enums: never `ValueClass::BitCopy`, claimed by
-        // the Plain bucket through `!named_elem_owns_heap` instead.
+        // the Plain bucket through `!named_elem_carries_drop_obligation` instead.
         unregistered_named("Colour"),
         unregistered_named("Tone"),
         // A tuple containing a heap-free direct enum is all-`BitCopy` too.

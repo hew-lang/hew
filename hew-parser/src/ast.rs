@@ -1569,6 +1569,20 @@ pub struct MachineEvent {
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
 }
 
+/// Authored syntax used for a machine transition body.
+///
+/// Transition lowering stores every form in `MachineTransition::body`, and
+/// event-head bindings can wrap an expression form in a block. Retaining the
+/// source form prevents consumers such as the formatter from mistaking an
+/// explicit block for payload shorthand after that desugaring.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MachineTransitionBodyForm {
+    Implicit,
+    PayloadShorthand,
+    #[default]
+    Block,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineTransition {
     pub event_name: String,
@@ -1593,6 +1607,10 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
+    /// Surface form authored after the transition head. The expression in
+    /// `body` alone cannot preserve this distinction after parser desugaring.
+    #[serde(default)]
+    pub body_form: MachineTransitionBodyForm,
     /// When true, a self-transition (`source == target`) explicitly opts in to
     /// Mealy re-entry semantics: the source `exit` block and target `entry` block
     /// both run even though the state does not change.  Written as the `reenter`

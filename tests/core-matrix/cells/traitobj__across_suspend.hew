@@ -1,0 +1,48 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type P {
+    n: string;
+}
+
+impl Named for P {
+    fn name(val: P) -> string {
+        val.n
+    }
+}
+
+type Q {
+    n: string;
+}
+
+impl Named for Q {
+    fn name(val: Q) -> string {
+        val.n
+    }
+}
+
+fn show_named(v: dyn Named) {
+    let s = v.name();
+    println(s);
+}
+
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: dyn Named) -> i64 {
+        sleep(2ms);
+        show_named(v);
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x: dyn Named = P { n: "p0" };
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

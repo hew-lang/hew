@@ -1,0 +1,11 @@
+fn main() {
+    let x: bool = true;
+    let m: HashMap<string, bool> = HashMap::new();
+    m.insert("k", x);
+    match m.get("k") {
+        Some(e) => {
+            println(f"{e}");
+        },
+        None => println("missing"),
+    }
+}

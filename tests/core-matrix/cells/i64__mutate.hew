@@ -1,0 +1,5 @@
+fn main() {
+    var x: i64 = 42;
+    x = 43;
+    println(f"{x}");
+}

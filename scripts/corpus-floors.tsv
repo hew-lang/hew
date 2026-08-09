@@ -31,9 +31,10 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	58	-	golden-MIR fixtures under examples/v05/checked-mir
-ci-parity-marked-steps	exact	34	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
-ci-required-checks	exact	38	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
-corpus-floor-registry	exact	26	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
+ci-parity-marked-steps	exact	35	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
+ci-required-checks	exact	40	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
+core-matrix-cells	exact	378	-	core-matrix cells under tests/core-matrix/cells (primitive x operation), each with a paired .expected oracle
+corpus-floor-registry	exact	28	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	exact	70	-	examples/*.hew programs (filter-discovered: category exclusions, `fn main` required) the runtime coverage execution proof builds and runs
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
 ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
@@ -41,10 +42,11 @@ fuzz-oracle-candidates	min	646	120	ratcheted candidates collected by the fuzz-to
 fuzz-seed-corpus	min	699	120	source seeds hydrated into the parser fuzz corpus
 hew-corpus-check-files	min	1685	250	tracked .hew files swept by scripts/hew-corpus-check.sh
 hew-fmt-check-files	min	648	150	std/ and examples/ .hew sources checked by make hew-fmt-check
+hew-fmt-property-files	min	1774	200	compilable tracked corpus files formatted, rechecked, and checked for idempotence
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
-macos-leak-oracle-binaries	exact	111	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
-macos-leak-oracle-tests	exact	743	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-binaries	exact	114	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-tests	exact	753	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 opaque-resource-lifecycle-facts	exact	17	-	AST-derived shipped empty opaque resource declarations with one close/release/producer lifecycle
 runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus

@@ -271,6 +271,11 @@ fn make_agent() -> ureq::Agent {
         } else {
             None
         })
+        // Non-2xx responses still carry a body the caller may need (e.g. a
+        // JSON error payload on a 404). ureq's default turns 4xx/5xx into
+        // `Err(Error::StatusCode)`, which discards the body entirely — route
+        // every status through `Ok` and let `finish_response` read it.
+        .http_status_as_error(false)
         .build();
     ureq::Agent::new_with_config(config)
 }
@@ -317,9 +322,9 @@ fn send_request(
                 .fold(req, |request, (name, value)| request.header(name, value));
             match req.call() {
                 Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => {
-                    build_response(i32::from(code), "", std::ptr::null_mut())
-                }
+                // `make_agent` disables `http_status_as_error`, so this arm
+                // is unreachable via a real HTTP status — kept as a fail-closed
+                // fallback in case a future ureq version reintroduces it.
                 Err(e) => error_response(&e.to_string()),
             }
         }
@@ -334,9 +339,9 @@ fn send_request(
                 .fold(req, |request, (name, value)| request.header(name, value));
             match req.send(body.unwrap_or(b"")) {
                 Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => {
-                    build_response(i32::from(code), "", std::ptr::null_mut())
-                }
+                // `make_agent` disables `http_status_as_error`, so this arm
+                // is unreachable via a real HTTP status — kept as a fail-closed
+                // fallback in case a future ureq version reintroduces it.
                 Err(e) => error_response(&e.to_string()),
             }
         }
@@ -1639,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback_get_404_returns_status_with_empty_body() {
+    fn loopback_get_404_returns_status_with_body() {
         let (addr, handle) = start_echo_server(404, "not found");
         let url = CString::new(format!("{addr}/missing")).unwrap();
         // SAFETY: url is a valid C string.
@@ -1647,10 +1652,11 @@ mod tests {
         assert!(!resp.is_null());
         // SAFETY: resp is a valid response.
         let (status, body) = unsafe { take_response(resp) };
-        // ureq treats 4xx as Error::StatusCode, so hew_http_get builds
-        // a response with the status code but empty body.
+        // `make_agent` disables ureq's `http_status_as_error`, so a 4xx/5xx
+        // status still routes through `finish_response` and the server's
+        // actual body is preserved, not discarded.
         assert_eq!(status, 404);
-        assert!(body.is_empty());
+        assert_eq!(body, "not found");
         handle.join().unwrap();
     }
 

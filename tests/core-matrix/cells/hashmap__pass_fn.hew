@@ -1,0 +1,12 @@
+fn use_it(v: HashMap<string, i64>) {
+    let v_l = v.len();
+    let v_a = match v.get("a") { Some(v_g) => v_g, None => -1, };
+    println(f"len={v_l} a={v_a}");
+}
+
+fn main() {
+    let x: HashMap<string, i64> = HashMap::new();
+    x.insert("a", 1);
+    x.insert("b", 2);
+    use_it(x);
+}

@@ -511,27 +511,44 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
             Untracked,
         ),
 
+        // Collection lookup/remove reads borrow arg[0] AND their lookup key:
+        // the `hew-cabi` map contract (hew-cabi/src/map.rs, "Runtime kernel
+        // C ABI" table) pins the lookup K as **borrowed** for `_get_layout` /
+        // `_get_clone_layout` / `_contains*` and "untouched, never dropped by
+        // the kernel" for the `_remove*` family — the caller keeps the key's
+        // drop obligation. Classifying the key `Escaping` here suppressed the
+        // caller-side release of any string keyed through a lookup (the
+        // VecIter yield binder's body-end drop being the proven leak).
+        "hew_hashmap_contains_key_layout"
+        | "hew_hashmap_get_clone_layout"
+        | "hew_hashmap_get_layout"
+        | "hew_hashmap_remove_layout"
+        | "hew_hashmap_remove_take_layout"
+        | "hew_hashset_contains_layout"
+        | "hew_hashset_remove_layout" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::COLLECTION,
+            },
+            BorrowingUse,
+            Untracked,
+        ),
+
         // Collection receiver reads and in-place mutations borrow arg[0]; tail
-        // operands remain ordinary escapes.
+        // operands remain ordinary escapes — `_insert_layout` genuinely
+        // CONSUMES its key/value operands (vacant transfer per the map
+        // contract), so its string args stay `Escaping`.
         "hew_bytes_get"
         | "hew_hashmap_clear_layout"
         | "hew_hashmap_clone_layout"
-        | "hew_hashmap_contains_key_layout"
-        | "hew_hashmap_get_clone_layout"
-        | "hew_hashmap_get_layout"
         | "hew_hashmap_insert_layout"
         | "hew_hashmap_keys_layout"
         | "hew_hashmap_len_layout"
-        | "hew_hashmap_remove_layout"
-        | "hew_hashmap_remove_take_layout"
         | "hew_hashmap_values_layout"
         | "hew_hashset_clear_layout"
         | "hew_hashset_clone_layout"
-        | "hew_hashset_contains_layout"
         | "hew_hashset_insert_layout"
         | "hew_hashset_is_empty_layout"
         | "hew_hashset_len_layout"
-        | "hew_hashset_remove_layout"
         | "hew_hashset_to_vec_layout"
         | "hew_string_get" => CalleeOwnershipContract::new(
             BorrowsReceiver {

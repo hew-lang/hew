@@ -1,0 +1,12 @@
+fn use_it(v: bytes) {
+    let v_l = v.len();
+    let v_0 = v[0];
+    println(f"len={v_l} b0={v_0}");
+}
+
+fn main() {
+    let x: bytes = bytes::new();
+    x.push(65);
+    x.push(66);
+    use_it(x);
+}

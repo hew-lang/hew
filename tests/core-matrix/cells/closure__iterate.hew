@@ -1,0 +1,11 @@
+fn main() {
+    let a = |v: i64| v * 2;
+    let b = |v: i64| v * 3;
+    let v: Vec<fn(i64) -> i64> = Vec::new();
+    v.push(a);
+    v.push(b);
+    for e in v {
+        let e_r = e(21);
+        println(f"{e_r}");
+    }
+}

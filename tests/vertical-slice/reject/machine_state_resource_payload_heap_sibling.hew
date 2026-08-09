@@ -1,0 +1,64 @@
+// The machine-state resource rejection fires per offending state, and a
+// `#[resource]` beside a heap-owning sibling in the same payload is still a
+// rejection — the marker veto does not depend on the payload being
+// resource-only. Two machines, two diagnostics, one per held state.
+//
+// Expected diagnostics:
+//   machine `Mixed` state `Active` holds `#[resource]`/`#[linear]` value `Handle`
+//   machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl Handle {
+    fn close(self) {
+        println(f"CLOSE fd={self.fd}");
+    }
+}
+
+machine Mixed {
+    events {
+        Open { fd: i64; }
+        Touch;
+    }
+
+    state Idle;
+    state Active { h: Handle; label: string; }
+
+    on Open(fd): Idle => Active {
+        Active { h: Handle { fd: fd }, label: "conn".to_upper() }
+    }
+    on Touch: Active => Active reenter {
+        Active { h: self.h, label: self.label }
+    }
+
+    default { state }
+}
+
+machine Plain {
+    events {
+        Open { fd: i64; }
+        Shut;
+    }
+
+    state Idle;
+    state Live { h: Handle; }
+
+    on Open(fd): Idle => Live {
+        Live { h: Handle { fd: fd } }
+    }
+    on Shut: Live => Idle {
+        Idle
+    }
+
+    default { state }
+}
+
+fn main() {
+    var s = Mixed::Idle;
+    s.step(MixedEvent::Open { fd: 7 });
+    var p = Plain::Idle;
+    p.step(PlainEvent::Open { fd: 8 });
+    p.step(PlainEvent::Shut);
+}

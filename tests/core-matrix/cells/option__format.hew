@@ -1,0 +1,4 @@
+fn main() {
+    let x: Option<i64> = Some(5);
+    println(f"v={x}");
+}

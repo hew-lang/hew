@@ -1,0 +1,32 @@
+#[opaque]
+type DqH {
+}
+
+#[resource]
+type Dq {
+    handle: DqH;
+    tag: i64;
+}
+
+impl Dq {
+    fn close(self) {
+        unsafe { hew_deque_free(self.handle) };
+        println(f"close {self.tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> DqH;
+    fn hew_deque_free(dq: DqH);
+    fn hew_deque_len(dq: DqH) -> i64;
+}
+
+fn main() {
+    let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
+    let y = Dq { handle: unsafe { hew_deque_new() }, tag: 2 };
+    let v: Vec<Dq> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

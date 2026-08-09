@@ -609,6 +609,20 @@ def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
     )
+    assert "make hew-fmt-property" in result.stdout, result.stdout
+
+
+def test_parser_path_runs_formatter_property() -> None:
+    result = run_dispatcher("hew-parser/src/fmt.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: parser" in result.stdout, result.stdout
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+
+
+def test_vertical_slice_source_runs_formatter_property() -> None:
+    result = run_dispatcher("tests/vertical-slice/accept/example.hew")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
 
 
 def test_std_hew_file_adds_hew_suite_addon() -> None:
@@ -643,6 +657,7 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
     test_pos = result.stdout.index("  - make test")
@@ -840,6 +855,8 @@ _TESTS = [
     test_fallback_lane_includes_smoke_tier_before_heavy,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
     test_hew_tests_path_routes_to_hew_tests_lane,
+    test_parser_path_runs_formatter_property,
+    test_vertical_slice_source_runs_formatter_property,
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
     test_stdlib_execution_proof_authorities_route_to_their_gate,

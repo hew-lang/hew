@@ -1,0 +1,5 @@
+fn main() {
+    let x: f64 = 3.5;
+    let y = x;
+    println(f"{y}");
+}

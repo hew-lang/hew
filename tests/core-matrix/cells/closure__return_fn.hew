@@ -1,0 +1,10 @@
+fn make() -> fn(i64) -> i64 {
+    let m = |v: i64| v * 2;
+    m
+}
+
+fn main() {
+    let x = make();
+    let x_r = x(21);
+    println(f"{x_r}");
+}

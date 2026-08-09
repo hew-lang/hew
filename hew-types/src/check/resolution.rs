@@ -444,7 +444,36 @@ impl Checker {
         // presentation through the general unique-owner fallback would turn
         // it into a source nominal after the lexical authority has gone away.
         // Non-root stdlib bodies keep their owner through the branch above.
+        //
+        // A USER declaration whose bare leaf collides with a builtin name is
+        // the exception: a file-imported `type Result` shadows the prelude
+        // enum, and its layout registration is keyed by the declaring file's
+        // full owner (`lib.Result`). Keeping the spelling bare here hands MIR
+        // a field-order key its registration can never match. Yield to a
+        // unique NON-builtin, non-stdlib declaration owner — exactly the
+        // qualification every non-builtin-shaped leaf receives below — and
+        // keep the builtin presentation only when no such user owner exists.
         if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
+            // Root's bare namespace IS the file-import namespace (#2208): a
+            // package import can only claim this leaf through an explicit
+            // qualified spelling, so only a flat-file-import declaration
+            // competes with the builtin presentation here. Exactly one such
+            // owner wins; zero (or an ambiguous set) keeps the builtin.
+            let mut file_owners: Vec<String> = self
+                .registered_type_owners(name)
+                .into_iter()
+                .filter(|owner| {
+                    owner.rsplit_once('.').is_some_and(|(module, _)| {
+                        self.flat_file_import_module_names.contains(module)
+                    }) && self.type_defs.contains_key(owner)
+                        && self.resolved_builtin_type(owner).is_none()
+                })
+                .collect();
+            file_owners.sort_unstable();
+            file_owners.dedup();
+            if let [only] = file_owners.as_slice() {
+                return Some(only.clone());
+            }
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified
@@ -462,6 +491,16 @@ impl Checker {
         // Ambiguous (>1 owner) or none → leave bare and let the exact / builtin
         // compare fail closed (a genuinely ambiguous bare reference is a
         // resolution error, not something to silently pick a winner for).
+        match self.registered_type_owners(name).as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    /// Every distinct module-qualified declaration owner registered for a bare
+    /// leaf `name`, collapsed through proven owner bindings so compatibility
+    /// and canonical registrations of one declaration count once.
+    fn registered_type_owners(&self, name: &str) -> Vec<String> {
         let mut owners: Vec<&String> = self
             .type_defs
             .keys()
@@ -495,10 +534,7 @@ impl Checker {
             .collect();
         canonical_owners.sort_unstable();
         canonical_owners.dedup();
-        match canonical_owners.as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        }
+        canonical_owners
     }
 
     /// Resolve the exact source owner written before a variant surface's final

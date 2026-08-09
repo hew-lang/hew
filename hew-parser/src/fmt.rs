@@ -9,12 +9,12 @@ use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
-    MachineState, MachineTransition, MatchArm, NamingCase, OverflowPolicy, Param, Pattern,
-    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm,
-    ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WireMetadata,
+    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    RestartPolicy, SelectArm, ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -1322,34 +1322,42 @@ impl<'a> Formatter<'a> {
                 Self::strip_event_binding_prelude(after_hooks, &transition.event_bindings);
             &stripped_body
         };
-        let is_implicit_body = matches!(body_expr,
-            Expr::Identifier(name) if name == &transition.target_state);
-        if is_implicit_body {
-            self.write(";");
-        } else if let Expr::StructInit { name, fields, .. } = body_expr {
-            if name == &transition.target_state {
-                self.write(" { ");
-                for (i, (fname, fval)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
+        match transition.body_form {
+            MachineTransitionBodyForm::Implicit => self.write(";"),
+            MachineTransitionBodyForm::PayloadShorthand => {
+                let Expr::StructInit { name, fields, .. } = body_expr else {
+                    self.write(" { ");
+                    self.format_expr(body_expr);
+                    self.write(" }");
+                    return;
+                };
+                if name == &transition.target_state {
+                    self.write(" { ");
+                    for (i, (fname, fval)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(fname);
+                        self.write(": ");
+                        self.format_expr(&fval.0);
                     }
-                    self.write(fname);
-                    self.write(": ");
-                    self.format_expr(&fval.0);
+                    self.write(" }");
+                } else {
+                    self.write(" { ");
+                    self.format_expr(body_expr);
+                    self.write(" }");
                 }
-                self.write(" }");
-            } else {
-                self.write(" { ");
-                self.format_expr(body_expr);
-                self.write(" }");
             }
-        } else if let Expr::Block(block) = body_expr {
-            self.write(" ");
-            self.format_block(block, span_end);
-        } else {
-            self.write(" { ");
-            self.format_expr(body_expr);
-            self.write(" }");
+            MachineTransitionBodyForm::Block => {
+                self.write(" ");
+                if let Expr::Block(block) = body_expr {
+                    self.format_block(block, span_end);
+                } else {
+                    self.write("{ ");
+                    self.format_expr(body_expr);
+                    self.write(" }");
+                }
+            }
         }
     }
 
@@ -5125,5 +5133,38 @@ supervisor Simple {
             !formatted.contains("supervisor Simple("),
             "supervisor with no config params must not emit parens; got:\n{formatted}"
         );
+    }
+
+    #[test]
+    fn transition_body_form_survives_head_binding_desugaring() {
+        let src = "\
+machine Socket {
+    events {
+        Connect { fd: i64; }
+    }
+
+    state Idle;
+    state Active { h: Handle; }
+
+    on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }
+    on Connect(fd): Active => Active { h: Handle { fd: fd } }
+    on Connect(fd): Active => Idle;
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            formatted
+                .contains("on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }"),
+            "explicit transition block must retain its outer braces; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("on Connect(fd): Active => Active { h: Handle { fd: fd } }"),
+            "payload shorthand must remain shorthand; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("on Connect(fd): Active => Idle;"),
+            "implicit transition must remain implicit; got:\n{formatted}"
+        );
+        assert_eq!(roundtrip(&formatted), formatted);
     }
 }

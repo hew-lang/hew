@@ -1,0 +1,19 @@
+fn main() {
+    let a = gen {
+        yield 1;
+        yield 2;
+    };
+    let b = gen {
+        yield 2;
+        yield 3;
+    };
+    let v: Vec<Generator<i64, ()>> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    var e_sum = 0;
+    for e_y in e {
+        e_sum = e_sum + e_y;
+    }
+    println(f"sum {e_sum}");
+}

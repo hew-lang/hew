@@ -1,0 +1,8 @@
+fn use_it(v: i32) {
+    println(f"{v}");
+}
+
+fn main() {
+    let x: i32 = 7;
+    use_it(x);
+}

@@ -1,0 +1,13 @@
+type Rec {
+    a: i64;
+    b: string;
+}
+
+fn main() {
+    let a = Rec { a: 1, b: "x0" };
+    let b = Rec { a: 1, b: "x0" };
+    let c = Rec { a: 2, b: "x1" };
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

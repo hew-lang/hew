@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -149,6 +149,68 @@ pub struct ModuleGraph {
     pub item_sources: HashMap<String, Vec<PathBuf>>,
 }
 
+// ── FileSpanIndices ──────────────────────────────────────────────────
+
+/// One span-key discriminator per SOURCE FILE in a module graph.
+///
+/// The checker keys every recorded fact by `(byte range, index)`. A byte range
+/// is an offset into one FILE, so the index must discriminate files: two files
+/// with an expression at the same offset would otherwise share a key and the
+/// second would silently overwrite the first's type.
+///
+/// A per-MODULE index is not sufficient. A directory module assembles its entry
+/// file plus every peer `.hew` file into ONE module whose items keep their own
+/// file-relative spans, so two peer files with same-length declarations collide.
+/// That produced a codegen abort — `mm/dog.hew` and `mm/cat.hew` each declaring
+/// `pub type X { name: string }` plus a constructor made `make_cat` build a
+/// `Dog`, and the Move type check rejected the mismatch. Whether the collision
+/// bites depends only on byte offsets, so renaming a field appeared to "fix" it.
+///
+/// Every consumer that stamps or reads a span key must derive its index from
+/// this one allocation. Numbering is 1-based over the non-root modules in
+/// topological order, with a module occupying as many consecutive indices as it
+/// has source files; the root compilation unit keeps index 0.
+#[derive(Debug, Clone, Default)]
+pub struct FileSpanIndices {
+    module_base: HashMap<ModuleId, u32>,
+    item_index: HashMap<ModuleId, Vec<u32>>,
+    by_path: HashMap<PathBuf, u32>,
+    module_name: HashMap<u32, String>,
+}
+
+impl FileSpanIndices {
+    /// The index of a module's ENTRY file — the fallback for any item whose
+    /// defining file was not recorded.
+    #[must_use]
+    pub fn module_base(&self, id: &ModuleId) -> Option<u32> {
+        self.module_base.get(id).copied()
+    }
+
+    /// The index for `modules[id].items[item_idx]`, attributed to the file that
+    /// actually declares it.
+    #[must_use]
+    pub fn item_index(&self, id: &ModuleId, item_idx: usize) -> Option<u32> {
+        self.item_index
+            .get(id)
+            .and_then(|indices| indices.get(item_idx).copied())
+            .or_else(|| self.module_base(id))
+    }
+
+    /// The index for a canonical source path. First writer wins, matching the
+    /// module walk: a file reachable both on its own and as a directory
+    /// module's peer keeps the identity of whichever module was checked first.
+    #[must_use]
+    pub fn path_index(&self, path: &Path) -> Option<u32> {
+        self.by_path.get(path).copied()
+    }
+
+    /// The dotted module path that owns an index.
+    #[must_use]
+    pub fn module_name(&self, index: u32) -> Option<&str> {
+        self.module_name.get(&index).map(String::as_str)
+    }
+}
+
 impl ModuleGraph {
     #[must_use]
     pub fn new(root: ModuleId) -> Self {
@@ -166,6 +228,68 @@ impl ModuleGraph {
     #[must_use]
     pub fn item_source(&self, id: &ModuleId, item_idx: usize) -> Option<&PathBuf> {
         self.item_sources.get(&id.path.join("."))?.get(item_idx)
+    }
+
+    /// Allocate one span-key discriminator per SOURCE FILE in the graph.
+    ///
+    /// See [`FileSpanIndices`] for why the unit is a file and not a module.
+    #[must_use]
+    pub fn file_span_indices(&self) -> FileSpanIndices {
+        let mut indices = FileSpanIndices::default();
+        let mut next: u32 = 0;
+        for module_id in &self.topo_order {
+            if *module_id == self.root {
+                continue;
+            }
+            let Some(module) = self.modules.get(module_id) else {
+                // Deliberately does NOT advance the counter: an id in
+                // `topo_order` with no module entry (a dangling import that
+                // survived to lowering) must not shift the numbering on one
+                // consumer only.
+                continue;
+            };
+            let dotted = module_id.path.join(".");
+            let mut files: Vec<PathBuf> = Vec::new();
+            for path in &module.source_paths {
+                if !files.contains(path) {
+                    files.push(path.clone());
+                }
+            }
+            let base = next + 1;
+            // A module with no recorded source paths still owns exactly one
+            // index, so the numbering is independent of path bookkeeping.
+            let file_count = files.len().max(1);
+            for (offset, path) in files.iter().enumerate() {
+                let idx = base + u32::try_from(offset).unwrap_or(0);
+                indices.by_path.entry(path.clone()).or_insert(idx);
+            }
+            for offset in 0..file_count {
+                let idx = base + u32::try_from(offset).unwrap_or(0);
+                indices.module_name.insert(idx, dotted.clone());
+            }
+            next += u32::try_from(file_count).unwrap_or(1);
+            indices.module_base.insert(module_id.clone(), base);
+
+            // Per-item indices. An item with no recorded source (or one naming
+            // a file outside `source_paths`) belongs to the module's entry
+            // file, which is `base`.
+            let sources = self.item_sources.get(&dotted);
+            let item_indices: Vec<u32> = (0..module.items.len())
+                .map(|item_idx| {
+                    sources
+                        .and_then(|paths| paths.get(item_idx))
+                        .and_then(|path| {
+                            files
+                                .iter()
+                                .position(|candidate| candidate == path)
+                                .map(|offset| base + u32::try_from(offset).unwrap_or(0))
+                        })
+                        .unwrap_or(base)
+                })
+                .collect();
+            indices.item_index.insert(module_id.clone(), item_indices);
+        }
+        indices
     }
 
     /// Insert a module into the graph.

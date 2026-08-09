@@ -5706,6 +5706,10 @@ impl Checker {
     /// Pass 2: Collect function signatures
     pub(super) fn collect_functions(&mut self, program: &Program) {
         let flat_file_import_modules = flat_file_import_module_ids(program);
+        self.flat_file_import_module_names = flat_file_import_modules
+            .iter()
+            .map(|module_id| module_id.path.join("."))
+            .collect();
         // Process module graph items first (if multi-module).
         // Skip the root module — its items are already in program.items and
         // will be processed below with current_module = None (bare names).
@@ -6130,19 +6134,18 @@ impl Checker {
                                     );
                                     self.publish_impl_method_declaration_id(&keys, &declaration);
                                 }
-                                if let Some(td) = self.lookup_type_def_mut(type_name) {
-                                    td.methods.insert(
-                                        m.name.clone(),
-                                        FnSig {
-                                            param_names,
-                                            params,
-                                            return_type,
-                                            consumes_receiver,
-                                            returns_receiver_identity,
-                                            ..FnSig::default()
-                                        },
-                                    );
-                                }
+                                self.publish_impl_method_sig(
+                                    type_name,
+                                    &m.name,
+                                    &FnSig {
+                                        param_names,
+                                        params,
+                                        return_type,
+                                        consumes_receiver,
+                                        returns_receiver_identity,
+                                        ..FnSig::default()
+                                    },
+                                );
                             }
                         }
                     }
@@ -7365,21 +7368,7 @@ impl Checker {
                 .insert(method_key.clone(), origin.clone());
             self.extern_method_origins.insert(registered_key, origin);
         }
-        if let Some(td) = self.lookup_type_def_mut(type_name) {
-            td.methods.insert(method.name.clone(), sig.clone());
-        }
-        // The bare type table is a compatibility surface and is
-        // last-writer-wins across modules. Attach the method to the declaring
-        // module's exact type definition as well; qualified receivers must
-        // never recover methods through the polluted bare entry.
-        if !type_name.contains('.') {
-            if let Some(module) = self.current_module.as_deref() {
-                let qualified_type = format!("{module}.{type_name}");
-                if let Some(td) = self.type_defs.get_mut(&qualified_type) {
-                    td.methods.insert(method.name.clone(), sig.clone());
-                }
-            }
-        }
+        self.publish_impl_method_sig(type_name, &method.name, &sig);
         // A `consuming self` inherent method moves its receiver at every call
         // site. Register the qualified `Type::method` name into the
         // consume-receiver set so the dispatch site marks the receiver moved
@@ -7424,6 +7413,37 @@ impl Checker {
         }
 
         sig
+    }
+
+    /// Publish one resolved impl-method signature onto every type-definition
+    /// entry a receiver can be spelled through.
+    ///
+    /// Two entries exist for a module-declared type: the BARE compatibility
+    /// entry (`Dog`) and the declaring module's exact entry (`gm.Dog`). A
+    /// receiver produced by the module's own constructor resolves through the
+    /// qualified entry, so a method published only onto the bare entry is
+    /// invisible and the call reports "no method" against the qualified type.
+    /// Explicit impl methods always published to both; materialised trait
+    /// defaults published only to the bare entry, which is why a trait default
+    /// declared in an imported module never resolved on its implementing type.
+    /// Both producers route through here so the two method classes cannot
+    /// drift apart again.
+    fn publish_impl_method_sig(&mut self, type_name: &str, method_name: &str, sig: &FnSig) {
+        if let Some(td) = self.lookup_type_def_mut(type_name) {
+            td.methods.insert(method_name.to_string(), sig.clone());
+        }
+        // The bare type table is a compatibility surface and is
+        // last-writer-wins across modules. Attach the method to the declaring
+        // module's exact type definition as well; qualified receivers must
+        // never recover methods through the polluted bare entry.
+        if !type_name.contains('.') {
+            if let Some(module) = self.current_module.clone() {
+                let qualified_type = format!("{module}.{type_name}");
+                if let Some(td) = self.type_defs.get_mut(&qualified_type) {
+                    td.methods.insert(method_name.to_string(), sig.clone());
+                }
+            }
+        }
     }
 
     /// Derive every key one impl method's declaration identity is published

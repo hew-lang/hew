@@ -10,13 +10,13 @@ pub(crate) use crate::ast::{
     ChildSpec, CompositeGroup, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy, ElseBlock,
     Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl,
     ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
-    MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase, OverflowFallback,
-    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordField,
-    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata,
+    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm,
+    ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::Token;
 use serde::Serialize;

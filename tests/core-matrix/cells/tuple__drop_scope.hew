@@ -1,0 +1,15 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let h: (i64, Tok) = (1, Tok { id: 1 });
+    println("body");
+}

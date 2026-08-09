@@ -13897,6 +13897,11 @@ fn lower_instruction_with_cancel_drops(
                 StringRetainCondition::Always => {
                     retain_string_value(fn_ctx, *value, "mir_share")?;
                 }
+                // FreshShare is a structural MIR marker; at runtime it is the
+                // same unconditional +1 as `Always`.
+                StringRetainCondition::FreshShare => {
+                    retain_string_value(fn_ctx, *value, "mir_share")?;
+                }
                 StringRetainCondition::AggregateBorrowedIngress => {
                     retain_strings_in_borrowed_aggregate(fn_ctx, *value, "mir_aggregate_share")?;
                 }
@@ -19623,22 +19628,33 @@ fn lower_closure_pair_vec_call(
             })?;
             emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
         }
-        "hew_vec_pop_ptr" => {
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[vec_ptr.into()], "vec_pop_pair")
-                .llvm_ctx("closure pair vec pop")?;
+        "hew_vec_pop_ptr" | "hew_vec_remove_at_ptr" => {
+            // Pop and remove-at share the ownership contract: the element box
+            // transfers out of the vec, the pair is unboxed into the dest,
+            // and the box itself is freed (the extracted pair keeps the env).
+            let call = if callee == "hew_vec_remove_at_ptr" {
+                let index = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{callee} index"))?;
+                fn_ctx
+                    .builder
+                    .build_call(fv, &[vec_ptr.into(), index.into()], "vec_remove_pair")
+                    .llvm_ctx("closure pair vec remove")?
+            } else {
+                fn_ctx
+                    .builder
+                    .build_call(fv, &[vec_ptr.into()], "vec_pop_pair")
+                    .llvm_ctx("closure pair vec pop")?
+            };
             let box_ptr = call
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_vec_pop_ptr returned void".into()))?
+                .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?
                 .into_pointer_value();
-            let dest = dest.copied().ok_or_else(|| {
-                CodegenError::FailClosed("hew_vec_pop_ptr: missing dest place".into())
-            })?;
+            let dest = dest
+                .copied()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{callee}: missing dest place")))?;
             emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
             // Ownership transferred out of the vec: free the element box
-            // (the popped pair keeps the env).
+            // (the extracted pair keeps the env).
             let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
             let (_, dest_ty) = place_pointer(fn_ctx, dest)?;
             let (pair_size, pair_align) = abi_size_align(dest_ty, Some(fn_ctx.target_data))?;
@@ -23857,7 +23873,7 @@ fn emit_enum_inplace_drop_call(
     place: Place,
     ty: &ResolvedTy,
 ) -> CodegenResult<()> {
-    let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, ty)?;
+    let enum_name = crate::layout::inplace_drop_layout_key_for_ty(fn_ctx, ty)?;
     let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &enum_name);
     if helper.count_basic_blocks() == 0 {
         return Err(CodegenError::FailClosed(format!(
@@ -24484,13 +24500,18 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
-        // A tuple element is owned when any field owns heap.
+        // A tuple element is owned when any field carries a drop obligation
+        // (heap OR a closeable `#[resource]`).
         ResolvedTy::Tuple(fields) => fields
             .iter()
-            .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, &mut HashSet::new())),
-        // A user record/enum nominal is owned when it transitively owns heap.
+            .any(|f| resolved_ty_carries_drop_obligation(fn_ctx, f)),
+        // A user record/enum nominal is owned when it transitively carries a
+        // drop obligation — the same axis the MIR harvest
+        // (`named_elem_carries_drop_obligation`) consults, so a scalar-field
+        // `#[resource]` element reaches the owned ABI whose per-element drop
+        // thunk runs its `close`.
         ResolvedTy::Named { builtin: None, .. } => {
-            resolved_ty_contains_heap_leaf(fn_ctx, elem, &mut HashSet::new())
+            resolved_ty_carries_drop_obligation(fn_ctx, elem)
         }
         // Nested collection elements (Vec<E> / HashMap / HashSet) are owned
         // heap handles — route the outer Vec through the W5.016 owned descriptor
@@ -24615,6 +24636,24 @@ pub(crate) fn resolved_ty_contains_heap_leaf(
             enum_layouts: fn_ctx.enum_layouts,
             machine_layouts: fn_ctx.machine_layouts,
         },
+    )
+}
+
+/// Structural drop-OBLIGATION check — the admission axis: heap ownership OR a
+/// registered closeable `#[resource]` (the `hew_mir::ty_carries_drop_obligation`
+/// authority over the same [`CgHeapLayouts`] adapter plus the pipeline lifecycle
+/// registry). Element/value descriptor and composite-drop admission consult
+/// THIS, not the literal-heap check: a scalar-field `#[resource]` record owns no
+/// heap yet its element drop must run `close` exactly once.
+pub(crate) fn resolved_ty_carries_drop_obligation(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> bool {
+    hew_mir::ty_carries_drop_obligation(
+        ty,
+        &CgHeapLayouts {
+            record_field_resolved_tys: fn_ctx.record_field_resolved_tys,
+            enum_layouts: fn_ctx.enum_layouts,
+            machine_layouts: fn_ctx.machine_layouts,
+        },
+        fn_ctx.lifecycle_registry,
     )
 }
 

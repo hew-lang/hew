@@ -1,0 +1,9 @@
+fn main() {
+    let x: string = "ab";
+    let y: string = "cd";
+    let v: Vec<string> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

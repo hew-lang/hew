@@ -1,0 +1,13 @@
+enum Colour {
+    Red;
+    Green;
+}
+
+fn main() {
+    let a: Colour = Red;
+    let b: Colour = Red;
+    let c: Colour = Green;
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

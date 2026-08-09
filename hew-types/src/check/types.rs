@@ -2511,6 +2511,11 @@ pub struct Checker {
     /// before HIR lowering, so their declaration IDs are root-owned even though
     /// their checker spans retain the source module index.
     pub(super) registration_is_flat_file_import: bool,
+    /// Dotted module names whose items were flattened into the root program by
+    /// a file-path import. Root's bare namespace IS these modules' namespace
+    /// (#2208): a bare root reference to a leaf they declare resolves to their
+    /// owner-qualified identity even when the leaf shadows a builtin name.
+    pub(super) flat_file_import_module_names: HashSet<String>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::caller_visible_param_projections`].
     pub(super) caller_visible_param_projections: HashSet<SpanKey>,
@@ -3545,6 +3550,7 @@ impl Checker {
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             registration_is_flat_file_import: false,
+            flat_file_import_module_names: HashSet::new(),
             caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),

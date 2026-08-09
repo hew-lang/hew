@@ -1,0 +1,115 @@
+// Accept fixture (VecIter string yield binder — retained shares, exactly-once
+// release): a `for x in <Vec<string>>` yield binder is FRAME-owned (the
+// clone-out mints a fresh count per iteration) but its release authority is
+// the per-iteration BODY-END drop, not the function-scope LIFO. An
+// ownership-transferring use of the binder therefore lowers as a
+// RETAIN-BACKED SHARE (`+1` for the destination, the binder keeps its own
+// count and its body-end release), never as a static consume: the consume
+// suppressed nothing locally, poisoned the dataflow into the
+// "conditionally moved VecIter yield across an abandonment point" NYI wall,
+// and stranded the post-pass share retain without a balancing destination
+// release (`ObligationUnderReleased`).
+//
+// Every key is a HEAP string (concatenated) so a regressed count aborts or
+// leaks rather than no-op dropping a static literal.
+//
+// Cells covered:
+//   - yield binder conditionally MOVED into a HashMap under an `if`, with a
+//     later abandonment point (an `unwrap()` trap edge) in the same body —
+//     the exact shape the NYI wall rejected;
+//   - yield binder moved on one arm of a `match`;
+//   - yield binder escaping via a `var` assigned in the loop (then returned);
+//   - yield binder abandoned via `break` and via `return` from inside the
+//     loop.
+
+fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
+    var kept: HashMap<string, i64> = HashMap::new();
+    for category in totals.keys() {
+        let cents = totals.get(category).unwrap_or(0);
+        if cents > 500 {
+            kept.insert(category, cents);
+        }
+        // Abandonment point after the conditional move: `unwrap()` lowers a
+        // trap edge inside the body region.
+        let probe = totals.get("groceries-heap".to_upper()).unwrap_or(0) + totals.len();
+        if probe < 0 {
+            return -1;
+        }
+    }
+    return kept.len();
+}
+
+fn best_category(totals: HashMap<string, i64>) -> string {
+    var best_name = "";
+    var best_cents = -1;
+    for category in totals.keys() {
+        let cents = totals.get(category).unwrap_or(0);
+        if cents > best_cents {
+            best_cents = cents;
+            best_name = category;
+        }
+    }
+    return best_name;
+}
+
+fn match_pick(names: Vec<string>) -> string {
+    var chosen = "none";
+    for name in names {
+        match name.starts_with("z") {
+            true => { chosen = name; }
+            false => {}
+        }
+    }
+    return chosen;
+}
+
+fn first_with_prefix(names: Vec<string>) -> string {
+    var found = "none";
+    for name in names {
+        if name.starts_with("b") {
+            found = name;
+            break;
+        }
+    }
+    return found;
+}
+
+fn find_over(totals: HashMap<string, i64>, floor: i64) -> string {
+    for category in totals.keys() {
+        if totals.get(category).unwrap_or(0) > floor {
+            return category;
+        }
+    }
+    return "none";
+}
+
+fn main() {
+    var totals: HashMap<string, i64> = HashMap::new();
+    totals.insert("groceries" + "-heap", 1200);
+    totals.insert("transit" + "-heap", 400);
+    totals.insert("rent" + "-heap", 90000);
+
+    let names = ["alpha" + "-heap", "beta" + "-heap", "zeta" + "-heap"];
+
+    // Loop the whole matrix so a per-iteration imbalance amplifies: a missing
+    // release trips the leak oracle's slope, a double release aborts before
+    // the final line prints.
+    var kept = 0;
+    var best = "";
+    var picked = "";
+    var broke = "";
+    var over = "";
+    for i in 0..40 {
+        kept = keep_expensive(totals.clone());
+        best = best_category(totals.clone());
+        picked = match_pick(names.clone());
+        broke = first_with_prefix(names.clone());
+        over = find_over(totals.clone(), 50000);
+    }
+    println(f"kept={kept}");
+    println(f"best={best}");
+    println(f"match={picked}");
+    println(f"break={broke}");
+    println(f"return={over}");
+    println("yield-share-ok");
+}

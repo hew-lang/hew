@@ -40,6 +40,7 @@ command_timeout_floor() {
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
         "make test-hew-ratchet") echo 600 ;;
+        "make test-core-matrix") echo 600 ;;
         "make test-o2-differential") echo 1200 ;;
         "make o2-differential-selftest") echo 30 ;;
         "make doc-ratchet-selftest") echo 45 ;;
@@ -52,6 +53,7 @@ command_timeout_floor() {
         "make checked-mir-run") echo 420 ;;
         "make ll-diff") echo 45 ;;
         "make hew-check-all") echo 300 ;;
+        "make hew-fmt-property") echo 600 ;;
         "make test-leak-oracle-selftest") echo 60 ;;
         *) echo 0 ;;
     esac
@@ -99,6 +101,7 @@ CI_REQUIRED_CHECKS=(
     "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
+    "Core matrix primitive x operation (ci.yml: make test-core-matrix)	make test-core-matrix"
     "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
     "O2-differential gate self-test (ci.yml: make o2-differential-selftest)	make o2-differential-selftest"
     "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
@@ -115,6 +118,7 @@ CI_REQUIRED_CHECKS=(
     "ll-byte-identity normaliser self-test (ci.yml: make ll-identity-selftest)	make ll-identity-selftest"
     "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
     "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
+    "Hew formatter behaviour property (ci.yml: make hew-fmt-property)	make hew-fmt-property"
     "C-ABI crate tests (ci.yml: make test-cabi)	make test-cabi"
     "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
     "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
@@ -367,7 +371,7 @@ is_vertical_slice_path() {
 
 is_hew_tests_path() {
     case "$1" in
-        tests/hew/*)
+        tests/hew/*|tests/core-matrix/*|scripts/core-matrix.py|scripts/core-matrix-gen.py)
             return 0
             ;;
     esac
@@ -518,6 +522,7 @@ needs_codegen_release_smoke=0
 needs_stdlib_lint=0
 needs_hew_suite=0
 needs_hew_corpus=0
+needs_hew_fmt_property=0
 needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
 needs_trap_fixtures=0
@@ -552,6 +557,13 @@ for path in "${CHANGED_FILES[@]}"; do
     case "$path" in
         *.hew)
             needs_hew_corpus=1
+            needs_hew_fmt_property=1
+            ;;
+    esac
+
+    case "$path" in
+        hew-parser/*|hew-cli/src/main.rs|hew-cli/src/args.rs)
+            needs_hew_fmt_property=1
             ;;
     esac
 
@@ -719,6 +731,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-parser"
+        add_command "make hew-fmt-property"
         ;;
     types)
         # Run the full frontend pipeline (hew-types + hew-hir + hew-mir) rather
@@ -744,6 +757,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-cli"
+        add_command "make hew-fmt-property"
         ;;
     compiler-pipeline)
         add_command "cargo fmt --all -- --check"
@@ -796,6 +810,7 @@ case "$LANE" in
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-hew-ratchet"
+        add_command "make test-core-matrix"
         add_command "make test-stdlib-ratchet"
         ;;
     runtime-net)
@@ -859,6 +874,7 @@ case "$LANE" in
         add_command "make test-pkg-import"
         add_command "make fuzz-oracle"
         add_command "make test-hew-ratchet"
+        add_command "make test-core-matrix"
         add_command "make test-o2-differential"
         add_command "make o2-differential-selftest"
         add_command "make test-release-workflow-contract"
@@ -872,6 +888,7 @@ case "$LANE" in
         add_command "make ll-diff"
         add_command "make ll-identity-selftest"
         add_command "make hew-check-all"
+        add_command "make hew-fmt-property"
         add_command "make test-cabi"
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
@@ -917,6 +934,12 @@ if (( needs_hew_corpus == 1 )) && [[ "$LANE" != "fallback" ]]; then
     # test suite (including hew-check-all's constituency) via make test +
     # make test-hew-ratchet.
     add_command "make hew-check-all"
+fi
+
+if (( needs_hew_fmt_property == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "parser" && "$LANE" != "cli" ]]; then
+    # Any Hew source change exercises the formatter property over the complete
+    # derived corpus, independently of the primary lane for that source file.
+    add_command "make hew-fmt-property"
 fi
 
 if (( needs_sandbox_fixture_check == 1 )); then

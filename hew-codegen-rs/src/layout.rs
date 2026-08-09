@@ -826,6 +826,34 @@ pub(crate) fn enum_layout_key_for_ty(
     enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
 }
 
+/// The in-place drop-helper key for a tagged-union value, machines included.
+///
+/// A machine is an enum at the value-classification layer, so a machine local
+/// admitted for a scope-exit release carries the same `DropKind::EnumInPlace`
+/// as a user enum. Machines are registered in `machine_layouts` under the
+/// machine-class key rather than in `enum_layouts`, so probe that registry
+/// first — the key it yields is the same one MIR's seed scan resolves through
+/// the machine enum view, so the emitted call and the synthesised
+/// `__hew_enum_drop_inplace_<key>` body cannot drift.
+///
+/// Scoped to the in-place drop caller on purpose. The other
+/// `enum_layout_key_for_ty` consumers are indirect-enum paths gated on
+/// `is_indirect_enum`, which a machine never satisfies; keeping the machine
+/// probe here rather than in the shared resolver means those paths cannot
+/// acquire a machine key by future accident.
+pub(crate) fn inplace_drop_layout_key_for_ty(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> CodegenResult<String> {
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if fn_ctx.machine_layouts.contains_key(&machine_key) {
+            return Ok(machine_key);
+        }
+    }
+    enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
+}
+
 /// `enum_layout_key_for_ty` with the enum-layout slice supplied directly, for
 /// synthesis paths that resolve the key without a live `FnCtx` (e.g. the
 /// state-clone/drop synthesis pass routing an indirect-enum child field through
@@ -2275,7 +2303,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // `LayoutManaged` (2) so the runtime's drop discipline fires; a Copy record
     // (no heap leaf) keeps Plain (0) and a null drop_fn.
     let key_drop_fn = if resolved_ty
-        .is_some_and(|rty| resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()))
+        .is_some_and(|rty| crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty))
     {
         let rty = resolved_ty.expect("heap-leaf check requires a resolved type");
         match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
@@ -2389,7 +2417,7 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
         if let Some(name) = primitive_value_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
-        if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) {
+        if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) {
             return hashmap_owned_value_layout_descriptor_ptr(fn_ctx, rty, val_ty);
         }
     }
@@ -4340,7 +4368,7 @@ fn emit_insert_overwrite_key_release(
     }
     let release = match key_ty {
         ResolvedTy::String => Some(KeyRelease::StringPtr),
-        rty if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) => {
+        rty if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) => {
             match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
                 Some((OwnedElemThunkKind::Record, record_key)) => Some(KeyRelease::RecordInPlace(
                     get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),

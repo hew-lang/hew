@@ -356,10 +356,10 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.os }}
-    # Two x86_64 runs reached the former 60-minute ceiling at 60m22s and
-    # 60m26s with workspace tests still running after 38m and 41m. 90 min
-    # adds roughly 30 minutes of finite headroom for the slower runner.
-    timeout-minutes: 90
+    # Three x86_64 runs reached 60m, 60m, and 90m with workspace tests still
+    # unfinished. Keep a finite 180-minute ceiling to obtain a completed
+    # duration from this slower runner before choosing a tighter budget.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

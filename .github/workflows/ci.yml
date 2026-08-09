@@ -195,10 +195,12 @@ jobs:
   lint:
     name: Clippy & format
     runs-on: ubuntu-24.04
-    # The formatter proof crossed 15 min on a cold runner before Clippy began.
-    # 25 min leaves bounded room for its SARIF and lint tail without masking a
-    # stuck job indefinitely.
-    timeout-minutes: 25
+    # Job 93290474020 reached the final authority-graph step at 25m17s after
+    # 308s of toolchain setup, 252s of structural lint, 131s of .hew format,
+    # 492s of formatter preservation, 167s of Clippy, and about 90s elsewhere.
+    # The graph did not complete, so 45 min leaves cold-runner headroom while
+    # retaining a finite ceiling for a stuck job.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -223,11 +225,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # A cold runner always pays this once; make structural-lint (below and
-      # in local `make lint`) provisions through the same idempotent target,
-      # so a warm cache anywhere in the chain makes this a no-op.
-      - name: Bootstrap pinned structural lint toolchain
-        run: make structural-lint-bootstrap
+      # Keep this consumer on the shared cache-backed provisioning action.
+      # The structural-lint target still verifies the pinned toolchain before
+      # it scans, so local and CI entry points retain the same safety checks.
+      - name: Provision pinned ast-grep toolchain
+        uses: ./.github/actions/setup-ast-grep
+
+      # Keep the bootstrap counterfactuals on the required job after moving
+      # provisioning into the shared action.
+      - name: Verify structural lint bootstrap contract
+        run: make test-ast-grep-contract test-structural-lint-bootstrap
 
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow

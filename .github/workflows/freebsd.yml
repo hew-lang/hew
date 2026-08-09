@@ -42,7 +42,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -51,14 +51,20 @@ jobs:
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            # Install the repository-pinned toolchain and WASI standard
+            # library through rustup, matching the other full-suite hosts.
+            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+              --default-toolchain 1.96.0 --target wasm32-wasip1
             # The debug libhew bootstrap starts the Python freshness helper,
             # which then starts Cargo. Give both child-process levels absolute
             # executables instead of depending on the SSH login environment.
-            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
-            export CARGO=/usr/local/bin/cargo
+            export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+            export CARGO="$HOME/.cargo/bin/cargo"
             export PYTHON=/usr/local/bin/python3
             test -x "$CARGO"
             test -x "$PYTHON"
+            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
+            rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
             export MAKE=gmake
             /usr/local/llvm22/bin/llvm-config --version
             command -v gdb || command -v lldb || {
@@ -92,16 +98,12 @@ jobs:
             # does not yet carry cargo-nextest, so install via cargo).
             cargo install cargo-nextest --locked
 
-            # Rust workspace tests. Exclude only executable WASI cases that
-            # need a rustup-managed wasm32-wasip1 target; retain rejection and
-            # native parity coverage.
             # Default features include "full" (encryption + profiler + quic),
             # so all QUIC transport tests run without an explicit flag.
             # The ci profile applies the same slow-timeout = 3x60 s envelope
             # as all other platforms, replacing the previous bare cargo test.
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
-              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
             # hew-cabi is excluded from the workspace run above because its

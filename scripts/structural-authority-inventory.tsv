@@ -162,7 +162,7 @@ suspend-authority	suspending-terminator-consumer	hew-mir/src/dump.rs	4	stage-3	c
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/drop_plan.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	4	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	6	stage-3	composed suspend authority carrier
-suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	4	stage-3	composed suspend authority carrier
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/temp_drop.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	3	stage-3	composed suspend authority carrier
 suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	composed suspend authority carrier

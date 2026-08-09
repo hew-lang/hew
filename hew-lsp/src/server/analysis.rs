@@ -2651,7 +2651,8 @@ mod tests {
             "fixture must type-check: {:?}",
             type_output.errors
         );
-        let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &type_output);
+        let (hir_diagnostics, module) =
+            collect_hir_diagnostics(&parse_result.program, &type_output);
         assert!(
             hir_diagnostics.is_empty(),
             "fixture must lower cleanly: {hir_diagnostics:?}"
@@ -2688,7 +2689,8 @@ mod tests {
 
     #[test]
     fn mir_lint_honours_an_in_source_allow_directive() {
-        let suppressed = MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
+        let suppressed =
+            MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
         let diags = mir_lint_diags_for(&suppressed);
         assert!(
             !diags

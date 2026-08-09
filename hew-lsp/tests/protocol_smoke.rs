@@ -282,10 +282,7 @@ fn lsp_publishes_mir_dead_store_as_warning() {
 
 #[test]
 fn lsp_mir_lint_respects_in_source_allow_directive() {
-    let diags = diagnostics_for(
-        LSP_DEAD_STORE_SUPPRESSED,
-        "file:///mir_lint/suppressed.hew",
-    );
+    let diags = diagnostics_for(LSP_DEAD_STORE_SUPPRESSED, "file:///mir_lint/suppressed.hew");
     assert!(
         dead_store_diagnostics(&diags).is_empty(),
         "// hew:allow(dead_store) must suppress the LSP diagnostic, got: {diags:?}"

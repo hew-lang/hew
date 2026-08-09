@@ -878,8 +878,12 @@ fn run_type_check(source: &str) -> TypeCheckResult {
         hir_diagnostics,
         mir_lints,
     } = analysis;
-    let diagnostics =
-        convert_diagnostics(parse_result.errors, type_output, hir_diagnostics, &mir_lints);
+    let diagnostics = convert_diagnostics(
+        parse_result.errors,
+        type_output,
+        hir_diagnostics,
+        &mir_lints,
+    );
 
     TypeCheckResult {
         diagnostics,
@@ -926,8 +930,12 @@ fn run_analysis(source: &str) -> AnalysisResult {
         hir_diagnostics,
         mir_lints,
     } = analysis;
-    let diagnostics =
-        convert_diagnostics(parse_result.errors, type_output, hir_diagnostics, &mir_lints);
+    let diagnostics = convert_diagnostics(
+        parse_result.errors,
+        type_output,
+        hir_diagnostics,
+        &mir_lints,
+    );
 
     AnalysisResult {
         diagnostics,
@@ -2253,7 +2261,10 @@ mod tests {
 
     fn diagnostics_of(source: &str) -> Vec<serde_json::Value> {
         let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
-        parsed["diagnostics"].as_array().cloned().unwrap_or_default()
+        parsed["diagnostics"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[test]

@@ -5706,6 +5706,10 @@ impl Checker {
     /// Pass 2: Collect function signatures
     pub(super) fn collect_functions(&mut self, program: &Program) {
         let flat_file_import_modules = flat_file_import_module_ids(program);
+        self.flat_file_import_module_names = flat_file_import_modules
+            .iter()
+            .map(|module_id| module_id.path.join("."))
+            .collect();
         // Process module graph items first (if multi-module).
         // Skip the root module — its items are already in program.items and
         // will be processed below with current_module = None (bare names).

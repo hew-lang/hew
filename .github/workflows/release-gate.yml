@@ -100,10 +100,11 @@ jobs:
   gate-linux:
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
-    # The 1,326-test Hew-suite ratchet now takes about 18.5 min warm. 90 min
-    # leaves a bounded budget for the release builds, workspace tests, and
-    # release-only evidence that surround it.
-    timeout-minutes: 90
+    # The passed surrounding work measured 2,053 s (~34 min), while the final
+    # gate was cancelled after more than 3,338 s (~56 min): over 89 min total.
+    # 120 min adds ~30 min for cold-runner completion and variance, while
+    # retaining a finite ceiling that still distinguishes a hung suite.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

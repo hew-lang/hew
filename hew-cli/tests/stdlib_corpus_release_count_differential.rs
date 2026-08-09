@@ -200,40 +200,6 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     ),
 ];
 
-// `content_type_headers` builds one fresh `(string, string)` carrier and moves
-// it into the returned Vec. The move-ingress call transfers that carrier; an
-// additional scope drop for the now-empty construction temporary would release
-// the same strings a second time. Each imported copy therefore has zero
-// elaborated releases instead of the baseline's copied-carrier cleanup.
-const ACCOUNTED_MOVED_CONTENT_TYPE_HEADER_COPIES: &[(&str, &str)] = &[
-    (
-        "examples/benchmarks/http_server.hew",
-        "std$net$http$content_type_headers",
-    ),
-    (
-        "examples/benchmarks/http_server_expert.hew",
-        "std$net$http$content_type_headers",
-    ),
-    (
-        "examples/http_json_demo.hew",
-        "std$net$http$http_client$content_type_headers",
-    ),
-    (
-        "examples/http_server.hew",
-        "std$net$http$content_type_headers",
-    ),
-    (
-        "examples/static_server.hew",
-        "std$net$http$content_type_headers",
-    ),
-    (
-        "std/net/http/http_client.hew",
-        "std$net$http$content_type_headers",
-    ),
-];
-
-const MOVED_CONTENT_TYPE_HEADER_REASON: &str = "content_type_headers moves its sole fresh `(string, string)` carrier into the returned Vec through hew_vec_push_owned_move; the Vec owns both strings after the call, so the construction temporary has no release left to emit and the former copied-carrier drop would be an over-release";
-
 // These files carry inlined copies of the same current `std::net::connect_timeout`
 // helper. The owner has no suspend edge: its releases are the host's live
 // terminal/error paths, the receiver error-path releases, and formatting
@@ -331,19 +297,11 @@ const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout bod
 
 fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
 {
-    ACCOUNTED_BELOW_BASELINE
-        .iter()
-        .copied()
-        .chain(
-            ACCOUNTED_MOVED_CONTENT_TYPE_HEADER_COPIES
-                .iter()
-                .map(|(file, function)| (*file, *function, 0, MOVED_CONTENT_TYPE_HEADER_REASON)),
-        )
-        .chain(
-            ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
-                .iter()
-                .map(|(file, function)| (*file, *function, 17, NET_CONNECT_TIMEOUT_REASON)),
-        )
+    ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
+        ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
+            .iter()
+            .map(|(file, function)| (*file, *function, 17, NET_CONNECT_TIMEOUT_REASON)),
+    )
 }
 
 fn capture_mode() -> bool {

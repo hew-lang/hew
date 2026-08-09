@@ -3750,6 +3750,7 @@ pub enum ClosurePairVecKind {
     Set,
     Get,
     Pop,
+    RemoveAt,
 }
 
 impl ClosurePairVecKind {
@@ -3760,6 +3761,7 @@ impl ClosurePairVecKind {
             Self::Set => "hew_vec_set_ptr",
             Self::Get => "hew_vec_get_ptr",
             Self::Pop => "hew_vec_pop_ptr",
+            Self::RemoveAt => "hew_vec_remove_at_ptr",
         }
     }
 }

@@ -9428,6 +9428,10 @@ fn closure_pair_vec_kind(
         (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Pop), "hew_vec_pop_ptr") => {
             Some(crate::ClosurePairVecKind::Pop)
         }
+        (
+            hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Remove),
+            "hew_vec_remove_at_ptr",
+        ) => Some(crate::ClosurePairVecKind::RemoveAt),
         _ => None,
     }
 }

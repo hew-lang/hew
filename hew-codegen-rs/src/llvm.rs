@@ -19628,22 +19628,33 @@ fn lower_closure_pair_vec_call(
             })?;
             emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
         }
-        "hew_vec_pop_ptr" => {
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[vec_ptr.into()], "vec_pop_pair")
-                .llvm_ctx("closure pair vec pop")?;
+        "hew_vec_pop_ptr" | "hew_vec_remove_at_ptr" => {
+            // Pop and remove-at share the ownership contract: the element box
+            // transfers out of the vec, the pair is unboxed into the dest,
+            // and the box itself is freed (the extracted pair keeps the env).
+            let call = if callee == "hew_vec_remove_at_ptr" {
+                let index = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{callee} index"))?;
+                fn_ctx
+                    .builder
+                    .build_call(fv, &[vec_ptr.into(), index.into()], "vec_remove_pair")
+                    .llvm_ctx("closure pair vec remove")?
+            } else {
+                fn_ctx
+                    .builder
+                    .build_call(fv, &[vec_ptr.into()], "vec_pop_pair")
+                    .llvm_ctx("closure pair vec pop")?
+            };
             let box_ptr = call
                 .try_as_basic_value()
                 .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_vec_pop_ptr returned void".into()))?
+                .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?
                 .into_pointer_value();
-            let dest = dest.copied().ok_or_else(|| {
-                CodegenError::FailClosed("hew_vec_pop_ptr: missing dest place".into())
-            })?;
+            let dest = dest
+                .copied()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{callee}: missing dest place")))?;
             emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
             // Ownership transferred out of the vec: free the element box
-            // (the popped pair keeps the env).
+            // (the extracted pair keeps the env).
             let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
             let (_, dest_ty) = place_pointer(fn_ctx, dest)?;
             let (pair_size, pair_align) = abi_size_align(dest_ty, Some(fn_ctx.target_data))?;

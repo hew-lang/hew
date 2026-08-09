@@ -2059,7 +2059,17 @@ pub unsafe extern "C" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64) -> *m
     cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        abort_if_layout_aware(v);
+        // A boxed-element vec (`Vec<fn(..)>` / closure pairs) is
+        // layout-managed with pointer-sized slots and a per-element drop
+        // thunk; its removal is the same slot motion as the plain ptr vec —
+        // ownership of the boxed element transfers to the caller, so no drop
+        // runs and the tail shift slides the remaining sole-owner boxes down
+        // unchanged. `hew_vec_pop_ptr` already takes exactly this read on the
+        // same vecs. Any other layout-managed stride keeps the fail-closed
+        // abort: a multi-byte inline element cannot be read as one pointer.
+        if !(*v).layout.is_null() && (*(*v).layout).size != core::mem::size_of::<*mut c_void>() {
+            abort_layout_aware_operation();
+        }
         let len = (*v).len;
         let idx = index as usize;
         if idx >= len {

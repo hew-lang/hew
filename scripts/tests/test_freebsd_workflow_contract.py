@@ -54,6 +54,7 @@ FREEBSD_TOOL_PACKAGES = (
     "llvm22",
     "gdb",
     "rust",
+    "python3",
     "cmake",
     "ninja",
     "git",
@@ -74,6 +75,7 @@ NIGHTLY_TOOL_PACKAGES = (
     "llvm22",
     "gdb",
     "rust",
+    "python3",
     "cmake",
     "ninja",
     "git",
@@ -135,6 +137,14 @@ EXPECTED_EXACT_REF_CHECK = (
     "$GITHUB_SHA",
 )
 EXPECTED_LLVM_ENV = ("export", "LLVM_SYS_221_PREFIX=/usr/local/llvm22")
+EXPECTED_CHILD_PATH_ENV = (
+    "export",
+    "PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+)
+EXPECTED_CARGO_ENV = ("export", "CARGO=/usr/local/bin/cargo")
+EXPECTED_PYTHON_ENV = ("export", "PYTHON=/usr/local/bin/python3")
+EXPECTED_CARGO_PROBE = ("test", "-x", "$CARGO")
+EXPECTED_PYTHON_PROBE = ("test", "-x", "$PYTHON")
 EXPECTED_GNU_MAKE_ENV = ("export", "MAKE=gmake")
 EXPECTED_VERTICAL_SLICE_GATE = ("gmake", "test-vertical-slice")
 EXPECTED_HEW_RATCHET_GATE = ("gmake", "test-hew-ratchet")
@@ -348,6 +358,11 @@ def _assert_wasi_tool_setup(
         f"the exact tool set without an automatic update; got {pkg_commands!r}"
     )
     required_commands = [
+        EXPECTED_CHILD_PATH_ENV,
+        EXPECTED_CARGO_ENV,
+        EXPECTED_PYTHON_ENV,
+        EXPECTED_CARGO_PROBE,
+        EXPECTED_PYTHON_PROBE,
         EXPECTED_WASM_LD_LINK,
         EXPECTED_WASMTIME_PROBE,
         EXPECTED_WASM_LD_PROBE,

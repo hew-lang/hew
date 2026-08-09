@@ -548,7 +548,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -557,6 +557,14 @@ jobs:
             git config --global --add safe.directory "$(pwd)"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            # The debug libhew bootstrap starts the Python freshness helper,
+            # which then starts Cargo. Give both child-process levels absolute
+            # executables instead of depending on the SSH login environment.
+            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+            export CARGO=/usr/local/bin/cargo
+            export PYTHON=/usr/local/bin/python3
+            test -x "$CARGO"
+            test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
             # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
@@ -681,7 +689,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -690,6 +698,13 @@ jobs:
             git config --global --add safe.directory "$(pwd)"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            # Match the x86_64 guest's explicit child-build environment so a
+            # future scope expansion cannot regress to SSH profile discovery.
+            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+            export CARGO=/usr/local/bin/cargo
+            export PYTHON=/usr/local/bin/python3
+            test -x "$CARGO"
+            test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
             # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its

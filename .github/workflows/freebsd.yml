@@ -42,7 +42,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -51,7 +51,14 @@ jobs:
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
-            export PATH="/usr/local/llvm22/bin:$PATH"
+            # The debug libhew bootstrap starts the Python freshness helper,
+            # which then starts Cargo. Give both child-process levels absolute
+            # executables instead of depending on the SSH login environment.
+            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+            export CARGO=/usr/local/bin/cargo
+            export PYTHON=/usr/local/bin/python3
+            test -x "$CARGO"
+            test -x "$PYTHON"
             export MAKE=gmake
             /usr/local/llvm22/bin/llvm-config --version
             command -v gdb || command -v lldb || {

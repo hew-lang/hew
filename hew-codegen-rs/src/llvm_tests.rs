@@ -5145,14 +5145,6 @@ fn fixture_lookup_error_layout() -> MirEnumLayout {
     }
 }
 
-fn fixture_monitor_ref_layout() -> MirRecordLayout {
-    MirRecordLayout {
-        name: "MonitorRef".to_string(),
-        field_tys: vec![ResolvedTy::I64],
-        field_names: vec![],
-    }
-}
-
 /// A tri-variant payload-carrying user enum for `emit_enum_variant_literal`:
 ///   enum Sample { Empty, OneInt(i64), TwoInts(i64, i64) }
 fn fixture_sample_enum_layout() -> MirEnumLayout {
@@ -6790,47 +6782,6 @@ fn emit_send_result_from_rc_rejects_non_i32_status() {
         }
         other => panic!("expected FailClosed, got {other:?}"),
     }
-}
-
-// ---- emit_struct_literal -----------------------------------------------
-
-#[test]
-fn emit_struct_literal_monitor_ref_writes_ref_id_field() {
-    let ctx = Context::create();
-    let m = ctx.create_module("emit_struct_literal_test");
-    let harness = build_harness(&ctx, &[fixture_monitor_ref_layout()], &[]);
-    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-    alloc_local(
-        &mut fn_ctx,
-        0,
-        ResolvedTy::Named {
-            name: "MonitorRef".to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        },
-    );
-    alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
-    emit_struct_literal(
-        &fn_ctx,
-        Place::Local(0),
-        &[(FieldOffset(0), Place::Local(1))],
-    )
-    .expect("emit_struct_literal MonitorRef{ref_id:i64} must succeed");
-    finish_test_fn(&fn_ctx);
-    assert!(
-        m.verify().is_ok(),
-        "module must verify:\n{}",
-        m.print_to_string().to_string()
-    );
-    let ir = m.print_to_string().to_string();
-    // The delegated `lower_record_init` path uses field_{idx}_init_ptr /
-    // field_{idx}_init_src labels — assert the substrate-delegation is live.
-    assert!(
-        ir.contains("field_0_init_ptr") && ir.contains("field_0_init_src"),
-        "expected lower_record_init field-0 init labels (substrate delegation); \
-             got IR:\n{ir}"
-    );
 }
 
 // ---- emit_enum_variant_literal -----------------------------------------

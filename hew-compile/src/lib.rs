@@ -313,22 +313,62 @@ fn load_project_context(
     })
 }
 
-/// Return the same-name entry file when `input` is a peer of a directory
-/// module. Checking a peer directly still checks it in the lexical namespace
-/// that supplies the module's shared traits, types, and constants.
-fn directory_module_entry_for_peer(input: &Path) -> Option<String> {
+/// Return the same-name entry file when `input` is a directory-module peer
+/// whose impl names a trait declared by that entry. Checking the peer directly
+/// must retain the lexical trait namespace that materializes default methods,
+/// without assembling unrelated peers into every standalone file check.
+fn directory_module_entry_for_peer(program: &Program, input: &Path) -> Option<String> {
     let input_name = input.file_name()?.to_str()?;
     let parent = input.parent()?;
     let module_name = parent.file_name()?.to_str()?;
     let entry_name = format!("{module_name}.hew");
-    if input_name == entry_name || !parent.join(&entry_name).is_file() {
+    let entry_path = parent.join(&entry_name);
+    if input_name == entry_name || !entry_path.is_file() {
+        return None;
+    }
+    let local_traits = program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Trait(decl) => Some(decl.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let entry_source = std::fs::read_to_string(entry_path).ok()?;
+    let entry_parse = hew_parser::parse(&entry_source);
+    if entry_parse
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+    {
+        return None;
+    }
+    let entry_traits = entry_parse
+        .program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Trait(decl) => Some(decl.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let needs_entry_trait = program.items.iter().any(|(item, _)| {
+        let Item::Impl(decl) = item else {
+            return false;
+        };
+        decl.trait_bound.as_ref().is_some_and(|bound| {
+            entry_traits.contains(bound.name.as_str())
+                && !local_traits.contains(bound.name.as_str())
+        })
+    });
+    if !needs_entry_trait {
         return None;
     }
     Some(entry_name)
 }
 
 fn import_directory_module_entry_for_peer(program: &mut Program, input: &Path) {
-    let Some(entry_name) = directory_module_entry_for_peer(input) else {
+    let Some(entry_name) = directory_module_entry_for_peer(program, input) else {
         return;
     };
     program.items.insert(

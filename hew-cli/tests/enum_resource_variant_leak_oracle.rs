@@ -21,6 +21,7 @@ type Dq {{}}\n\
 type Handle {{ raw: Dq; }}\n\
 impl Handle {{\n\
     fn value(self) -> i64 {{ 7 }}\n\
+    fn sink(self) {{ self.close(); }}\n\
     fn close(self) {{ unsafe {{ hew_deque_free(self.raw) }}; print(\"C\"); }}\n\
 }}\n\
 extern \"C\" {{\n\
@@ -40,6 +41,10 @@ fn main() {{\n\
         }}\n\
         match make(false) {{\n\
             Outcome::Loaded(handle) => print(handle.value()),\n\
+            Outcome::Failed(message) => print(message + \"!\"),\n\
+        }}\n\
+        match make(true) {{\n\
+            Outcome::Loaded(handle) => handle.sink(),\n\
             Outcome::Failed(message) => print(message + \"!\"),\n\
         }}\n\
     }}\n\
@@ -189,7 +194,7 @@ fn resource_record_enum_payload_closes_exactly_once() {
 
     let mut expected = String::new();
     for _ in 0..RESOURCE_FRAMES {
-        let _ = write!(expected, "7BAD!C");
+        let _ = write!(expected, "7BAD!CC");
     }
 
     let output = run_under_malloc_scribble(&bin);
@@ -202,7 +207,7 @@ fn resource_record_enum_payload_closes_exactly_once() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         expected,
-        "each resource payload must be read, then closed exactly once"
+        "borrowed and consuming resource payload methods must each close exactly once"
     );
     assert_exact_zero_leaks(&bin, "resource_record_enum_payload");
 

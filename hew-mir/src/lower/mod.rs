@@ -7476,8 +7476,10 @@ enum NestedUseSite {
 #[derive(Default)]
 struct RootScan {
     poisoned: bool,
-    /// Instruction escape events: (block id, instruction index, field).
-    escapes: Vec<(u32, usize, u32)>,
+    /// Escape events: (block id, instruction index, field). `None` marks a
+    /// call terminator whose unique continuation is the post-call insertion
+    /// point.
+    escapes: Vec<(u32, Option<usize>, u32)>,
     /// Non-escape uses of the root or its binders; `None` index = the
     /// block's terminator.
     sites: Vec<(u32, Option<usize>)>,

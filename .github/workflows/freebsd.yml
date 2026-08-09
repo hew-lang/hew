@@ -41,13 +41,30 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            # `rust` is deliberately NOT installed from pkg: the pkg toolchain
+            # is not rustup-managed, so it ignores rust-toolchain.toml and cannot
+            # supply wasm32-wasip1 (#1960). `curl` fetches rustup below.
+            pkg install -y -U -r FreeBSD llvm22 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime curl
 
           run: |
             set -eux
 
             git config --global --add safe.directory "$(pwd)"
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+            # Install a rustup-managed toolchain so rust-toolchain.toml governs
+            # this job as it does the Linux/macOS/Windows ones. That file pins
+            # the channel and lists wasm32-wasip1 under `targets`, so the WASI
+            # runner target is provisioned automatically (no `rustup target add`).
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+            sh rustup-init.sh -y --no-modify-path --default-toolchain none
+            . "$HOME/.cargo/env"
+            rm -f rustup-init.sh
+
+            rustup show active-toolchain
+            rustup target list --installed | grep -qx wasm32-wasip1
+            rustc --version
+            cargo --version
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
             export MAKE=gmake
@@ -79,16 +96,16 @@ jobs:
             # does not yet carry cargo-nextest, so install via cargo).
             cargo install cargo-nextest --locked
 
-            # Rust workspace tests. Exclude only executable WASI cases that
-            # need a rustup-managed wasm32-wasip1 target; retain rejection and
-            # native parity coverage.
+            # Rust workspace tests, with no wasm-cross exclusions: the rustup
+            # toolchain above supplies wasm32-wasip1, so the executable WASI
+            # cases build the runner from source and run it under the pkg
+            # wasmtime, matching the rustup platforms (#1960).
             # Default features include "full" (encryption + profiler + quic),
             # so all QUIC transport tests run without an explicit flag.
             # The ci profile applies the same slow-timeout = 3x60 s envelope
             # as all other platforms, replacing the previous bare cargo test.
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
-              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
             # hew-cabi is excluded from the workspace run above because its

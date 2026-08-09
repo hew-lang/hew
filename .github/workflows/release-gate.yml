@@ -449,12 +449,34 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            #
+            # `rust` is deliberately NOT installed from pkg here: the pkg
+            # toolchain is not rustup-managed, so it ignores rust-toolchain.toml
+            # and cannot supply wasm32-wasip1 (#1960). `curl` fetches rustup.
+            pkg install -y -U -r FreeBSD llvm22 cmake ninja git pkgconf libffi libxml2 wasmtime curl
 
           run: |
             set -eux
 
             git config --global --add safe.directory "$(pwd)"
+
+            # Install a rustup-managed toolchain so rust-toolchain.toml governs
+            # this gate exactly as it does the Linux/macOS/Windows gates. That
+            # file already pins the channel and lists wasm32-wasip1 under
+            # `targets`, so the WASI runner target is provisioned automatically
+            # and no `rustup target add` is needed. Upstream publishes rustup
+            # and every pinned component for x86_64-unknown-freebsd.
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+            sh rustup-init.sh -y --no-modify-path --default-toolchain none
+            . "$HOME/.cargo/env"
+            rm -f rustup-init.sh
+
+            # Materialise the pinned toolchain and prove wasm32-wasip1 is
+            # actually present before the gate relies on it.
+            rustup show active-toolchain
+            rustup target list --installed | grep -qx wasm32-wasip1
+            rustc --version
+            cargo --version
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
             /usr/local/llvm22/bin/llvm-config --version
@@ -489,18 +511,12 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked
 
-            # Scope out only the eval/WASI E2E tests that build the WASI runner
-            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
-            # rustup-managed and cannot add that target. The wasm backend is
-            # host-independent and already gated on the four rustup platforms;
-            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
-            # deliberately narrow so the gate still covers what FreeBSD can run:
-            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
-            # and the wasi_run_e2e native_* codegen-parity tests (which run
-            # natively).
+            # Full workspace run with no wasm-cross exclusions: this gate now
+            # has a rustup toolchain with wasm32-wasip1, so the eval_wasm_* and
+            # wasi_run_e2e E2E tests build the WASI runner from source and run
+            # it under the pkg wasmtime, matching the rustup platforms (#1960).
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
-              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
             # hew-cabi is excluded from the workspace run above because its
@@ -580,14 +596,16 @@ jobs:
             cargo install cargo-nextest --locked
 
             # Scope out only the eval/WASI E2E tests that build the WASI runner
-            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
-            # rustup-managed and cannot add that target. The wasm backend is
-            # host-independent and already gated on the four rustup platforms;
-            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
-            # deliberately narrow so the gate still covers what FreeBSD can run:
-            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
-            # and the wasi_run_e2e native_* codegen-parity tests (which run
-            # natively).
+            # from source against wasm32-wasip1. Unlike the x86_64 gate, this
+            # exclusion is PERMANENT rather than pending: upstream Rust ships no
+            # aarch64-unknown-freebsd host at all — there is no rustup-init for
+            # it and no `rust` entry in the channel manifest — so the #1960 fix
+            # applied to the x86_64 gate cannot be applied here at any version.
+            # The wasm backend is host-independent and is gated on the four
+            # rustup platforms plus FreeBSD x86_64. The filter is deliberately
+            # narrow so the gate still covers what this platform can run: it
+            # keeps the eval_wasm_* *rejection* paths (which build no wasm) and
+            # the wasi_run_e2e native_* codegen-parity tests (which run natively).
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
               -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \

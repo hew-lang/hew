@@ -29,6 +29,7 @@ wasm-opt = ["-O1", "--enable-bulk-memory"]
 hew-analysis = { path = "../hew-analysis" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
+hew-mir = { path = "../hew-mir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 wasm-bindgen = "0.2.125"

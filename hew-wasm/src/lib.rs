@@ -523,11 +523,69 @@ struct AnalyzedSource {
     /// boundary-violation diagnostics; this gate remains for any construct the
     /// checker still leaves unresolved at the HIR boundary.
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
+    /// MIR-stage lint findings (`dead_store` today, plus any future lint that
+    /// lands on `IrPipeline::lint_warnings`), surfaced in the playground as
+    /// **warnings** (issue #2176).
+    ///
+    /// Distinct from [`Self::hir_diagnostics`], which is converted with an
+    /// unconditional `"error"` severity: MIR lints are level-controlled style
+    /// findings and must never make the playground show red for code the
+    /// native compiler accepts.
+    mir_lints: Vec<hew_mir::MirLint>,
+}
+
+/// Lower to MIR and collect the MIR-stage lint findings, applying the same
+/// suppression policy the CLI's `render_pipeline_mir_lints` applies.
+///
+/// Degrades silently to an empty vector on any lowering trouble: MIR lowering
+/// can reject code the checker accepted, and those hard `E_MIR_*` diagnostics
+/// (`IrPipeline::diagnostics`) are deliberately dropped here rather than being
+/// promoted into browser-visible errors. The playground's authority for hard
+/// errors stays at the parse/check/HIR stages.
+fn collect_mir_lints(source: &str, hir_module: &hew_hir::HirModule) -> Vec<hew_mir::MirLint> {
+    let pipeline = hew_mir::lower_hir_module_with_facts(hir_module, hew_mir::PointerWidth::Bits32);
+    let levels = hew_types::LintLevels::default();
+    pipeline
+        .lint_warnings
+        .into_iter()
+        .filter(|warning| {
+            let span_start = warning.span.0 as usize;
+            let span_end = warning.span.1 as usize;
+            // A span past the end of the buffer belongs to an imported module
+            // we cannot position in the single-source playground.
+            span_end <= source.len()
+                && !hew_types::directive_suppresses(source, span_start, warning.lint)
+                && levels.level(warning.lint) != hew_types::LintLevel::Allow
+        })
+        .collect()
+}
+
+/// Convert a MIR lint finding into a playground diagnostic.
+///
+/// Severity is `"warning"`, never `"error"` — the MIR lint path deliberately
+/// does not reuse [`hir_diagnostic_to_wasm`]'s unconditional error mapping.
+fn mir_lint_to_wasm(lint: &hew_mir::MirLint) -> WasmDiagnostic {
+    let span = WasmSpan {
+        start: lint.span.0 as usize,
+        end: lint.span.1 as usize,
+    };
+    WasmDiagnostic {
+        severity: "warning".to_string(),
+        phase: "mir",
+        message: lint.message.clone(),
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
+        kind: lint.lint.as_str().to_string(),
+        notes: Vec::new(),
+        suggestions: Vec::new(),
+        source_module: None,
+    }
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
-    let (type_output, hir_diagnostics) = if parse_result.errors.is_empty() {
+    let (type_output, hir_diagnostics, mir_lints) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
@@ -548,6 +606,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         // sandbox VM, which has its own coroutine scheduler). Using X86_64
         // lets actors/machines pass HIR lowering while still catching
         // CheckerBoundaryViolation diagnostics that arise regardless of target.
+        let mut mir_lints = Vec::new();
         let hir_diagnostics = if tco.errors.is_empty() {
             let lower_output = hew_hir::lower_program(
                 &parse_result.program,
@@ -569,19 +628,27 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
                     diags.push(diag);
                 }
             }
+            // MIR-stage lints run only when HIR lowering is clean: a module the
+            // HIR stage already rejected is not worth lowering further, and
+            // skipping it also keeps the added browser cost off every buffer
+            // that is mid-edit and already erroring.
+            if diags.is_empty() {
+                mir_lints = collect_mir_lints(source, &lower_output.module);
+            }
             diags
         } else {
             Vec::new()
         };
-        (Some(tco), hir_diagnostics)
+        (Some(tco), hir_diagnostics, mir_lints)
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), Vec::new())
     };
 
     AnalyzedSource {
         parse_result,
         type_output,
         hir_diagnostics,
+        mir_lints,
     }
 }
 
@@ -765,6 +832,7 @@ fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
+    mir_lints: &[hew_mir::MirLint],
 ) -> Vec<WasmDiagnostic> {
     let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
@@ -772,6 +840,7 @@ fn convert_diagnostics(
         diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
     diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
+    diagnostics.extend(mir_lints.iter().map(mir_lint_to_wasm));
     diagnostics
 }
 
@@ -807,8 +876,10 @@ fn run_type_check(source: &str) -> TypeCheckResult {
         parse_result,
         type_output,
         hir_diagnostics,
+        mir_lints,
     } = analysis;
-    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
+    let diagnostics =
+        convert_diagnostics(parse_result.errors, type_output, hir_diagnostics, &mir_lints);
 
     TypeCheckResult {
         diagnostics,
@@ -853,8 +924,10 @@ fn run_analysis(source: &str) -> AnalysisResult {
         parse_result,
         type_output,
         hir_diagnostics,
+        mir_lints,
     } = analysis;
-    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
+    let diagnostics =
+        convert_diagnostics(parse_result.errors, type_output, hir_diagnostics, &mir_lints);
 
     AnalysisResult {
         diagnostics,
@@ -2167,6 +2240,52 @@ mod tests {
         assert!(
             parsed.as_array().is_some(),
             "inlay_hints must always return a JSON array, got: {result}"
+        );
+    }
+
+    // ── MIR-stage lint surfacing (issue #2176) ───────────────────────────
+
+    const MIR_DEAD_STORE: &str =
+        "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n";
+
+    /// Near-identical control: every store is read.
+    const MIR_CLEAN: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
+
+    fn diagnostics_of(source: &str) -> Vec<serde_json::Value> {
+        let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        parsed["diagnostics"].as_array().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn wasm_mir_dead_store_surfaces_as_a_warning() {
+        let diags = diagnostics_of(MIR_DEAD_STORE);
+        let lint = diags
+            .iter()
+            .find(|d| d["kind"] == "dead_store")
+            .unwrap_or_else(|| panic!("dead_store must reach the playground: {diags:?}"));
+
+        // #2176's constraint: not the unconditional "error" HIR mapping.
+        assert_eq!(lint["severity"], "warning");
+        assert_eq!(lint["phase"], "mir");
+    }
+
+    #[test]
+    fn wasm_mir_lint_stays_silent_on_the_clean_control() {
+        let diags = diagnostics_of(MIR_CLEAN);
+        assert!(
+            !diags.iter().any(|d| d["kind"] == "dead_store"),
+            "an accumulator loop must not trip dead_store: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn wasm_mir_lint_honours_an_in_source_allow_directive() {
+        let suppressed =
+            MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
+        let diags = diagnostics_of(&suppressed);
+        assert!(
+            !diags.iter().any(|d| d["kind"] == "dead_store"),
+            "hew:allow must suppress the playground surfacing too: {diags:?}"
         );
     }
 }

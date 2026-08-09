@@ -839,6 +839,7 @@ pub(super) fn analyze_document(
     let (
         type_output,
         hir_diagnostics,
+        hir_module,
         module_sources,
         dangling_import_diagnostics,
         cycle_diagnostics,
@@ -847,6 +848,7 @@ pub(super) fn analyze_document(
         (
             None,
             Vec::new(),
+            None,
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -918,14 +920,16 @@ pub(super) fn analyze_document(
         }
         checker.set_lint_sources(lint_sources);
         let type_output = checker.check_program(&program);
-        let hir_diagnostics = if type_output.errors.is_empty() {
-            collect_hir_diagnostics(&program, &type_output)
+        let (hir_diagnostics, hir_module) = if type_output.errors.is_empty() {
+            let (diagnostics, module) = collect_hir_diagnostics(&program, &type_output);
+            (diagnostics, Some(module))
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         (
             Some(type_output),
             hir_diagnostics,
+            hir_module,
             module_sources,
             dangling_import_diagnostics,
             cycle_diagnostics,
@@ -949,6 +953,18 @@ pub(super) fn analyze_document(
         &hir_diagnostics,
     );
     merge_diagnostics(&mut diagnostics_by_uri, &hir_lsp_diagnostics);
+    // MIR-stage lints (issue #2176). Only run when HIR lowering produced a
+    // module AND raised no diagnostics: a module the HIR stage already rejected
+    // is not worth lowering further, and the HIR errors are the actionable
+    // signal. Rendered as WARNINGs on their own path, never through the
+    // unconditional-ERROR HIR mapping above.
+    if hir_diagnostics.is_empty() {
+        if let Some(hir_module) = hir_module.as_ref() {
+            let mir_lint_diagnostics =
+                build_mir_lint_lsp_diagnostics(uri, source, &line_offsets, hir_module);
+            merge_diagnostics(&mut diagnostics_by_uri, &mir_lint_diagnostics);
+        }
+    }
     merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
     merge_diagnostics(&mut diagnostics_by_uri, &cycle_diagnostics);
     merge_diagnostics(&mut diagnostics_by_uri, &ambiguous_import_diagnostics);
@@ -1200,12 +1216,94 @@ pub(super) fn build_diagnostics_by_uri(
     diagnostics_by_uri
 }
 
+/// Lower to HIR once and return both the HIR diagnostics and the lowered
+/// module, so the MIR lint pass can reuse the same lowering instead of
+/// repeating it.
 fn collect_hir_diagnostics(
     program: &hew_parser::ast::Program,
     type_output: &TypeCheckOutput,
-) -> Vec<HirDiagnostic> {
+) -> (Vec<HirDiagnostic>, hew_hir::HirModule) {
     let lower_output = lower_program_host_target(program, type_output, &ResolutionCtx);
-    dedup_hir_diagnostics(lower_output.diagnostics, verify_hir(&lower_output.module))
+    let diagnostics =
+        dedup_hir_diagnostics(lower_output.diagnostics, verify_hir(&lower_output.module));
+    (diagnostics, lower_output.module)
+}
+
+/// Run the MIR-stage lint pass (`dead_store` today, plus any future MIR lint
+/// that lands on `IrPipeline::lint_warnings`) and render the findings as LSP
+/// **warnings**.
+///
+/// This is the editor half of issue #2176. It deliberately does NOT reuse
+/// [`build_hir_lsp_diagnostics`], which maps every HIR diagnostic to
+/// `DiagnosticSeverity::ERROR`: MIR lints are level-controlled warnings, not
+/// hard errors, and must never fail an editor buffer the compiler accepts.
+///
+/// Policy parity with the CLI's `render_pipeline_mir_lints`
+/// (`hew-cli/src/main.rs`): findings whose span runs past the root source come
+/// from an imported module we cannot faithfully position here and are skipped;
+/// an in-source `// hew:allow(<lint>)` suppresses; `LintLevel::Allow` drops the
+/// finding. The LSP exposes no `-A/-W/-D` flags, so levels resolve at their
+/// registry defaults and a `Deny`-level lint still renders as a WARNING here —
+/// an editor buffer is not a build, and the CLI remains the gate that fails.
+///
+/// # Panics
+///
+/// Never. MIR lowering can reject code the checker accepted, and
+/// [`hew_mir::lower_hir_module_with_facts`] reports that through
+/// `IrPipeline::diagnostics`, which this function ignores entirely: a lowering
+/// failure degrades silently to "no MIR lints" and leaves the already-computed
+/// HIR diagnostics untouched.
+fn build_mir_lint_lsp_diagnostics(
+    root_uri: &Url,
+    root_source: &str,
+    root_line_offsets: &[usize],
+    hir_module: &hew_hir::HirModule,
+) -> DiagnosticMap {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
+
+    let pipeline = hew_mir::lower_hir_module_with_facts(hir_module, hew_mir::PointerWidth::Bits64);
+    // `pipeline.diagnostics` (the hard `E_MIR_*` move/init errors) are
+    // deliberately dropped: the CLI is the gate for those, and surfacing them
+    // here would turn a lowering failure into a user-visible editor error.
+    let levels = hew_types::LintLevels::default();
+
+    for warning in &pipeline.lint_warnings {
+        let span_start = warning.span.0 as usize;
+        let span_end = warning.span.1 as usize;
+        // Post-flatten MIR lint spans are module-anonymous raw byte offsets
+        // into the root compilation unit. A span past the end belongs to an
+        // imported module, so skip it rather than point at the wrong line.
+        if span_end > root_source.len() {
+            continue;
+        }
+        if hew_types::directive_suppresses(root_source, span_start, warning.lint) {
+            continue;
+        }
+        if levels.level(warning.lint) == hew_types::LintLevel::Allow {
+            continue;
+        }
+
+        let range = super::span_to_range(root_source, root_line_offsets, &(span_start..span_end));
+        insert_diagnostic(
+            &mut diagnostics_by_uri,
+            root_uri.clone(),
+            Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String(warning.lint.as_str().to_string())),
+                source: Some("hew-mir".to_string()),
+                message: warning.message.clone(),
+                data: Some(serde_json::json!({
+                    "kind": warning.lint.as_str(),
+                    "source": "mir",
+                    "lint": warning.lint.as_str(),
+                })),
+                ..Default::default()
+            },
+        );
+    }
+
+    diagnostics_by_uri
 }
 
 fn dedup_hir_diagnostics(
@@ -2524,5 +2622,79 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&pkg_dir);
         let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    // ── MIR-stage lint surfacing (issue #2176) ───────────────────────────
+
+    /// `x` is assigned `5`, then unconditionally overwritten before the first
+    /// value is read: the `var x = 5` store is dead.
+    const MIR_DEAD_STORE: &str =
+        "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n";
+
+    /// Near-identical control: a textbook accumulator loop where every store is
+    /// read. Proves the lint discriminates rather than firing on any `var`.
+    const MIR_CLEAN: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
+
+    fn mir_lint_diags_for(source: &str) -> Vec<Diagnostic> {
+        let uri = Url::parse("file:///mir_lint.hew").unwrap();
+        let line_offsets = compute_line_offsets(source);
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "fixture must type-check: {:?}",
+            type_output.errors
+        );
+        let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &type_output);
+        assert!(
+            hir_diagnostics.is_empty(),
+            "fixture must lower cleanly: {hir_diagnostics:?}"
+        );
+        build_mir_lint_lsp_diagnostics(&uri, source, &line_offsets, &module)
+            .get(&uri)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn mir_dead_store_surfaces_in_the_lsp_as_a_warning() {
+        let diags = mir_lint_diags_for(MIR_DEAD_STORE);
+        let diagnostic = diags
+            .iter()
+            .find(|d| d.code == Some(NumberOrString::String("dead_store".to_string())))
+            .expect("dead_store must reach the LSP surface");
+
+        // The whole point of #2176's constraint: this must NOT inherit the
+        // HIR path's unconditional ERROR mapping.
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
+    }
+
+    #[test]
+    fn mir_lint_stays_silent_on_the_clean_control() {
+        let diags = mir_lint_diags_for(MIR_CLEAN);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == Some(NumberOrString::String("dead_store".to_string()))),
+            "an accumulator loop must not trip dead_store: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn mir_lint_honours_an_in_source_allow_directive() {
+        let suppressed = MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
+        let diags = mir_lint_diags_for(&suppressed);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == Some(NumberOrString::String("dead_store".to_string()))),
+            "hew:allow must suppress the LSP surfacing too: {diags:?}"
+        );
     }
 }

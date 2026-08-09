@@ -178,3 +178,136 @@ fn lsp_initialize_didopen_diagnostics_roundtrip() {
 
     shutdown(&mut stdin);
 }
+
+// ── MIR-stage lint surfacing (#2176) ─────────────────────────────────
+//
+// `dead_store` rides the MIR liveness pass, not the HIR checker sweep, so
+// before #2176 it reached the CLI only. These tests drive a real LSP session
+// and assert the lint arrives over the wire.
+//
+// Presence alone would be a weak claim: a pass that flagged every buffer would
+// also satisfy it. Each positive is therefore paired with a CONTROL that
+// differs only in the property under test, and the controls assert the ABSENCE
+// of a `dead_store` diagnostic while a plain type error still publishes — so a
+// silent control cannot pass by the pipeline being broken.
+
+/// Fixtures mirror `hew-cli/tests/lint_pass_e2e.rs` so the two surfaces are
+/// held to one definition of the lint.
+const LSP_DEAD_STORE: &str =
+    "fn f() -> i64 {\n    var x = 5;\n    x = 6;\n    x\n}\nfn main() {\n    let _ = f();\n}\n";
+
+/// CONTROL 1 — identical but for the in-source allow directive.
+const LSP_DEAD_STORE_SUPPRESSED: &str =
+    "fn f() -> i64 {\n    // hew:allow(dead_store)\n    var x = 5;\n    x = 6;\n    x\n}\nfn main() {\n    let _ = f();\n}\n";
+
+/// CONTROL 2 — a normal accumulator loop where every store IS read. Proves the
+/// pass discriminates on liveness rather than firing on any `var`.
+const LSP_FOR_RANGE_CLEAN: &str =
+    "fn sum(n: i64) -> i64 {\n    var total = 0;\n    for i in 0..n {\n        total = total + i;\n    }\n    total\n}\nfn main() {\n    let _ = sum(5);\n}\n";
+
+/// Drive one `initialize` → `didOpen` session and return the published
+/// diagnostics for the document.
+fn diagnostics_for(source: &str, uri: &str) -> Vec<Value> {
+    let mut server = ServerProcess {
+        child: Command::new(server_binary())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn hew-lsp"),
+    };
+    let mut stdin = server.child.stdin.take().expect("child stdin");
+    let rx = spawn_reader(server.child.stdout.take().expect("child stdout"));
+    let deadline = Instant::now() + SESSION_BUDGET;
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{"processId":null,"capabilities":{},"rootUri":null}}),
+    );
+    recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(1)));
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didOpen",
+                "params":{"textDocument":{"uri":uri,"languageId":"hew","version":1,"text":source}}}),
+    );
+    let publish = recv_until(&rx, deadline, |m| {
+        m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && m["params"]["uri"] == json!(uri)
+    });
+    let diags = publish["params"]["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    shutdown(&mut stdin);
+    diags
+}
+
+fn dead_store_diagnostics(diags: &[Value]) -> Vec<&Value> {
+    diags
+        .iter()
+        .filter(|d| d["code"] == json!("dead_store"))
+        .collect()
+}
+
+#[test]
+fn lsp_publishes_mir_dead_store_as_warning() {
+    let diags = diagnostics_for(LSP_DEAD_STORE, "file:///mir_lint/dead_store.hew");
+    let found = dead_store_diagnostics(&diags);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one dead_store diagnostic, got: {diags:?}"
+    );
+    let d = found[0];
+    // Severity is the crux of #2176: the HIR path maps everything to ERROR
+    // unconditionally, and a lint must not fail a buffer the compiler accepts.
+    assert_eq!(
+        d["severity"],
+        json!(2),
+        "dead_store must publish as WARNING (2), got: {d}"
+    );
+    assert_eq!(d["source"], json!("hew-mir"), "unexpected source: {d}");
+    // The span must point at the dead store on line 1 (0-based), not line 0.
+    assert_eq!(
+        d["range"]["start"]["line"],
+        json!(1),
+        "dead_store span should cover `var x = 5;`, got: {d}"
+    );
+}
+
+#[test]
+fn lsp_mir_lint_respects_in_source_allow_directive() {
+    let diags = diagnostics_for(
+        LSP_DEAD_STORE_SUPPRESSED,
+        "file:///mir_lint/suppressed.hew",
+    );
+    assert!(
+        dead_store_diagnostics(&diags).is_empty(),
+        "// hew:allow(dead_store) must suppress the LSP diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+fn lsp_mir_lint_stays_silent_on_live_stores() {
+    let diags = diagnostics_for(LSP_FOR_RANGE_CLEAN, "file:///mir_lint/clean.hew");
+    assert!(
+        dead_store_diagnostics(&diags).is_empty(),
+        "a normal accumulator loop must not trip dead_store, got: {diags:?}"
+    );
+}
+
+/// Guards the controls above: proves this harness DOES publish for these URIs,
+/// so an empty control is discrimination and not a dead pipeline.
+#[test]
+fn lsp_control_harness_still_publishes_diagnostics() {
+    let diags = diagnostics_for(BAD_SOURCE, "file:///mir_lint/harness_control.hew");
+    assert!(
+        !diags.is_empty(),
+        "harness must still publish for a known-bad source"
+    );
+}

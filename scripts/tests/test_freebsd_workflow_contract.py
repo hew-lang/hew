@@ -87,6 +87,72 @@ EXPECTED_NIGHTLY_PKG_PHASES = (
     EXPECTED_PKG_UPDATE,
     EXPECTED_NIGHTLY_PKG_INSTALL,
 )
+
+# ── rustup lanes (#1960) ───────────────────────────────────────────────────
+# The x86_64 FreeBSD jobs install a rustup-managed toolchain instead of the
+# `rust` pkg, so rust-toolchain.toml governs them as it does every other
+# platform. That file pins the channel and lists wasm32-wasip1 under `targets`,
+# so those lanes provision the WASI target and run the wasm-cross E2E tests
+# with NO exclusion filter. aarch64 keeps the pkg toolchain and the filter:
+# upstream Rust publishes no aarch64-unknown-freebsd host at all.
+RUSTUP_JOBS = frozenset({"build-and-test", "gate-freebsd-x86_64"})
+
+EXPECTED_UNFILTERED_NEXTEST_COMMAND = (
+    "cargo",
+    "nextest",
+    "run",
+    "--workspace",
+    "--exclude",
+    "hew-wasm",
+    "--exclude",
+    "hew-cabi",
+    "--profile",
+    "ci",
+    "--no-fail-fast",
+)
+# `rust` is replaced by `curl` (to fetch rustup-init) on the rustup lanes.
+RUSTUP_TOOL_PACKAGES = tuple(
+    package for package in FREEBSD_TOOL_PACKAGES if package != "rust"
+) + ("curl",)
+RUSTUP_NIGHTLY_TOOL_PACKAGES = tuple(
+    package for package in NIGHTLY_TOOL_PACKAGES if package != "rust"
+) + ("curl",)
+EXPECTED_RUSTUP_PKG_PHASES = (
+    EXPECTED_PKG_BOOTSTRAP,
+    EXPECTED_PKG_UPDATE,
+    (*PKG_INSTALL_PREFIX, *RUSTUP_TOOL_PACKAGES),
+)
+EXPECTED_RUSTUP_NIGHTLY_PKG_PHASES = (
+    EXPECTED_PKG_BOOTSTRAP,
+    EXPECTED_PKG_UPDATE,
+    (*PKG_INSTALL_PREFIX, *RUSTUP_NIGHTLY_TOOL_PACKAGES),
+)
+# The target probe is the load-bearing assertion: without it a provisioning
+# regression would silently fall back to reduced coverage instead of failing.
+EXPECTED_RUSTUP_TARGET_PROBE = (
+    "rustup",
+    "target",
+    "list",
+    "--installed",
+    "|",
+    "grep",
+    "-qx",
+    "wasm32-wasip1",
+)
+EXPECTED_RUSTUP_INIT = (
+    "sh",
+    "rustup-init.sh",
+    "-y",
+    "--no-modify-path",
+    "--default-toolchain",
+    "none",
+)
+EXPECTED_RUSTUP_ACTIVE_TOOLCHAIN = ("rustup", "show", "active-toolchain")
+RUSTUP_PROVISION_COMMANDS = (
+    EXPECTED_RUSTUP_INIT,
+    EXPECTED_RUSTUP_ACTIVE_TOOLCHAIN,
+    EXPECTED_RUSTUP_TARGET_PROBE,
+)
 EXPECTED_WASM_LD_LINK = (
     "ln",
     "-sf",
@@ -320,8 +386,19 @@ def _rewrite_pkg_commands(
 
 def _expected_pkg_phases(job_name: str) -> tuple[tuple[str, ...], ...]:
     if job_name == "build-and-test":
+        if job_name in RUSTUP_JOBS:
+            return EXPECTED_RUSTUP_NIGHTLY_PKG_PHASES
         return EXPECTED_NIGHTLY_PKG_PHASES
+    if job_name in RUSTUP_JOBS:
+        return EXPECTED_RUSTUP_PKG_PHASES
     return EXPECTED_PKG_PHASES
+
+
+def _expected_nextest_command(job_name: str) -> tuple[str, ...]:
+    """Rustup lanes run unfiltered; the pkg-toolchain lane keeps the filter."""
+    if job_name in RUSTUP_JOBS:
+        return EXPECTED_UNFILTERED_NEXTEST_COMMAND
+    return EXPECTED_NEXTEST_COMMAND
 
 
 def _assert_wasi_tool_setup(
@@ -351,6 +428,8 @@ def _assert_wasi_tool_setup(
     ]
     if job_name == "build-and-test":
         required_commands.append(EXPECTED_BASH_PROBE)
+    if job_name in RUSTUP_JOBS:
+        required_commands.extend(RUSTUP_PROVISION_COMMANDS)
     for required in required_commands:
         assert run_commands.count(required) == 1, (
             f"{job_name} must run exactly one active command {required!r}"
@@ -398,7 +477,8 @@ def _nextest_commands(job: str) -> list[tuple[str, ...]]:
 
 
 def _assert_command_list(commands: list[tuple[str, ...]], job_name: str) -> None:
-    assert commands == [EXPECTED_NEXTEST_COMMAND], (
+    expected = _expected_nextest_command(job_name)
+    assert commands == [expected], (
         f"{job_name} must contain exactly the canonical FreeBSD nextest command; "
         f"got {commands!r}"
     )
@@ -419,7 +499,7 @@ def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
         EXPECTED_LLVM_ENV,
         EXPECTED_GNU_MAKE_ENV,
         EXPECTED_BASH_PROBE,
-        EXPECTED_NEXTEST_COMMAND,
+        _expected_nextest_command(job_name),
         EXPECTED_VERTICAL_SLICE_GATE,
         EXPECTED_HEW_RATCHET_GATE,
     )
@@ -580,12 +660,13 @@ def test_nightly_bash_package_removal_is_rejected() -> None:
     job_name = "build-and-test"
     step_name = "Build and test on FreeBSD"
     step = _step_block(_job_block(workflow, job_name), step_name)
-    install_text = " ".join(EXPECTED_NIGHTLY_PKG_INSTALL)
+    install_phase = _expected_pkg_phases(job_name)[-1]
+    install_text = " ".join(install_phase)
     assert step.count(install_text) == 1
     mutated_install = tuple(
-        package for package in EXPECTED_NIGHTLY_PKG_INSTALL if package != "bash"
+        package for package in install_phase if package != "bash"
     )
-    assert len(mutated_install) + 1 == len(EXPECTED_NIGHTLY_PKG_INSTALL)
+    assert len(mutated_install) + 1 == len(install_phase)
     mutated_step = step.replace(install_text, " ".join(mutated_install), 1)
     mutated = workflow.replace(step, mutated_step, 1)
     assert "gmake" in mutated_step and "pkgconf" in mutated_step
@@ -622,10 +703,24 @@ def test_commented_nightly_tool_commands_are_rejected() -> None:
     job_name = "build-and-test"
     step_name = "Build and test on FreeBSD"
     step = _step_block(_job_block(workflow, job_name), step_name)
-    for command in WASI_TOOL_COMMANDS:
+    phases = _expected_pkg_phases(job_name)
+    tool_commands = (
+        EXPECTED_PKG_UPDATE,
+        EXPECTED_PKG_BOOTSTRAP,
+        phases[-1],
+        EXPECTED_WASM_LD_LINK,
+        EXPECTED_WASMTIME_PROBE,
+        EXPECTED_WASM_LD_PROBE,
+        EXPECTED_BASH_PROBE,
+    )
+    if job_name in RUSTUP_JOBS:
+        tool_commands += RUSTUP_PROVISION_COMMANDS
+    for command in tool_commands:
         command_text = " ".join(command)
-        expected_count = EXPECTED_NIGHTLY_PKG_PHASES.count(command) or 1
-        assert step.count(command_text) == expected_count
+        expected_count = phases.count(command) or 1
+        assert step.count(command_text) == expected_count, (
+            f"{command_text!r} must appear {expected_count} time(s) in {job_name}"
+        )
         mutated_step = step.replace(command_text, f"# {command_text}", 1)
         mutated = workflow.replace(step, mutated_step, 1)
         assert command_text in mutated, "comment mutation must preserve raw text"
@@ -644,10 +739,12 @@ def test_single_release_leg_missing_wasmtime_is_rejected() -> None:
     ):
         job = _job_block(release_gate, job_name)
         step = _step_block(job, step_name)
-        install_text = " ".join(EXPECTED_PKG_INSTALL)
+        install_phase = _expected_pkg_phases(job_name)[-1]
+        install_text = " ".join(install_phase)
         assert step.count(install_text) == 1
+        assert "wasmtime" in install_phase
         mutated_step = step.replace(
-            install_text, install_text.removesuffix(" wasmtime"), 1
+            install_text, install_text.replace(" wasmtime", "", 1), 1
         )
         mutated_job = job.replace(step, mutated_step, 1)
         mutated = release_gate.replace(job, mutated_job, 1)
@@ -656,7 +753,8 @@ def test_single_release_leg_missing_wasmtime_is_rejected() -> None:
             if job_name == "gate-freebsd-x86_64"
             else "gate-freebsd-x86_64"
         )
-        assert install_text in _job_block(mutated, other_job), (
+        other_install_text = " ".join(_expected_pkg_phases(other_job)[-1])
+        assert other_install_text in _job_block(mutated, other_job), (
             "the opposite release leg must remain intact in the mutation control"
         )
         _assert_rejected(

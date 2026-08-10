@@ -717,11 +717,17 @@ jobs:
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            # Only the CLI, not hew-lsp/hew-observe/hew-lib: this leg proves
-            # the compiler builds and runs on FreeBSD aarch64, not release-lib
-            # linking or the LSP/observe binaries — those are proven on the
-            # other five release-gate legs. See the job header comment.
+            # Only the CLI release binary, not hew-lsp/hew-observe or the
+            # release-lib profile: this leg proves the compiler builds and
+            # runs on FreeBSD aarch64. The debug libhew archive below is the
+            # native-link input required by the smoke test.
             cargo build -p hew-cli --release
+
+            # `hew build` resolves its in-tree native library from the debug
+            # target directory. Build the canonical consolidated archive and
+            # prove its content-addressed freshness before the smoke link.
+            gmake stdlib
+            gmake check-libhew-fresh
 
             target/release/hew --version
 

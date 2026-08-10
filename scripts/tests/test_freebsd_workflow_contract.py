@@ -183,6 +183,15 @@ EXPECTED_WASI_TARGET_PROBE = (
 EXPECTED_GNU_MAKE_ENV = ("export", "MAKE=gmake")
 EXPECTED_VERTICAL_SLICE_GATE = ("gmake", "test-vertical-slice")
 EXPECTED_HEW_RATCHET_GATE = ("gmake", "test-hew-ratchet")
+EXPECTED_AARCH64_STDLIB_BUILD = ("gmake", "stdlib")
+EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK = ("gmake", "check-libhew-fresh")
+EXPECTED_AARCH64_SMOKE_LINK = (
+    "target/release/hew",
+    "build",
+    "_smoke.hew",
+    "-o",
+    "_smoke_bin",
+)
 WASI_TOOL_COMMANDS = (
     EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_BOOTSTRAP,
@@ -739,6 +748,27 @@ def test_aarch64_release_gate_stays_scoped_down() -> None:
     )
 
 
+def test_aarch64_release_gate_builds_and_checks_libhew_before_smoke() -> None:
+    job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    step = _step_block(job, "Build and test on FreeBSD aarch64")
+    commands = _active_shell_commands(_literal_block(step, "run"))
+
+    for command in (
+        EXPECTED_AARCH64_STDLIB_BUILD,
+        EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK,
+        EXPECTED_AARCH64_SMOKE_LINK,
+    ):
+        assert commands.count(command) == 1, (
+            f"gate-freebsd-aarch64 must run exactly one active command {command!r}"
+        )
+
+    assert (
+        commands.index(EXPECTED_AARCH64_STDLIB_BUILD)
+        < commands.index(EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK)
+        < commands.index(EXPECTED_AARCH64_SMOKE_LINK)
+    ), "gate-freebsd-aarch64 must build and verify libhew before its smoke link"
+
+
 def test_commented_nightly_tool_commands_are_rejected() -> None:
     workflow = WORKFLOW.read_text()
     job_name = "build-and-test"
@@ -1144,6 +1174,7 @@ _TESTS = (
     test_nightly_bash_package_removal_is_rejected,
     test_nightly_bash_probe_removal_is_rejected,
     test_aarch64_release_gate_stays_scoped_down,
+    test_aarch64_release_gate_builds_and_checks_libhew_before_smoke,
     test_commented_nightly_tool_commands_are_rejected,
     test_single_release_leg_missing_wasmtime_is_rejected,
     test_named_repository_drift_is_rejected_in_every_freebsd_job,

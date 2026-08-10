@@ -2126,7 +2126,19 @@ mod tests {
         // macOS SIGPIPE suppression the connection-store path applies.
         let sock: Socket = OwnedFd::from(near).into();
         suppress_sigpipe(&sock);
-        drop(far); // fully close the peer
+        // Tear the peer down at the SOCKET level before releasing its fd.
+        //
+        // `drop(far)` alone returns that fd NUMBER to the process while this
+        // suite is running many threads that open sockets and files. If another
+        // thread is handed the just-freed number before the send below, the
+        // near end is once again connected to something live, `framed_send`
+        // writes the whole payload and returns 4096 instead of -1 — a spurious
+        // failure of a test whose subject is the SIGPIPE defenses, not fd
+        // allocation (see hew-lang/hew#2877). `shutdown` breaks the connection
+        // itself, so the precondition no longer depends on the fd slot
+        // staying free.
+        far.shutdown(Shutdown::Both).expect("shutdown peer");
+        drop(far); // release the now-disconnected peer
 
         // The peer is gone, so the header write inside framed_send hits EPIPE
         // and the function fails closed. Reaching the assertion proves the

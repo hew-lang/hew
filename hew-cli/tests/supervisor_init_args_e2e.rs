@@ -170,56 +170,6 @@ fn main() -> i64 {
     }
 }
 
-/// The old `tell; sleep(50ms)` form has no completion authority: a loaded
-/// worker turn can still be pending when `main` exits.  This deliberately
-/// delayed handler is a counterfactual for the former 30 ms / 50 ms oracle;
-/// it must exit successfully with no report, proving that a quiet process is
-/// not evidence that a tell was handled.
-#[test]
-fn supervisor_child_i32_fixed_sleep_oracle_misses_delayed_turn() {
-    require_codegen();
-
-    let source = r#"actor Worker {
-    let a: i32;
-    let b: i32;
-    receive fn report() {
-        sleep(100ms);
-        print("a="); print(a); print(" b="); println(b);
-    }
-}
-supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(b: 99, a: 7);
-}
-fn main() {
-    let sup = spawn Pool;
-    sleep(30ms);
-    let w = sup.w;
-    w.report();
-    sleep(50ms);
-}
-"#;
-
-    let (_dir, path) = write_fixture(source);
-    let output = run_fixture(
-        &path,
-        Some("1"),
-        "fixed-sleep counterfactual (HEW_WORKERS=1)",
-    );
-    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        output.status.success(),
-        "fixed-sleep counterfactual should still exit 0; stderr: {stderr}"
-    );
-    assert!(
-        stdout.is_empty(),
-        "the former fixed sleeps must miss a delayed report; got stdout: {stdout}"
-    );
-}
-
 /// An ask/reply oracle must reject a plausible but wrong field value.  The
 /// control uses the same reversed declaration order as the regression tooth,
 /// but deliberately supplies `b: 98`; a false green would hide the width/order

@@ -17,6 +17,54 @@ PREFLIGHT_TIMEOUT_DOCS="${PREFLIGHT_TIMEOUT_DOCS:-30}"
 PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
 PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
 
+TIMEOUT_CALIBRATION_PARALLELISM=16
+HOST_PARALLELISM=1
+HOST_PARALLELISM_SOURCE="conservative fallback"
+TIMEOUT_SCALE_NUMERATOR="$TIMEOUT_CALIBRATION_PARALLELISM"
+TIMEOUT_SCALE_DENOMINATOR=1
+
+detect_host_parallelism() {
+    local detected=""
+
+    if command -v nproc >/dev/null 2>&1 && detected="$(nproc 2>/dev/null)" && [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+        HOST_PARALLELISM="$detected"
+        HOST_PARALLELISM_SOURCE="nproc"
+    elif command -v sysctl >/dev/null 2>&1 && detected="$(sysctl -n hw.ncpu 2>/dev/null)" && [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+        HOST_PARALLELISM="$detected"
+        HOST_PARALLELISM_SOURCE="sysctl -n hw.ncpu"
+    elif command -v getconf >/dev/null 2>&1 && detected="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" && [[ "$detected" =~ ^[1-9][0-9]*$ ]]; then
+        HOST_PARALLELISM="$detected"
+        HOST_PARALLELISM_SOURCE="getconf _NPROCESSORS_ONLN"
+    fi
+
+    if (( HOST_PARALLELISM >= TIMEOUT_CALIBRATION_PARALLELISM )); then
+        TIMEOUT_SCALE_NUMERATOR=1
+        TIMEOUT_SCALE_DENOMINATOR=1
+    else
+        TIMEOUT_SCALE_NUMERATOR="$TIMEOUT_CALIBRATION_PARALLELISM"
+        TIMEOUT_SCALE_DENOMINATOR="$HOST_PARALLELISM"
+    fi
+}
+
+scale_timeout_budget() {
+    local baseline="$1"
+    echo $(( (baseline * TIMEOUT_SCALE_NUMERATOR + TIMEOUT_SCALE_DENOMINATOR - 1) / TIMEOUT_SCALE_DENOMINATOR ))
+}
+
+print_timeout_scaling() {
+    local factor_hundredths
+    factor_hundredths=$(( (TIMEOUT_SCALE_NUMERATOR * 100 + TIMEOUT_SCALE_DENOMINATOR / 2) / TIMEOUT_SCALE_DENOMINATOR ))
+    printf 'Host parallelism: %s (%s); timeout scale: max(1, %s / %s) = %d.%02dx; budgets use ceil(baseline * %s / %s), with a finite 16.00x maximum.\n' \
+        "$HOST_PARALLELISM" \
+        "$HOST_PARALLELISM_SOURCE" \
+        "$TIMEOUT_CALIBRATION_PARALLELISM" \
+        "$HOST_PARALLELISM" \
+        "$(( factor_hundredths / 100 ))" \
+        "$(( factor_hundredths % 100 ))" \
+        "$TIMEOUT_SCALE_NUMERATOR" \
+        "$TIMEOUT_SCALE_DENOMINATOR"
+}
+
 # Per-command stuck ceilings from the local preflight timing audit.  These are
 # measurement-only hang budgets, not coverage skips or bypasses.  The effective
 # timeout is max(command floor, lane tier), so narrow lanes get enough time for
@@ -65,13 +113,15 @@ command_timeout_floor() {
 
 command_timeout() {
     local cmd="$1"
+    local baseline
     local floor
     floor="$(command_timeout_floor "$cmd")"
     if (( floor > CMD_TIMEOUT )); then
-        echo "$floor"
+        baseline="$floor"
     else
-        echo "$CMD_TIMEOUT"
+        baseline="$CMD_TIMEOUT"
     fi
+    scale_timeout_budget "$baseline"
 }
 
 DRY_RUN=0
@@ -1050,12 +1100,15 @@ case "$LANE" in
         ;;
 esac
 
+detect_host_parallelism
+
 echo "Selected profile: $PROFILE_LABEL"
 if (( FAIL_FAST == 1 )); then
     echo "Failure policy: fail-fast"
 else
     echo "Failure policy: run-all (default)"
 fi
+print_timeout_scaling
 echo "Reason: $LANE_REASON"
 echo "Changed files:"
 for path in "${CHANGED_FILES[@]}"; do

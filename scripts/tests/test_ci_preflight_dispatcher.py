@@ -15,6 +15,7 @@ def run_dispatcher(
     env: dict[str, str] | None = None,
     dry_run: bool = True,
     timeout: float | None = None,
+    parallelism: int = 16,
 ) -> subprocess.CompletedProcess[str]:
     extra_args = extra_args or []
     args = ["bash", str(SCRIPT)]
@@ -22,18 +23,25 @@ def run_dispatcher(
         args.append("--dry-run")
     args.extend(extra_args)
     args.extend(["--", *paths])
-    run_env = None
+    run_env = os.environ.copy()
     if env is not None:
-        run_env = {**os.environ, **env}
-    return subprocess.run(
-        args,
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=run_env,
-        timeout=timeout,
-    )
+        run_env.update(env)
+    with tempfile.TemporaryDirectory() as bin_dir:
+        fake_nproc = Path(bin_dir) / "nproc"
+        fake_nproc.write_text(
+            f"#!/bin/sh\nprintf '{parallelism}\\n'\n", encoding="utf-8"
+        )
+        fake_nproc.chmod(0o755)
+        run_env["PATH"] = f"{bin_dir}{os.pathsep}{run_env['PATH']}"
+        return subprocess.run(
+            args,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=run_env,
+            timeout=timeout,
+        )
 
 
 def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
@@ -148,12 +156,26 @@ def test_dry_run_shows_budget_annotation_fallback_lane() -> None:
     )
 
 
-def test_dry_run_shows_budget_annotation_docs_lane() -> None:
-    """docs-only changes produce 'Commands: none (docs-only)'; no budget line needed."""
-    result = run_dispatcher("README.md")
+def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
+    """An 8-core host doubles both profile and command-specific baselines."""
+    result = run_dispatcher("some-unclassified-root-file.txt", parallelism=8)
+
     assert result.returncode == 0, result.stderr
-    assert "docs-only" in result.stdout, result.stdout
-    # docs lane has no commands, so no budget annotation — just confirm no crash.
+    assert result.stdout.count("Host parallelism:") == 1, result.stdout
+    assert "Host parallelism: 8 (nproc)" in result.stdout, result.stdout
+    assert "max(1, 16 / 8) = 2.00x" in result.stdout, result.stdout
+    assert "ceil(baseline * 16 / 8)" in result.stdout, result.stdout
+    assert "make lint  (budget: 1200s)" in result.stdout, result.stdout
+    assert "make test-hew-ratchet  (budget: 3000s)" in result.stdout, result.stdout
+    assert "make test-o2-differential  (budget: 5400s)" in result.stdout, result.stdout
+
+    fast_result = run_dispatcher("some-unclassified-root-file.txt", parallelism=32)
+    assert fast_result.returncode == 0, fast_result.stderr
+    assert "max(1, 16 / 32) = 1.00x" in fast_result.stdout, fast_result.stdout
+    assert "make lint  (budget: 600s)" in fast_result.stdout, fast_result.stdout
+    assert "make test-hew-ratchet  (budget: 1500s)" in fast_result.stdout, (
+        fast_result.stdout
+    )
 
 
 def test_help_includes_profile_json() -> None:
@@ -841,7 +863,7 @@ _TESTS = [
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,
-    test_dry_run_shows_budget_annotation_docs_lane,
+    test_dry_run_scales_every_budget_from_detected_parallelism,
     test_help_includes_profile_json,
     test_profile_json_flag_accepted_in_dry_run,
     test_help_includes_fail_fast_and_run_all_default,

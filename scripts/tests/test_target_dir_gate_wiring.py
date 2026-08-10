@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Prove RC1 language gates consume Cargo's configured debug output.
-
-The gates build through Make.  This contract previews their recipes under both
-an absolute and a workspace-relative CARGO_TARGET_DIR, then requires the
-resulting compiler path to be threaded into every runner that executes Hew.
-That makes a stale repository-local target/debug/hew unable to pass the gate.
-"""
+"""Prove RC1 language gates consume Cargo's configured debug output."""
 
 from __future__ import annotations
 
@@ -38,6 +32,10 @@ TARGETS = (
     "ll-diff",
     "ll-golden",
 )
+XTASK_TARGETS = {
+    "test-vertical-slice": "vertical-slice",
+    "test-stdlib-ratchet": "stdlib-ratchet",
+}
 
 
 def preview(target: str, target_dir: str) -> str:
@@ -60,6 +58,10 @@ def assert_all_gates_use(target_dir: str, expected_debug_dir: str) -> None:
     expected_hew = f"{expected_debug_dir}/debug/hew"
     for target in TARGETS:
         recipe = preview(target, target_dir)
+        if target in XTASK_TARGETS:
+            expected = f"cargo xtask gate {XTASK_TARGETS[target]}"
+            assert expected in recipe, f"{target} bypassed {expected}:\n{recipe}"
+            continue
         assert expected_hew in recipe, f"{target} did not use {expected_hew}:\n{recipe}"
         assert "target/debug/hew" not in recipe, (
             f"{target} retained a repository-default compiler path:\n{recipe}"

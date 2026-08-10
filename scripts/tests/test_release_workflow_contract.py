@@ -32,6 +32,8 @@ RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
 WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
 SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
+FREEBSD_SETUP = ROOT / "scripts" / "ci" / "freebsd-setup.sh"
+BUILD_SYSTEM_XTASK = ROOT / "xtask" / "src" / "build_system.rs"
 WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
 WINDOWS_LLVM_TOOLCHAIN_REPO = "hew-lang/llvm-toolchain"
 WINDOWS_LLVM_TOOLCHAIN_VERSION = "22.1.0-windows-msvc-v1"
@@ -594,12 +596,9 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
     # build matrix: macOS Unix + Windows; Linux matrix; two FreeBSD jobs.
     assert release.count("scripts/test-release-lib-link.sh") == 4
     assert release.count("scripts/test-release-lib-link.ps1") == 1
-    # Linux x86_64/aarch64, macOS, Windows, and the FreeBSD x86_64 gate job.
-    # The FreeBSD aarch64 gate leg is intentionally scoped to build+smoke
-    # (lib-link coverage is retained on freebsd-x86_64 and linux-aarch64).
-    assert gate.count("scripts/test-release-lib-link.sh") == 3
-    assert gate.count("scripts/test-release-lib-link.ps1") == 1
-    assert gate.count("make test-release-lib-link") == 1
+    # Linux x86_64/aarch64, macOS, Windows, and FreeBSD x86_64 enter through
+    # the same release-link gate. FreeBSD aarch64 stays build-and-smoke only.
+    assert gate.count("cargo xtask gate release-link") == 5
     for text in (release, gate):
         assert "ar t " not in text
         assert "llvm-ar t " not in text
@@ -608,14 +607,18 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
 def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> None:
     release = workflow()
     gate = RELEASE_GATE.read_text()
-    assert release.count("git bash pkgconf") == 2
-    assert gate.count("git gmake bash pkgconf") == 2
+    setup = FREEBSD_SETUP.read_text()
+    assert release.count("scripts/ci/freebsd-setup.sh prepare") == 2
+    assert gate.count("scripts/ci/freebsd-setup.sh prepare") == 2
+    assert release.count("source scripts/ci/freebsd-setup.sh") == 2
+    assert gate.count("source scripts/ci/freebsd-setup.sh") == 2
+    assert "git gmake bash" in setup
+    assert "pkgconf" in setup
+    assert "command -v bash" in setup
     assert release.count("command -v bash") == 2
-    assert gate.count("command -v bash") == 2
     assert release.count("bash scripts/test-release-lib-link.sh") == 2
-    # Gate: FreeBSD x86_64 only — the aarch64 gate leg is intentionally
-    # scoped to build+smoke (coverage retained on freebsd-x86_64/linux-aarch64).
-    assert gate.count("bash scripts/test-release-lib-link.sh") == 1
+    freebsd_x86 = workflow_job(gate, "gate-freebsd-x86_64")
+    assert "cargo xtask gate release-link" in freebsd_x86
 
     for job_name in ("  build-freebsd:\n", "  build-freebsd-aarch64:\n"):
         start = release.index(job_name)
@@ -896,6 +899,7 @@ def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None
 
 def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
     makefile = MAKEFILE.read_text()
+    xtask = BUILD_SYSTEM_XTASK.read_text()
     release = makefile[
         makefile.index("release:\n") : makefile.index("\n# Validate release builds")
     ]
@@ -908,8 +912,9 @@ def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
         )
     ]
 
+    assert "cargo xtask build release $(CARGO_TARGET_FLAG)" in release
     for package in ("hew-cli", "hew-lsp", "hew-observe"):
-        assert f"cargo build -p {package} --release" in release
+        assert f'"{package}"' in xtask
     for binary in ("hew", "hew-lsp", "hew-observe"):
         name = re.escape(binary)
         assert re.search(
@@ -921,7 +926,7 @@ def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
         assert f'@test -x "$(RELEASE_DIR)/{binary}" \\' in install
         assert f'install -m 755 "$(RELEASE_DIR)/{binary}"' in install
         assert f'"$(DESTDIR)$(PREFIX)/bin/{binary}"' in install
-    assert "cargo build -p hew-lib --profile release-lib" in release
+    assert '"--profile", "release-lib"' in xtask
     assert "$(RELEASE_LIB_DIR)/libhew.a" in assembly
 
 
@@ -1315,13 +1320,13 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
         "make check-gate-reachability",
         "make test-release-workflow-contract",
         "make test-opaque-resource-lifecycle-matrix-external",
-        "make test-vertical-slice",
-        "make test-hew-ratchet",
-        "make test-stdlib-ratchet",
         "make test-stdlib-execution-proofs",
     ):
         assert command in linux
         assert command in validator
+    for name in ("vertical-slice", "hew-ratchet", "stdlib-ratchet"):
+        assert f"cargo xtask gate {name}" in linux
+        assert f"make test-{name}" in validator
     assert "make test-compiler-lifecycle" in linux
     assert "make test-compiler-pipeline" not in linux
     assert "make test-compiler-pipeline" in validator
@@ -1329,8 +1334,8 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
     assert "macos-14" in gate and "macos-15-intel" in gate
     # FreeBSD x86_64 only — the aarch64 gate leg is intentionally scoped to
     # build+smoke (suite coverage retained on freebsd-x86_64 and linux-aarch64).
-    assert gate.count("gmake test-vertical-slice") == 1
-    assert gate.count("gmake test-hew-ratchet") == 1
+    freebsd_x86 = workflow_job(gate, "gate-freebsd-x86_64")
+    assert "cargo xtask gate freebsd" in freebsd_x86
 
 
 def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
@@ -1341,7 +1346,7 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
         (gate.replace("make test-stdlib-execution-proofs", "true", 1), validator),
         (gate, validator.replace("make macos-leak-oracle", "true", 1)),
         (gate.replace("macos-15-intel", "macos-14", 1), validator),
-        (gate.replace("gmake test-vertical-slice", "true", 1), validator),
+        (gate.replace("cargo xtask gate freebsd", "true", 1), validator),
     )
     for mutated_gate, mutated_validator in mutations:
         try:

@@ -269,23 +269,18 @@ jobs:
           gates: workspace
           cache-shared-key: build-test-windows
 
-      - name: Build Rust crates
+      - name: Build native release artifacts
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
+        run: cargo xtask build native --release
 
-      - name: Build hew-runtime for wasm32-wasip1 (debug)
+      - name: Build WASI artifacts (debug)
         # The full workspace nextest below runs debug test binaries, and
         # bootstrap_wasi_runner() builds this archive on demand when it is
         # absent. Without a pre-build, every parallel nextest process races to
         # cargo-build the same non-atomically written staticlib and wasm-ld
         # intermittently fails to open it. Mirrors ci.yml's Windows job.
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-
-      - name: Build hew-std for wasm32-wasip1 (debug)
-        # Same race, same medicine: bootstrap_wasi_runner() also builds
-        # libhew_std.a on demand when it is missing.
-        run: cargo build -p hew-std --target wasm32-wasip1
+        run: cargo xtask build wasm
 
       - name: Run Rust workspace tests
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
@@ -295,17 +290,12 @@ jobs:
         # playground-wasm-build job.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
+        run: cargo xtask gate workspace
 
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        run: make test-cabi
+        run: cargo xtask gate cabi
 
       - name: Upload test reports
         if: always()
@@ -341,16 +331,13 @@ jobs:
       - name: Set macOS deployment target
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
-      - name: Build libhew.a (runtime + stdlib)
+      - name: Build native debug and release artifacts
         run: |
-          cargo build -p hew-lib --release
-          cargo build -p hew-lib
+          cargo xtask build native
+          cargo xtask build native --release
 
-      - name: Build frontend (release)
-        run: cargo build -p hew-cli --release
-
-      - name: Build hew-runtime for wasm32-wasip1
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+      - name: Build WASI artifacts
+        run: cargo xtask build wasm --release
 
       - name: Run Rust workspace tests
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
@@ -361,17 +348,13 @@ jobs:
         # The macOS leak-oracle authority is explicit local macOS validation
         # before release; Linux supplies structural/ASan coverage where applicable.
         run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
-          -E 'not binary(~oracle)'
+          cargo xtask gate workspace
+          --filter-expr 'not binary(~oracle)'
 
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        run: make test-cabi
+        run: cargo xtask gate cabi
 
       - name: Upload test reports
         if: always()

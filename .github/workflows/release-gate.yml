@@ -150,21 +150,17 @@ jobs:
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
+        run: cargo xtask build native --release
 
       - name: Build WASM runtime
-        run: |
-          rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+        run: cargo xtask build wasm --release
 
       - name: Verify release binaries
         run: |
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          make test-release-lib-link
+          cargo xtask gate release-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -190,7 +186,7 @@ jobs:
         # and nothing in CI reads it.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
+        run: cargo xtask gate workspace
 
       - name: Run foundational compiled-Hew and lifecycle gates
         run: |
@@ -198,9 +194,9 @@ jobs:
           make test-release-workflow-contract
           make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
-          make test-vertical-slice
-          make test-hew-ratchet
-          make test-stdlib-ratchet
+          cargo xtask gate vertical-slice
+          cargo xtask gate hew-ratchet
+          cargo xtask gate stdlib-ratchet
           make test-stdlib-execution-proofs
 
       - name: Run MQTT broker end-to-end oracle
@@ -210,7 +206,7 @@ jobs:
         run: make mqtt-broker-e2e
 
       - name: Browser-analysis playground gate
-        run: make playground-check
+        run: cargo xtask gate playground
 
       - name: Upload test reports
         if: always()
@@ -259,23 +255,17 @@ jobs:
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
+        run: cargo xtask build native --release
 
       - name: Build WASM runtime
-        run: |
-          rustup target add wasm32-wasip1
-          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+        run: cargo xtask build wasm --release
 
       - name: Verify release binaries
         run: |
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
+          cargo xtask gate release-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -300,7 +290,9 @@ jobs:
         # (child helper exits 101); they pass natively on arm64 Linux
         # (container repro) and on every other platform. Runner-environment
         # classification — excluded here, tracked for investigation.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)'
+        run: >-
+          cargo xtask gate workspace
+          --filter-expr 'not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)'
 
       - name: Upload test reports
         if: always()
@@ -337,35 +329,22 @@ jobs:
           cache-shared-key: build-test-macos
 
       - name: Install LLVM
-        run: |
-          # hew-codegen-rs (inkwell -> llvm-sys-221) needs LLVM 22's static
-          # libraries during cargo build.
-          brew install llvm@${{ env.LLVM_VERSION }} lld@${{ env.LLVM_VERSION }}
-          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
-          LLD_PREFIX="$(brew --prefix lld@${{ env.LLVM_VERSION }})"
-          {
-            echo "LLVM_PREFIX=${LLVM_PREFIX}"
-            echo "LLD_PREFIX=${LLD_PREFIX}"
-            echo "CC=${LLVM_PREFIX}/bin/clang"
-            echo "CXX=${LLVM_PREFIX}/bin/clang++"
-            echo "MACOSX_DEPLOYMENT_TARGET=13.0"
-          } >> "$GITHUB_ENV"
-          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_FULL_VERSION }}
+
+      - name: Set macOS deployment target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - name: Build all release crates
-        run: |
-          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-          cargo build -p hew-lib --profile release-lib
+        run: cargo xtask build native --release
 
       - name: Verify release binaries
         run: |
           target/release/hew --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          scripts/test-release-lib-link.sh \
-            --hew target/release/hew \
-            --archive target/release-lib/libhew.a
+          cargo xtask gate release-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -381,7 +360,9 @@ jobs:
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
         # their memory coverage is the Linux ASan job; exclude them here.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle)'
+        run: >-
+          cargo xtask gate workspace
+          --filter-expr 'not binary(~oracle)'
 
       - name: Upload test reports
         if: always()
@@ -423,16 +404,10 @@ jobs:
           version: 22.1.5
 
       - name: Build release crates
-        run: |
-          cargo build -p hew-lsp -p hew-observe -p hew-cli --release
-          cargo build -p hew-lib --profile release-lib
+        run: cargo xtask build native --release
 
       - name: Prove release library consumer linking
-        shell: pwsh
-        run: |
-          ./scripts/test-release-lib-link.ps1 `
-            -Hew target/release/hew.exe `
-            -Archive target/release-lib/hew.lib
+        run: cargo xtask gate release-link
 
       - name: Verify binaries
         shell: bash
@@ -441,16 +416,11 @@ jobs:
           target/release/hew-observe.exe --version && echo "hew-observe runs"
 
       - name: Run Rust workspace tests
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
+        run: cargo xtask gate workspace
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
-        run: make test-cabi
+        run: cargo xtask gate cabi
 
       - name: Upload test reports
         if: always()
@@ -496,6 +466,7 @@ jobs:
             source scripts/ci/freebsd-setup.sh
             hew_freebsd_activate freebsd
             cargo xtask build native --release
+            cargo xtask gate release-link
             cargo xtask gate release-smoke
             cargo xtask gate freebsd
             HEW_FREEBSD_CI

@@ -229,42 +229,10 @@ jobs:
           gates: licenses
           cache-shared-key: release-${{ matrix.target }}
 
-      - name: Cache Rust artifacts (Darwin)
-        if: startsWith(matrix.target, 'darwin')
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: release-${{ matrix.target }}-cargo-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            release-${{ matrix.target }}-cargo-${{ matrix.os }}-
-
-      - name: Cache Rust artifacts
-        if: ${{ !startsWith(matrix.target, 'darwin') }}
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            release-${{ matrix.target }}-cargo-
-
       # ── Rust builds ─────────────────────────────────────────────────────
 
-      - name: Build hew, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
-
-      - name: Build libhew.a (runtime + stdlib)
-        # The shipped archive builds under the non-LTO release-lib profile:
-        # external Rust staticlibs (--link-lib packages) cannot dedupe their
-        # verbatim libstd members against a fat-LTO archive.
-        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+      - name: Build native release artifacts
+        run: cargo xtask build native --release --target ${{ matrix.rust_target }}
 
       - name: Prove release library consumer linking (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -673,25 +641,8 @@ jobs:
           gates: licenses
           cache-shared-key: release-jammy-${{ matrix.target }}
 
-      - name: Cache Rust artifacts
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: release-${{ matrix.target }}-jammy-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            release-${{ matrix.target }}-jammy-cargo-
-
-      - name: Build hew, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
-
-      - name: Build libhew.a (runtime + stdlib)
-        # Non-LTO release-lib profile: the shipped archive must keep verbatim
-        # libstd members so external Rust staticlibs (--link-lib) can dedupe.
-        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+      - name: Build native release artifacts
+        run: cargo xtask build native --release --target ${{ matrix.rust_target }}
 
       - name: Prove release library consumer linking
         run: |

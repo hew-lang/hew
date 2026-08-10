@@ -394,7 +394,7 @@ jobs:
         run: make sandbox-fixtures-check
 
       - name: Check repo-local playground browser/tooling smoke
-        run: make playground-check
+        run: cargo xtask gate playground
 
   # ─────────────────────────────────────────────────────────────────────────
   # Compiled-Hew artifact — one Linux build for the language-suite consumers
@@ -579,8 +579,8 @@ jobs:
       # >>> CI-PARITY-STEPS
       - name: Assert shard union and Hew ratchet
         if: env.RUN_CODE_PATH == 'true'
-        run: >-  # parity-cmd: make test-hew-ratchet
-          make test-hew-ratchet
+        run: >-  # parity-cmd: cargo xtask gate hew-ratchet
+          cargo xtask gate hew-ratchet
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
           HEW_FULL_INVENTORY="${{ runner.temp }}/compiled-hew-full.txt"
           HEW_SHARD_COUNT=4
@@ -802,15 +802,11 @@ jobs:
           gates: workspace,cabi
           cache-shared-key: build-test-windows
 
-      - name: Build Rust crates
+      - name: Build native release artifacts
         if: env.RUN_CODE_PATH == 'true'
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
-        run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
-
-      - name: Build Hew runtime library for PDB e2e
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-lib --release
+        run: cargo xtask build native --release
 
       - name: Verify Windows CodeView PDB emission
         if: env.RUN_CODE_PATH == 'true'
@@ -847,20 +843,14 @@ jobs:
           if ($dumpText -notmatch "(?i)main") { throw "PDB dump has no main symbol`n$dumpText" }
           if ($dumpText -notmatch "(?i)line") { throw "PDB dump has no line information`n$dumpText" }
 
-      - name: Build hew-runtime for wasm32-wasip1 (debug)
+      - name: Build WASI artifacts (debug)
         # Mirrors the macOS job. The WASI tests run as debug binaries and
         # bootstrap_wasi_runner builds this archive on demand when it is
         # absent, so without a pre-build every parallel nextest process races
         # to cargo-build the same non-atomically written staticlib and wasm-ld
         # intermittently fails to open it.
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-
-      - name: Build hew-std for wasm32-wasip1 (debug)
-        # Same race, same medicine: bootstrap_wasi_runner also builds
-        # libhew_std.a on demand when it is missing.
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-std --target wasm32-wasip1
+        run: cargo xtask build wasm
 
       - name: Run platform smoke tests
         # Default Windows path: prove the platform build links and the
@@ -871,14 +861,7 @@ jobs:
         # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
         # when both link into a test binary.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
-        run: >-
-          cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
+        run: cargo xtask gate platform-smoke
 
       - name: Run full Rust workspace tests
         # Platform/toolchain/ABI change: run the full workspace nextest on
@@ -892,19 +875,14 @@ jobs:
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
-        run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
+        run: cargo xtask gate workspace
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         # Unconditional on the code path: the crate is 82 fast tests and it is
         # the only place the C-ABI ownership contract is exercised on Windows.
         if: env.RUN_CODE_PATH == 'true'
-        run: make test-cabi
+        run: cargo xtask gate cabi
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
@@ -955,15 +933,11 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
-      - name: Build libhew.a (runtime + stdlib)
+      - name: Build native debug and release artifacts
         if: env.RUN_CODE_PATH == 'true'
         run: |
-          cargo build -p hew-lib --release
-          cargo build -p hew-lib
-
-      - name: Build frontend (release)
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-cli --release
+          cargo xtask build native
+          cargo xtask build native --release
 
       - name: Smoke test the release binary
         if: env.RUN_CODE_PATH == 'true'
@@ -971,13 +945,13 @@ jobs:
         # binary. Guards the ABI-mismatch abort class (#1606): a release build
         # that crashes at process exit while every debug test passes, because
         # the two use different C++ runtime linkage.
-        run: make test-release-binary
+        run: cargo xtask gate release-smoke
 
-      - name: Build hew-runtime for wasm32-wasip1 (release)
+      - name: Build WASI artifacts (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+        run: cargo xtask build wasm --release
 
-      - name: Build hew-runtime for wasm32-wasip1 (debug)
+      - name: Build WASI artifacts (debug)
         # The platform smoke tests run as debug binaries (cargo nextest run, no
         # --release). bootstrap_wasi_runner in support/mod.rs derives the build
         # profile from the test binary path and looks for the same profile's
@@ -988,13 +962,7 @@ jobs:
         # corrupt or transiently delete the file and wasm-ld then fails with
         # "cannot open .../wasm32-wasip1/debug/libhew_runtime.a".
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-
-      - name: Build hew-std for wasm32-wasip1 (debug)
-        # Pre-build the stdlib WASI archive for the same reason: bootstrap_wasi_runner
-        # builds libhew_std.a on demand if absent, same concurrent-write race applies.
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-std --target wasm32-wasip1
+        run: cargo xtask build wasm
 
       - name: Run platform smoke tests
         # Default macOS path: prove the Apple Silicon build links and the
@@ -1010,14 +978,8 @@ jobs:
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
         run: >-
-          cargo nextest run
-          -p hew-runtime
-          -p hew-codegen-rs
-          -p hew-compile
-          -p hew-cli
-          -p hew-lib
-          --profile ci
-          -E 'not binary(~oracle)'
+          cargo xtask gate platform-smoke
+          --filter-expr 'not binary(~oracle)'
 
       - name: Run full Rust workspace tests
         # Platform/toolchain/ABI change: run the full workspace nextest on
@@ -1032,19 +994,15 @@ jobs:
         # before release; Linux supplies structural/ASan coverage where applicable.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
         run: >-
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
-          --no-fail-fast
-          -E 'not binary(~oracle)'
+          cargo xtask gate workspace
+          --filter-expr 'not binary(~oracle)'
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         # Unconditional on the code path so Apple Silicon keeps C-ABI coverage
         # even when the full workspace nextest is deduped off this job.
         if: env.RUN_CODE_PATH == 'true'
-        run: make test-cabi
+        run: cargo xtask gate cabi
 
       - name: Upload test reports
         # The Linux and Windows jobs already publish the same two reports

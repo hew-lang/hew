@@ -206,7 +206,9 @@ RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew-native hew-lsp observe runtime stdlib wasm-runtime assemble
+all:
+	cargo xtask build all
+	$(MAKE) assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -362,9 +364,8 @@ sandbox-parity: hew-native sandbox-vm-deps $(LIBHEW_READY)
 # manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.
 # Running full `cargo test -p hew-wasm` subsumes the --lib curated-manifest smoke and compiles
 # and runs tests/v05_wasm_coverage.rs (the fixture-coverage integration suite).
-playground-check: playground-manifest-check
-	cargo test -p hew-wasm
-	$(MAKE) wasm
+playground-check:
+	cargo xtask gate playground
 
 # Focused curated playground WASI runtime preflight.
 playground-wasi-check:
@@ -376,32 +377,9 @@ playground-wasi-check:
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
-# Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
-# tests (nextest smoke profile). Designed to complete in <5 min and surface
-# format and fast oracle failures during local iteration. Clippy remains in
-# the lint target and is not duplicated here.
-#
-# Run this target directly for a quick sanity pass on any diff without waiting
-# for E2E compilation. The comprehensive dispatcher reserves it for that local
-# opt-in because its full workspace run already includes the smoke test.
-#
-# The smoke nextest profile excludes subprocess-intensive tests (eval_e2e,
-# test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].
-#
-# Build-graph note: cargo clippy and cargo nextest both compile the hew-cli
-# library, so `make hew-native` after them only pays for the final link step
-# (~1–2 s on a warm tree).  Some nextest smoke tests execute `hew run`, which
-# links against the combined archive; bring it up to date AND assert its
-# freshness before nextest so a fresh checkout does not fail smoke with
-# "cannot find libhew.a" and a carried-over target dir cannot feed a stale one
-# to the tests. Running `make hew-native` here also eliminates the redundant
-# compile triggered by make lint → hew-fmt-check later in that same run
-# (hew-fmt-check requires target/debug/hew but nextest does not produce it).
+# Compatibility alias for the canonical fast xtask gate.
 ci-preflight-smoke:
-	cargo fmt --all -- --check
-	$(MAKE) check-libhew-fresh
-	cargo nextest run --workspace --profile smoke
-	$(MAKE) hew-native
+	cargo xtask gate smoke
 
 # Assert that libhew.a matches the content-addressed certificate written only
 # after Cargo successfully built (or fingerprint-verified) it.  The certificate
@@ -578,7 +556,7 @@ wasm-dist: wasm
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew-native hew-lsp observe runtime stdlib wasm-runtime
+assemble:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# assemble-release makes build/std a symlink to ../std; reset it so the
 	@# flat std stub loop below cannot rewrite tracked std/*.hew files in root.
@@ -638,12 +616,7 @@ endif
 
 release:
 	$(RELEASE_PREP)
-	$(RELEASE_ENV) cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
-	$(RELEASE_ENV) cargo build -p hew-lsp --release $(CARGO_TARGET_FLAG)
-	$(RELEASE_ENV) cargo build -p hew-observe --release $(CARGO_TARGET_FLAG)
-	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
-	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
-	$(RELEASE_ENV) cargo build -p hew-std --target wasm32-wasip1 --release
+	$(RELEASE_ENV) cargo xtask build release $(CARGO_TARGET_FLAG)
 	$(MAKE) assemble-release
 
 # Validate release builds on all supported platforms before tagging.
@@ -713,31 +686,9 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-# Build the combined runtime+stdlib static lib, the native runtime staticlib,
-# and the WASM runtime before running the full workspace test suite.  Several
-# hew-cli integration tests (eval_e2e, eval_wasm_*) call `hew eval` which needs
-# both libs at link time.
-# The WASM runtime (libhew_runtime.a for wasm32-wasip1) is required by the
-# wasm32-wasi eval tests even when they are expected to fail before codegen:
-# the linker library search runs before the fast-typecheck diagnostic path,
-# so a missing staticlib causes an unrelated error that aborts those tests.
-# `runtime` builds the *native* libhew_runtime.a that the hew-codegen-rs coro
-# substrate execution tests link directly.  `cargo test`/`nextest` build only
-# hew-runtime's rlib, never its staticlib, so without this prereq a stale
-# cached archive (e.g. one predating the hew_cont_* continuation substrate)
-# would be linked against freshly-emitted coro objects and fail with
-# undefined-symbol errors on a target dir carried across commits.
-test: wasm-runtime runtime $(LIBHEW_READY)
-	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
-		set -e; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
-		test -f "$(LIBHEW)"; \
-		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast; \
-	else \
-		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
-		echo "         Install with: cargo install cargo-nextest" >&2; \
-		cargo test --workspace --exclude hew-cabi --no-fail-fast; \
-	fi
+# Compatibility alias for the canonical workspace build-and-test gate.
+test:
+	cargo xtask gate workspace
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -767,7 +718,7 @@ test-leak-oracle-selftest:
 # developer machines only. This target is that missing half; every job carrying
 # an `--exclude hew-cabi` runs it.
 test-cabi:
-	cargo nextest run --profile ci-cabi -p hew-cabi
+	cargo xtask gate cabi
 
 # Build the combined runtime+stdlib static lib and the WASM runtime before
 # running the compiler-pipeline tests.  Several hew-cli integration tests
@@ -810,11 +761,9 @@ test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
-# End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
-# Build libhew first and verify freshness so native fixture links do not test
-# against stale runtime/stdlib archives on a fresh checkout or CI runner.
-test-vertical-slice: hew-native runtime $(LIBHEW_READY)
-	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
+# End-to-end Hew compiler oracle, including its xtask-owned prerequisites.
+test-vertical-slice:
+	cargo xtask gate vertical-slice
 
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
@@ -964,9 +913,8 @@ check-gate-reachability: test-check-gate-reachability
 test-check-gate-reachability:
 	python3 scripts/tests/test_check_gate_reachability.py
 
-test-stdlib-ratchet: hew
-	@echo "==> Type-checking stdlib (ratcheted)"
-	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
+test-stdlib-ratchet:
+	cargo xtask gate stdlib-ratchet
 
 # Verify the public stdlib index has exactly one executable fixture proof per
 # module, and that each manifest fixture is run by its declared test command.

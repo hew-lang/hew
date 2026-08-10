@@ -1051,6 +1051,14 @@ def parse_makefile(text: str) -> tuple[set[str], dict[str, set[str]], dict[str, 
 MAKE_INVOKE_RE = re.compile(
     r"(?<![\w-])g?make[^\S\n]+((?:[A-Za-z0-9_.-]+[^\S\n]+)*[A-Za-z0-9_.-]+)"
 )
+XTASK_GATE_RE = re.compile(r"(?<![\w-])cargo\s+xtask\s+gate\s+([A-Za-z0-9_.-]+)")
+XTASK_GATE_MAKE_EQUIVALENTS = {
+    "playground": {"playground-check", "playground-manifest-check"},
+    "release-link": {"test-release-lib-link"},
+    "release-smoke": {"test-release-binary"},
+    "vertical-slice": {"test-vertical-slice"},
+    "stdlib-ratchet": {"test-stdlib-ratchet"},
+}
 
 
 # Commands that print their arguments instead of running them. `echo "run make
@@ -1086,6 +1094,16 @@ def make_targets_in(text: str, known: set[str]) -> set[str]:
             else:
                 break
     return found
+
+
+def xtask_gate_make_targets(text: str, known: set[str]) -> set[str]:
+    """Legacy public targets whose canonical xtask gate CI invokes directly."""
+    return {
+        target
+        for gate in XTASK_GATE_RE.findall(text)
+        for target in XTASK_GATE_MAKE_EQUIVALENTS.get(gate, set())
+        if target in known
+    }
 
 
 # ── Reachability closure ──────────────────────────────────────────────────────
@@ -1138,9 +1156,17 @@ def ci_test_commands(
 ) -> list[str]:
     """Text of every test invocation CI can reach: the commands of runnable CI
     steps plus the recipes of the Makefile targets CI reaches."""
-    return [command for _, command in step_commands] + [
-        executing_text(recipes.get(t, "")) for t in sorted(reached)
+    sources = list(step_commands) + [
+        (f"Makefile: {target}", executing_text(recipes.get(target, "")))
+        for target in sorted(reached)
     ]
+    blobs = [command for _, command in sources]
+    blobs.extend(
+        invocation.command
+        for where, command in sources
+        for invocation in cargo_commands_in(where, command)
+    )
+    return blobs
 
 
 WORKSPACE_RUN_RE = re.compile(
@@ -1492,6 +1518,9 @@ _VALUE_FLAGS = {
     "-p",
     "--package",
     "--exclude",
+    "--verify",
+    "--gates",
+    "--field",
 }
 
 # Long flags that take no value; every other unknown long flag is ambiguous.
@@ -1526,6 +1555,7 @@ _BOOLEAN_FLAGS = {
     "--help",
     "--hide-progress-bar",
     "--ignore-default-filter",
+    "--list",
 }
 
 CARGO_CMD_RE = re.compile(r"(?<![\w./-])cargo(?![\w-])")
@@ -1652,7 +1682,53 @@ def cargo_commands_in(where: str, script: str) -> list[CargoInvocation]:
         invocation = parse_cargo_command(where, segment)
         if invocation is not None:
             out.append(invocation)
+            out.extend(xtask_gate_cargo_commands(where, invocation))
     return out
+
+
+def xtask_gate_cargo_commands(
+    where: str, invocation: CargoInvocation
+) -> list[CargoInvocation]:
+    """Expand xtask test gates into the Cargo verdicts they own."""
+    if invocation.subcommand != "xtask":
+        return []
+    tokens = invocation.tokens
+    try:
+        gate_index = tokens.index("gate")
+        gate = tokens[gate_index + 1]
+    except (ValueError, IndexError):
+        return []
+
+    workspace = (
+        "cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi "
+        "--profile ci --no-fail-fast"
+    )
+    platform_smoke = (
+        "cargo nextest run -p hew-runtime -p hew-codegen-rs -p hew-compile "
+        "-p hew-cli -p hew-lib --profile ci"
+    )
+    commands = {
+        "workspace": [workspace],
+        "platform-full": [workspace],
+        "platform-smoke": [platform_smoke],
+        "cabi": ["cargo nextest run --profile ci-cabi -p hew-cabi"],
+        "playground": ["cargo test -p hew-wasm"],
+        "freebsd": [workspace, "cargo nextest run --profile ci-cabi -p hew-cabi"],
+    }.get(gate, [])
+
+    if "--filter-expr" in tokens and commands:
+        filter_index = tokens.index("--filter-expr")
+        if filter_index + 1 >= len(tokens):
+            raise SystemExit(f"error: {where}: xtask gate filter has no expression")
+        expression = shlex.quote(tokens[filter_index + 1])
+        commands = [f"{command} --filter-expr {expression}" for command in commands]
+
+    expanded = []
+    for command in commands:
+        parsed = parse_cargo_command(f"{where} / xtask gate {gate}", command)
+        if parsed is not None:
+            expanded.append(parsed)
+    return expanded
 
 
 def nextest_runs(
@@ -2161,7 +2237,7 @@ def main() -> int:
         for invocation in cargo_commands_in(where, script)
     ]
 
-    roots = make_targets_in(ci_text, known)
+    roots = make_targets_in(ci_text, known) | xtask_gate_make_targets(ci_text, known)
     reached = close_over_makefile(roots, prereqs, recipes, known)
 
     gates = ci_gate_targets(phony)

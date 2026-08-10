@@ -59,7 +59,7 @@ fn usage() -> String {
         "",
         "commands:",
         "  build [all|native|wasm|release] [--release] [--target TRIPLE]",
-        "  gate <smoke|workspace|platform-smoke|platform-full|cabi|vertical-slice|hew-ratchet|stdlib-ratchet|playground|release-smoke|freebsd>",
+        "  gate <name> [--filter-expr NEXTEST_EXPRESSION]",
         "  tools --gates GATE[,GATE...] [--field tools|targets|ast-grep]",
         "  tools --verify GATE[,GATE...]",
         "  ci-local [--list]",
@@ -205,31 +205,21 @@ fn verify_libhew(root: &Path, target: Option<&str>) -> Result<()> {
 }
 
 fn gate(root: &Path, args: &[String]) -> Result<()> {
-    let name = args
-        .first()
-        .ok_or_else(|| "gate requires a gate name".to_string())?;
-    if args.len() != 1 {
-        return Err("gate accepts exactly one gate name".to_string());
-    }
-    match name.as_str() {
+    let (name, filter_expr) = parse_gate_options(args)?;
+    match name {
         "smoke" => {
             build_native(root, Profile::Debug, None, false)?;
             verify_libhew(root, None)?;
             cargo(root, &["fmt", "--all", "--", "--check"])?;
-            cargo(
-                root,
-                &["nextest", "run", "--workspace", "--profile", "smoke"],
-            )
+            nextest(root, &["--workspace", "--profile", "smoke"], None)
         }
         "workspace" | "platform-full" => {
             build_native(root, Profile::Debug, None, true)?;
             build_wasm(root, Profile::Debug)?;
             verify_libhew(root, None)?;
-            cargo(
+            nextest(
                 root,
                 &[
-                    "nextest",
-                    "run",
                     "--workspace",
                     "--exclude",
                     "hew-wasm",
@@ -239,57 +229,102 @@ fn gate(root: &Path, args: &[String]) -> Result<()> {
                     "ci",
                     "--no-fail-fast",
                 ],
+                filter_expr,
             )
         }
-        "platform-smoke" => {
-            build_native(root, Profile::Debug, None, true)?;
-            build_wasm(root, Profile::Debug)?;
-            verify_libhew(root, None)?;
-            cargo(
-                root,
-                &[
-                    "nextest",
-                    "run",
-                    "-p",
-                    "hew-runtime",
-                    "-p",
-                    "hew-codegen-rs",
-                    "-p",
-                    "hew-compile",
-                    "-p",
-                    "hew-cli",
-                    "-p",
-                    "hew-lib",
-                    "--profile",
-                    "ci",
-                ],
-            )
-        }
+        "platform-smoke" => platform_smoke(root, filter_expr),
         "cabi" => cargo(
             root,
             &["nextest", "run", "--profile", "ci-cabi", "-p", "hew-cabi"],
         ),
         "vertical-slice" => compiled_hew_script(root, "tests/vertical-slice/run.sh", &[]),
-        "hew-ratchet" => compiled_hew_script(root, "scripts/hew-suite-ratchet.sh", &[]),
-        "stdlib-ratchet" => compiled_hew_script(root, "scripts/stdlib-ratchet.sh", &[]),
-        "playground" => {
-            cargo(root, &["run", "-p", "hew-capability-gen", "--", "--check"])?;
-            run_program(
-                root,
-                python(),
-                &["scripts/gen-playground-manifest.py", "--check"],
-            )?;
-            cargo(root, &["test", "-p", "hew-wasm"])?;
-            run_program(
-                root,
-                "wasm-pack",
-                &["build", "hew-wasm", "--target", "web", "--release"],
-            )
+        "hew-ratchet" => {
+            if let Ok(path) = env::var("HEW_O0_OUTCOMES_FILE") {
+                compiled_hew_script(
+                    root,
+                    "scripts/hew-suite-ratchet.sh",
+                    &["--emit-o0-outcomes", &path],
+                )
+            } else {
+                compiled_hew_script(root, "scripts/hew-suite-ratchet.sh", &[])
+            }
         }
+        "stdlib-ratchet" => compiled_hew_script(root, "scripts/stdlib-ratchet.sh", &[]),
+        "playground" => playground_gate(root),
         "freebsd" => freebsd_gate(root),
         "release-smoke" => release_smoke(root),
+        "release-link" => release_link(root),
         other => Err(format!("unknown gate {other:?}")),
     }
+}
+
+fn parse_gate_options(args: &[String]) -> Result<(&str, Option<&str>)> {
+    let name = args
+        .first()
+        .ok_or_else(|| "gate requires a gate name".to_string())?;
+    let mut filter_expr = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--filter-expr" => {
+                filter_expr = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--filter-expr requires an expression".to_string())?
+                        .as_str(),
+                );
+                index += 2;
+            }
+            other => return Err(format!("unknown gate option {other:?}")),
+        }
+    }
+    if filter_expr.is_some()
+        && !matches!(
+            name.as_str(),
+            "workspace" | "platform-full" | "platform-smoke"
+        )
+    {
+        return Err(format!("gate {name:?} does not accept --filter-expr"));
+    }
+    Ok((name, filter_expr))
+}
+
+fn platform_smoke(root: &Path, filter_expr: Option<&str>) -> Result<()> {
+    build_native(root, Profile::Debug, None, true)?;
+    build_wasm(root, Profile::Debug)?;
+    verify_libhew(root, None)?;
+    nextest(
+        root,
+        &[
+            "-p",
+            "hew-runtime",
+            "-p",
+            "hew-codegen-rs",
+            "-p",
+            "hew-compile",
+            "-p",
+            "hew-cli",
+            "-p",
+            "hew-lib",
+            "--profile",
+            "ci",
+        ],
+        filter_expr,
+    )
+}
+
+fn playground_gate(root: &Path) -> Result<()> {
+    cargo(root, &["run", "-p", "hew-capability-gen", "--", "--check"])?;
+    run_program(
+        root,
+        python(),
+        &["scripts/gen-playground-manifest.py", "--check"],
+    )?;
+    cargo(root, &["test", "-p", "hew-wasm"])?;
+    run_program(
+        root,
+        "wasm-pack",
+        &["build", "hew-wasm", "--target", "web", "--release"],
+    )
 }
 
 fn freebsd_gate(root: &Path) -> Result<()> {
@@ -315,6 +350,29 @@ fn freebsd_gate(root: &Path) -> Result<()> {
 fn release_smoke(root: &Path) -> Result<()> {
     build_native(root, Profile::Release, None, false)?;
     run_program(root, "scripts/test-release-binary.sh", &["--no-build"])
+}
+
+fn release_link(root: &Path) -> Result<()> {
+    let hew = cargo_output_dir(root, "release", None)?.join(executable("hew"));
+    let archive_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };
+    let archive = cargo_output_dir(root, "release-lib", None)?.join(archive_name);
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("powershell");
+        command
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg("scripts/test-release-lib-link.ps1")
+            .arg("-Hew")
+            .arg(hew)
+            .arg("-Archive")
+            .arg(archive);
+        command
+    } else {
+        let mut command = Command::new("scripts/test-release-lib-link.sh");
+        command.arg("--hew").arg(hew).arg("--archive").arg(archive);
+        command
+    };
+    command.current_dir(root);
+    run_command(&mut command, "prove release library consumer linking")
 }
 
 fn compiled_hew_script(root: &Path, script: &str, args: &[&str]) -> Result<()> {
@@ -394,8 +452,8 @@ impl ToolPlan {
                 "lint" => plan.ast_grep = true,
                 "licenses" => plan.tools.extend([CARGO_ABOUT, CARGO_DENY]),
                 "coverage" => plan.tools.extend([LLVM_COV, NEXTEST]),
-                "vertical-slice" | "hew-ratchet" | "stdlib-ratchet" | "release-smoke" | "build" => {
-                }
+                "vertical-slice" | "hew-ratchet" | "stdlib-ratchet" | "release-smoke"
+                | "release-link" | "build" => {}
                 other => return Err(format!("unknown CI gate {other:?}")),
             }
         }
@@ -461,6 +519,18 @@ fn ci_local(root: &Path, args: &[String]) -> Result<()> {
 
 fn cargo(root: &Path, args: &[&str]) -> Result<()> {
     run_program(root, cargo_executable(), args)
+}
+
+fn nextest(root: &Path, args: &[&str], filter_expr: Option<&str>) -> Result<()> {
+    let mut command = Command::new(cargo_executable());
+    command
+        .current_dir(root)
+        .args(["nextest", "run"])
+        .args(args);
+    if let Some(expression) = filter_expr {
+        command.args(["-E", expression]);
+    }
+    run_command(&mut command, "run nextest gate")
 }
 
 fn run_program(root: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Result<()> {
@@ -558,5 +628,25 @@ mod tests {
     #[test]
     fn tool_plan_rejects_unknown_gates() {
         assert!(ToolPlan::for_gates("workspace,typo").is_err());
+    }
+
+    #[test]
+    fn gate_options_limit_filters_to_platform_test_gates() {
+        let workspace = [
+            "workspace".to_string(),
+            "--filter-expr".to_string(),
+            "not binary(~oracle)".to_string(),
+        ];
+        assert_eq!(
+            parse_gate_options(&workspace).unwrap(),
+            ("workspace", Some("not binary(~oracle)"))
+        );
+
+        let cabi = [
+            "cabi".to_string(),
+            "--filter-expr".to_string(),
+            "all()".to_string(),
+        ];
+        assert!(parse_gate_options(&cabi).is_err());
     }
 }

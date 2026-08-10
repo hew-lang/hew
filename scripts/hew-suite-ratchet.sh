@@ -164,8 +164,18 @@ for fixture in "$TESTS_DIR"/*.hew; do
     cached_report="$CACHE_DIR/$cache_key.xml"
     if [[ ! -s "$cached_report" ]] || ! python3 "$HEW_JUNIT_PY" "$cached_report" >/dev/null 2>&1; then
         fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
-        "$HEW_BIN" test "$fixture" --format junit > "$fresh_report" 2>> "$STDERR_FILE" || true
-        if [[ ! -s "$fresh_report" ]] || ! python3 "$HEW_JUNIT_PY" "$fresh_report" >/dev/null; then
+        rc=0
+        "$HEW_BIN" test "$fixture" --format junit --allow-empty \
+            > "$fresh_report" 2>> "$STDERR_FILE" || rc=$?
+        # A few fixtures are bare `fn main` oracles with no `#[test]`
+        # functions. Running the directory as a whole ignored them; running
+        # per file must too, or caching turns them into failures. A clean exit
+        # with no report means no tests, not a broken fixture.
+        if [[ $rc -eq 0 && ! -s "$fresh_report" ]]; then
+            rm -f "$fresh_report"
+            continue
+        fi
+        if [[ $rc -ne 0 || ! -s "$fresh_report" ]] || ! python3 "$HEW_JUNIT_PY" "$fresh_report" >/dev/null; then
             echo "error: hew test produced an invalid JUnit report for $fixture" >&2
             rm -f "$fresh_report"
             cat "$STDERR_FILE" >&2

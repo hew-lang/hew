@@ -119,6 +119,16 @@ default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+# The Intel macOS release-gate runner is roughly three times slower than the
+# other supported runners. These four full compiler/linking and release-accounting
+# oracles exceeded the normal 300-second ceiling while healthy, so give only this
+# host a provisional 900-second completion window. Keep the standard 300-second
+# hang ceiling everywhere else until this runner reports passing durations.
+platform = "cfg(all(target_os = \"macos\", target_arch = \"x86_64\"))"
+filter = "test(native_link_darwin_cross_arch) | test(a_stdlib_module) | test(no_shipped) | test(binder_shape_release_sweep)"
+slow-timeout = { period = "300s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
 # Every test_runner_e2e case spawns the full hew binary to drive `hew test`.
 # Cap the concurrency the same way eval_e2e is capped so the suite does not
 # oversubscribe a 4-core hosted runner.

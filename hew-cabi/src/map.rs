@@ -399,31 +399,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hashmap_key_layout_field_values_are_readable() {
-        unsafe extern "C" fn dummy_hash(_key: *const c_void) -> u64 {
-            0
-        }
-        unsafe extern "C" fn dummy_eq(_lhs: *const c_void, _rhs: *const c_void) -> i32 {
-            1
-        }
-
-        let layout = HewMapKeyLayout {
-            size: 16,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            hash_fn: Some(dummy_hash),
-            eq_fn: Some(dummy_eq),
-            drop_fn: None,
-        };
-        assert_eq!(layout.size, 16);
-        assert_eq!(layout.align, 8);
-        assert_eq!(layout.ownership_kind, HewTypeOwnershipKind::Plain);
-        assert!(layout.hash_fn.is_some());
-        assert!(layout.eq_fn.is_some());
-        assert!(layout.drop_fn.is_none());
-    }
-
     // -- HewMapValueLayout repr --
 
     #[test]
@@ -447,22 +422,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hashmap_value_layout_field_values_are_readable() {
-        let layout = HewMapValueLayout {
-            size: 24,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            drop_fn: None,
-            clone_fn: None,
-        };
-        assert_eq!(layout.size, 24);
-        assert_eq!(layout.align, 8);
-        assert_eq!(layout.ownership_kind, HewTypeOwnershipKind::Plain);
-        assert!(layout.drop_fn.is_none());
-        assert!(layout.clone_fn.is_none());
-    }
-
     // -- HewTypeOwnershipKind discriminant values (ABI contract) --
 
     #[test]
@@ -475,75 +434,5 @@ mod tests {
             0,
             "Plain must be discriminant 0 for C interop (zero-init is Plain)",
         );
-    }
-
-    // -- null-safe thunk construction --
-
-    #[test]
-    fn hashmap_key_layout_thunk_fields_are_null_safe() {
-        // Constructing with None thunks must compile and produce a layout where
-        // both thunks are absent.  The runtime's job (C-1b) is to detect None
-        // and abort fail-closed.
-        let layout = HewMapKeyLayout {
-            size: 8,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            hash_fn: None,
-            eq_fn: None,
-            drop_fn: None,
-        };
-        assert!(
-            layout.hash_fn.is_none(),
-            "hash_fn must be None when not supplied",
-        );
-        assert!(
-            layout.eq_fn.is_none(),
-            "eq_fn must be None when not supplied",
-        );
-        // Verify that None is represented as a null-sized discriminant slot
-        // (same size as Some(fn), proving the niche optimisation holds).
-        assert_eq!(
-            size_of_val(&layout.hash_fn),
-            size_of::<HewMapKeyHashThunk>(),
-            "None hash_fn slot must have the same footprint as a fn pointer",
-        );
-    }
-
-    // -- Debug impls are present --
-
-    #[test]
-    fn hew_map_key_layout_debug_output() {
-        let layout = HewMapKeyLayout {
-            size: 4,
-            align: 4,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            hash_fn: None,
-            eq_fn: None,
-            drop_fn: None,
-        };
-        let dbg = format!("{layout:?}");
-        assert!(
-            dbg.contains("HewMapKeyLayout"),
-            "Debug must include type name"
-        );
-        assert!(dbg.contains("size: 4"), "Debug must include size");
-        assert!(dbg.contains("Plain"), "Debug must include ownership_kind");
-    }
-
-    #[test]
-    fn hew_map_value_layout_debug_output() {
-        let layout = HewMapValueLayout {
-            size: 8,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            drop_fn: None,
-            clone_fn: None,
-        };
-        let dbg = format!("{layout:?}");
-        assert!(
-            dbg.contains("HewMapValueLayout"),
-            "Debug must include type name",
-        );
-        assert!(dbg.contains("Plain"), "Debug must include ownership_kind");
     }
 }

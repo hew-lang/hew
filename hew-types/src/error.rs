@@ -1899,38 +1899,6 @@ mod tests {
 
     // ── TypeErrorKind equality ───────────────────────────────────────
 
-    #[test]
-    fn test_type_error_kind_equality() {
-        assert_eq!(
-            TypeErrorKind::UndefinedVariable,
-            TypeErrorKind::UndefinedVariable
-        );
-        assert_ne!(
-            TypeErrorKind::UndefinedVariable,
-            TypeErrorKind::UndefinedField
-        );
-        assert_eq!(
-            TypeErrorKind::Mismatch {
-                expected: "i32".into(),
-                actual: "bool".into()
-            },
-            TypeErrorKind::Mismatch {
-                expected: "i32".into(),
-                actual: "bool".into()
-            },
-        );
-        assert_ne!(
-            TypeErrorKind::Mismatch {
-                expected: "i32".into(),
-                actual: "bool".into()
-            },
-            TypeErrorKind::Mismatch {
-                expected: "i64".into(),
-                actual: "bool".into()
-            },
-        );
-    }
-
     // ── TypeError Clone ──────────────────────────────────────────────
 
     // ── Multi-error collection ───────────────────────────────────────

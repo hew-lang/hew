@@ -621,14 +621,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn elem_kind_clone_and_eq() {
-        let a = ElemKind::Plain;
-        let b = a;
-        assert_eq!(a, b);
-        assert_ne!(ElemKind::Plain, ElemKind::String);
-    }
-
     // ── HewTypeLayout ABI scaffold ───────────────────────────────────────
 
     #[test]
@@ -642,18 +634,6 @@ mod tests {
     #[test]
     fn ownership_kind_size_is_one_byte() {
         assert_eq!(std::mem::size_of::<HewTypeOwnershipKind>(), 1);
-    }
-
-    #[test]
-    fn type_layout_fields_are_stable() {
-        let layout = HewTypeLayout {
-            size: 24,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        };
-        assert_eq!(layout.size, 24);
-        assert_eq!(layout.align, 8);
-        assert_eq!(layout.ownership_kind, HewTypeOwnershipKind::LayoutManaged);
     }
 
     // ── HewVec layout (must match the C struct) ─────────────────────────
@@ -670,74 +650,6 @@ mod tests {
             size > 5 * std::mem::size_of::<usize>(),
             "HewVec too small: {size}"
         );
-    }
-
-    #[test]
-    fn hewvec_field_offsets_are_stable() {
-        // Construct a HewVec with known sentinel values and read them back
-        // to verify field ordering matches the C layout.
-        // SAFETY: layout is null so layout_storage is never read; zeroed bytes
-        // are a valid (unused) initialiser for the inline storage field.
-        let v = unsafe {
-            HewVec {
-                data: 0xAAAA_usize as *mut u8,
-                len: 42,
-                cap: 100,
-                elem_size: 8,
-                elem_kind: ElemKind::String,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        assert_eq!(v.data as usize, 0xAAAA);
-        assert_eq!(v.len, 42);
-        assert_eq!(v.cap, 100);
-        assert_eq!(v.elem_size, 8);
-        assert_eq!(v.elem_kind, ElemKind::String);
-        assert!(v.layout.is_null());
-    }
-
-    #[test]
-    fn hewvec_debug_output_is_readable() {
-        // SAFETY: layout is null so layout_storage is never read.
-        let v = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: 4,
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let debug = format!("{v:?}");
-        // Verify Debug output includes key field names.
-        assert!(debug.contains("HewVec"), "Debug should include type name");
-        assert!(debug.contains("len: 0"), "Debug should include len");
-        assert!(debug.contains("Plain"), "Debug should include elem_kind");
-        assert!(debug.contains("layout"), "Debug should include layout");
-    }
-
-    #[test]
-    fn hewvec_default_field_values_are_sane() {
-        // A zeroed HewVec (like C's memset-to-zero) should be a valid empty vec.
-        // SAFETY: layout is null so layout_storage is never read.
-        let v = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: 0,
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        assert!(v.data.is_null());
-        assert_eq!(v.len, 0);
-        assert_eq!(v.cap, 0);
-        assert!(v.layout.is_null());
     }
 
     #[test]

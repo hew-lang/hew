@@ -80,9 +80,38 @@ def parse(path: Path) -> tuple[list[tuple[str, str]], tuple[int, int, int]]:
     return outcomes, (total, failures, skipped)
 
 
+def merge(output: Path, inputs: list[Path]) -> None:
+    """Merge per-fixture reports into the suite report consumed by CI."""
+    root = ET.Element("testsuites", tests="0", failures="0", skipped="0")
+    totals = [0, 0, 0]
+    for path in inputs:
+        tree_root = ET.parse(path).getroot()
+        if tree_root.tag != "testsuites":
+            raise SystemExit(f"error: {path}: root element is not <testsuites>")
+        try:
+            totals[0] += int(tree_root.get("tests", ""))
+            totals[1] += int(tree_root.get("failures", ""))
+            totals[2] += int(tree_root.get("skipped", ""))
+        except ValueError as e:
+            raise SystemExit(f"error: {path}: invalid JUnit summary") from e
+        root.extend(list(tree_root))
+    root.set("tests", str(totals[0]))
+    root.set("failures", str(totals[1]))
+    root.set("skipped", str(totals[2]))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(output, encoding="unicode", xml_declaration=True)
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[0] == "--merge":
+        merge(Path(argv[1]), [Path(path) for path in argv[2:]])
+        return 0
     if len(argv) != 1:
-        print("usage: python3 scripts/lib/hew_junit.py <junit.xml>", file=sys.stderr)
+        print(
+            "usage: python3 scripts/lib/hew_junit.py <junit.xml>\n"
+            "       python3 scripts/lib/hew_junit.py --merge <output> <input>...",
+            file=sys.stderr,
+        )
         return 2
     path = Path(argv[0])
     if not path.is_file():

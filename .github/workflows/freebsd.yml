@@ -43,9 +43,22 @@ jobs:
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
             pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
             set -eux
+            id
+            test "$(id -u)" = 0
+
+            # The VM action connects as root. Finish privileged setup before
+            # handing the complete build and test workload to a normal user.
+            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
+            chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
+            su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
+            set -eux
+            export HOME=/home/hew-ci
+            id
+            test "$(id -u)" -ne 0
 
             git config --global --add safe.directory "$(pwd)"
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -73,7 +86,6 @@ jobs:
             }
 
             # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
             command -v bash && bash --version
@@ -124,6 +136,7 @@ jobs:
             # overwriting the workspace run's junit.xml (same class of bug
             # profile.ci-cabi exists to prevent — see .config/nextest.toml).
             cargo nextest run -p hew-cli --test dwarf_debugger_locals_e2e --profile ci-focused
+            HEW_FREEBSD_CI
 
       - name: Upload test reports
         # vmactions/freebsd-vm syncs the working directory back to this host

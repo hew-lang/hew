@@ -48,9 +48,9 @@ if [[ "${1:-}" == "--worker" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 
 if [[ ! -x "$HEW_BIN" ]]; then
@@ -230,7 +230,7 @@ echo "Formatted parse/check failures: $check_failures"
 echo "Idempotence failures:           $idempotence_failures"
 
 floor_failed=0
-corpus_floor_assert "hew-fmt-property-files" "$compilable" \
+corpus_nonempty_assert "hew-fmt-property-files" "$compilable" \
     "compilable files formatted, rechecked, and checked for idempotence" || floor_failed=1
 
 if (( ${#FAILURES[@]} > 0 )); then

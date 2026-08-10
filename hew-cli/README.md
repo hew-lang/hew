@@ -342,6 +342,8 @@ isolation. A per-test timeout prevents hung tests from blocking the suite.
 hew test tests/                          # run all tests under tests/
 hew test mylib.hew                       # run tests in a single file
 hew test tests/ --filter auth            # run only tests whose name contains "auth"
+hew test tests/ --list                   # list stable file::test identities
+hew test tests/ --partition hash:1/4     # run one stable one-based hash shard
 hew test tests/ --format junit           # emit JUnit XML to stdout (CI mode)
 hew test tests/ --timeout 60            # per-test timeout in seconds (default: 30)
 hew test tests/ --include-ignored        # also run #[ignore]-annotated tests
@@ -351,6 +353,8 @@ hew test tests/ --no-color               # disable coloured output
 | Flag | Default | Description |
 |---|---|---|
 | `--filter <pattern>` | — | Run only tests whose name contains `pattern` |
+| `--list` | off | List discovered `file::test` identities without compiling them |
+| `--partition hash:<shard>/<total>` | — | Run one stable, one-based hash partition |
 | `--format text\|junit` | `text` | Human-readable output or JUnit XML |
 | `--timeout <seconds>` | `30` | Wall-clock limit for test execution (run phase only, not compile) |
 | `--include-ignored` | off | Also execute tests annotated with `#[ignore]` |

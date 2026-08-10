@@ -72,15 +72,11 @@ Always use `make` targets instead of running `cargo` directly. See the [Makefile
 |---|---|---|---|
 | Full (default) | `make test` | Rust workspace (via nextest) | medium |
 | Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt` | medium |
-| Rust only | `make test-rust` | All Rust workspace crates | medium |
-| Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
-| Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
-| CLI | `make test-cli` | `hew-cli` + `hew-pkg` | fast |
-| Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
+| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers | medium |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
 | Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |
 
-Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`, `test-runtime-unit`) during inner-loop iteration and `make test` before opening a PR.
+Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
 
 `make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 

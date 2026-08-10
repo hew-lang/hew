@@ -13,9 +13,6 @@ import sys
 from typing import NoReturn
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
 def fail(message: str) -> NoReturn:
     print(f"example-expectations: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -38,7 +35,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hew-bin", type=Path, required=True)
     parser.add_argument("--label", required=True)
-    parser.add_argument("--floor-key")
     parser.add_argument("--source-root", type=Path, action="append", default=[])
     parser.add_argument("--source", type=Path, action="append", default=[])
     parser.add_argument("--timeout-seconds", type=float, default=30.0)
@@ -139,17 +135,6 @@ def compact(text: str) -> str:
     return "|".join(text.splitlines()[:3])
 
 
-def assert_floor(key: str, actual: int, label: str) -> None:
-    helper = REPO_ROOT / "scripts/lib/corpus-floor.sh"
-    result = subprocess.run(
-        ["bash", str(helper), key, str(actual), label],
-        cwd=REPO_ROOT,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
-
-
 def main() -> None:
     args = parse_args()
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
@@ -158,9 +143,6 @@ def main() -> None:
         fail(f"compiler is not executable: {display(args.hew_bin)}")
 
     sources = collect_sources(args.source_root, args.source)
-    if args.floor_key:
-        assert_floor(args.floor_key, len(sources), args.label)
-
     passed = 0
     failed = 0
     hew_timeout_ms = max(1, math.ceil(args.timeout_seconds * 1000))

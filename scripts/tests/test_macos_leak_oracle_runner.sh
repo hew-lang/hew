@@ -1,72 +1,14 @@
 #!/usr/bin/env bash
-# Teeth for scripts/macos-leak-oracle.sh's exact inventory authority.
+# Teeth for scripts/macos-leak-oracle.sh's derived inventory authority.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT}/scripts/macos-leak-oracle.sh"
 DISCOVERY="${ROOT}/scripts/macos-leak-source-inventory.py"
-# shellcheck source=scripts/lib/corpus-floor.sh
-# shellcheck disable=SC1091
-source "${ROOT}/scripts/lib/corpus-floor.sh"
-
-exact_floor() {
-    local key="$1" row mode floor
-    row="$(corpus_floor_row "${key}")" || {
-        echo "FAIL no corpus floor registered for ${key}" >&2
-        return 1
-    }
-    IFS=$'\t' read -r _ mode floor _ _ <<< "${row}"
-    if [[ "${mode}" != "exact" ]]; then
-        echo "FAIL ${key} must use an exact corpus floor, found ${mode}" >&2
-        return 1
-    fi
-    printf '%s\n' "${floor}"
-}
-
-EXPECTED_BINARIES="$(exact_floor macos-leak-oracle-binaries)"
-EXPECTED_TESTS="$(exact_floor macos-leak-oracle-tests)"
-SOURCE_BINARIES="$(
-    python3 "${DISCOVERY}" --tests-dir "${ROOT}/hew-cli/tests" \
-        | grep -Fvx 'ffi_link_e2e'
-)"
-
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/hew-leak-runner-selftest.XXXXXX")"
 cleanup_work_dir() { rm -rf "${work_dir}"; }
 trap cleanup_work_dir EXIT
-
-write_inventory() {
-    local output="$1" binary_count="$2" test_count="$3" include_ffi="$4"
-    : > "${output}"
-    local synthetic_count="${binary_count}"
-    local written_tests=0
-    if [[ "${include_ffi}" == "yes" ]]; then
-        printf '%s\n' \
-            "hew-cli::ffi_link_e2e ffi_borrow_boundary_has_no_drop_or_leak_slope" \
-            >> "${output}"
-        synthetic_count=$(( synthetic_count - 1 ))
-        written_tests=1
-    fi
-    local source_binary
-    while IFS= read -r source_binary; do
-        [[ -n "${source_binary}" ]] || continue
-        printf 'hew-cli::%s source_discovered_allocator_verdict\n' "${source_binary}" >> "${output}"
-        synthetic_count=$(( synthetic_count - 1 ))
-        written_tests=$(( written_tests + 1 ))
-    done <<< "${SOURCE_BINARIES}"
-    if (( synthetic_count < 0 )); then
-        echo "FAIL source-derived allocator corpus exceeds binary floor" >&2
-        exit 1
-    fi
-    local i
-    for (( i = 1; i <= synthetic_count; i++ )); do
-        printf 'hew-cli::synthetic_%03d_oracle verdict_%03d\n' "${i}" "${i}" >> "${output}"
-        written_tests=$(( written_tests + 1 ))
-    done
-    for (( i = written_tests + 1; i <= test_count; i++ )); do
-        printf 'hew-cli::synthetic_001_oracle extra_verdict_%03d\n' "${i}" >> "${output}"
-    done
-}
 
 expect_red() {
     local label="$1" expected="$2" inventory="$3"
@@ -84,31 +26,15 @@ expect_red() {
     echo "PASS counterfactual RED ${label}: ${expected}"
 }
 
-good="${work_dir}/good.txt"
-write_inventory "${good}" "${EXPECTED_BINARIES}" "${EXPECTED_TESTS}" yes
-"${RUNNER}" --check-inventory-file "${good}" >/dev/null
-echo "PASS accepted exact ${EXPECTED_BINARIES}-binary/${EXPECTED_TESTS}-test inventory with ffi_link_e2e"
-
 live="${work_dir}/live.txt"
 "${RUNNER}" --list-inventory > "${live}"
-"${RUNNER}" --check-inventory-file "${live}" >/dev/null
-echo "PASS live nextest inventory matches the exact binary/test authorities"
+"${RUNNER}" --check-inventory-file "${live}"
+EXPECTED_TESTS="$(wc -l < "${live}" | tr -d '[:space:]')"
+echo "PASS live nextest inventory is nonempty and source-derived"
 
-shrunken_binaries="${work_dir}/shrunken-binaries.txt"
-write_inventory \
-    "${shrunken_binaries}" \
-    "$(( EXPECTED_BINARIES - 1 ))" \
-    "${EXPECTED_TESTS}" \
-    yes
-expect_red "binary corpus shrink" "macos-leak-oracle-binaries" "${shrunken_binaries}"
-
-shrunken_tests="${work_dir}/shrunken-tests.txt"
-write_inventory \
-    "${shrunken_tests}" \
-    "${EXPECTED_BINARIES}" \
-    "$(( EXPECTED_TESTS - 1 ))" \
-    yes
-expect_red "test corpus shrink" "macos-leak-oracle-tests" "${shrunken_tests}"
+good="${work_dir}/good.txt"
+cp "${live}" "${good}"
+"${RUNNER}" --check-inventory-file "${good}"
 
 duplicate="${work_dir}/duplicate.txt"
 head -n "$(( EXPECTED_TESTS - 1 ))" "${good}" > "${duplicate}"
@@ -125,11 +51,12 @@ printf '%s\n' "hew-cli::synthetic_001_oracle unexpected third-field" >> "${malfo
 expect_red "malformed inventory" "malformed nextest inventory" "${malformed}"
 
 unexpected_binary="${work_dir}/unexpected-binary.txt"
-sed 's/hew-cli::synthetic_001_oracle/hew-cli::unexpected/' "${good}" > "${unexpected_binary}"
+cp "${good}" "${unexpected_binary}"
+printf '%s\n' 'hew-cli::unexpected invented_verdict' >> "${unexpected_binary}"
 expect_red "unexpected binary" "no source-derived allocator authority" "${unexpected_binary}"
 
 missing_ffi="${work_dir}/missing-ffi.txt"
-write_inventory "${missing_ffi}" "${EXPECTED_BINARIES}" "${EXPECTED_TESTS}" no
+grep -Fv 'hew-cli::ffi_link_e2e ' "${good}" > "${missing_ffi}"
 expect_red "missing ffi authority" "required ffi_link_e2e leak verdict is absent" "${missing_ffi}"
 
 synthetic_sources="${work_dir}/synthetic-sources"

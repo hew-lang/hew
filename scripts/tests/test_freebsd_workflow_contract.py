@@ -183,6 +183,35 @@ EXPECTED_WASI_TARGET_PROBE = (
 EXPECTED_GNU_MAKE_ENV = ("export", "MAKE=gmake")
 EXPECTED_VERTICAL_SLICE_GATE = ("gmake", "test-vertical-slice")
 EXPECTED_HEW_RATCHET_GATE = ("gmake", "test-hew-ratchet")
+FREEBSD_CI_USER = "hew-ci"
+EXPECTED_CI_USER_CREATE = (
+    "pw",
+    "useradd",
+    "-n",
+    FREEBSD_CI_USER,
+    "-m",
+    "-s",
+    "/bin/sh",
+)
+EXPECTED_ID_PROBE = ("id",)
+EXPECTED_ROOT_UID_ASSERT = ("test", "$(id -u)", "=", "0")
+EXPECTED_WORKSPACE_CHOWN = (
+    "chown",
+    "-R",
+    f"{FREEBSD_CI_USER}:{FREEBSD_CI_USER}",
+    "$GITHUB_WORKSPACE",
+)
+EXPECTED_CI_USER_SWITCH = (
+    "su",
+    "-m",
+    FREEBSD_CI_USER,
+    "-c",
+    "sh -s",
+    "<<HEW_FREEBSD_CI",
+)
+EXPECTED_CI_HOME = ("export", "HOME=/home/hew-ci")
+EXPECTED_NON_ROOT_UID_ASSERT = ("test", "$(id -u)", "-ne", "0")
+EXPECTED_CI_SCRIPT_END = ("HEW_FREEBSD_CI",)
 EXPECTED_AARCH64_STDLIB_BUILD = ("gmake", "stdlib")
 EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK = ("gmake", "check-libhew-fresh")
 EXPECTED_AARCH64_SMOKE_LINK = (
@@ -512,6 +541,55 @@ def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
     )
 
 
+def _assert_unprivileged_full_suite(
+    workflow: str,
+    job_name: str,
+    step_name: str,
+) -> None:
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    prepare_commands = _active_shell_commands(_literal_block(step, "prepare"))
+    run_commands = _active_shell_commands(_literal_block(step, "run"))
+
+    assert prepare_commands.count(EXPECTED_CI_USER_CREATE) == 1, (
+        f"{job_name} must create exactly one dedicated FreeBSD CI user"
+    )
+    for command in (
+        EXPECTED_ROOT_UID_ASSERT,
+        EXPECTED_WORKSPACE_CHOWN,
+        EXPECTED_CI_USER_SWITCH,
+        EXPECTED_CI_HOME,
+        EXPECTED_NON_ROOT_UID_ASSERT,
+        EXPECTED_CI_SCRIPT_END,
+    ):
+        assert run_commands.count(command) == 1, (
+            f"{job_name} must run exactly one active command {command!r}"
+        )
+    assert run_commands.count(EXPECTED_ID_PROBE) == 2, (
+        f"{job_name} must log both the VM login and test user identities"
+    )
+
+    root_id, ci_id = [
+        index
+        for index, command in enumerate(run_commands)
+        if command == EXPECTED_ID_PROBE
+    ]
+    ordered = (
+        root_id,
+        run_commands.index(EXPECTED_ROOT_UID_ASSERT),
+        run_commands.index(EXPECTED_WORKSPACE_CHOWN),
+        run_commands.index(EXPECTED_CI_USER_SWITCH),
+        run_commands.index(EXPECTED_CI_HOME),
+        ci_id,
+        run_commands.index(EXPECTED_NON_ROOT_UID_ASSERT),
+        run_commands.index(EXPECTED_HEW_RATCHET_GATE),
+        run_commands.index(EXPECTED_CI_SCRIPT_END),
+    )
+    assert list(ordered) == sorted(ordered), (
+        f"{job_name} must prove root, transfer workspace ownership, then prove "
+        "the full test workload finishes under a non-root user"
+    )
+
+
 def _assert_rejected(check: Callable[[], None]) -> None:
     try:
         check()
@@ -526,6 +604,47 @@ def test_freebsd_nextest_command_is_exact() -> None:
 
 def test_freebsd_nightly_runs_authenticated_compiled_hew_gates() -> None:
     _assert_nightly_compiled_hew_authority(WORKFLOW.read_text())
+
+
+def test_full_freebsd_suites_run_as_a_non_root_user() -> None:
+    _assert_unprivileged_full_suite(
+        WORKFLOW.read_text(),
+        "build-and-test",
+        "Build and test on FreeBSD",
+    )
+    _assert_unprivileged_full_suite(
+        RELEASE_GATE.read_text(),
+        "gate-freebsd-x86_64",
+        "Build and test on FreeBSD",
+    )
+
+
+def test_freebsd_user_boundary_cannot_be_removed() -> None:
+    for workflow, job_name, step_name in (
+        (WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"),
+        (
+            RELEASE_GATE.read_text(),
+            "gate-freebsd-x86_64",
+            "Build and test on FreeBSD",
+        ),
+    ):
+        job = _job_block(workflow, job_name)
+        step = _step_block(job, step_name)
+        for command_text in (
+            "pw useradd -n hew-ci -m -s /bin/sh",
+            'test "$(id -u)" = 0',
+            'chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"',
+            "su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'",
+            'test "$(id -u)" -ne 0',
+        ):
+            assert step.count(command_text) == 1
+            mutated_step = step.replace(command_text, f"# {command_text}", 1)
+            mutated = workflow.replace(step, mutated_step, 1)
+            _assert_rejected(
+                lambda mutated=mutated, job_name=job_name, step_name=step_name: (
+                    _assert_unprivileged_full_suite(mutated, job_name, step_name)
+                )
+            )
 
 
 def test_nightly_compiled_hew_commands_cannot_be_commented_out() -> None:
@@ -652,19 +771,19 @@ def test_required_clippy_job_runs_contract_unconditionally() -> None:
     _assert_required_ci_path(CI_WORKFLOW.read_text())
 
 
-def test_docs_copy_cannot_mask_required_job_mutation() -> None:
+def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
     workflow = CI_WORKFLOW.read_text()
     job = _job_block(workflow, REQUIRED_CI_JOB)
     assert job.count(f"run: {CONTRACT_COMMAND}") == 1
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    assert f'add_command "{CONTRACT_COMMAND}"' in dispatcher
     mutated_job = job.replace(
         f"run: {CONTRACT_COMMAND}",
         "run: echo contract-check-removed",
         1,
     )
     mutated = workflow.replace(job, mutated_job, 1)
-    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 1, (
-        "the optional docs/scripts copy must remain in the mutation control"
-    )
+    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 0
     _assert_rejected(lambda: _assert_required_ci_path(mutated))
 
 
@@ -1160,6 +1279,8 @@ def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
 _TESTS = (
     test_freebsd_nextest_command_is_exact,
     test_freebsd_nightly_runs_authenticated_compiled_hew_gates,
+    test_full_freebsd_suites_run_as_a_non_root_user,
+    test_freebsd_user_boundary_cannot_be_removed,
     test_nightly_compiled_hew_commands_cannot_be_commented_out,
     test_nightly_compiled_hew_gate_order_cannot_drift,
     test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest,
@@ -1168,7 +1289,7 @@ _TESTS = (
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
     test_x86_64_wasi_target_setup_matches_repository_toolchain,
     test_required_clippy_job_runs_contract_unconditionally,
-    test_docs_copy_cannot_mask_required_job_mutation,
+    test_dispatcher_copy_cannot_mask_required_job_mutation,
     test_required_job_parity_marker_drift_is_rejected,
     test_added_nightly_exclusion_is_rejected,
     test_nightly_bash_package_removal_is_rejected,

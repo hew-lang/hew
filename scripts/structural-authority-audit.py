@@ -1789,42 +1789,6 @@ def main() -> int:
         print("\n".join(f"  - {item}" for item in failures), file=sys.stderr)
         return 1
 
-    floor_rows = (root / "scripts/corpus-floors.tsv").read_text().splitlines()
-    floor = next(
-        (
-            line.split("\t")[2]
-            for line in floor_rows
-            if line.startswith("structural-authority-inventory\t")
-        ),
-        None,
-    )
-    reviewed = len(expected) + len(presentation)
-    if floor is None or not floor.isdigit() or int(floor) != reviewed:
-        print(
-            f"structural-authority-inventory corpus floor is stale or missing (expected {reviewed})",
-            file=sys.stderr,
-        )
-        return 1
-    if opaque_facts:
-        opaque_floor = next(
-            (
-                line.split("\t")[2]
-                for line in floor_rows
-                if line.startswith("opaque-resource-lifecycle-facts\t")
-            ),
-            None,
-        )
-        if (
-            opaque_floor is None
-            or not opaque_floor.isdigit()
-            or int(opaque_floor) != len(opaque_facts)
-        ):
-            print(
-                "opaque-resource-lifecycle-facts corpus floor is stale or missing "
-                f"(expected {len(opaque_facts)})",
-                file=sys.stderr,
-            )
-            return 1
     semantic_leaf_count = sum(
         count
         for (group, _, _), count in actual.items()

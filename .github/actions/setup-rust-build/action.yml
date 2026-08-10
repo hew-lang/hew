@@ -39,7 +39,7 @@ inputs:
       Swatinem/rust-cache prefix-key.  Bump to invalidate on toolchain or
       LLVM version changes.
     required: false
-    default: 'v1-llvm22'
+    default: 'v2-deps-llvm22'
 
 runs:
   using: composite
@@ -81,3 +81,15 @@ runs:
       with:
         prefix-key: ${{ inputs.cache-prefix-key }}
         shared-key: ${{ inputs.cache-shared-key }}
+        # Keep the dependency layer stable across ordinary source and
+        # workspace-manifest edits. Cargo's fingerprints still reject an
+        # incompatible restored artifact, while a lock/toolchain/config change
+        # rotates the exact cache key. The action removes workspace crates
+        # before saving, so this stores third-party compilation rather than a
+        # second copy of the source-sensitive sccache layer above.
+        add-rust-environment-hash-key: "false"
+        key: deps-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+        cache-targets: "true"
+        cache-all-crates: "false"
+        cache-workspace-crates: "false"
+        cache-bin: "false"

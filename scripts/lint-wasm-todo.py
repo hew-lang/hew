@@ -31,7 +31,6 @@ EXCLUDED_PATHS = {
     "Makefile",
     "hew-capability-gen/README.md",
     "wasm-capability-manifest.toml",
-    "scripts/lint-wasm-todo-issue-ref.sh",
     "scripts/lint-wasm-todo.py",
 }
 EXCLUDED_PREFIXES = (

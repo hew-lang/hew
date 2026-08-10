@@ -1,5 +1,6 @@
 mod support;
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use support::{hew_binary, require_codegen, run_hew_in};
@@ -145,6 +146,83 @@ fn filter_narrows_to_matching_tests() {
     assert!(stdout.contains("test keeps_me ... ok"));
     assert!(!stdout.contains("skip_me"));
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+}
+
+#[test]
+fn list_reports_stable_relative_identities_without_compiling() {
+    let output = run_suite(
+        &[
+            (
+                "alpha_test.hew",
+                "#[test]\nfn alpha() {\n    assert(true);\n}\n",
+            ),
+            (
+                "nested/beta_test.hew",
+                "#[test]\nfn beta() {\n    assert(true);\n}\n",
+            ),
+        ],
+        &["--list"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["alpha_test.hew::alpha", "nested/beta_test.hew::beta"]
+    );
+}
+
+#[test]
+fn hash_partition_inventories_are_disjoint_and_cover_the_full_list() {
+    let dir = support::tempdir();
+    let mut source = String::new();
+    for index in 0..20 {
+        writeln!(
+            source,
+            "#[test]\nfn case_{index}() {{\n    assert(true);\n}}"
+        )
+        .unwrap();
+    }
+    write_file(dir.path(), "partition_test.hew", &source);
+
+    let full = run_hew_in(dir.path(), &["test", ".", "--list"]);
+    assert!(full.status.success());
+    let full: std::collections::BTreeSet<_> = String::from_utf8(full.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+
+    let mut union = std::collections::BTreeSet::new();
+    for shard in 1..=4 {
+        let partition = format!("hash:{shard}/4");
+        let output = run_hew_in(
+            dir.path(),
+            &["test", ".", "--list", "--partition", &partition],
+        );
+        assert!(output.status.success());
+        for identity in String::from_utf8(output.stdout).unwrap().lines() {
+            assert!(
+                union.insert(identity.to_owned()),
+                "duplicate partition identity: {identity}"
+            );
+        }
+    }
+    assert_eq!(union, full);
+}
+
+#[test]
+fn malformed_hash_partition_is_rejected() {
+    let output = run_suite(
+        &[(
+            "partition_test.hew",
+            "#[test]\nfn alpha() {\n    assert(true);\n}\n",
+        )],
+        &["--list", "--partition", "hash:0/4"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("1 <= SHARD <= TOTAL"));
 }
 
 #[test]

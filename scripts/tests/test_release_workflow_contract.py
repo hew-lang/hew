@@ -703,7 +703,9 @@ def test_release_record_is_durable_and_tag_ready() -> None:
 def test_contract_oracle_runs_in_required_ci() -> None:
     ci = CI_WORKFLOW.read_text()
     assert "'.github/workflows/release.yml'" in ci
-    assert "make test-release-workflow-contract" in ci
+    assert "scripts/ci-preflight-dispatcher.sh --base origin/main" in ci
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    assert 'add_command "make test-release-workflow-contract"' in dispatcher
 
 
 def workflow_job(text: str, name: str) -> str:
@@ -1312,7 +1314,6 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
     for command in (
         "make check-gate-reachability",
         "make test-release-workflow-contract",
-        "make test-compiler-pipeline",
         "make test-opaque-resource-lifecycle-matrix-external",
         "make test-vertical-slice",
         "make test-hew-ratchet",
@@ -1321,6 +1322,9 @@ def assert_foundational_release_gate_contract(gate: str, validator: str) -> None
     ):
         assert command in linux
         assert command in validator
+    assert "make test-compiler-lifecycle" in linux
+    assert "make test-compiler-pipeline" not in linux
+    assert "make test-compiler-pipeline" in validator
     assert "make macos-leak-oracle" in validator
     assert "macos-14" in gate and "macos-15-intel" in gate
     # FreeBSD x86_64 only — the aarch64 gate leg is intentionally scoped to

@@ -632,6 +632,9 @@ pub unsafe extern "C" fn hew_timer_wheel_remove(
     remove_entry(&mut w, entry, generation)
 }
 
+/// Advance `tw` through `now` and synchronously run every callback due in that
+/// interval. Returning from this function is the completion boundary for all
+/// callbacks included in its fired count.
 pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
     cabi_guard!(tw.is_null(), 0);
     // SAFETY: caller guarantees `tw` is valid.
@@ -667,9 +670,11 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
                 reason = "masked to L0_SIZE which fits in usize"
             )]
             let l0_slot = (w.current_ms / L0_MS) as usize & (L0_SIZE - 1);
-            collect_expired_entries(&raw mut w.l0[l0_slot], w.current_ms, &mut expired);
 
-            // Cascade at L1 boundary (every 256 ms).
+            // Cascade before collecting the boundary slot. An L1 entry whose
+            // deadline is exactly this boundary is redistributed into the
+            // current L0 slot and must complete in this tick, not after the
+            // slot wraps around again.
             if l0_slot == 0 {
                 cascade_l1_to_l0(&mut w);
 
@@ -678,6 +683,8 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
                     cascade_overflow(&mut w);
                 }
             }
+
+            collect_expired_entries(&raw mut w.l0[l0_slot], w.current_ms, &mut expired);
         }
 
         // Collect any overflow entries past their deadline.
@@ -1101,6 +1108,26 @@ mod tests {
             assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
             assert_eq!(timer_wheel_tick_to(tw, 1_255), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn l1_deadline_on_l0_boundary_fires_in_that_tick() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(0);
+
+        // SAFETY: `tw` is test-owned and `data` outlives the synchronous tick.
+        unsafe {
+            let handle = timer_wheel_schedule_at_handle(tw, L1_MS, test_cb, data);
+            assert!(!handle.entry.is_null());
+
+            assert_eq!(timer_wheel_tick_to(tw, L1_MS - 1), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 0);
+            assert_eq!(timer_wheel_tick_to(tw, L1_MS), 1);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
 
             hew_timer_wheel_free(tw);

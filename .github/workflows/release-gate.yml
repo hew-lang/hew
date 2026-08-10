@@ -191,8 +191,8 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
-      # test-compiler-pipeline and the lifecycle matrix below shell out to the
-      # pinned ast-grep to derive their fact set. Provision it here alongside
+      # The lifecycle matrices below shell out to the pinned ast-grep to derive
+      # their fact set. Provision it here alongside
       # LLVM and wasmtime, so the cost is one cached job-level toolchain step
       # instead of a cargo install nested inside a test target.
       - name: Provision pinned ast-grep toolchain
@@ -202,7 +202,7 @@ jobs:
         run: |
           make check-gate-reachability
           make test-release-workflow-contract
-          make test-compiler-pipeline
+          make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
           make test-hew-ratchet
@@ -533,9 +533,10 @@ jobs:
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
-    # release builds and workspace tests. Its 120-minute budget preserves room
-    # for the slower guest while keeping the release gate's ceiling finite.
-    timeout-minutes: 120
+    # release builds and workspace tests. A 109-minute run passed, while a
+    # 120.8-minute run was cancelled at the old ceiling; 180 minutes adds
+    # finite variance headroom without making the release gate unbounded.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -555,9 +556,22 @@ jobs:
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
             pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
             set -eux
+            id
+            test "$(id -u)" = 0
+
+            # The VM action connects as root. Finish privileged setup before
+            # handing the complete build and test workload to a normal user.
+            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
+            chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
+            su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
+            set -eux
+            export HOME=/home/hew-ci
+            id
+            test "$(id -u)" -ne 0
             command -v bash && bash --version
 
             git config --global --add safe.directory "$(pwd)"
@@ -583,7 +597,6 @@ jobs:
             # own bin dir, which is not on PATH. Expose it like the macOS gate's
             # lld@22 so the linker probe and WASI builds use the same explicit
             # linker as the other full-suite hosts.
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
@@ -621,6 +634,7 @@ jobs:
 
             gmake test-vertical-slice
             gmake test-hew-ratchet
+            HEW_FREEBSD_CI
 
       - name: Upload test reports
         # vmactions/freebsd-vm syncs the working directory back to this host
@@ -670,7 +684,10 @@ jobs:
   gate-freebsd-aarch64:
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # This is an emulated QEMU leg; 300 minutes matches release.yml's
+    # build-freebsd-aarch64 budget for the same target and reflects guest
+    # throughput, not growth in the release-gate suite.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

@@ -27,6 +27,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/cargo-output-dir.sh"
 HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
 ORACLE="${ROOT}/scripts/fuzz/run-oracle.py"
@@ -242,9 +244,9 @@ if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
          "expected oracle exit 1, got ${rc}; output: ${output}"
 fi
-if ! echo "${output}" | grep -q "CORPUS FLOOR"; then
+if ! echo "${output}" | grep -q "CORPUS MINIMUM"; then
     fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
-         "expected 'CORPUS FLOOR' in output; got: ${output}"
+         "expected 'CORPUS MINIMUM' in output; got: ${output}"
 fi
 
 # 4b: a corpus override with no declared minimum must be refused outright,

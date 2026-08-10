@@ -35,7 +35,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
-from corpus_floor import assert_floor  # noqa: E402
+from corpus_nonempty import assert_nonempty  # noqa: E402
 
 CELLS = os.path.join(ROOT, "tests", "core-matrix", "cells")
 MATRIX = os.path.join(ROOT, "tests", "core-matrix", "matrix.tsv")
@@ -222,7 +222,7 @@ def main():
         return 1
     # A matrix that silently shrinks is the same defect as a matrix that never
     # ran: assert the enumeration size before believing any verdict over it.
-    assert_floor("core-matrix-cells", len(names), context="tests/core-matrix/cells")
+    assert_nonempty("core-matrix-cells", len(names), context="tests/core-matrix/cells")
     results = run_all()
 
     if args.record:

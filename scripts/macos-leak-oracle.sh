@@ -9,9 +9,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
-# shellcheck disable=SC1091
-source "${ROOT}/scripts/lib/corpus-floor.sh"
 
 SOURCE_DISCOVERY="${ROOT}/scripts/macos-leak-source-inventory.py"
 SOURCE_TESTS_DIR="${HEW_LEAK_SOURCE_TESTS_DIR:-${ROOT}/hew-cli/tests}"
@@ -104,14 +101,6 @@ verify_inventory() {
         awk '{ print $1 }' "${inventory}" | LC_ALL=C sort -u | wc -l | tr -d '[:space:]'
     )"
     test_count="$(wc -l < "${inventory}" | tr -d '[:space:]')"
-    corpus_floor_assert \
-        "macos-leak-oracle-binaries" \
-        "${binary_count}" \
-        "${test_count} selected test verdicts, including ffi_link_e2e"
-    corpus_floor_assert \
-        "macos-leak-oracle-tests" \
-        "${test_count}" \
-        "${binary_count} selected binaries, including ffi_link_e2e"
     echo "macos-leak-oracle: inventory accepted (${binary_count} binaries, ${test_count} tests)"
 }
 

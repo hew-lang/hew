@@ -22,13 +22,12 @@ inputs:
       Omit or leave empty to add no extra targets.
     required: false
     default: ''
-  tools:
+  gates:
     description: >
-      Comma-separated tool names for taiki-e/install-action
-      (e.g. 'nextest', 'nextest,cargo-llvm-cov').
-      The install-action step is SKIPPED entirely when this input is empty.
+      Comma-separated xtask gate names. The gate metadata derives all external
+      tools and Rust targets; callers must not maintain a parallel tool list.
     required: false
-    default: ''
+    default: 'build'
   cache-shared-key:
     description: >
       Swatinem/rust-cache shared-key that scopes the cache to the calling
@@ -50,10 +49,38 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-      if: inputs.tools != ''
+    - name: Derive provisioning from selected gates
+      id: plan
+      shell: bash
+      run: |
+        set -euo pipefail
+        tools=$(cargo xtask tools --gates '${{ inputs.gates }}' --field tools)
+        targets=$(cargo xtask tools --gates '${{ inputs.gates }}' --field targets)
+        ast_grep=$(cargo xtask tools --gates '${{ inputs.gates }}' --field ast-grep)
+        {
+          echo "tools=${tools}"
+          echo "targets=${targets}"
+          echo "ast_grep=${ast_grep}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install gate Rust targets
+      if: steps.plan.outputs.targets != ''
+      shell: bash
+      run: rustup target add ${{ steps.plan.outputs.targets }}
+
+    - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026  # v2.85.11
+      if: steps.plan.outputs.tools != ''
       with:
-        tool: ${{ inputs.tools }}
+        tool: ${{ steps.plan.outputs.tools }}
+        fallback: none
+
+    - name: Provision pinned ast-grep toolchain
+      if: steps.plan.outputs.ast_grep == 'true'
+      uses: ./.github/actions/setup-ast-grep
+
+    - name: Verify gate toolchain
+      shell: bash
+      run: cargo xtask tools --verify '${{ inputs.gates }}'
 
     # ── sccache: workspace-crate compilation cache ─────────────────────────
     # Promotes the .cargo/config.toml opt-in annotation to CI reality.

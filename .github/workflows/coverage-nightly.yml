@@ -106,7 +106,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           components: llvm-tools
-          tools: nextest,cargo-llvm-cov
+          gates: coverage,workspace
           cache-shared-key: coverage
 
       - name: Free runner disk
@@ -139,28 +139,6 @@ jobs:
         # target/llvm-cov-target/. Confirms whether disk was already marginal
         # entering the build, independently of the build itself.
         run: df -h /
-
-      - name: Install WASI runner prerequisites
-        # The instrumented run includes hew-cli's wasmtime-backed e2e tests
-        # (e.g. sort_merge_authority_runs_under_wasmtime), whose support
-        # bootstrap builds the wasm32-wasip1 runtime + stdlib archives at test
-        # time and runs the output under wasmtime. Same wasmtime provisioning
-        # as ci.yml's "Build & test (Linux)" job — the two environment
-        # contracts must not drift (same class as the FreeBSD nightly wasmtime
-        # omission). The heavyweight eval_wasm / wasi_run_e2e suites stay
-        # excluded below; they gate per-PR in ci.yml.
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rustup target add wasm32-wasip1
-          WASMTIME_TAG="$(gh release view --repo bytecodealliance/wasmtime --json tagName --jq .tagName)"
-          WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
-          .github/scripts/retry-download.sh \
-            gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run tests with coverage
         # Default features include "full" (encryption + profiler + quic),
@@ -288,53 +266,13 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          gates: workspace
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
         # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p hew-pkg -p hew-runtime -p hew-lsp -p hew-cli --release
-
-      - name: Install WASI runner prerequisites
-        # This job runs the full workspace nextest, including hew-cli's
-        # WASI-dependent tests (eval_wasm_*, sort_merge_authority_runs_under_
-        # wasmtime, etc.), which require_wasi_runner() panics on hard-failing
-        # if wasmtime is unreachable. Windows had no equivalent of the Linux
-        # tarball / macOS brew install here — same class of gap ci.yml's
-        # build-and-test-windows job carried before it was fixed, and the same
-        # class the FreeBSD nightly was missing. Provision from the same
-        # pinned WASMTIME_VERSION ci.yml uses and prove it runs inside this
-        # step, not inside a test.
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rustup target add wasm32-wasip1
-          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
-
-          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
-          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
-
-          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
-          $wasmtimeBin = Join-Path (Get-Location).Path $dir
-          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
-          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
-            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
-
-          & $wasmtimeExe --version
-          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
-
-          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
-          # link step shells out to it, so an unreachable wasm-ld is the same
-          # class of silent gap as a missing runtime.
-          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
-          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
-          & $wasmLd.Source --version
-          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # The full workspace nextest below runs debug test binaries, and
@@ -392,7 +330,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          gates: workspace
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -410,14 +348,6 @@ jobs:
 
       - name: Build frontend (release)
         run: cargo build -p hew-cli --release
-
-      - name: Install WASI runner prerequisites
-        run: |
-          rustup target add wasm32-wasip1
-          brew install wasmtime
-          wasmtime --version
-          command -v wasm-ld
-          wasm-ld --version
 
       - name: Build hew-runtime for wasm32-wasip1
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release

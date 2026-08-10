@@ -146,7 +146,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          gates: workspace,playground,lint
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
@@ -182,14 +182,6 @@ jobs:
         # cache. Keeps the binaries and libhew.a.
         run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
 
-      - name: Install WASI prerequisites
-        run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.wasmtime/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
-
       - name: Run Rust workspace tests
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
@@ -199,13 +191,6 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
-
-      # The lifecycle matrices below shell out to the pinned ast-grep to derive
-      # their fact set. Provision it here alongside
-      # LLVM and wasmtime, so the cost is one cached job-level toolchain step
-      # instead of a cargo install nested inside a test target.
-      - name: Provision pinned ast-grep toolchain
-        uses: ./.github/actions/setup-ast-grep
 
       - name: Run foundational compiled-Hew and lifecycle gates
         run: |
@@ -223,25 +208,6 @@ jobs:
         # above, so this exercises a real external client against the shipped
         # compiler's broker example before a release candidate is tagged.
         run: make mqtt-broker-e2e
-
-      # Browser-analysis WASM gate — Linux x86_64 only.
-      # Installs wasm-pack + wasm32-unknown-unknown and runs the full playground
-      # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
-      # integration), and the wasm-pack release build.  Scoped to x86_64 to avoid
-      # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
-      - name: Install wasm-pack v0.13.1 (browser-analysis gate)
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
-
-      - name: Add wasm32-unknown-unknown target
-        run: rustup target add wasm32-unknown-unknown
 
       - name: Browser-analysis playground gate
         run: make playground-check
@@ -289,7 +255,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          gates: workspace
           cache-shared-key: build-test-linux
 
       - name: Build all release crates
@@ -326,14 +292,6 @@ jobs:
         # debug test build below needs the disk far more than a re-link
         # cache. Keeps the binaries and libhew.a.
         run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
-
-      - name: Install WASI prerequisites
-        run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.wasmtime/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
 
       - name: Run Rust workspace tests
         env:
@@ -375,7 +333,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          gates: workspace
           cache-shared-key: build-test-macos
 
       - name: Install LLVM
@@ -418,18 +376,6 @@ jobs:
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
 
-      - name: Install WASI prerequisites
-        run: |
-          rustup target add wasm32-wasip1
-          brew install wasmtime
-          LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
-          LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_VERSION }})}"
-          export PATH="${LLD_PREFIX}/bin:${LLVM_PREFIX}/bin:$PATH"
-          command -v wasmtime
-          wasmtime --version
-          command -v wasm-ld
-          wasm-ld --version
-
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
@@ -468,7 +414,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          tools: nextest
+          gates: workspace
           cache-shared-key: build-test-windows
 
       - name: Install LLVM 22
@@ -493,28 +439,6 @@ jobs:
         run: |
           target/release/hew-lsp.exe --version && echo "hew-lsp runs"
           target/release/hew-observe.exe --version && echo "hew-observe runs"
-
-      # The eval_wasm_* / wasi_run_e2e modules shell out to wasmtime; without
-      # it they fail at bootstrap ("wasmtime not found"). Every other release
-      # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
-      # — this lane did not, so its WASI coverage never actually ran.
-      - name: Install WASI prerequisites
-        shell: pwsh
-        run: |
-          # Unpack the published archive rather than using the convenience
-          # installer: the installer insists on editing a shell profile and
-          # fails the step even after extracting successfully. PATH for the
-          # later steps comes from GITHUB_PATH.
-          $version = "v47.0.3"
-          $dest = Join-Path $env:RUNNER_TEMP "wasmtime"
-          $zip = Join-Path $env:RUNNER_TEMP "wasmtime.zip"
-          $url = "https://github.com/bytecodealliance/wasmtime/releases/download/$version/wasmtime-$version-x86_64-windows.zip"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          $bin = (Get-ChildItem -Path $dest -Filter wasmtime.exe -Recurse | Select-Object -First 1).DirectoryName
-          if (-not $bin) { throw "wasmtime.exe not found under $dest" }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
         run: >-

@@ -175,11 +175,8 @@ jobs:
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
         with:
           components: rustfmt
+          gates: lint
           cache-shared-key: docs-scripts-gates
-
-      - name: Provision pinned ast-grep toolchain
-        if: needs.changes.outputs.selected_compile != 'true' && needs.changes.outputs.scripts == 'true'
-        uses: ./.github/actions/setup-ast-grep
 
       - name: Run change-scoped checks
         if: needs.changes.outputs.selected_compile != 'true' && (needs.changes.outputs.docs == 'true' || needs.changes.outputs.scripts == 'true')
@@ -217,6 +214,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         with:
           components: 'clippy, rustfmt'
+          gates: lint
           cache-shared-key: lint
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -226,12 +224,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      # Keep this consumer on the shared cache-backed provisioning action.
-      # The structural-lint target still verifies the pinned toolchain before
-      # it scans, so local and CI entry points retain the same safety checks.
-      - name: Provision pinned ast-grep toolchain
-        uses: ./.github/actions/setup-ast-grep
 
       # Keep the bootstrap counterfactuals on the required job after moving
       # provisioning into the shared action.
@@ -362,10 +354,8 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          gates: licenses
           cache-shared-key: deny
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version 0.19.6
 
       - name: Check license policy
         run: cargo deny check licenses
@@ -375,9 +365,6 @@ jobs:
 
       - name: Check security advisories
         run: cargo deny check advisories
-
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --version 0.9.0 --features cli
 
       - name: Verify THIRD-PARTY-LICENSES is current
         run: make licenses-check
@@ -398,18 +385,8 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
+          gates: playground
           cache-shared-key: playground-wasm
-
-      - name: Install wasm-pack v0.13.1
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
 
       - name: Check sandbox fixtures are current
         # The committed sandbox fixtures are generated from in-tree sources; a
@@ -708,38 +685,8 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          tools: nextest
+          gates: workspace,playground,lint
           cache-shared-key: build-test-linux
-
-      - name: Install WASI target
-        if: env.RUN_CODE_PATH == 'true'
-        run: rustup target add wasm32-wasip1
-
-      - name: Install wasmtime
-        if: env.RUN_CODE_PATH == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          .github/scripts/retry-download.sh \
-            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
-
-      - name: Install wasm-pack v0.13.1
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          set -euo pipefail
-          WASM_PACK_VERSION=0.13.1
-          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
-            -o "/tmp/${TARBALL}"
-          tar -xzf "/tmp/${TARBALL}" -C /tmp
-          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-          /tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack --version
 
       - name: Setup Node.js for selected browser checks
         if: env.RUN_CODE_PATH == 'true'
@@ -748,10 +695,6 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: hew-sandbox-vm/package-lock.json
-
-      - name: Provision pinned ast-grep toolchain
-        if: env.RUN_CODE_PATH == 'true'
-        uses: ./.github/actions/setup-ast-grep
 
       - name: Run change-scoped tests
         if: env.RUN_CODE_PATH == 'true'
@@ -856,7 +799,7 @@ jobs:
       - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          tools: nextest
+          gates: workspace,cabi
           cache-shared-key: build-test-windows
 
       - name: Build Rust crates
@@ -903,45 +846,6 @@ jobs:
           if ($dumpText -notmatch "pdb-e2e\.hew") { throw "PDB dump has no source module record for pdb-e2e.hew`n$dumpText" }
           if ($dumpText -notmatch "(?i)main") { throw "PDB dump has no main symbol`n$dumpText" }
           if ($dumpText -notmatch "(?i)line") { throw "PDB dump has no line information`n$dumpText" }
-
-      - name: Install WASI runner prerequisites
-        # Windows had no equivalent of the Linux tarball / macOS brew install,
-        # so `wasmtime` was absent here and every WASI-dependent hew-cli test
-        # either failed with "`wasmtime` not found" or — via the deleted
-        # try_require_wasi_runner — passed having asserted nothing. Provision
-        # the runner from the same pinned WASMTIME_VERSION the other two jobs
-        # use, and prove it runs inside this step: a broken install must fail
-        # the job here, not resurface as "not found" inside a test.
-        if: env.RUN_CODE_PATH == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rustup target add wasm32-wasip1
-          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
-
-          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
-          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
-          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
-
-          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
-          $wasmtimeBin = Join-Path (Get-Location).Path $dir
-          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
-          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
-            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
-          }
-          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
-
-          & $wasmtimeExe --version
-          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
-
-          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
-          # link step shells out to it, so an unreachable wasm-ld is the same
-          # class of silent gap as a missing runtime.
-          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
-          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
-          & $wasmLd.Source --version
-          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
 
       - name: Build hew-runtime for wasm32-wasip1 (debug)
         # Mirrors the macOS job. The WASI tests run as debug binaries and
@@ -1038,7 +942,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         with:
           targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
-          tools: nextest
+          gates: workspace,cabi
           cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -1068,23 +972,6 @@ jobs:
         # that crashes at process exit while every debug test passes, because
         # the two use different C++ runtime linkage.
         run: make test-release-binary
-
-      - name: Install WASI runner prerequisites
-        if: env.RUN_CODE_PATH == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rustup target add wasm32-wasip1
-          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
-          .github/scripts/retry-download.sh \
-            gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
-            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
-          tar -xJf "${WASMTIME_DIR}.tar.xz"
-          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
-          "./${WASMTIME_DIR}/wasmtime" --version
-          command -v wasm-ld
-          wasm-ld --version
 
       - name: Build hew-runtime for wasm32-wasip1 (release)
         if: env.RUN_CODE_PATH == 'true'

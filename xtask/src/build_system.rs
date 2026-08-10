@@ -330,7 +330,7 @@ fn tools(args: &[String]) -> Result<()> {
     }
     match field {
         "tools" => println!("{}", plan.tools.into_iter().collect::<Vec<_>>().join(",")),
-        "targets" => println!("{}", plan.targets.into_iter().collect::<Vec<_>>().join(",")),
+        "targets" => println!("{}", plan.targets.into_iter().collect::<Vec<_>>().join(" ")),
         "ast-grep" => println!("{}", plan.ast_grep),
         other => return Err(format!("unknown tools field {other:?}")),
     }

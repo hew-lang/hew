@@ -11,32 +11,73 @@ mod support;
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use support::{hew_binary, repo_root, require_codegen};
 
-/// Run an `examples/actor/<name>.hew` fixture via `hew run`, optionally setting
-/// `HEW_WORKERS`, and assert it exits 0 with exactly `expected_stdout`.
-fn run_await_example(name: &str, workers: Option<&str>, expected_stdout: &str) {
+/// Compile one example to a native binary. The caller retains the tempdir for
+/// as long as it needs to launch the artifact.
+fn build_example(category: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
     require_codegen();
 
     let source: PathBuf = repo_root()
-        .join("examples/actor")
+        .join("examples")
+        .join(category)
         .join(format!("{name}.hew"));
     assert!(
         source.is_file(),
-        "await example fixture missing: {}",
+        "example fixture missing: {}",
         source.display()
     );
 
+    let dir = support::tempdir();
+    let binary = dir
+        .path()
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     let mut command = Command::new(hew_binary());
-    command.arg("run").arg(&source).current_dir(repo_root());
+    command
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .current_dir(repo_root());
+    let output = support::try_run_bounded_command(
+        command,
+        format!("hew build {}", source.display()),
+        Duration::from_mins(2),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        output.status.success(),
+        "hew build {} should exit 0; stdout:\n{}\nstderr:\n{}",
+        source.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        binary.is_file(),
+        "missing built fixture: {}",
+        binary.display()
+    );
+    (dir, binary)
+}
+
+/// Launch a pre-built fixture under one worker-pool configuration.
+fn run_example_binary(
+    binary: &std::path::Path,
+    name: &str,
+    workers: Option<&str>,
+    expected_stdout: &str,
+) {
+    let mut command = Command::new(binary);
+    command.current_dir(repo_root());
     if let Some(workers) = workers {
         command.env("HEW_WORKERS", workers);
     }
 
     let label = match workers {
-        Some(w) => format!("hew run {name} (HEW_WORKERS={w})"),
-        None => format!("hew run {name} (default pool)"),
+        Some(w) => format!("run {name} (HEW_WORKERS={w})"),
+        None => format!("run {name} (default pool)"),
     };
     // A lost wake would hang the program; the bounded runner turns a hang into a
     // test failure instead of an orphaned process.
@@ -58,8 +99,9 @@ fn run_await_example(name: &str, workers: Option<&str>, expected_stdout: &str) {
 /// Assert a fixture produces the same output under the default pool AND under a
 /// single worker (the worker-freeing edge).
 fn run_await_example_both_pools(name: &str, expected_stdout: &str) {
-    run_await_example(name, None, expected_stdout);
-    run_await_example(name, Some("1"), expected_stdout);
+    let (_dir, binary) = build_example("actor", name);
+    run_example_binary(&binary, name, None, expected_stdout);
+    run_example_binary(&binary, name, Some("1"), expected_stdout);
 }
 
 #[test]
@@ -180,50 +222,10 @@ fn scope_deadline_runs_or_skips_the_timeout_body_under_both_pools() {
     run_await_example_both_pools("scope_deadline_suspend", "timeout=7\nwork=0\n");
 }
 
-/// Run an `examples/net/<name>.hew` fixture via `hew run`, optionally setting
-/// `HEW_WORKERS`, and assert it exits 0 with exactly `expected_stdout`. The net
-/// fixtures are self-contained: `main` runs the TCP server and the actor runs
-/// the suspendable client, so a single `hew run` is the whole oracle.
-fn run_net_example(name: &str, workers: Option<&str>, expected_stdout: &str) {
-    require_codegen();
-
-    let source: PathBuf = repo_root().join("examples/net").join(format!("{name}.hew"));
-    assert!(
-        source.is_file(),
-        "net example fixture missing: {}",
-        source.display()
-    );
-
-    let mut command = Command::new(hew_binary());
-    command.arg("run").arg(&source).current_dir(repo_root());
-    if let Some(workers) = workers {
-        command.env("HEW_WORKERS", workers);
-    }
-
-    let label = match workers {
-        Some(w) => format!("hew run {name} (HEW_WORKERS={w})"),
-        None => format!("hew run {name} (default pool)"),
-    };
-    // A closure-await that blocks instead of suspending would strand the lone
-    // worker; the bounded runner turns that hang into a test failure.
-    let output = support::run_bounded_command(command, label.clone());
-
-    assert!(
-        output.status.success(),
-        "{label} should exit 0; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        expected_stdout,
-        "{label} produced unexpected stdout",
-    );
-}
-
 fn run_net_example_both_pools(name: &str, expected_stdout: &str) {
-    run_net_example(name, None, expected_stdout);
-    run_net_example(name, Some("1"), expected_stdout);
+    let (_dir, binary) = build_example("net", name);
+    run_example_binary(&binary, name, None, expected_stdout);
+    run_example_binary(&binary, name, Some("1"), expected_stdout);
 }
 
 #[test]

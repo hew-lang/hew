@@ -503,13 +503,13 @@ fn eval_file_in_repl_context_succeeds() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .arg("eval")
         .arg("-f")
         .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+        .current_dir(dir.path());
+    let output = support::run_bounded_command(command, format!("hew eval -f {}", path.display()));
 
     assert!(
         output.status.success(),
@@ -2193,12 +2193,13 @@ fn eval_json_runtime_failure_preserves_stdout() {
     )
     .unwrap();
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .args(["eval", "--json", "-f"])
         .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+        .current_dir(dir.path());
+    let output =
+        support::run_bounded_command(command, format!("hew eval --json -f {}", path.display()));
 
     assert_eq!(output.status.code(), Some(1));
 

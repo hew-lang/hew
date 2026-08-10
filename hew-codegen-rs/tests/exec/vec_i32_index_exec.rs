@@ -59,11 +59,9 @@ fn run_hew_source(repo: &Path, stem: &str, source: &str) -> String {
     let path = dir.join(format!("{stem}.hew"));
     std::fs::write(&path, source).expect("write temp Hew source");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&path);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", path.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",

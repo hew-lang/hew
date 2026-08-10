@@ -59,11 +59,9 @@ fn run_vec_record_contains_fixture_executes() {
     let expected = std::fs::read_to_string(fixture.with_extension("expected"))
         .expect("read run_vec_record_contains.expected");
 
-    let output = hew_command(&repo)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(&repo);
+    command.arg("run").arg(&fixture);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", fixture.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",

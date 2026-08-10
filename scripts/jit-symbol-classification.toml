@@ -1615,6 +1615,7 @@ internal = [
   "hew_shutdown_register_supervisor",
   "hew_shutdown_unregister_supervisor",
   "hew_shutdown_wait",
+  "hew_sink_shutdown",
   "hew_simtime_advance_ms",
   "hew_simtime_disable",
   "hew_simtime_enable",

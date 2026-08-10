@@ -191,8 +191,8 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
-      # test-compiler-pipeline and the lifecycle matrix below shell out to the
-      # pinned ast-grep to derive their fact set. Provision it here alongside
+      # The lifecycle matrices below shell out to the pinned ast-grep to derive
+      # their fact set. Provision it here alongside
       # LLVM and wasmtime, so the cost is one cached job-level toolchain step
       # instead of a cargo install nested inside a test target.
       - name: Provision pinned ast-grep toolchain
@@ -202,7 +202,7 @@ jobs:
         run: |
           make check-gate-reachability
           make test-release-workflow-contract
-          make test-compiler-pipeline
+          make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
           make test-vertical-slice
           make test-hew-ratchet

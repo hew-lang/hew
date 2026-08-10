@@ -307,14 +307,14 @@ jobs:
         run: make lint-wasm-todo
 
       - name: Codegen carried-identity gate
-        # Assert the codegen carried-identity invariants with a focused step;
-        # the aggregate lint edge below also owns it as a prerequisite.
+        # Assert the codegen carried-identity invariants with a focused step.
         run: make codegen-carried-identity-gate
 
-      - name: Run complete lint authority graph
-        # Keep a real edge to the aggregate target so additions to lint's
-        # prerequisite graph cannot become local-only gates.
-        run: make lint
+      - name: Check codegen trap inventory
+        run: make codegen-trap-inventory-check
+
+      - name: Verify system closure
+        run: make verify-sys-lane-closure
 
       - name: Orchestration-token leak scan
         # Scan tracked source files and commit-message bodies of all PR commits
@@ -357,6 +357,11 @@ jobs:
         # Runs the checker's own self-test first
         # (test-sandbox-parity-coverage-check).
         run: make sandbox-parity-coverage-check
+
+      - name: Assert complete lint authority coverage
+        run: |
+          python3 scripts/tests/test_check_lint_ci_coverage.py
+          python3 scripts/check-lint-ci-coverage.py
 
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
@@ -599,11 +604,11 @@ jobs:
         # explicit edge so the selftest cannot become local-only.
         run: make test-leak-oracle-selftest
 
-      - name: Run compiler pipeline and local opaque-resource lifecycle evidence
+      - name: Run local opaque-resource lifecycle evidence
         if: env.RUN_CODE_PATH == 'true'
-        # The focused compiler ladder owns the source-derived lifecycle matrix;
-        # keep this explicit CI edge so neither target can become local-only.
-        run: make test-compiler-pipeline
+        # Workspace nextest above already owns the compiler ladder's Rust tests.
+        run: >-  # parity-cmd: make test-compiler-pipeline
+          make test-compiler-lifecycle
 
       - name: Run external-network opaque-resource lifecycle evidence
         if: env.RUN_CODE_PATH == 'true'

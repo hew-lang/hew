@@ -100,7 +100,7 @@ CI_REQUIRED_CHECKS=(
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
     "FreeBSD workflow contract (ci.yml required Clippy & format job)	make freebsd-workflow-contract-check"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
-    "Compiler pipeline + local opaque lifecycle matrix (ci.yml: make test-compiler-pipeline)	make test-compiler-pipeline"
+    "Local opaque lifecycle matrix (ci.yml: make test-compiler-lifecycle)	make test-compiler-pipeline"
     "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"

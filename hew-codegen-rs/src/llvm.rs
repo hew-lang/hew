@@ -35281,6 +35281,7 @@ fn build_module_for_target<'ctx>(
         ctx,
         &llvm_mod,
         &pipeline.machine_layouts,
+        &pipeline.record_layouts,
         &mut record_layouts,
         &pipeline.enum_layouts,
         Some(&target_data),

@@ -281,31 +281,60 @@ pub(crate) fn host_data_layout_string() -> &'static str {
 /// canonical class-tagged monomorphization key (`mc$$control.Lifecycle$$i64$$`),
 /// while a payload field carries the nominal owner plus its concrete type
 /// arguments. Project the latter through [`hew_hir::machine_layout_key`] so
-/// both sides meet without discarding module or generic identity. Recurses
-/// through generic args, tuples, arrays, and slices: any of them can carry an
-/// embedded machine whose body must be set before the container is sized.
+/// both sides meet without discarding module or generic identity. Records use
+/// the parallel [`hew_hir::layout_key_for_named`] authority before the walk
+/// descends through their fields. Recurses through generic args, tuples,
+/// arrays, and slices: any of them can carry an embedded machine whose body
+/// must be set before the container is sized.
 fn collect_named_machine_deps(
     field_ty: &ResolvedTy,
     index_of: &HashMap<String, usize>,
+    record_fields: &HashMap<String, &[ResolvedTy]>,
+    visiting: &mut Vec<String>,
     out: &mut Vec<usize>,
 ) {
     match field_ty {
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
             let machine_key = hew_hir::machine_layout_key(name, args);
             if let Some(&idx) = index_of.get(&machine_key) {
                 out.push(idx);
+            } else if let Some(record_key) = hew_hir::layout_key_for_named(name, args, *builtin) {
+                if let Some(fields) = record_fields.get(&record_key) {
+                    // A machine can be reached only THROUGH a record field
+                    // (`state Holding { w: Wrap }` where `type Wrap { inner: Inner }`).
+                    // The record is not itself a machine, so it misses `index_of`;
+                    // without descending here the embedded machine is never seen as
+                    // a dependency and the container is sized against an opaque
+                    // struct — the record-wrapped half of #2864.
+                    //
+                    // A record cycle is not representable by value, but recursion is
+                    // guarded rather than trusted: `visiting` makes a malformed or
+                    // indirect layout terminate instead of overflowing the stack.
+                    if !visiting.contains(&record_key) {
+                        visiting.push(record_key);
+                        for fty in *fields {
+                            collect_named_machine_deps(fty, index_of, record_fields, visiting, out);
+                        }
+                        visiting.pop();
+                    }
+                }
             }
             for arg in args {
-                collect_named_machine_deps(arg, index_of, out);
+                collect_named_machine_deps(arg, index_of, record_fields, visiting, out);
             }
         }
         ResolvedTy::Tuple(elems) => {
             for e in elems {
-                collect_named_machine_deps(e, index_of, out);
+                collect_named_machine_deps(e, index_of, record_fields, visiting, out);
             }
         }
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            collect_named_machine_deps(inner, index_of, out);
+            collect_named_machine_deps(inner, index_of, record_fields, visiting, out);
         }
         _ => {}
     }
@@ -325,6 +354,7 @@ pub(crate) fn register_machine_layouts<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     machine_layouts: &[MachineLayout],
+    record_layouts: &[hew_mir::RecordLayout],
     record_layout_map: &mut RecordLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     target_data: Option<&TargetData>,
@@ -367,6 +397,15 @@ pub(crate) fn register_machine_layouts<'ctx>(
             .map(|(i, l)| (l.name.clone(), i))
             .collect();
 
+        // Records are not machines, so they never appear in `index_of` — but a
+        // state payload may reach a machine only by way of one. Preserve each
+        // record's canonical registry key so module-qualified and generic
+        // identities remain disjoint during the dependency walk.
+        let record_fields: HashMap<String, &[ResolvedTy]> = record_layouts
+            .iter()
+            .map(|r| (r.name.clone(), r.field_tys.as_slice()))
+            .collect();
+
         // `dep_of[i]` = indices of machines whose bodies must be set before `i`.
         let dep_of: Vec<Vec<usize>> = machine_layouts
             .iter()
@@ -375,7 +414,13 @@ pub(crate) fn register_machine_layouts<'ctx>(
                 let mut deps: Vec<usize> = Vec::new();
                 for variant in layout.variants.iter().chain(layout.events.iter()) {
                     for field_ty in &variant.field_tys {
-                        collect_named_machine_deps(field_ty, &index_of, &mut deps);
+                        collect_named_machine_deps(
+                            field_ty,
+                            &index_of,
+                            &record_fields,
+                            &mut Vec::new(),
+                            &mut deps,
+                        );
                     }
                 }
                 deps.sort_unstable();
@@ -6782,7 +6827,15 @@ mod tests {
             is_opaque: false,
         };
         let mut deps = Vec::new();
-        collect_named_machine_deps(&field_ty, &index_of, &mut deps);
+        let record_fields = HashMap::new();
+        let mut visiting = Vec::new();
+        collect_named_machine_deps(
+            &field_ty,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
         assert_eq!(deps, vec![7]);
 
         let other_module = ResolvedTy::Named {
@@ -6791,7 +6844,13 @@ mod tests {
             builtin: None,
             is_opaque: false,
         };
-        collect_named_machine_deps(&other_module, &index_of, &mut deps);
+        collect_named_machine_deps(
+            &other_module,
+            &index_of,
+            &record_fields,
+            &mut visiting,
+            &mut deps,
+        );
         assert_eq!(
             deps,
             vec![7],

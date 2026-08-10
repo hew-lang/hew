@@ -275,6 +275,39 @@ pub(crate) fn host_data_layout_string() -> &'static str {
     })
 }
 
+/// Collect machine-layout indices that `field_ty` depends on for sizing.
+///
+/// Mirrors `collect_named_enum_deps`, but keyed by SHORT name because machine
+/// layouts are registered and looked up by short name (see the
+/// `machine_short_names` set in `llvm.rs`). Recurses through generic args,
+/// tuples, arrays, and slices: any of them can carry an embedded machine whose
+/// body must be set before the container is sized.
+fn collect_named_machine_deps(
+    field_ty: &ResolvedTy,
+    index_of: &HashMap<&str, usize>,
+    out: &mut Vec<usize>,
+) {
+    match field_ty {
+        ResolvedTy::Named { name, args, .. } => {
+            if let Some(&idx) = index_of.get(short_name(name)) {
+                out.push(idx);
+            }
+            for arg in args {
+                collect_named_machine_deps(arg, index_of, out);
+            }
+        }
+        ResolvedTy::Tuple(elems) => {
+            for e in elems {
+                collect_named_machine_deps(e, index_of, out);
+            }
+        }
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            collect_named_machine_deps(inner, index_of, out);
+        }
+        _ => {}
+    }
+}
+
 /// Register every machine from `pipeline.machine_layouts` as a named LLVM
 /// tagged-union struct. See the module-level "Layout invariants" block
 /// for the struct shape and access pattern.
@@ -294,7 +327,105 @@ pub(crate) fn register_machine_layouts<'ctx>(
     target_data: Option<&TargetData>,
 ) -> CodegenResult<MachineLayoutMap<'ctx>> {
     let mut map: MachineLayoutMap<'ctx> = HashMap::new();
-    for layout in machine_layouts {
+
+    // Process in dependency order, for the same reason `register_enum_layouts`
+    // does: `build_tagged_union_layout` sizes each variant payload via
+    // `TargetData::get_abi_size`. A state payload may hold ANOTHER machine
+    // (`state Holding { inner: Inner }`), and sizing that field while `Inner`'s
+    // named struct is still OPAQUE yields 0 — the outer payload array
+    // under-sizes and the state's accessor GEPs run past the alloca.
+    //
+    // WHY the input order is wrong: machine layouts arrive in SOURCE order, so
+    // declaring the container before the embedded machine (`Outer` then
+    // `Inner`) sizes `Outer` against an opaque `Inner`. Enum layouts are
+    // already topologically sorted here; machines were not, which made the
+    // identical program compile or miscompile purely on declaration order.
+    //
+    // ⚠️ This is NOT caught by the opaque-member layout guard and is NOT
+    // fail-closed: the reversed order compiles clean and SEGFAULTS at runtime
+    // (verified — the container's payload is sized 0 and the embedded machine's
+    // string field is read from unallocated memory).
+    //
+    // WHEN OBSOLETE: if machine layouts are ever emitted in dependency order
+    // upstream, this sort becomes a no-op (already ordered) and can be removed.
+    //
+    // Algorithm: Kahn's topological sort, stable within each tier so unrelated
+    // machines keep input order — required by the first-registration-wins dedup
+    // below. Machine layout names are keyed by short name, matching the
+    // `machine_short_names` convention in `llvm.rs`.
+    let machine_order: Vec<usize> = {
+        let n = machine_layouts.len();
+        let index_of: HashMap<&str, usize> = machine_layouts
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (short_name(&l.name), i))
+            .collect();
+
+        // `dep_of[i]` = indices of machines whose bodies must be set before `i`.
+        let dep_of: Vec<Vec<usize>> = machine_layouts
+            .iter()
+            .enumerate()
+            .map(|(i, layout)| {
+                let mut deps: Vec<usize> = Vec::new();
+                for variant in layout.variants.iter().chain(layout.events.iter()) {
+                    for field_ty in &variant.field_tys {
+                        collect_named_machine_deps(field_ty, &index_of, &mut deps);
+                    }
+                }
+                deps.sort_unstable();
+                deps.dedup();
+                // Defensive: a self-edge would deadlock Kahn's. A machine
+                // embedding itself inline is not representable anyway.
+                deps.retain(|&d| d != i);
+                deps
+            })
+            .collect();
+
+        let mut in_deg: Vec<usize> = dep_of.iter().map(|d| d.len()).collect();
+        let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, deps) in dep_of.iter().enumerate() {
+            for &d in deps {
+                reverse[d].push(i);
+            }
+        }
+
+        let mut order: Vec<usize> = Vec::with_capacity(n);
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..n).filter(|&i| in_deg[i] == 0).collect();
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            for &j in &reverse[i] {
+                in_deg[j] -= 1;
+                if in_deg[j] == 0 {
+                    queue.push_back(j);
+                }
+            }
+        }
+        if order.len() != n {
+            // A machine state payload holds machines inline (finite-size tagged
+            // unions), so a layout cycle has no finite size. Fail closed rather
+            // than fall back to input order, which would silently size one of
+            // the participants against an opaque member.
+            let cycle_names: Vec<&str> = machine_layouts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !order.contains(i))
+                .map(|(_, l)| l.name.as_str())
+                .collect();
+            return Err(CodegenError::FailClosed(format!(
+                "cyclic machine layout detected — a machine state payload holds an \
+                 embedded machine inline (a finite-size tagged union), so the \
+                 following machine name(s) cannot be laid out: {}. \
+                 Break the cycle by holding the embedded machine behind an \
+                 indirection instead of inline in a state payload.",
+                cycle_names.join(", ")
+            )));
+        }
+        order
+    };
+
+    for &layout_idx in &machine_order {
+        let layout = &machine_layouts[layout_idx];
         // Within-class duplicate guard (mirrors `register_enum_layouts`):
         // a second `set_body` against the same predeclared opaque struct
         // is invalid LLVM. Skip the repeat if the outer struct's

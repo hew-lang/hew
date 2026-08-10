@@ -1,0 +1,25 @@
+name: Local Linux CI smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provisioning-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: 22.1.5
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          gates: smoke
+          cache-shared-key: local-linux-smoke
+
+      - name: Run the selected build entry point
+        run: cargo xtask gate smoke

@@ -92,12 +92,14 @@ runs:
     # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
     # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
     - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      if: env.ACT != 'true'
       with:
         # Always pull the latest released sccache binary unless we need to
         # pin for a specific fix.  The action itself is SHA-pinned above.
         version: "v0.10.0"
 
     - name: Export sccache environment variables
+      if: env.ACT != 'true'
       shell: bash
       run: |
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
@@ -105,6 +107,7 @@ runs:
         echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      if: env.ACT != 'true'
       with:
         prefix-key: ${{ inputs.cache-prefix-key }}
         shared-key: ${{ inputs.cache-shared-key }}

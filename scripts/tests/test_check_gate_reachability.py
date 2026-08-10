@@ -539,7 +539,6 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     reached = gate.close_over_makefile(roots, prereqs, recipes, known)
     required = {
         "test",
-        "test-rust",
         "check-libhew-fresh",
         "libhew-debug",
         "runtime",
@@ -848,12 +847,13 @@ def test_every_target_of_a_multi_target_invocation_is_a_reference() -> None:
 
 def test_a_python_string_is_data_and_its_comment_is_not() -> None:
     chunks = gate.script_chunks(
-        f'FIXTURE = "make {MISSING}"  # see make test-rust\n', executable=False
+        f'FIXTURE = "make {MISSING}"  # see make test-compiler-pipeline\n',
+        executable=False,
     )
     found = [
         t for _, chunk, prose in chunks for t in gate.make_references_in(chunk, prose)
     ]
-    assert found == ["test-rust"], (
+    assert found == ["test-compiler-pipeline"], (
         "a target name inside a Python string literal is generated fixture text, "
         f"but its comment is documentation; got {found}"
     )

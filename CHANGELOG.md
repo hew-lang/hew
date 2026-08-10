@@ -310,7 +310,7 @@ structured changelog.
   the targets that failed it are gone: `test-all`, `test-hew`, `test-stdlib`,
   `test-real-timing`, `test-lane`, `test-lane-all`, `test-fast`, `lane-gates`,
   `fuzz-smoke`, `grammar`, `install-check`, and the `profile.lane`
-  nextest tier they shared. Use `make test-rust` for the workspace suite,
+  nextest tier they shared. Use `make test` for the workspace suite,
   `make test-hew-ratchet` and `make test-stdlib-ratchet` for the ratcheted `.hew`
   and stdlib sweeps, `make fuzz-oracle` for the fuzz corpus, and
   `cargo nextest run -p <crate> --profile ci` for fast per-crate iteration. The

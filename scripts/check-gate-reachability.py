@@ -1697,8 +1697,8 @@ def uncompensated_packages(
 
 # ── Containment: proving a target CI never names is nevertheless run ──────────
 #
-# `make test`, `make test-rust` and `make lint` are local entry points that fan
-# out to work CI does in pieces — CI cannot run `make test-rust` verbatim,
+# `make test` and `make lint` are local entry points that fan out to work CI
+# does in pieces — CI cannot run `make test` verbatim,
 # because its workspace run has no `--exclude hew-cabi` and that crate's
 # cfg(test) symbols collide with hew-runtime's at link time. Deleting the
 # developer entry point is not the answer, and neither is a waiver.
@@ -2158,7 +2158,7 @@ def main() -> int:
             print(f"      - {t}")
     # Then the containment proof, to a fixpoint: a target CI never names is
     # reached when every prerequisite is reached and every command in its recipe
-    # is one CI runs anyway. `make test-rust` is the workspace suite CI runs in
+    # is one CI runs anyway. `make test` is the workspace suite CI runs in
     # pieces; `make lint` is CI's clippy invocation plus prerequisites that are
     # each their own CI step. A target with one unclassifiable command — a bash
     # script, a sanitizer-flagged run, a `cargo miri test` — is NOT proved, and

@@ -64,7 +64,7 @@ def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> N
     assert "  - cargo fmt --all -- --check" in result.stdout
     assert "  - make freebsd-workflow-contract-check" in result.stdout
     assert "  - make test-release-workflow-contract" in result.stdout
-    assert "  - make test-rust" in result.stdout
+    assert "  - make test" in result.stdout
     assert "  - make doc-ratchet-selftest" in result.stdout
     assert "make test-codegen" not in result.stdout
 
@@ -127,9 +127,13 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(
-        r"name: Bootstrap pinned structural lint toolchain\s+run: make structural-lint-bootstrap",
+        r"name: Provision pinned ast-grep toolchain\s+uses: ./\.github/actions/setup-ast-grep",
         workflow,
-    ), "hosted CI must explicitly bootstrap on a clean checkout"
+    ), "hosted CI must explicitly provision the pinned toolchain"
+    assert re.search(
+        r"name: Verify structural lint bootstrap contract\s+run: make test-ast-grep-contract test-structural-lint-bootstrap",
+        workflow,
+    ), "hosted CI must run the bootstrap contract tests"
     assert re.search(
         r"name: Run structural authority lint\s+run: make structural-lint",
         workflow,
@@ -380,7 +384,7 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
     """runtime-net lane includes make stdlib + freshness check before tests.
 
     Both hew-runtime and hew-lib source changes must produce libhew.a before
-    test-runtime-net runs, so that linked programs never test against a stale .a.
+    the workspace tests run, so linked programs never test against a stale .a.
     """
     for path in ("hew-runtime/src/lib.rs", "hew-lib/src/lib.rs"):
         result = run_dispatcher(path)
@@ -399,9 +403,9 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
         # Freshness gate must appear before the test command.
         stdlib_pos = result.stdout.index("make stdlib")
         fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
-        test_pos = result.stdout.index("make test-runtime-net")
+        test_pos = result.stdout.index("make test")
         assert stdlib_pos < fresh_pos < test_pos, (
-            f"Expected order: make stdlib < check-libhew-fresh < test-runtime-net.\n"
+            f"Expected order: make stdlib < check-libhew-fresh < test.\n"
             f"stdout:\n{result.stdout}"
         )
 
@@ -693,7 +697,7 @@ def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
 
     The types lane runs test-compiler-pipeline (the full HIR/MIR/codegen closure)
     plus fuzz-oracle, covering both buckets.  A type-checker change can break
-    hew-hir / hew-mir tests that make test-types alone never runs (#2026).
+    hew-hir / hew-mir tests that a package subset would never run (#2026).
     This avoids the 9156-test fallback suite while keeping the gate sound.
     """
     result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
@@ -754,7 +758,7 @@ def test_hew_compile_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-compile change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
 
 
 def test_hew_cabi_routes_to_cli_lane() -> None:
@@ -764,7 +768,7 @@ def test_hew_cabi_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-cabi change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
 
 
 def test_hew_capability_gen_routes_to_cli_lane() -> None:
@@ -774,7 +778,7 @@ def test_hew_capability_gen_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-capability-gen change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
 
 
 def test_hew_wasm_routes_to_wasm_lane() -> None:

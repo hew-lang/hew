@@ -47,18 +47,13 @@
 #   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — Rust workspace tests (fast path)
-#   make test-rust         — just Rust workspace tests
-#   make test-parser       — parser + lexer crate tests (narrow)
-#   make test-types        — type-checker + parser + lexer crate tests (narrow)
-#   make test-cli          — CLI crate tests (narrow)
+#   make test         — Rust workspace tests
 #   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
 #   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-package-install — hew install -> Hew import consumer proof
-#   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-stdlib-execution-proofs — verify every README-indexed public stdlib module has an executed API proof
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
@@ -74,7 +69,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-core-matrix test-core-matrix-generator test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -712,8 +707,6 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust
-
 # Build the combined runtime+stdlib static lib, the native runtime staticlib,
 # and the WASM runtime before running the full workspace test suite.  Several
 # hew-cli integration tests (eval_e2e, eval_wasm_*) call `hew eval` which needs
@@ -728,7 +721,7 @@ test: test-rust
 # cached archive (e.g. one predating the hew_cont_* continuation substrate)
 # would be linked against freshly-emitted coro objects and fail with
 # undefined-symbol errors on a target dir carried across commits.
-test-rust: wasm-runtime runtime $(LIBHEW_READY)
+test: wasm-runtime runtime $(LIBHEW_READY)
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
 		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
@@ -739,15 +732,6 @@ test-rust: wasm-runtime runtime $(LIBHEW_READY)
 		echo "         Install with: cargo install cargo-nextest" >&2; \
 		cargo test --workspace --exclude hew-cabi --no-fail-fast; \
 	fi
-
-test-parser:
-	cargo nextest run --profile ci -p hew-parser -p hew-lexer
-
-test-types:
-	cargo nextest run --profile ci -p hew-types -p hew-parser -p hew-lexer
-
-test-cli:
-	cargo nextest run --profile ci -p hew-cli -p hew-pkg
 
 # Canonical local macOS memory authority. This is deliberately named as a local
 # authority, not a CI `test-*` gate: hosted macOS processes cannot grant
@@ -879,13 +863,6 @@ ll-golden: hew
 ll-identity-selftest:
 	bash scripts/ll-identity-selftest.sh
 
-test-runtime-net:
-	cargo nextest run --profile ci --no-fail-fast \
-		-p hew-runtime \
-		-p hew-analysis \
-		-p hew-lsp \
-		-p hew-std
-
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
 # Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
@@ -926,15 +903,13 @@ test-hew-ratchet: hew-native runtime $(LIBHEW_READY)
 # The generator self-check runs first: a cell cannot be hand-edited into
 # agreement with a broken compiler without the corpus diverging from the
 # enumeration that produced it.
-test-core-matrix: test-core-matrix-generator hew-native runtime $(LIBHEW_READY)
-	@echo "==> Running the core matrix (primitive x operation)"
-	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py
-
-test-core-matrix-generator:
+test-core-matrix: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Checking the core-matrix corpus matches its generator"
 	@rm -rf "$(CURDIR)/.tmp/core-matrix-regen"
 	python3 scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
 	diff -r tests/core-matrix/cells "$(CURDIR)/.tmp/core-matrix-regen"
+	@echo "==> Running the core matrix (primitive x operation)"
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/core-matrix.py
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM

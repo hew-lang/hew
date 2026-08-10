@@ -655,12 +655,11 @@ elif (( bucket_count > 1 )); then
     # Conservative invariant: any unrecognised combination falls back.
     # Every promoted combination must have a dispatcher test case.
     #
-    #   parser + types:  test-types runs hew-types + hew-parser + hew-lexer,
-    #     covering both buckets.  Dependency closure: types ← parser ← lexer
-    #     (no runtime/codegen downstream in this narrow set).
+    #   parser + types: the compiler-pipeline suite covers both buckets and
+    #     their HIR/MIR/codegen consumers.
     if (( has_parser == 1 && has_types == 1 && bucket_count == 2 )); then
         LANE="types"
-        LANE_REASON="parser + type-checker changed; test-types covers both (parser + types dep closure)"
+        LANE_REASON="parser + type-checker changed; compiler pipeline covers both"
     else
         LANE="fallback"
         LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
@@ -721,7 +720,7 @@ case "$LANE" in
         add_command "make test-stdlib-execution-proofs"
         add_command "cargo fmt --all -- --check"
         add_command "make freebsd-workflow-contract-check"
-        add_command "make test-rust"
+        add_command "make test"
         add_command "make o2-differential-selftest"
         add_command "make doc-ratchet-selftest"
         ;;
@@ -733,15 +732,12 @@ case "$LANE" in
     parser)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-parser"
+        add_command "make test-compiler-pipeline"
         add_command "make hew-fmt-property"
         ;;
     types)
-        # Run the full frontend pipeline (hew-types + hew-hir + hew-mir) rather
-        # than the narrow make test-types (hew-types + hew-parser + hew-lexer only).
-        # A type-checker change can break hew-hir / hew-mir tests that test-types
-        # never runs — this was the root cause of #2026 (reject_unbounded_generic_ordering).
-        # make test-types remains the iteration target; this lane is the gate.
+        # A type-checker change can break hew-hir / hew-mir tests, so use the
+        # full frontend pipeline rather than a package subset.
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-compiler-pipeline"
@@ -759,7 +755,7 @@ case "$LANE" in
     cli)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-cli"
+        add_command "make test-compiler-pipeline"
         add_command "make hew-fmt-property"
         ;;
     compiler-pipeline)
@@ -821,7 +817,7 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make stdlib"
         add_command "scripts/check-libhew-fresh.sh"
-        add_command "make test-runtime-net"
+        add_command "make test"
         # Runtime ABI changes (e.g. HewCont layout / continuation resume protocol)
         # are invisible to rlib unit tests alone — a Rust unit test can pass over a
         # garbage codegen path.  Run the compiled .hew suites so a local preflight

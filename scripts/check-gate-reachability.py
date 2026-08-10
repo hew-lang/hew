@@ -184,8 +184,12 @@ def host_release_authority_is_ported(
     """
     if authority.target not in known:
         return False
+    accepted = {
+        authority.runner,
+        f"cargo xtask gate {authority.target}",
+    }
     return any(
-        segment.lstrip("@-").strip() == authority.runner
+        segment.lstrip("@-").strip() in accepted
         for segment in _command_segments(
             strip_shell_comments(recipes.get(authority.target, ""))
         )
@@ -1054,10 +1058,67 @@ MAKE_INVOKE_RE = re.compile(
 XTASK_GATE_RE = re.compile(r"(?<![\w-])cargo\s+xtask\s+gate\s+([A-Za-z0-9_.-]+)")
 XTASK_GATE_MAKE_EQUIVALENTS = {
     "playground": {"playground-check", "playground-manifest-check"},
+    "playground-wasi": {"playground-wasi-check"},
     "release-link": {"test-release-lib-link"},
+    "release-verify": {"test-release-lib-link"},
     "release-smoke": {"test-release-binary"},
     "vertical-slice": {"test-vertical-slice"},
     "stdlib-ratchet": {"test-stdlib-ratchet"},
+    "asan": {"asan"},
+    "asan-fixtures": {"asan-fixtures", "test-asan-fixture-selftest"},
+    "cabi": {"test-cabi"},
+    "codegen-identity": {"codegen-carried-identity-gate"},
+    "codegen-traps": {"codegen-trap-inventory-check"},
+    "compiler-lifecycle": {
+        "test-compiler-lifecycle",
+        "test-opaque-resource-lifecycle-matrix",
+    },
+    "compiler-lifecycle-external": {"test-opaque-resource-lifecycle-matrix-external"},
+    "ffi": {"verify-ffi", "test-verify-ffi", "test-python310-toml-compat"},
+    "freebsd-contract": {"freebsd-workflow-contract-check"},
+    "fuzz-smoke": {"fuzz-smoke"},
+    "hew-fmt": {"hew-fmt-check"},
+    "hew-ratchet": {"test-hew-ratchet"},
+    "leak-scan": {"leak-scan"},
+    "libhew-link-race": {"libhew-link-race-test"},
+    "licenses": {"licenses-check"},
+    "lint": {"lint"},
+    "ll-identity": {"ll-identity-selftest"},
+    "miri": {"miri"},
+    "mqtt": {"mqtt-broker-e2e"},
+    "observe-functional": {"observe-functional-test"},
+    "o2-differential": {"test-o2-differential"},
+    "reachability": {"check-gate-reachability", "test-check-gate-reachability"},
+    "release-contract": {"test-release-workflow-contract"},
+    "runtime-poison-lint": {
+        "runtime-poison-safe-lint",
+        "runtime-poison-safe-lint-self-test",
+    },
+    "sandbox-coverage": {
+        "sandbox-parity-coverage-check",
+        "test-sandbox-parity-coverage-check",
+    },
+    "sandbox-fixtures-check": {"sandbox-fixtures-check"},
+    "sandbox-parity": {"sandbox-parity"},
+    "sanitizer-contract": {"check-sanitizer-gate"},
+    "stdlib-execution": {"test-stdlib-execution-proofs"},
+    "stdlib-lint": {"stdlib-lint", "stdlib-errno-gate"},
+    "structural-bootstrap-contract": {
+        "test-ast-grep-contract",
+        "test-structural-lint-bootstrap",
+        "test-structural-authority-audit",
+    },
+    "structural-lint": {"structural-lint", "structural-lint-bootstrap"},
+    "sys-closure": {"verify-sys-lane-closure", "test-sys-lane-closure"},
+    "tsan": {"tsan"},
+    "wasm-todo-lint": {
+        "lint-wasm-todo",
+        "lint-wasm-todo-self-test",
+        "wasm-capability-check",
+    },
+    "workspace": {"test", "check-libhew-fresh"},
+    "example-contract": {"test-example-expectations-selftest"},
+    "docs-examples": {"test-doc-examples"},
 }
 
 
@@ -1161,6 +1222,25 @@ def ci_test_commands(
         for target in sorted(reached)
     ]
     blobs = [command for _, command in sources]
+    xtask_test_commands = {
+        "sandbox-parity": (
+            "cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet "
+            "--test playground --test ios_subset"
+        ),
+        "observe-functional": (
+            "cargo test -p hew-observe --test functional -- --ignored --nocapture"
+        ),
+        "libhew-link-race": (
+            "cargo test -p hew-testutil --test libhew_link_race -- --ignored "
+            "--nocapture --test-threads=1"
+        ),
+    }
+    blobs.extend(
+        command
+        for blob in list(blobs)
+        for gate, command in xtask_test_commands.items()
+        if re.search(rf"cargo\s+xtask\s+gate\s+{re.escape(gate)}\b", blob)
+    )
     blobs.extend(
         invocation.command
         for where, command in sources
@@ -1714,6 +1794,17 @@ def xtask_gate_cargo_commands(
         "cabi": ["cargo nextest run --profile ci-cabi -p hew-cabi"],
         "playground": ["cargo test -p hew-wasm"],
         "freebsd": [workspace, "cargo nextest run --profile ci-cabi -p hew-cabi"],
+        "sandbox-parity": [
+            "cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet "
+            "--test playground --test ios_subset"
+        ],
+        "observe-functional": [
+            "cargo test -p hew-observe --test functional -- --ignored --nocapture"
+        ],
+        "libhew-link-race": [
+            "cargo test -p hew-testutil --test libhew_link_race -- --ignored "
+            "--nocapture --test-threads=1"
+        ],
     }.get(gate, [])
 
     if "--filter-expr" in tokens and commands:

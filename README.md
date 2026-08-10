@@ -285,19 +285,21 @@ brew install llvm
 ### Build
 
 ```bash
-make          # Build everything (debug)
-make release  # Build everything (optimized)
-make ci-preflight  # Dispatch a conservative local preflight from your current diff
-make test     # Run Rust + native codegen tests
-make lint     # cargo clippy
+cargo xtask build all      # Build everything (debug)
+cargo xtask build release  # Build everything (optimized)
+cargo xtask preflight      # Dispatch checks selected from the current diff
+cargo xtask gate workspace # Run Rust + native codegen tests
+cargo xtask gate ci        # Run the complete local CI gate graph
 ```
 
-See the [Makefile](Makefile) header for all targets.
+The [Makefile](Makefile) remains a compatibility facade; build logic and
+prerequisite edges live in `xtask` so all supported hosts execute the same
+graph.
 
-Use `make ci-preflight ARGS="--dry-run"` to inspect the selected commands before
+Use `cargo xtask preflight --dry-run` to inspect the selected commands before
 running them. By default the dispatcher runs every selected command, collects
 any failures, and reports the full timing summary at the end so one local run
-shows the whole preflight picture. Pass `make ci-preflight ARGS="--fail-fast"`
+shows the whole preflight picture. Pass `cargo xtask preflight --fail-fast`
 if you want it to stop after the first failed command instead. The first slice
 stays conservative: known docs/parser/types/CLI diffs get narrower checks, and
 everything else falls back to broader local preflight commands.

@@ -34,7 +34,24 @@ TARGETS = (
 )
 XTASK_TARGETS = {
     "test-vertical-slice": "vertical-slice",
+    "test-pkg-import": "pkg-import",
+    "test-package-install": "package-install",
+    "fuzz-oracle": "fuzz-oracle",
+    "fuzz-oracle-selftest": "fuzz-oracle-selftest",
+    "test-hew-ratchet": "hew-ratchet",
+    "test-o2-differential": "o2-differential",
     "test-stdlib-ratchet": "stdlib-ratchet",
+    "test-stdlib-execution-proofs": "stdlib-execution",
+    "test-doc-examples": "docs-examples",
+    "test-ux-examples": "ux-examples",
+    "test-surface-examples": "surface-examples",
+    "hew-check-all": "hew-check",
+    "checked-mir-verify": "checked-mir-verify",
+    "checked-mir-golden": "checked-mir-golden",
+    "checked-mir-run": "checked-mir-run",
+    "checked-mir-expect": "checked-mir-expect",
+    "ll-diff": "ll-diff",
+    "ll-golden": "ll-golden",
 }
 
 
@@ -58,13 +75,11 @@ def assert_all_gates_use(target_dir: str, expected_debug_dir: str) -> None:
     expected_hew = f"{expected_debug_dir}/debug/hew"
     for target in TARGETS:
         recipe = preview(target, target_dir)
-        if target in XTASK_TARGETS:
-            expected = f"cargo xtask gate {XTASK_TARGETS[target]}"
-            assert expected in recipe, f"{target} bypassed {expected}:\n{recipe}"
-            continue
-        assert expected_hew in recipe, f"{target} did not use {expected_hew}:\n{recipe}"
-        assert "target/debug/hew" not in recipe, (
-            f"{target} retained a repository-default compiler path:\n{recipe}"
+        expected = f"cargo xtask gate {XTASK_TARGETS[target]}"
+        assert expected in recipe, f"{target} bypassed {expected}:\n{recipe}"
+        assert expected_hew not in recipe, (
+            f"{target} leaked a shell-derived compiler path instead of letting xtask "
+            f"resolve Cargo metadata:\n{recipe}"
         )
 
 

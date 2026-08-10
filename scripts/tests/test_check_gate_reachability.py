@@ -483,11 +483,11 @@ def test_a_shell_dollar_in_a_recipe_is_not_a_variable_reference() -> None:
 
 
 def test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers() -> None:
-    phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
-    consumers = {t for t, deps in prereqs.items() if "check-libhew-fresh" in deps}
-    assert "observe-functional-test" in consumers, (
-        "observe-functional-test depends on the archive-ready bundle, which "
-        f"carries the freshness check; consumers seen: {sorted(consumers)}"
+    source = (ROOT / "xtask" / "src" / "build_system.rs").read_text()
+    body = source.split("fn observe_functional", 1)[1].split("\nfn ", 1)[0]
+    assert "build_native" in body and "verify_libhew" in body, (
+        "the observe functional gate must build and certify its native link "
+        "prerequisite in the Rust graph"
     )
 
 
@@ -531,37 +531,16 @@ def test_a_real_command_is_not_smuggled_in_as_a_precondition() -> None:
 
 
 def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
-    phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
-    known = set(prereqs) | phony
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
-    if "ci-preflight-dispatcher.sh" in commands:
-        fallback = subprocess.run(
-            [
-                "bash",
-                str(gate.DISPATCHER),
-                "--dry-run",
-                "--",
-                "some-unclassified-root-file.txt",
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        commands += "\n" + fallback.stdout
-    roots = gate.make_targets_in(commands, known)
-    reached = gate.close_over_makefile(roots, prereqs, recipes, known)
-    required = {
-        "test",
-        "check-libhew-fresh",
-        "libhew-debug",
-        "runtime",
-        "wasm-runtime",
-    }
-    assert required <= reached, (
-        "CI must execute the authoritative Make test edge and its native, WASI, "
-        f"and libhew prerequisites; missing {sorted(required - reached)}"
+    assert "cargo xtask gate workspace" in commands
+    source = (ROOT / "xtask" / "src" / "build_system.rs").read_text()
+    workspace = source.split('"workspace" => {', 1)[1].split("\n        }", 1)[0]
+    required = {"build_native", "build_wasm", "verify_libhew", "nextest"}
+    missing = {edge for edge in required if edge not in workspace}
+    assert not missing, (
+        "the workspace gate must own its native, WASI, freshness, and test "
+        f"edges; missing {sorted(missing)}"
     )
 
 
@@ -691,7 +670,9 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         oracle = next(
             (index, run)
             for index, run in enumerate(runnable)
-            if "make mqtt-broker-e2e" in run or "ci-preflight-dispatcher.sh" in run
+            if "make mqtt-broker-e2e" in run
+            or "cargo xtask gate mqtt" in run
+            or "ci-preflight-dispatcher.sh" in run
         )
         assert "mosquitto_pub" in provision[1] and "mosquitto_sub" in provision[1], (
             f"{path.name}:{job_name} must verify both MQTT client commands"

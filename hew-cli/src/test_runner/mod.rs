@@ -402,6 +402,7 @@ mod partition_tests {
             file: "/repo/tests/hew/sample_test.hew".into(),
             ignored: false,
             should_panic: false,
+            serial: false,
         };
         assert_eq!(
             test_identity(&test, Path::new("/repo")),

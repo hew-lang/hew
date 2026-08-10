@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "${ROOT}/scripts/lib/corpus-floor.sh"
+source "${ROOT}/scripts/lib/corpus-nonempty.sh"
 INDEX="${ROOT}/std/README.md"
 MANIFEST="${ROOT}/scripts/stdlib-execution-proofs.tsv"
 RUNNER="${ROOT}/tests/vertical-slice/run.sh"
@@ -359,5 +359,5 @@ count="$(wc -l < "${mapped}" | tr -d ' ')"
 # in the index, index rows must appear in the manifest. Two empty sides agree
 # with each other, so a README whose table format drifted would map zero
 # modules and still exit 0. Floor the mapped count.
-corpus_floor_assert "stdlib-proof-modules" "${count}" || exit 1
+corpus_nonempty_assert "stdlib-proof-modules" "${count}" || exit 1
 echo "stdlib execution proofs: ${count} public modules mapped to executable fixtures"

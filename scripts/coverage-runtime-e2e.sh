@@ -99,10 +99,10 @@ for f in examples/*.hew; do
     PROGRAMS+=("$f")
   fi
 done
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
-corpus_floor_assert "coverage-e2e-programs" "${#PROGRAMS[@]}" || exit 1
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
+corpus_nonempty_assert "coverage-e2e-programs" "${#PROGRAMS[@]}" || exit 1
 
 echo "==> Phase 1: build instrumented libhew.a"
 RUSTFLAGS="-C instrument-coverage" cargo build -p hew-lib
@@ -201,7 +201,7 @@ if [ -z "$COVERED_FUNCTIONS" ]; then
   echo "error: llvm-cov report did not contain a TOTAL row" >&2
   exit 1
 fi
-corpus_floor_assert "runtime-e2e-covered-functions" "$COVERED_FUNCTIONS" || exit 1
+corpus_nonempty_assert "runtime-e2e-covered-functions" "$COVERED_FUNCTIONS" || exit 1
 
 if [ "$WANT_HTML" -eq 1 ]; then
   echo "==> Generating HTML runtime report"

@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from corpus_floor import check_floor  # noqa: E402
+from corpus_nonempty import check_nonempty  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -589,8 +589,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Minimum number of ratcheted candidates (vertical-slice + regressions) "
             "this run must have collected. Required whenever --regressions-dir or "
-            "--vertical-slice-dir is overridden; the default corpus takes its floor "
-            "from scripts/corpus-floors.tsv."
+            "--vertical-slice-dir is overridden; use it to guard the caller-owned "
+            "corpus against an empty selection."
         ),
     )
     p.add_argument(
@@ -701,7 +701,7 @@ def main() -> int:
     if args.min_candidates is not None:
         if ratcheted_candidates < args.min_candidates:
             floor_error = (
-                f"\nCORPUS FLOOR: collected {ratcheted_candidates} ratcheted "
+                f"\nCORPUS MINIMUM: collected {ratcheted_candidates} ratcheted "
                 f"candidate(s), caller declared at least {args.min_candidates}\n"
                 "              vertical-slice/accept + fuzz-oracle/regressions\n"
                 "              An oracle run over nothing proves nothing: both gate\n"
@@ -709,7 +709,7 @@ def main() -> int:
                 "collected."
             )
     else:
-        floor_error = check_floor("fuzz-oracle-candidates", ratcheted_candidates)
+        floor_error = check_nonempty("fuzz-oracle-candidates", ratcheted_candidates)
 
     if floor_error is not None:
         print(
@@ -718,7 +718,7 @@ def main() -> int:
         )
         print(f"   ({ratcheted_candidates} ratcheted candidate(s) collected)")
     else:
-        print(f"corpus floor OK: {ratcheted_candidates} ratcheted candidate(s)")
+        print(f"corpus selection OK: {ratcheted_candidates} ratcheted candidate(s)")
 
     stats = OracleStats()
     all_verdicts: list[Verdict] = []

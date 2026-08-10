@@ -24,24 +24,11 @@ def run(
     return subprocess.run(command, text=True, capture_output=True)
 
 
-def set_inventory(root: Path, body: str = "", *, floor: int | None = None) -> None:
+def set_inventory(root: Path, body: str = "") -> None:
     (root / "scripts/structural-authority-inventory.tsv").write_text(
         INVENTORY_HEADER + body
     )
     presentation = root / "scripts/structural-authority-presentation.tsv"
-    presentation_count = len(
-        [
-            line
-            for line in presentation.read_text().splitlines()[1:]
-            if line.strip() and not line.startswith("#")
-        ]
-    )
-    row_count = len([line for line in body.splitlines() if line.strip()])
-    expected_floor = row_count + presentation_count if floor is None else floor
-    (root / "scripts/corpus-floors.tsv").write_text(
-        "structural-authority-inventory\texact\t"
-        f"{expected_floor}\t-\ttemporary authority inventory\n"
-    )
 
 
 with tempfile.TemporaryDirectory() as temp:

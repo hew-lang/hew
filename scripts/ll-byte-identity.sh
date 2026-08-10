@@ -31,14 +31,13 @@
 # files in either directory are reported as missing-counterpart warnings (not
 # failures), so adding a new fixture does not break the oracle.
 #
-# CORPUS FLOOR: this oracle owns no corpus — it compares two directories its
+# NONEMPTY INPUT: this oracle owns no corpus — it compares two directories its
 # caller chose — so it cannot know the size to expect and does not guess one.
 # What it CAN refuse is to report success having compared nothing: every head
 # file missing, or every file yielding no function bodies, used to leave
 # matched=0 and print "OK (0 fixtures byte-identical)". The intrinsic floor is
 # one comparison; the tracked floor belongs to the caller that owns the corpus
-# and is passed in as [min-compared] (scripts/ll-corpus.sh passes its own
-# floored fixture count from scripts/corpus-floors.tsv).
+# and is passed in as [min-compared].
 #
 # Exit codes:
 #   0  all matched function bodies are byte-identical

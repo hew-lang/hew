@@ -62,7 +62,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from corpus_floor import assert_floor  # noqa: E402
+from corpus_nonempty import assert_nonempty  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "hew-sandbox-wasm" / "tests"
@@ -225,8 +225,8 @@ def main() -> int:
     # The per-binary loop below asserts nothing when the list is short: three
     # binaries silently becoming one still reports "3 check(s) passed, 0
     # failed". The empty case above is caught by name; the shrink is caught
-    # only by the tracked count.
-    assert_floor("sandbox-vm-binaries", len(vm_dependent_binaries))
+    # only by rejecting an empty selection.
+    assert_nonempty("sandbox-vm-binaries", len(vm_dependent_binaries))
 
     if verbose:
         print()

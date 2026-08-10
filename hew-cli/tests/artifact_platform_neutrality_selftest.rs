@@ -47,7 +47,6 @@ const ARTIFACT_ROOTS: &[&str] = &[
 
 /// Individual files outside the roots above, compared/parsed byte-for-byte.
 const ARTIFACT_FILES: &[&str] = &[
-    "scripts/corpus-floors.tsv",
     "scripts/stdlib-execution-proofs.tsv",
     "scripts/structural-authority-inventory.tsv",
     "scripts/structural-authority-presentation.tsv",

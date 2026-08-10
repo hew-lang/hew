@@ -313,6 +313,81 @@ fn load_project_context(
     })
 }
 
+/// Return the same-name entry file when `input` is a directory-module peer
+/// whose impl names a trait declared by that entry. Checking the peer directly
+/// must retain the lexical trait namespace that materializes default methods,
+/// without assembling unrelated peers into every standalone file check.
+fn directory_module_entry_for_peer(program: &Program, input: &Path) -> Option<String> {
+    let input_name = input.file_name()?.to_str()?;
+    let parent = input.parent()?;
+    let module_name = parent.file_name()?.to_str()?;
+    let entry_name = format!("{module_name}.hew");
+    let entry_path = parent.join(&entry_name);
+    if input_name == entry_name || !entry_path.is_file() {
+        return None;
+    }
+    let local_traits = program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Trait(decl) => Some(decl.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let entry_source = std::fs::read_to_string(entry_path).ok()?;
+    let entry_parse = hew_parser::parse(&entry_source);
+    if entry_parse
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+    {
+        return None;
+    }
+    let entry_traits = entry_parse
+        .program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Trait(decl) => Some(decl.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let needs_entry_trait = program.items.iter().any(|(item, _)| {
+        let Item::Impl(decl) = item else {
+            return false;
+        };
+        decl.trait_bound.as_ref().is_some_and(|bound| {
+            entry_traits.contains(bound.name.as_str())
+                && !local_traits.contains(bound.name.as_str())
+        })
+    });
+    if !needs_entry_trait {
+        return None;
+    }
+    Some(entry_name)
+}
+
+fn import_directory_module_entry_for_peer(program: &mut Program, input: &Path) {
+    let Some(entry_name) = directory_module_entry_for_peer(program, input) else {
+        return;
+    };
+    program.items.insert(
+        0,
+        (
+            Item::Import(ImportDecl {
+                path: Vec::new(),
+                spec: None,
+                module_alias: None,
+                file_path: Some(entry_name),
+                resolved_items: None,
+                resolved_item_source_paths: Vec::new(),
+                resolved_source_paths: Vec::new(),
+            }),
+            0..0,
+        ),
+    );
+}
+
 fn project_context_for_program(
     source: &str,
     options: &FrontendOptions,
@@ -1535,6 +1610,7 @@ pub fn run_file_frontend_to_typecheck(
 ) -> Result<FileFrontendState, FrontendFailure> {
     let project = load_project_context(input, Some(options))?;
     let (mut program, parse_diagnostics) = parse_source_with_diagnostics(&project.source, input)?;
+    import_directory_module_entry_for_peer(&mut program, Path::new(input));
     let mut diagnostics = parse_diagnostics;
 
     if let Err(failure) = resolve_imports_internal(
@@ -1863,6 +1939,36 @@ mod tests {
         file.write_all(content.as_bytes())
             .expect("write source file");
         path.display().to_string()
+    }
+
+    #[test]
+    fn checking_directory_module_peer_loads_entry_namespace() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("greeting");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "greeting.hew",
+            "pub trait Greeter {\n    fn name(self) -> string;\n    fn greet(self) -> string { self.name() }\n}\n",
+        );
+        let peer = write_source(
+            &module_dir,
+            "dog.hew",
+            "pub type Dog { label: string; }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
+        );
+
+        let result = check_file(
+            &peer,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                ..FrontendOptions::default()
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "a directly checked peer must share its directory module entry: {:#?}",
+            result.err()
+        );
     }
 
     #[test]

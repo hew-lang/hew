@@ -3590,6 +3590,7 @@ impl Builder {
                         params,
                         &HashSet::new(),
                         &ResolvedTy::clone,
+                        &|ty, _| matches!(ty, ResolvedTy::String),
                         false,
                         &|_| false,
                     ) == WholeParamEmbedClass::None
@@ -3606,6 +3607,7 @@ impl Builder {
                         params,
                         &HashSet::new(),
                         &ResolvedTy::clone,
+                        &|ty, _| matches!(ty, ResolvedTy::String),
                         false,
                         &|_| false,
                     ) == WholeParamEmbedClass::None
@@ -3623,6 +3625,63 @@ impl Builder {
             _ => false,
         }
     }
+
+    /// Whether an owned-Vec element rvalue can transfer its one live carrier
+    /// into the descriptor slot. Ordinary materialised owners use the shared
+    /// freshness proof above. A constructor that embeds an affine owned call
+    /// carrier or a registered carrier member is also a move source: field
+    /// lowering has already transferred that value into the fresh aggregate
+    /// and neutralized its carrier slot, so COPY-IN would manufacture a second
+    /// owner and leave structural cleanup to release the first one.
+    pub(crate) fn expr_is_owned_vec_move_ingress_owner(&self, expr: &HirExpr) -> bool {
+        if Self::expr_is_materialized_owner(
+            expr,
+            &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            &self.funcupdate_param_ids,
+            &self.proven_foreign_bindings,
+        ) {
+            return true;
+        }
+
+        matches!(
+            &expr.kind,
+            HirExprKind::StructInit { .. }
+                | HirExprKind::TupleLiteral { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+        ) && self
+            .call_scrutinee_provenance
+            .fresh_owner_verdicts
+            .value_is_free_of_opaque_foreign_provenance(expr)
+            && !crate::return_provenance::value_reads_a_proven_foreign_binding(
+                expr,
+                &self.proven_foreign_bindings,
+                self.call_scrutinee_provenance
+                    .fresh_owner_verdicts
+                    .declared_release_types(),
+            )
+            && Self::classify_whole_param_embeds(
+                expr,
+                &self.funcupdate_param_ids,
+                &self.owned_carrier_param_ids,
+                &|ty| self.subst_ty(ty),
+                &|ty, is_carrier| {
+                    is_carrier
+                        && matches!(
+                            ValueClass::of_ty(ty, &self.type_classes),
+                            ValueClass::AffineResource | ValueClass::Linear
+                        )
+                },
+                true,
+                &|ty| {
+                    crate::model::ty_owns_heap_mir(
+                        ty,
+                        &self.record_field_orders,
+                        &self.enum_layouts,
+                    )
+                },
+            ) == WholeParamEmbedClass::IndependentlyOwnedOnly
+    }
+
     /// Classify WHOLE by-value parameter embeds through constructors.
     ///
     /// Recurses only through constructions (struct / tuple / machine-variant
@@ -3630,13 +3689,16 @@ impl Builder {
     /// owner route, other leaves stop the recursion. The Vec COPY-IN mint uses
     /// the stricter mode: every non-constructor heap-owning leaf fails closed,
     /// because a projection or unproven call result can carry an unretained alias
-    /// derived from another parameter. This admits only construction trees whose
-    /// owned leaves are the whole retained string parameters being discharged.
+    /// derived from another parameter. The MOVE ingress mode additionally
+    /// rejects a whole retained string and permits a whole registered carrier
+    /// only when its root is affine. Heap-owning record parameters keep the
+    /// prepared COPY-IN owner; registered member projections remain eligible.
     fn classify_whole_param_embeds(
         expr: &HirExpr,
         params: &HashSet<BindingId>,
         owned_carrier_params: &HashSet<BindingId>,
         resolve_ty: &impl Fn(&ResolvedTy) -> ResolvedTy,
+        param_leaf_is_independent: &impl Fn(&ResolvedTy, bool) -> bool,
         reject_unproven_owned_leaves: bool,
         owns_heap: &impl Fn(&ResolvedTy) -> bool,
     ) -> WholeParamEmbedClass {
@@ -3645,9 +3707,8 @@ impl Builder {
                 resolved: ResolvedRef::Binding(id),
                 ..
             } if params.contains(id) => {
-                if matches!(resolve_ty(&expr.ty), ResolvedTy::String)
-                    || owned_carrier_params.contains(id)
-                {
+                let ty = resolve_ty(&expr.ty);
+                if param_leaf_is_independent(&ty, owned_carrier_params.contains(id)) {
                     WholeParamEmbedClass::IndependentlyOwnedOnly
                 } else {
                     WholeParamEmbedClass::UnsupportedBorrowAlias
@@ -3661,6 +3722,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3671,6 +3733,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3684,6 +3747,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )
@@ -3698,6 +3762,7 @@ impl Builder {
                         params,
                         owned_carrier_params,
                         resolve_ty,
+                        param_leaf_is_independent,
                         reject_unproven_owned_leaves,
                         owns_heap,
                     )

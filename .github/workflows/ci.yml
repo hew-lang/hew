@@ -188,13 +188,19 @@ jobs:
         run: make freebsd-workflow-contract-check
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Lint — fast feedback on code quality (always runs, ~1.5 min)
+  # Lint — code quality plus 1,778-file formatter preservation
+  # (always runs; cold runners can take 15–25 min)
   # Produces SARIF output for GitHub Code Scanning inline annotations.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Job 93290474020 reached the final authority-graph step at 25m17s after
+    # 308s of toolchain setup, 252s of structural lint, 131s of .hew format,
+    # 492s of formatter preservation, 167s of Clippy, and about 90s elsewhere.
+    # The graph did not complete, so 45 min leaves cold-runner headroom while
+    # retaining a finite ceiling for a stuck job.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -219,11 +225,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # A cold runner always pays this once; make structural-lint (below and
-      # in local `make lint`) provisions through the same idempotent target,
-      # so a warm cache anywhere in the chain makes this a no-op.
-      - name: Bootstrap pinned structural lint toolchain
-        run: make structural-lint-bootstrap
+      # Keep this consumer on the shared cache-backed provisioning action.
+      # The structural-lint target still verifies the pinned toolchain before
+      # it scans, so local and CI entry points retain the same safety checks.
+      - name: Provision pinned ast-grep toolchain
+        uses: ./.github/actions/setup-ast-grep
+
+      # Keep the bootstrap counterfactuals on the required job after moving
+      # provisioning into the shared action.
+      - name: Verify structural lint bootstrap contract
+        run: make test-ast-grep-contract test-structural-lint-bootstrap
 
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
@@ -426,13 +437,11 @@ jobs:
     name: Build & test (Linux)
     needs: changes
     runs-on: ubuntu-24.04
-    # Was 60. Successful runs on main land at 51-56 min wall time (checked
-    # 2026-07-04 across 5 recent green runs), leaving only 4-9 min of
-    # headroom against normal runner-to-runner variance -- PRs #2396 and
-    # #2397 both got CANCELLED at exactly 60m00-16s. 90 min restores real
-    # headroom without masking a genuine regression (see the diagnosis in
-    # the commit that introduced this change).
-    timeout-minutes: 90
+    # A cancelled cold-runner job completed about 105 min of work, then spent
+    # 20 min in its final O2 differential step. That step measures about 33
+    # min warm, yielding about 138 min of expected work. 180 min leaves about
+    # 42 min for cold-runner variance while retaining a finite hung-job limit.
+    timeout-minutes: 180
     env:
       # mold is installed by the "Install build tools" step below.
       # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to

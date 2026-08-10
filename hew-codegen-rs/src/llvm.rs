@@ -2139,6 +2139,11 @@ enum HelperCrashCleanupDisposition {
     Owned,
     /// Caller-owned representation loan: success only retires the token.
     CrashOnlyLoan,
+    /// A local whose value is eventually transferred into `ReturnSlot`.
+    /// The source remains crash-owned until the Move hook deactivates it;
+    /// normal return retires the stale token without dropping the caller's
+    /// newly acquired value.
+    ReturnTransfer,
     /// Reassigned `while let` scrutinee SNAPSHOT owner: a byte-copy alias of
     /// the still-live loop variable, dropped ONLY on the loop back-edge (the
     /// MIR `back_edge_only_iteration_owners` contract deliberately excludes it
@@ -22214,6 +22219,10 @@ fn call_destination_has_specialized_crash_cleanup_lifecycle(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "cleanup discovery needs MIR, layout, call-boundary, and loop authorities"
+)]
 fn collect_helper_crash_cleanup_descriptors(
     func: &RawMirFunction,
     elab: Option<&ElaboratedMirFunction>,
@@ -22222,6 +22231,7 @@ fn collect_helper_crash_cleanup_descriptors(
     enum_layouts: &[EnumLayout],
     fn_symbols: &FnSymbolMap<'_>,
     back_edge_blocks: &HashSet<u32>,
+    representation_loan_params: &HashMap<String, Vec<u32>>,
 ) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
     // Places whose ENTIRE drop-plan footprint is the loop back-edge Goto and
     // nothing else are reassigned-`while let` scrutinee snapshots: a byte-copy
@@ -22277,6 +22287,21 @@ fn collect_helper_crash_cleanup_descriptors(
         })?;
         supported_producers.insert(Place::Local(local));
     }
+    let representation_loan_arguments = func
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call { callee, args, .. } => Some((callee, args)),
+            _ => None,
+        })
+        .flat_map(|(callee, args)| {
+            representation_loan_params
+                .get(callee)
+                .into_iter()
+                .flatten()
+                .filter_map(|index| args.get(*index as usize).copied())
+        })
+        .collect::<HashSet<_>>();
     for block in &func.blocks {
         for instr in &block.instructions {
             for place in hew_mir::dataflow::instr_write_places(instr) {
@@ -22450,7 +22475,7 @@ fn collect_helper_crash_cleanup_descriptors(
             ))
         })?;
         let place = Place::Local(fact.param_index);
-        let descriptor = hew_mir::lower::crash_only_param_loan_drop(place, ty, crash_cleanup)
+        let descriptor = hew_mir::lower::crash_only_cleanup_drop(place, ty, crash_cleanup)
             .map_err(CodegenError::FailClosed)?;
         if by_place.insert(place, descriptors.len()).is_some() {
             return Err(CodegenError::FailClosed(format!(
@@ -22463,6 +22488,53 @@ fn collect_helper_crash_cleanup_descriptors(
             descriptor,
             disposition: HelperCrashCleanupDisposition::CrashOnlyLoan,
         });
+    }
+
+    // A Move into ReturnSlot suppresses the source local's ordinary exit drop,
+    // but that success-path transfer happens after every earlier call. Keep a
+    // crash-only descriptor for returned bytes so a representation-loan call
+    // can hand cleanup authority to its callee and reacquire it on success.
+    // The Move hook deactivates this owner before copying the return value, and
+    // the return sweep only retires its stale token, leaving ReturnSlot as the
+    // sole normal-path owner.
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            let Instr::Move {
+                dest: Place::ReturnSlot,
+                src: place @ Place::Local(local),
+            } = instr
+            else {
+                continue;
+            };
+            let Some(ty) = func.locals.get(*local as usize) else {
+                return Err(CodegenError::FailClosed(format!(
+                    "return transfer source {place:?} is outside `{}`'s local table",
+                    func.name
+                )));
+            };
+            if !matches!(ty, ResolvedTy::Bytes)
+                || !representation_loan_arguments.contains(place)
+                || by_place.contains_key(place)
+            {
+                continue;
+            }
+            if !supported_producers.contains(place) {
+                return Err(CodegenError::FailClosed(format!(
+                    "returned bytes crash cleanup for {place:?} has no lifecycle hook"
+                )));
+            }
+            let descriptor = hew_mir::lower::crash_only_cleanup_drop(
+                *place,
+                ty,
+                hew_mir::ParamCrashCleanupKind::Bytes,
+            )
+            .map_err(CodegenError::FailClosed)?;
+            by_place.insert(*place, descriptors.len());
+            descriptors.push(HelperCrashCleanupDescriptor {
+                descriptor,
+                disposition: HelperCrashCleanupDisposition::ReturnTransfer,
+            });
+        }
     }
 
     // Re-mark reassigned-`while let` scrutinee snapshots as retire-only on the
@@ -23619,7 +23691,8 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
         // ritual used by ordinary elaborated cleanup. Trapping here turned a
         // recoverable live owner into a post-success SIGTRAP.
         //
-        // A `CrashOnlyLoan` (caller-owned representation loan) and a
+        // A `CrashOnlyLoan` (caller-owned representation loan), a
+        // `ReturnTransfer` (value already moved to the caller), and a
         // `BackEdgeSnapshot` (reassigned-`while let` scrutinee alias of a
         // still-live loop variable) are NOT frame-owned here: on a normal return
         // their value is owned elsewhere (the caller / the loop variable's own
@@ -34319,6 +34392,7 @@ fn lower_function<'ctx>(
             enum_layouts,
             fn_symbols,
             &back_edge_blocks,
+            representation_loan_params_by_function,
         )?,
         if has_suspend {
             CrashCleanupStorage::DirectFrame

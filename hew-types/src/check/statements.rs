@@ -166,6 +166,22 @@ impl Checker {
         }
     }
 
+    /// Whether an arithmetic-shaped assignment value reads the binding being
+    /// replaced. Such an update must preserve the binding's independently
+    /// inferred storage width rather than adopting one operand's width as if
+    /// the assignment were a fresh direct write.
+    fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
+        match expr {
+            Expr::Identifier(name) => name == binding,
+            Expr::Binary { left, right, .. } => {
+                Self::numeric_update_reads_binding(&left.0, binding)
+                    || Self::numeric_update_reads_binding(&right.0, binding)
+            }
+            Expr::Unary { operand, .. } => Self::numeric_update_reads_binding(&operand.0, binding),
+            _ => false,
+        }
+    }
+
     /// Whether an assignment target crosses a compiler-proven caller-visible
     /// shared-handle boundary before reaching the storage it writes.
     ///
@@ -1419,11 +1435,11 @@ impl Checker {
                             if self.subst.resolve(&binding_ty).is_numeric_literal()
                                 && !value_resolved.is_numeric_literal()
                                 && value_resolved.is_numeric()
+                                && !Self::numeric_update_reads_binding(&value.0, name)
                             {
-                                let _ = crate::unify::unify(
-                                    &mut self.subst,
-                                    &binding_ty,
+                                let _ = self.try_unify_inference_with_owner_identity(
                                     &value_resolved,
+                                    &binding_ty,
                                 );
                             }
                         }

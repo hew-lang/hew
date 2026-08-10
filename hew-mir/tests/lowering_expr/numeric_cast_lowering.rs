@@ -172,6 +172,53 @@ fn normalizes_checker_admitted_mixed_width_arithmetic_before_checked_mir() {
 }
 
 #[test]
+fn direct_assignment_adopts_literal_bindings_concrete_width() {
+    let p = pipeline(
+        r"
+        fn narrow() -> i32 { 7 }
+
+        fn main() -> i32 {
+            var best = 0;
+            best = narrow();
+            best
+        }
+        ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let call_dest = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            hew_mir::Terminator::Call {
+                callee,
+                dest: Some(dest),
+                ..
+            } if callee == "narrow" => Some(*dest),
+            _ => None,
+        })
+        .expect("narrow call lowered");
+    assert_eq!(local_ty(main, call_dest), &ResolvedTy::I32);
+    assert!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::Move { dest, src }
+                    if *src == call_dest
+                        && local_ty(main, *dest) == &ResolvedTy::I32
+            )),
+        "the direct assignment must keep its i32 source and destination aligned: {main:#?}"
+    );
+}
+
+#[test]
 fn normalizes_checker_admitted_default_literal_binding_before_int_cmp() {
     let p = pipeline(
         r"

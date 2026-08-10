@@ -606,6 +606,7 @@ def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
     assert "make test-hew-ratchet" in result.stdout, (
         f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
     )
+    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
     )
@@ -654,6 +655,8 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     assert "make test-hew-ratchet" in result.stdout, (
         f"Expected 'make test-hew-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
+    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
+    assert "make test-o2-differential  (budget: 2700s)" in result.stdout, result.stdout
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )

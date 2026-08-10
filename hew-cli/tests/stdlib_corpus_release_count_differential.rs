@@ -100,27 +100,32 @@ const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &[];
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     // The benchmark loops moved to `serve_forever`; these `main` functions now
-    // own only listener construction and its typed failure branch.
+    // own only listener construction, the handoff edge, and the typed failure
+    // branch. The listener close remains on cancel-before-handoff.
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        8,
-        "refreshed from 9 to 8: main hands the listener `Server` to `serve_forever` (moved in at the call), so the declared-release resource-close of that `Server` on the call's cancel/handoff continuation is now excluded once the payload is handed off — a close-after-handoff of a `Server` main no longer owns is removed, not a leak (verified against origin/release/v0.6.0-rc1: the sole dropped plan entry is `drop Server kind=resource user_close(Server::close)` on the `serve_forever` cancel edge, where the Server was already moved into serve_forever). The remaining 8 stand below the pre-refactor baseline of 10 because the request loop and its owned path temporaries moved into serve_forever",
+        5,
+        "the current main has exactly five releases: the Server close on serve_forever's cancel-before-handoff edge, plus reason/detail on both the normal and cancel exits from the listen-error print (1 + 2 + 2). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 10 describes an obsolete main topology",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        12,
-        "refreshed from 13 to 12: same handed-off resource-close exclusion as http_server.hew::main — the `Server` moved into `serve_forever` no longer takes a spurious `Server::close` on the call's cancel/handoff continuation (verified base-vs-tip: the single removed plan entry is that resource close). Still below the pre-refactor baseline of 14 because the request loop and its owned path temporaries moved into serve_forever",
+        9,
+        "the current main has exactly nine releases: addr on return, panic, serve_forever cancel, and listen-error-print cancel; the Server close on serve_forever's cancel-before-handoff edge; and reason/detail on both exits from the error print (4 + 1 + 4). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 14 describes an obsolete main topology",
     ),
-    // Same handed-off-resource exclusion at the non-benchmark server examples:
-    // main hands its listener `Server` to `serve_forever`, so the declared-release
-    // `Server::close` that base planned on the handoff/cancel continuation is now
-    // correctly dropped (base-vs-tip diff: the sole removed plan entry is
-    // `drop Server kind=resource user_close(Server::close)`). One release each,
-    // not a leak — main no longer owns the Server after the move.
-    ("examples/http_server.hew", "main", 24, "the listener Server is moved into serve_forever; its declared-release close is no longer planned on main's handoff/cancel continuation (25 -> 24, the one removed plan entry is Server::close, verified against origin/release/v0.6.0-rc1)"),
-    ("examples/static_server.hew", "main", 24, "same handed-off Server::close exclusion as examples/http_server.hew::main (25 -> 24, verified base-vs-tip: the single removed plan entry is the Server resource close)"),
+    // The non-benchmark examples share the same current 21-entry topology.
+    // The Server close remains on cancel-before-handoff; the remaining entries
+    // cover the three persistent strings and the two error strings on every
+    // live exit where each value is still owned.
+    ("examples/http_server.hew", "main", 21, "the current main has exactly 21 releases: port/root on both os.args cancel edges (4); port/root/addr on return, panic, serve_forever cancel, and listen-error-print cancel (12); the Server close on serve_forever's cancel-before-handoff edge (1); and reason/detail on both exits from the error print (4). This complete live-owner topology, not a removed Server close, accounts for the shortfall from the obsolete 25-entry baseline"),
+    ("examples/static_server.hew", "main", 21, "the current main has the same exact 21-entry topology as examples/http_server.hew::main: four os.args-edge string releases, twelve port/root/addr releases across four live exits, one Server close on cancel-before-handoff, and four reason/detail releases. The 25-entry baseline predates this consolidated serve_forever control flow"),
+    (
+        "examples/http_json_demo.hew",
+        "main",
+        14,
+        "main explicitly consumes the three owned JSON Value handles with Value::free, so their implicit resource plans are retracted; the 14 remaining entries are exactly the Option<string> shell and url string paired on seven return, panic, and cancel exits (7 * 2). The former 19-entry count included five plans that no longer belong to live implicit owners",
+    ),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
     // action itself, outside the cow-heap drop count measured here.

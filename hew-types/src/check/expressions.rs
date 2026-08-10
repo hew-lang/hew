@@ -789,8 +789,10 @@ impl Checker {
         right_ty: &Ty,
     ) {
         if integer_type_info(common_ty, self.pointer_width()).is_some() {
-            self.expect_type(common_ty, left_ty, &left.1);
-            self.expect_type(common_ty, right_ty, &right.1);
+            // Concrete, compatible widths deliberately keep their operand
+            // types: HIR carries the common result type and MIR inserts the
+            // required NumericCast before checked arithmetic. Only literal or
+            // inference-variable operands need contextual unification here.
             self.record_concrete_integer_operand(common_ty, left, left_ty);
             self.record_concrete_integer_operand(common_ty, right, right_ty);
         }

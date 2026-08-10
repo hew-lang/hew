@@ -83,8 +83,9 @@ fn local_ty_carries_drop_obligation(
 /// function-scoped, so every OTHER owned field of the record — still solely
 /// owned by the record slot — leaked (#2212: one 64 B `tag` buffer per
 /// frame at slope 1). This pass emits one `Instr::FieldDropInPlace` per
-/// non-escaped owned sibling right after the escape instruction, where the
-/// value flow proves that point is past the record's last use.
+/// non-escaped owned sibling right after the escape instruction, or at the
+/// front of a consuming call's unique continuation, where the value flow
+/// proves that point is past the record's last use.
 ///
 /// Runs post-seal, after `apply_nested_fresh_string_temp_drops` and before
 /// `check_function` / drop elaboration, so the dataflow observes each
@@ -93,17 +94,19 @@ fn local_ty_carries_drop_obligation(
 /// ## Fail-closed admission (ALL conditions required; any miss keeps
 /// today's whole-record leak — never a double-free)
 ///
-/// 1. The root is an `owned_locals` owned-aggregate-record candidate whose
-///    whole-value alias set is the root alone (no `let b2 = b` copies —
-///    copies byte-share field pointers and can diverge; the discharge frees
-///    through the root slot only).
-/// 2. Exactly ONE escape event exists across the root's binders, it is an
-///    instruction (a terminator escape has no post-escape insertion point),
-///    and the escaping binder's provenance is `Unique { root, field }` —
-///    the value flow proves both the root and WHICH field escaped. The
-///    escaped field is never discharged: for a moved-out binder the escapee
-///    owns it; for a retained `string` clone the original keeps its
-///    pre-existing leak.
+/// 1. The root is an `owned_locals` record with at least one projected owned
+///    field and its whole-value alias set is the root alone (no `let b2 = b`
+///    copies — copies byte-share field pointers and can diverge; the
+///    discharge frees through the root slot only). The record need not admit
+///    a whole-value `RecordInPlace` drop: mixed resource/COW records are the
+///    field-granular case this pass must cover.
+/// 2. Exactly ONE escape event exists across the root's binders. It is either
+///    an instruction or a consuming call terminator whose continuation has
+///    exactly that call as its predecessor, and the escaping binder's
+///    provenance is `Unique { root, field }` — the value flow proves both the
+///    root and WHICH field escaped. The escaped field is never discharged:
+///    for a moved-out binder the escapee owns it; for a retained `string`
+///    clone the original keeps its pre-existing leak.
 /// 3. No binder of the root is the base local of another `owned_locals`
 ///    binding and none is the place of an inline `Drop` — an extracted
 ///    field with its own release path (`let g = b.gen`) is a second owner
@@ -163,11 +166,13 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
-    // Candidate roots: base locals of owned-aggregate-record bindings — the
-    // same candidate set the composite-drop prover derives from.
+    // Candidate roots: base locals of record bindings with projected owned
+    // fields. This intentionally includes mixed resource/COW records which
+    // cannot admit a whole-record RecordInPlace drop but whose individually
+    // admissible siblings can still be discharged safely.
     let mut root_record_ty: HashMap<u32, ResolvedTy> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
-        if !is_owned_record(ty) {
+        if !is_owned_record(ty) && owned_field_list(ty).is_empty() {
             continue;
         }
         let Some(place) = binding_locals.get(binding) else {
@@ -213,6 +218,8 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
             )
         })
     };
+    let retained_string_field_aliases =
+        uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
     let field_binders = collect_record_field_binders(blocks, &alias_of, &local_is_heap_owning);
     let provenance = attribute_field_binder_provenance(blocks, &alias_of, &field_binders);
     let binder_root = |binder: u32| -> Option<u32> {
@@ -277,7 +284,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                     match provenance.get(&$binder) {
                         Some(FieldBinderProvenance::Unique { root, field }) => {
                             if let Some(scan) = scans.get_mut(root) {
-                                scan.escapes.push((bid, $pos, *field));
+                                scan.escapes.push((bid, Some($pos), *field));
                             }
                         }
                         Some(FieldBinderProvenance::RootOnly { root }) => poison!(*root),
@@ -393,45 +400,63 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         if let Some(&root) = alias_of.get(&l) {
                             poison!(root);
                         } else if field_binders.contains(&l) {
-                            // An inline release of a binder (an extracted
-                            // field with its own drop, or a spliced
-                            // read-temp release): a second release path this
-                            // pass must not reason past.
-                            match binder_root(l) {
-                                Some(r) => poison!(r),
-                                None => poison_all = true,
+                            if retained_string_field_aliases.contains(&l) {
+                                // String field loads own a retained read-copy.
+                                // Its balancing drop does not discharge the
+                                // record's original field.
+                                site!(binder_root(l), Some(idx));
+                            } else {
+                                // An inline release of any other binder is a
+                                // second release path this pass must not race.
+                                match binder_root(l) {
+                                    Some(r) => poison!(r),
+                                    None => poison_all = true,
+                                }
                             }
                         }
                     }
                 }
                 Instr::FieldDropInPlace { base, .. }
-                | Instr::RecordFieldDrop { record: base, .. }
-                | Instr::RecordFieldStore { record: base, .. } => {
-                    // Field-granular writes/releases against a member carry
-                    // overwrite semantics this pass does not model.
+                | Instr::RecordFieldDrop { record: base, .. } => {
+                    // A separate field release is a second discharge path.
                     if let Some(l) = base_local(*base) {
                         if let Some(&root) = alias_of.get(&l) {
                             poison!(root);
                         }
                     }
-                    if let Instr::RecordFieldStore { src, .. } = instr {
-                        if aggregate_borrowed_ingress_sink_clones_source(
-                            block,
-                            idx,
-                            *src,
-                            Some(aggregate_clone_sites),
-                            local_tys,
-                            record_field_orders,
-                            enum_layouts,
-                        ) {
-                            continue;
-                        }
-                        if let Some(l) = base_local(*src) {
-                            if field_binders.contains(&l) {
-                                // Binder stored into another aggregate's
-                                // field slot — an owning sink.
-                                escape!(l, idx);
+                }
+                Instr::RecordFieldStore { record, src, .. } => {
+                    if let Some(member) = base_local(*record) {
+                        if let Some(&root) = alias_of.get(&member) {
+                            if member == root {
+                                // Overwrite lowering has already discharged
+                                // the old field value. The authoritative root
+                                // still owns the replacement, so this is a
+                                // modeled use rather than an escape.
+                                site!(Some(root), Some(idx));
+                            } else {
+                                // Updating a byte-copy temporary can diverge
+                                // it from the authoritative root slot.
+                                poison!(root);
                             }
+                        }
+                    }
+                    if aggregate_borrowed_ingress_sink_clones_source(
+                        block,
+                        idx,
+                        *src,
+                        Some(aggregate_clone_sites),
+                        local_tys,
+                        record_field_orders,
+                        enum_layouts,
+                    ) {
+                        continue;
+                    }
+                    if let Some(l) = base_local(*src) {
+                        if field_binders.contains(&l) {
+                            // Binder stored into another aggregate's field
+                            // slot — an owning sink.
+                            escape!(l, idx);
                         }
                     }
                 }
@@ -510,9 +535,23 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                         None => global_sites.push((bid, None)),
                     }
+                } else if matches!(block.terminator, Terminator::Call { .. }) {
+                    match provenance.get(&l) {
+                        Some(FieldBinderProvenance::Unique { root, field }) => {
+                            if let Some(scan) = scans.get_mut(root) {
+                                scan.escapes.push((bid, None, *field));
+                            }
+                        }
+                        Some(FieldBinderProvenance::RootOnly { root }) => {
+                            if let Some(scan) = scans.get_mut(root) {
+                                scan.poisoned = true;
+                            }
+                        }
+                        _ => poison_all = true,
+                    }
                 } else {
-                    // A terminator escape has no post-escape insertion
-                    // point; refuse the discharge (leak-as-before).
+                    // A non-call terminator escape has no normal continuation
+                    // where sibling cleanup can run.
                     match binder_root(l) {
                         Some(r) => {
                             if let Some(scan) = scans.get_mut(&r) {
@@ -550,11 +589,32 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         if reach.contains(&esc_block) {
             continue;
         }
+        let insertion = if let Some(esc_idx) = esc_idx {
+            (esc_block, esc_idx + 1)
+        } else {
+            let Some(escape_block) = blocks.iter().find(|block| block.id == esc_block) else {
+                continue;
+            };
+            let Terminator::Call { next, .. } = &escape_block.terminator else {
+                continue;
+            };
+            let predecessors: HashSet<u32> = blocks
+                .iter()
+                .filter(|block| block.successors().contains(next))
+                .map(|block| block.id)
+                .collect();
+            if predecessors != HashSet::from([esc_block])
+                || !blocks.iter().any(|block| block.id == *next)
+            {
+                continue;
+            }
+            (*next, 0)
+        };
         let in_region = |&(sb, si): &(u32, Option<usize>)| -> bool {
-            if sb == esc_block {
-                si.is_none_or(|i| i > esc_idx)
-            } else {
-                reach.contains(&sb)
+            match esc_idx {
+                Some(esc_idx) if sb == esc_block => si.is_none_or(|i| i > esc_idx),
+                None if sb == esc_block => false,
+                _ => reach.contains(&sb),
             }
         };
         if scan.sites.iter().any(in_region) || global_sites.iter().any(in_region) {
@@ -574,7 +634,8 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         if siblings.is_empty() {
             continue;
         }
-        insertions.push((esc_block, esc_idx + 1, siblings));
+        let (insert_block, insert_idx) = insertion;
+        insertions.push((insert_block, insert_idx, siblings));
     }
     // The one-hop scan above sees only a binder loaded DIRECTLY off a whole-value
     // alias member, so a ≥2-hop escape (`let mid = o.mid; let leaf = mid.leaf;
@@ -1850,9 +1911,12 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         note_alias_escape(l, &mut excluded_roots);
                     }
                 }
-                // `binder_read_is_borrow_safe_terminator` subsumes the string
-                // borrow/print exemption and extends it to the collection- and
-                // bytes-receiver-borrow contracts, so a `Result<bytes, _>`
+                // The module parameter summary proves exact borrowed argument
+                // positions for Hew-bodied calls, including read-only methods
+                // on resource payloads. `binder_read_is_borrow_safe_terminator`
+                // subsumes the string borrow/print exemption and extends it to
+                // the collection- and bytes-receiver-borrow contracts, so a
+                // `Result<bytes, _>`
                 // payload binder read by `hew_bytes_to_string(b)` (a
                 // `Terminator::Call` receiver borrow) no longer excludes its
                 // composite (#2429). `string_binder_read_is_user_fn_borrow`
@@ -1895,19 +1959,21 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         payload_binder_candidate_root.get(&l),
                         Some(PayloadBinderRoot::Root(root))
                             if shell_drop_safe_candidate_locals.contains(root)
-                    ) && (binder_read_is_borrow_safe_terminator(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        l,
-                    ) || string_binder_read_is_user_fn_borrow(
-                        &block.terminator,
-                        suspend_kinds.get(&block.id),
-                        l,
-                        local_tys.get(l as usize),
-                        module_fn_names,
-                        module_generic_fn_names,
-                        extern_contracts,
-                    ));
+                    ) && (proven_borrow_arg_locals.contains(&l)
+                        || binder_read_is_borrow_safe_terminator(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                        )
+                        || string_binder_read_is_user_fn_borrow(
+                            &block.terminator,
+                            suspend_kinds.get(&block.id),
+                            l,
+                            local_tys.get(l as usize),
+                            module_fn_names,
+                            module_generic_fn_names,
+                            extern_contracts,
+                        ));
                     if !read_is_borrow {
                         note_payload_escape(
                             &payload_binder_candidate_root,
@@ -5075,7 +5141,7 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
     }
 }
 mod returned_member_flow;
-use returned_member_flow::retained_owner_values_before;
+use returned_member_flow::{compute_returned_flow_locals, retained_owner_values_before};
 
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
@@ -5166,127 +5232,6 @@ pub(super) fn derive_returned_aggregate_member_bindings(
         }
     }
     returned_members
-}
-
-/// The set of backing locals that whole-value flow into this function's
-/// `ReturnSlot` — either directly or as a member of an aggregate that does.
-/// Shared by [`derive_returned_aggregate_member_bindings`] (which maps the set
-/// back to owned bindings) and [`derive_returned_member_transfer_blocks`]
-/// (which locates the block where each member enters the flow).
-fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
-    // Seed: every owned hand-off slot (Local or handle place) whole-value
-    // moved into the ReturnSlot.
-    let mut flows_to_return: HashSet<u32> = HashSet::new();
-    for block in blocks {
-        for instr in &block.instructions {
-            if let Instr::Move { dest, src } = instr {
-                if matches!(dest, Place::ReturnSlot) {
-                    if let Some(sl) = base_local(*src) {
-                        if place_is_owned_handoff_member(*src) {
-                            flows_to_return.insert(sl);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if flows_to_return.is_empty() {
-        return HashSet::new();
-    }
-
-    // Fixpoint: grow the set backward along whole-value Moves and downward
-    // through aggregate constructors whose dest already flows to the return.
-    // Add an owned hand-off source (Local or handle place) to the set,
-    // reporting whether it grew. Interior-projection places are rejected.
-    let add_member = |place: &Place, set: &mut HashSet<u32>| -> bool {
-        match base_local(*place) {
-            Some(local) if place_is_owned_handoff_member(*place) => set.insert(local),
-            _ => false,
-        }
-    };
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (instr_index, instr) in block.instructions.iter().enumerate() {
-                match instr {
-                    // Whole-value rebind/temp: `Move { dest: in-set, src }`
-                    // means `src` flowed onward into a local that reaches the
-                    // ReturnSlot, so `src` reaches it too.
-                    Instr::Move { dest, src }
-                        if matches!(dest, Place::Local(_))
-                            && base_local(*dest)
-                                .is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        changed |= add_member(src, &mut flows_to_return);
-                    }
-                    // Aggregate construction whose dest reaches the return: each
-                    // element source is a member handed to the caller.
-                    Instr::TupleConstruct { elements, dest }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        let retained = retained_owner_values_before(block, instr_index);
-                        for elem in elements {
-                            if !retained.contains(elem) {
-                                changed |= add_member(elem, &mut flows_to_return);
-                            }
-                        }
-                    }
-                    // Record construction whose dest reaches the return: each
-                    // field source is a member handed to the caller.
-                    Instr::RecordInit { fields, dest, .. }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        let retained = retained_owner_values_before(block, instr_index);
-                        for (_offset, field) in fields {
-                            if !retained.contains(field) {
-                                changed |= add_member(field, &mut flows_to_return);
-                            }
-                        }
-                    }
-                    Instr::ClosureEnvInit { fields, dest, .. }
-                        if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        for field in fields
-                            .iter()
-                            .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
-                        {
-                            changed |= add_member(&field.src, &mut flows_to_return);
-                        }
-                    }
-                    // Enum / machine variant payload store whose carrier
-                    // aggregate reaches the return: the stored source is an
-                    // owned member handed to the caller through that variant.
-                    //
-                    // A variant constructor (`Ok(s)`, a user enum variant with
-                    // an owned payload) does NOT lower to `TupleConstruct` /
-                    // `RecordInit`; it lowers to a tag store plus a
-                    // `Move { dest: Place::{Machine,Enum}Variant { local, .. },
-                    // src }` payload store into the aggregate's backing local.
-                    // That dest is an interior projection (not `Place::Local`),
-                    // so the whole-value back-prop arm above never sees it —
-                    // without this arm the returned variant's payload (the
-                    // `stream$try_to_file` Sink moved into `Result::Ok`) stays
-                    // drop-eligible and is freed by the callee before the caller
-                    // receives it (the Bug-B double-free).
-                    Instr::Move { dest, src }
-                        if matches!(
-                            dest,
-                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
-                        ) && base_local(*dest)
-                            .is_some_and(|dl| flows_to_return.contains(&dl)) =>
-                    {
-                        changed |= add_member(src, &mut flows_to_return);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    flows_to_return
 }
 
 #[cfg(test)]
@@ -7584,6 +7529,10 @@ mod escaped_sibling_field_discharge {
         matches!(ty, ResolvedTy::Named { name, .. } if name == "Rec")
     }
 
+    fn never_owned_record(_: &ResolvedTy) -> bool {
+        false
+    }
+
     fn is_chain_rec(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::Named { name, .. } if matches!(name.as_str(), "Outer" | "Mid" | "Leaf"))
     }
@@ -7800,6 +7749,108 @@ mod escaped_sibling_field_discharge {
             },
             "the discharge must address the NON-escaped sibling (field 1) on \
              the root local, typed at the field"
+        );
+    }
+
+    #[test]
+    fn consuming_call_discharges_mixed_record_sibling_in_unique_continuation() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let vec_string =
+            ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]);
+        let local_tys = vec![rec_ty(), vec_string, ResolvedTy::String, ResolvedTy::String];
+        let mut blocks = vec![
+            block(
+                0,
+                vec![
+                    Instr::RecordFieldStore {
+                        record: Place::Local(0),
+                        field_offset: FieldOffset(1),
+                        src: Place::Local(2),
+                    },
+                    Instr::RecordFieldLoad {
+                        record: Place::Local(0),
+                        field_offset: FieldOffset(1),
+                        dest: Place::Local(3),
+                    },
+                    Instr::Drop {
+                        place: Place::Local(3),
+                        ty: ResolvedTy::String,
+                        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
+                    },
+                    Instr::RecordFieldLoad {
+                        record: Place::Local(0),
+                        field_offset: FieldOffset(0),
+                        dest: Place::Local(1),
+                    },
+                ],
+                Terminator::Call {
+                    callee: "consume".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![Place::Local(1)],
+                    dest: None,
+                    next: 1,
+                },
+            ),
+            block(1, vec![], Terminator::Return),
+        ];
+
+        apply_with(
+            &mut blocks,
+            &owned,
+            &binding_locals,
+            &local_tys,
+            &[],
+            &never_owned_record,
+            &owned_fields,
+        );
+        assert_eq!(
+            blocks[1].instructions,
+            vec![Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            }],
+            "the surviving sibling must drop only after the consuming call returns"
+        );
+    }
+
+    #[test]
+    fn consuming_call_with_a_shared_continuation_refuses_discharge() {
+        let b = BindingId(1);
+        let owned = vec![(b, "r".to_string(), rec_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(b, Place::Local(0))].into_iter().collect();
+        let local_tys = vec![rec_ty(), ResolvedTy::String];
+        let mut blocks = vec![
+            block(
+                0,
+                vec![Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(1),
+                }],
+                Terminator::Call {
+                    callee: "consume".to_string(),
+                    authority: crate::model::CallAuthority::default(),
+                    args: vec![Place::Local(1)],
+                    dest: None,
+                    next: 2,
+                },
+            ),
+            block(1, vec![], Terminator::Goto { target: 2 }),
+            block(2, vec![], Terminator::Return),
+        ];
+
+        apply(&mut blocks, &owned, &binding_locals, &local_tys);
+        assert!(
+            blocks.iter().all(|block| block
+                .instructions
+                .iter()
+                .all(|instr| !matches!(instr, Instr::FieldDropInPlace { .. }))),
+            "a shared continuation cannot prove that the consuming call ran"
         );
     }
 

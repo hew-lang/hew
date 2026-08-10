@@ -2666,7 +2666,12 @@ fn collect_borrow_arg_sites_in_expr(
                             out.insert(arg.site);
                         }
                     }
-                } else if pc.receiver_methods.contains(&id) {
+                } else if pc.receiver_methods.contains(&id)
+                    || (pc.true_receiver_methods.contains(&id)
+                        && args
+                            .first()
+                            .is_some_and(|receiver| receiver.intent == IntentKind::Read))
+                {
                     // Shape A of #2753: a value-receiver non-consuming method
                     // (`p.touch()`) lowers to `Call { callee: Item(m), args:
                     // [recv, ..] }`. The receiver (arg 0) is a BORROW — the
@@ -2681,16 +2686,21 @@ fn collect_borrow_arg_sites_in_expr(
                     // stores/sends/captures/forwards it — is flipped to CONSUME
                     // by the `compute_call_param_consumption` fixpoint, so its
                     // receiver is absent here → not recorded → the callee owns
-                    // and drops it (mutually exclusive). Because a non-resource
-                    // composite receiver is absent from the resource-only
-                    // `param_consume` map, this fires ONLY in the
-                    // `proven_borrow_arg_sites` walk (which passes
-                    // `call_param_consume`), never in the intent-downgrade
-                    // `borrow_arg_sites` walk. Only a whole owned local / fresh
-                    // producer receiver is admitted (a projection/alias fails
-                    // closed to leak-not-double-free). The method's non-receiver
-                    // args stay unrecorded — the borrow-default surface is the
-                    // receiver only.
+                    // and drops it (mutually exclusive). A resource receiver
+                    // additionally requires the checker's accurate `Read`
+                    // intent; this admits read-only methods while a `close()`
+                    // receiver remains `Consume` even when its body scan is
+                    // otherwise borrow-shaped. A non-resource composite fires
+                    // only in the `proven_borrow_arg_sites` walk because it is
+                    // absent from the resource-only `param_consume` map. A
+                    // resource receiver can appear in both walks; its already-
+                    // accurate `Read` intent makes the downgrade entry a no-op,
+                    // while the proven entry supplies composite drop analysis.
+                    // Only a whole owned local / fresh producer receiver is
+                    // admitted (a projection/alias fails closed to leak-not-
+                    // double-free). The method's non-receiver args stay
+                    // unrecorded — the borrow-default surface is the receiver
+                    // only.
                     if let Some(receiver) = args.first() {
                         if pc.consume.get(&(id, 0)).copied() == Some(false)
                             && receiver_is_whole_owned_operand(receiver)

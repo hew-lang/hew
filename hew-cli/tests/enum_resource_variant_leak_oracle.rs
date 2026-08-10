@@ -21,6 +21,7 @@ type Dq {{}}\n\
 type Handle {{ raw: Dq; }}\n\
 impl Handle {{\n\
     fn value(self) -> i64 {{ 7 }}\n\
+    fn sink(self) {{ self.close(); }}\n\
     fn close(self) {{ unsafe {{ hew_deque_free(self.raw) }}; print(\"C\"); }}\n\
 }}\n\
 extern \"C\" {{\n\
@@ -40,6 +41,10 @@ fn main() {{\n\
         }}\n\
         match make(false) {{\n\
             Outcome::Loaded(handle) => print(handle.value()),\n\
+            Outcome::Failed(message) => print(message + \"!\"),\n\
+        }}\n\
+        match make(true) {{\n\
+            Outcome::Loaded(handle) => handle.sink(),\n\
             Outcome::Failed(message) => print(message + \"!\"),\n\
         }}\n\
     }}\n\
@@ -157,6 +162,54 @@ fn main() {
 }
 "#;
 
+const RETURNED_BYTES_LOAN_CRASH_SOURCE: &str = r#"
+fn push_then_maybe_crash(value: bytes, trigger: i64) {
+    value.push(0x40 as u8);
+    if trigger != 0 {
+        panic("crash during returned bytes loan");
+    }
+}
+
+fn build_packet(trigger: i64) -> bytes {
+    let value = bytes::new();
+    push_then_maybe_crash(value, trigger);
+    value
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        7
+    }
+}
+
+actor Runner {
+    let gate: LocalPid<Gate>;
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        let packet = build_packet(trigger);
+        packet.len() + seed
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    match await runner.run(0) {
+        Ok(value) => println(f"ok={value}"),
+        Err(_) => println("bad"),
+    }
+    match await runner.run(1) {
+        Ok(value) => println(f"unexpected={value}"),
+        Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}
+"#;
+
 fn assert_exact_zero_leaks(bin: &Path, shape: &str) {
     require_leaks_tool();
     let (count, bytes) = measure_leaks_exact(bin);
@@ -189,7 +242,7 @@ fn resource_record_enum_payload_closes_exactly_once() {
 
     let mut expected = String::new();
     for _ in 0..RESOURCE_FRAMES {
-        let _ = write!(expected, "7BAD!C");
+        let _ = write!(expected, "7BAD!CC");
     }
 
     let output = run_under_malloc_scribble(&bin);
@@ -202,7 +255,7 @@ fn resource_record_enum_payload_closes_exactly_once() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         expected,
-        "each resource payload must be read, then closed exactly once"
+        "borrowed and consuming resource payload methods must each close exactly once"
     );
     assert_exact_zero_leaks(&bin, "resource_record_enum_payload");
 
@@ -321,6 +374,39 @@ fn bytes_runtime_mutation_then_crash_releases_refreshed_snapshot_once() {
     );
     #[cfg(target_os = "macos")]
     assert_exact_zero_leaks(&bin, "bytes_mutating_helper_crash");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn returned_bytes_loan_releases_once_on_success_and_crash() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("returned-bytes-loan-crash-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        RETURNED_BYTES_LOAN_CRASH_SOURCE,
+        dir.path(),
+        "returned_bytes_loan_crash",
+    );
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "returned bytes must survive its successful ReturnSlot handoff and the \
+         crashing loan must release its buffer exactly once:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ok=8\nhandled-crash\nsurvived\n",
+        "the normal return and recovered crash must both complete"
+    );
+    #[cfg(target_os = "macos")]
+    assert_exact_zero_leaks(&bin, "returned_bytes_loan_crash");
 }
 
 fn function_body(ll: &str, needle: &str) -> Option<String> {

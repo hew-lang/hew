@@ -5300,12 +5300,8 @@ impl Builder {
                 // caller keeps its own independent drop.
                 let callee = if callee == "hew_vec_push_owned"
                     && args.len() == 1
-                    && Self::expr_is_materialized_owner(
-                        &args[0],
-                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
-                        &self.funcupdate_param_ids,
-                        &self.proven_foreign_bindings,
-                    ) {
+                    && self.expr_is_owned_vec_move_ingress_owner(&args[0])
+                {
                     "hew_vec_push_owned_move".to_string()
                 } else {
                     callee

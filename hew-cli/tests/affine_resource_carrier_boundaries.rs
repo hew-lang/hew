@@ -338,7 +338,11 @@ fn generic_identity_transfers_direct_and_nested_resource_authority_once() {
 
 #[test]
 fn arena_insert_does_not_close_the_inserted_resource_carrier() {
-    assert_exact_runtime("arena_insert", ARENA_BODY, "before insert\nafter insert\n");
+    assert_exact_runtime(
+        "arena_insert",
+        ARENA_BODY,
+        "before insert\nafter insert\nclosing token id=41\n",
+    );
 }
 
 #[test]
@@ -348,7 +352,11 @@ fn actor_message_send_transfers_named_resource_authority_once() {
 
 #[test]
 fn carrier_helper_locals_do_not_displace_trailing_abi_parameters() {
-    assert_exact_runtime("parameter_order", PARAMETER_ORDER_BODY, "1\n");
+    assert_exact_runtime(
+        "parameter_order",
+        PARAMETER_ORDER_BODY,
+        "1\nclosing token id=13\n",
+    );
 }
 
 #[test]
@@ -385,6 +393,10 @@ fn raw_mir_carries_guards_and_preserves_the_parameter_prefix() {
             "snapshot_drop _1 ty=Token plan=UserRecord { name: \"Token\" } boundary=LocalCall guard=_2"
         ),
         "Arena::insert's generic Token carrier must have a guarded terminal drop:\n{insert_fn}"
+    );
+    assert!(
+        insert_fn.contains("call hew_vec_push_owned_move("),
+        "Arena::insert's fresh Slot carrier must move into Vec storage:\n{insert_fn}"
     );
     assert_ordered(
         insert_fn,

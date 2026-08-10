@@ -533,9 +533,10 @@ jobs:
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
-    # release builds and workspace tests. Its 120-minute budget preserves room
-    # for the slower guest while keeping the release gate's ceiling finite.
-    timeout-minutes: 120
+    # release builds and workspace tests. A 109-minute run passed, while a
+    # 120.8-minute run was cancelled at the old ceiling; 180 minutes adds
+    # finite variance headroom without making the release gate unbounded.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

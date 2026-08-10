@@ -1202,7 +1202,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every

@@ -912,9 +912,17 @@ test-runtime-unit:
 # the identical O0 pass a second time (CI sets this across both targets in the
 # same job; plain `make test-hew-ratchet` / `make test-o2-differential` with no
 # env var keep their original standalone behaviour).
+ifneq ($(strip $(HEW_SHARD_REPORT_DIR)),)
+test-hew-ratchet:
+	python3 scripts/compiled-hew-shards.py aggregate --mode ratchet \
+		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
+		--full-inventory "$(HEW_FULL_INVENTORY)" \
+		--shard-count "$(HEW_SHARD_COUNT)"
+else
 test-hew-ratchet: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running Hew test suite (ratcheted)"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+endif
 
 # The core matrix: every core primitive crossed with every common operation,
 # one runnable program per cell, each asserting the exact value and -- where
@@ -943,9 +951,17 @@ test-core-matrix-generator:
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM
 # middle-end pipeline (RC9). A divergence is a miscompile and a full stop.
+ifneq ($(strip $(HEW_SHARD_REPORT_DIR)),)
+test-o2-differential:
+	python3 scripts/compiled-hew-shards.py aggregate --mode differential \
+		--reports-dir "$(HEW_SHARD_REPORT_DIR)" \
+		--full-inventory "$(HEW_FULL_INVENTORY)" \
+		--shard-count "$(HEW_SHARD_COUNT)"
+else
 test-o2-differential: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
 	HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+endif
 
 o2-differential-selftest:
 	bash scripts/o2-differential-selftest.sh

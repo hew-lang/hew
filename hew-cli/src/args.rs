@@ -594,12 +594,22 @@ pub enum TestFormat {
 }
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps these independent command-line switches directly"
+)]
 pub struct TestArgs {
     /// Files or directories to test.
     pub paths: Vec<PathBuf>,
+    /// List discovered test identities without compiling or running them.
+    #[arg(long)]
+    pub list: bool,
     /// Run only tests matching pattern.
     #[arg(long)]
     pub filter: Option<String>,
+    /// Run one stable hash partition (`hash:SHARD/TOTAL`, one-based).
+    #[arg(long, value_name = "PARTITION")]
+    pub partition: Option<String>,
     /// Output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: TestFormat,

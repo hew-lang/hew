@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Counterfactual tests for compiled-Hew shard aggregation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+import xml.etree.ElementTree as ET
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "compiled-hew-shards.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+COUNT = 1169
+SHARDS = 4
+
+
+def identity(index: int) -> str:
+    return f"tests/hew/generated_{index // 10}_test.hew::test_{index}"
+
+
+def write_junit(
+    path: Path, identities: list[str], failed: set[str] | None = None
+) -> None:
+    failed = failed or set()
+    root = ET.Element(
+        "testsuites",
+        tests=str(len(identities)),
+        failures=str(len(failed)),
+        skipped="0",
+    )
+    suite = ET.SubElement(
+        root,
+        "testsuite",
+        name="generated",
+        tests=str(len(identities)),
+        failures=str(len(failed)),
+        skipped="0",
+    )
+    for value in identities:
+        classname, name = value.rsplit("::", 1)
+        testcase = ET.SubElement(suite, "testcase", classname=classname, name=name)
+        if value in failed:
+            ET.SubElement(testcase, "failure", message="forced")
+    ET.ElementTree(root).write(path, encoding="unicode", xml_declaration=True)
+
+
+class CompiledHewShardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.reports = self.root / "reports"
+        self.reports.mkdir()
+        self.full = [identity(index) for index in range(COUNT)]
+        self.full_path = self.root / "full.txt"
+        self.full_path.write_text("\n".join(self.full) + "\n", encoding="utf-8")
+        self.expected = self.root / "expected.txt"
+        self.expected.write_text("# no expected failures\n", encoding="utf-8")
+        for shard in range(1, SHARDS + 1):
+            values = self.full[shard - 1 :: SHARDS]
+            (self.reports / f"hew-inventory-shard-{shard}.txt").write_text(
+                "\n".join(values) + "\n", encoding="utf-8"
+            )
+            write_junit(self.reports / f"hew-o0-shard-{shard}.xml", values)
+            write_junit(self.reports / f"hew-o2-shard-{shard}.xml", values)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def aggregate(self, mode: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "aggregate",
+                "--mode",
+                mode,
+                "--reports-dir",
+                str(self.reports),
+                "--full-inventory",
+                str(self.full_path),
+                "--shard-count",
+                str(SHARDS),
+                "--expected-failures",
+                str(self.expected),
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
+        return result
+
+    def test_complete_disjoint_union_passes_both_gates(self) -> None:
+        self.assertIn("ratchet passed", self.aggregate("ratchet").stdout)
+        self.assertIn("differential passed", self.aggregate("differential").stdout)
+
+    def test_missing_identity_fails_union_assertion(self) -> None:
+        path = self.reports / "hew-inventory-shard-1.txt"
+        values = path.read_text(encoding="utf-8").splitlines()[1:]
+        path.write_text("\n".join(values) + "\n", encoding="utf-8")
+        write_junit(self.reports / "hew-o0-shard-1.xml", values)
+        write_junit(self.reports / "hew-o2-shard-1.xml", values)
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("does not equal the full inventory", result.stderr)
+
+    def test_overlap_fails_even_when_the_union_is_complete(self) -> None:
+        path = self.reports / "hew-inventory-shard-2.txt"
+        values = path.read_text(encoding="utf-8").splitlines()
+        values.append(self.full[0])
+        path.write_text("\n".join(values) + "\n", encoding="utf-8")
+        write_junit(self.reports / "hew-o0-shard-2.xml", values)
+        write_junit(self.reports / "hew-o2-shard-2.xml", values)
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("inventories overlap", result.stderr)
+
+    def test_o2_outcome_drift_fails(self) -> None:
+        values = self.full[0::SHARDS]
+        write_junit(self.reports / "hew-o2-shard-1.xml", values, failed={values[0]})
+        result = self.aggregate("differential", expect=1)
+        self.assertIn("O0/O2 shard outcomes differ", result.stderr)
+
+    def test_unexpected_o0_failure_fails_ratchet(self) -> None:
+        values = self.full[0::SHARDS]
+        write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})
+        result = self.aggregate("ratchet", expect=1)
+        self.assertIn("failure set differs", result.stderr)
+
+
+class CompiledHewWorkflowContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_one_certified_build_feeds_all_four_shards(self) -> None:
+        self.assertEqual(self.workflow.count("make hew-native libhew-debug"), 1)
+        self.assertIn("shard: [1, 2, 3, 4]", self.workflow)
+        self.assertIn('--partition "hash:${{ matrix.shard }}/4"', self.workflow)
+        self.assertIn("name: compiled-hew-linux-${{ github.sha }}", self.workflow)
+        self.assertGreaterEqual(
+            self.workflow.count("scripts/compiled-hew-artifact.py unpack"), 2
+        )
+
+    def test_aggregate_uses_an_independent_full_inventory_and_both_gates(self) -> None:
+        self.assertIn(
+            'test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"',
+            self.workflow,
+        )
+        self.assertIn("make test-hew-ratchet", self.workflow)
+        self.assertIn("make test-o2-differential", self.workflow)
+        self.assertEqual(self.workflow.count("HEW_SHARD_COUNT=4"), 2)
+
+    def test_established_required_check_requires_both_parallel_branches(self) -> None:
+        required = self.workflow.split("  linux-required:\n", 1)[1].split(
+            "\n  # Code coverage", 1
+        )[0]
+        self.assertIn("name: Build & test (Linux)", required)
+        self.assertIn(
+            "needs: [changes, build-and-test, compiled-hew-aggregate]", required
+        )
+        self.assertIn('test "$RUST_GATES_RESULT" = success', required)
+        self.assertIn('test "$COMPILED_HEW_RESULT" = success', required)
+
+
+if __name__ == "__main__":
+    unittest.main()

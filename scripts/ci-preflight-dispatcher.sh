@@ -775,7 +775,7 @@ case "$LANE" in
         add_command "make test-release-workflow-contract"
         add_command "make test-stdlib-execution-proofs"
         add_command "cargo fmt --all -- --check"
-        add_command "make freebsd-workflow-contract-check"
+        add_command "cargo xtask gate freebsd-contract"
         add_command "make o2-differential-selftest"
         add_command "make doc-ratchet-selftest"
         ;;
@@ -907,7 +907,7 @@ case "$LANE" in
         # fallback preflight predicts a green merge-queue outcome.
         add_command "cargo fmt --all -- --check"
         add_command "make lint"
-        add_command "make freebsd-workflow-contract-check"
+        add_command "cargo xtask gate freebsd-contract"
         add_command "make playground-check"
         add_command "make test"
         add_command "make test-compiler-pipeline"

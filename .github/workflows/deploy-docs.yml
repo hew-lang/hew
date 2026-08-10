@@ -17,10 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         with:
           toolchain: stable
-      - name: Build hew
-        run: cargo build -p hew-cli --bin hew --release
       - name: Generate stdlib docs
-        run: ./target/release/hew doc std/ --output-dir target/doc/
+        run: cargo xtask gate docs
       - name: Validate generated docs
         run: |
           source_modules="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"

@@ -15,7 +15,7 @@ RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 REQUIRED_CI_JOB = "lint"
 REQUIRED_CI_JOB_NAME = "Clippy & format"
 CONTRACT_STEP_NAME = "Verify FreeBSD workflow contract"
-CONTRACT_COMMAND = "make freebsd-workflow-contract-check"
+CONTRACT_COMMAND = "cargo xtask gate freebsd-contract"
 
 EXPECTED_NEXTEST_COMMAND = (
     "cargo",

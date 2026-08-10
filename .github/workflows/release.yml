@@ -236,35 +236,29 @@ jobs:
 
       - name: Prove release library consumer linking (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        run: |
-          scripts/test-release-lib-link.sh \
-            --hew "target/${{ matrix.rust_target }}/release/hew" \
-            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+        run: HEW_RELEASE_TARGET=${{ matrix.rust_target }} cargo xtask gate release-link
 
       - name: Prove release library consumer linking (Windows)
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          ./scripts/test-release-lib-link.ps1 `
-            -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
-            -Archive "target/${{ matrix.rust_target }}/release-lib/hew.lib"
+          $env:HEW_RELEASE_TARGET = '${{ matrix.rust_target }}'
+          cargo xtask gate release-link
 
       - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        run: |
-          ./target/${{ matrix.rust_target }}/release/hew-lsp --version
-          ./target/${{ matrix.rust_target }}/release/hew-observe --version
+        run: HEW_RELEASE_TARGET=${{ matrix.rust_target }} cargo xtask gate release-verify
 
       - name: Smoke test hew-lsp and hew-observe (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
-          ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
-          ./target/${{ matrix.rust_target }}/release/hew-observe.exe --version
+          $env:HEW_RELEASE_TARGET = '${{ matrix.rust_target }}'
+          cargo xtask gate release-verify
 
       # ── Third-party license attribution ─────────────────────────────────
 
       - name: Generate THIRD-PARTY-LICENSES
-        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+        run: cargo xtask gate licenses-generate
 
       # ── Package archive ─────────────────────────────────────────────────
 
@@ -298,9 +292,7 @@ jobs:
           cp -r std/. "${ARCHIVE_NAME}/std/"
 
           # Generate shell completions from built binaries
-          for shell in bash zsh fish; do
-            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-          done
+          HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-completions
 
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
@@ -332,9 +324,7 @@ jobs:
           }
           HEWEOF
 
-          output=$(HEW_STD="${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/bin/hew" run "${smoke_root}/pkg-presign-smoke.hew")
-          echo "${output}"
-          echo "${output}" | grep -q "pkg-presign-smoke-ok"
+          HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-smoke
 
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -507,9 +497,7 @@ jobs:
           mkdir -p "${staging}"
           tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
 
-          output=$(HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
-          echo "${output}"
-          echo "${output}" | grep -q "pkg-smoke-ok"
+          HEW_PACKAGE_ROOT="${staging}" cargo xtask gate package-smoke
 
       - name: Create zip (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -645,20 +633,14 @@ jobs:
         run: cargo xtask build native --release --target ${{ matrix.rust_target }}
 
       - name: Prove release library consumer linking
-        run: |
-          scripts/test-release-lib-link.sh \
-            --hew "target/${{ matrix.rust_target }}/release/hew" \
-            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+        run: HEW_RELEASE_TARGET=${{ matrix.rust_target }} cargo xtask gate release-link
 
       - name: Generate THIRD-PARTY-LICENSES
-        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+        run: cargo xtask gate licenses-generate
 
       - name: Verify Linux binaries
         run: |
           ldd --version 2>&1 | sed -n "1p"
-          "target/${{ matrix.rust_target }}/release/hew" --version
-          "target/${{ matrix.rust_target }}/release/hew-lsp" --version
-          "target/${{ matrix.rust_target }}/release/hew-observe" --version
           test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
@@ -689,9 +671,8 @@ jobs:
 
           cp -r std/. "${ARCHIVE_NAME}/std/"
 
-          for shell in bash zsh fish; do
-            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-          done
+          HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-completions
+          HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-verify
 
           cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
@@ -719,9 +700,7 @@ jobs:
           mkdir -p "${staging}"
           tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
 
-          output=$(env -i PATH=/usr/bin:/bin HOME="${HOME}" HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
-          echo "${output}"
-          echo "${output}" | grep -q "pkg-smoke-ok"
+          HEW_PACKAGE_ROOT="${staging}" cargo xtask gate package-smoke
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -782,12 +761,10 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo xtask build native --release
-            bash scripts/test-release-lib-link.sh \
-              --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+            cargo xtask gate release-link
 
             # ── Third-party license attribution ────────────────────────────
-            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+            cargo xtask gate licenses-generate
 
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
@@ -809,9 +786,7 @@ jobs:
             cp -r std/. "${ARCHIVE_NAME}/std/"
 
             # Generate shell completions from built binaries
-            for shell in bash zsh fish; do
-              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            done
+            HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-completions
 
             # Licenses and docs
             cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
@@ -841,9 +816,7 @@ jobs:
             mkdir -p "${smoke_root}/staging"
             tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
 
-            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
-            echo "${output}"
-            echo "${output}" | grep -q "pkg-smoke-ok"
+            HEW_PACKAGE_ROOT="${smoke_root}/staging" cargo xtask gate package-smoke
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -897,12 +870,10 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo xtask build native --release
-            bash scripts/test-release-lib-link.sh \
-              --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+            cargo xtask gate release-link
 
             # ── Third-party license attribution ────────────────────────────
-            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+            cargo xtask gate licenses-generate
 
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
@@ -924,9 +895,7 @@ jobs:
             cp -r std/. "${ARCHIVE_NAME}/std/"
 
             # Generate shell completions from built binaries
-            for shell in bash zsh fish; do
-              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            done
+            HEW_PACKAGE_ROOT="${ARCHIVE_NAME}" cargo xtask gate package-completions
 
             # Licenses and docs
             cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
@@ -956,9 +925,7 @@ jobs:
             mkdir -p "${smoke_root}/staging"
             tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
 
-            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
-            echo "${output}"
-            echo "${output}" | grep -q "pkg-smoke-ok"
+            HEW_PACKAGE_ROOT="${smoke_root}/staging" cargo xtask gate package-smoke
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

@@ -27,10 +27,10 @@ runs:
     # binary's --version against tools/ast-grep.lock and the cached grammar
     # archive's SHA-256 on every invocation, so a corrupted or stale cache is
     # rebuilt rather than trusted. --install-only stops before the authority
-    # scan, which stays owned by the lint job's `make structural-lint`.
+    # scan, which stays owned by the lint job's xtask gate.
     - name: Bootstrap pinned ast-grep toolchain
       shell: bash
-      run: make structural-lint-bootstrap-install
+      run: cargo xtask gate structural-bootstrap
 
     # The consumers read this exact path. Prove it exists and runs here,
     # where the diagnostic is "provisioning failed", rather than several

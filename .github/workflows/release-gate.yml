@@ -95,7 +95,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if make asan; then
+          if cargo xtask gate asan; then
             printf 'asan=pass\n' > .sanitizer-asan-result
           else
             printf 'asan=fail\n' > .sanitizer-asan-result
@@ -156,20 +156,10 @@ jobs:
         run: cargo xtask build wasm --release
 
       - name: Verify release binaries
-        run: |
-          target/release/hew --version
-          target/release/hew-lsp --version
-          target/release/hew-observe --version
-          cargo xtask gate release-link
+        run: cargo xtask gate release-verify
 
       - name: Smoke test — compile and run a .hew program
-        run: |
-          echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-          target/release/hew build _smoke.hew -o _smoke_bin
-          chmod +x _smoke_bin
-          OUTPUT=$(./_smoke_bin)
-          rm -f _smoke.hew _smoke_bin
-          echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+        run: cargo xtask gate release-smoke
 
       - name: Trim release build intermediates
         # The release-profile deps/build/incremental trees are dead weight
@@ -190,23 +180,28 @@ jobs:
 
       - name: Run foundational compiled-Hew and lifecycle gates
         run: |
-          make check-gate-reachability
-          make test-release-workflow-contract
-          make test-compiler-lifecycle
-          make test-opaque-resource-lifecycle-matrix-external
+          cargo xtask gate reachability
+          cargo xtask gate release-contract
+          cargo xtask gate compiler-lifecycle
+          cargo xtask gate compiler-lifecycle-external
           cargo xtask gate vertical-slice
           cargo xtask gate hew-ratchet
           cargo xtask gate stdlib-ratchet
-          make test-stdlib-execution-proofs
+          cargo xtask gate stdlib-execution
+          cargo xtask gate observe-functional
+          cargo xtask gate libhew-link-race
 
       - name: Run MQTT broker end-to-end oracle
         # The Linux release lane has explicit mosquitto_pub/sub provisioning
         # above, so this exercises a real external client against the shipped
         # compiler's broker example before a release candidate is tagged.
-        run: make mqtt-broker-e2e
+        run: cargo xtask gate mqtt
 
       - name: Browser-analysis playground gate
-        run: cargo xtask gate playground
+        run: |
+          cargo xtask gate playground
+          cargo xtask gate playground-wasi
+          cargo xtask gate sandbox-parity
 
       - name: Upload test reports
         if: always()
@@ -261,20 +256,10 @@ jobs:
         run: cargo xtask build wasm --release
 
       - name: Verify release binaries
-        run: |
-          target/release/hew --version
-          target/release/hew-lsp --version
-          target/release/hew-observe --version
-          cargo xtask gate release-link
+        run: cargo xtask gate release-verify
 
       - name: Smoke test — compile and run a .hew program
-        run: |
-          echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-          target/release/hew build _smoke.hew -o _smoke_bin
-          chmod +x _smoke_bin
-          OUTPUT=$(./_smoke_bin)
-          rm -f _smoke.hew _smoke_bin
-          echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+        run: cargo xtask gate release-smoke
 
       - name: Trim release build intermediates
         # The release-profile deps/build/incremental trees are dead weight
@@ -340,20 +325,10 @@ jobs:
         run: cargo xtask build native --release
 
       - name: Verify release binaries
-        run: |
-          target/release/hew --version
-          target/release/hew-lsp --version
-          target/release/hew-observe --version
-          cargo xtask gate release-link
+        run: cargo xtask gate release-verify
 
       - name: Smoke test — compile and run a .hew program
-        run: |
-          echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-          target/release/hew build _smoke.hew -o _smoke_bin
-          chmod +x _smoke_bin
-          OUTPUT=$(./_smoke_bin)
-          rm -f _smoke.hew _smoke_bin
-          echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+        run: cargo xtask gate release-smoke
 
       - name: Run Rust workspace tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
@@ -406,14 +381,8 @@ jobs:
       - name: Build release crates
         run: cargo xtask build native --release
 
-      - name: Prove release library consumer linking
-        run: cargo xtask gate release-link
-
       - name: Verify binaries
-        shell: bash
-        run: |
-          target/release/hew-lsp.exe --version && echo "hew-lsp runs"
-          target/release/hew-observe.exe --version && echo "hew-observe runs"
+        run: cargo xtask gate release-verify
 
       - name: Run Rust workspace tests
         run: cargo xtask gate workspace

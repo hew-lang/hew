@@ -67,10 +67,7 @@ jobs:
           # prebuilt (uninstrumented) sysroot std.  The prebuilt std stays
           # uninstrumented — acceptable because these jobs detect data races and
           # leaks in hew-runtime's own code, not in std.
-          cargo +nightly test \
-            --target x86_64-unknown-linux-gnu \
-            -p hew-runtime \
-            --lib
+          cargo xtask gate asan
 
   # ─────────────────────────────────────────────────────────────────────────
   # Compiled .hew fixture ASan — leak detection for generated code
@@ -149,7 +146,7 @@ jobs:
           #   4. Runs clean-probe (zero findings), leak-probe (must catch the
           #      Hew generated-code malloc leak), clean-probe CLI-link (zero
           #      findings).
-          make asan-fixtures
+          cargo xtask gate asan-fixtures
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime
@@ -217,10 +214,9 @@ jobs:
           # parallel load; (b) single-threaded ensures TSan race reports are
           # isolated to the test that triggered them, not cross-test noise.
           #
-          # The invocation itself lives in the Makefile's `tsan` target so this
-          # job and a local run cannot drift; TSAN_OPTIONS above overrides the
-          # target's local-friendly default.
-          make tsan
+          # The invocation lives in xtask so this job and a local run cannot
+          # drift; TSAN_OPTIONS above overrides the local-friendly default.
+          cargo xtask gate tsan
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime Miri — aliasing / uninit-read / provenance for the runtime
@@ -271,11 +267,13 @@ jobs:
           restore-keys: runtime-miri-${{ runner.os }}-
 
       - name: Run hew-runtime Miri allowlist
-        # `make miri` owns the command: the toolchain, MIRIFLAGS, target dir and
+        # xtask owns the command: the toolchain, MIRIFLAGS, target dir and
         # the curated GREEN allowlist all live in one place. This step used to
         # hand-roll a copy with a "keep in sync" comment, which meant the target
         # ran nowhere in CI and the two could drift silently.
-        run: make miri MIRI_TOOLCHAIN=nightly-2026-06-14
+        env:
+          MIRI_TOOLCHAIN: nightly-2026-06-14
+        run: cargo xtask gate miri
 
   # ─────────────────────────────────────────────────────────────────────────
   # Parser fuzz smoke — bounded libFuzzer run over the parser fuzz targets
@@ -291,11 +289,11 @@ jobs:
   # the time budget — the same commit can pass one run and trip on another.
   # That nondeterminism is fine for a nightly signal but is excluded from
   # ci.yml, whose per-PR gates must be deterministic. The differential
-  # fuzz-oracle (`make fuzz-oracle`, replaying the tracked regression corpus)
+  # fuzz-oracle (replaying the tracked regression corpus)
   # is the deterministic per-PR fuzz gate and already runs there.
   #
-  # `make fuzz-smoke` self-provisions cargo-fuzz on the nightly toolchain
-  # (scripts/fuzz/smoke-bootstrap.sh) the same way `make structural-lint`
+  # The fuzz-smoke gate self-provisions cargo-fuzz on the nightly toolchain
+  # (scripts/fuzz/smoke-bootstrap.sh) the same way structural lint
   # self-provisions its pinned ast-grep toolchain: the install is a
   # prerequisite of the gate target, not a separate manual step, so a warm
   # cache makes it a fast no-op.
@@ -331,4 +329,4 @@ jobs:
       - name: Run bounded parser fuzz smoke
         # scripts/fuzz/run-smoke.sh — 120s per target, fails on a non-zero
         # cargo-fuzz exit OR a new file under fuzz/artifacts/<target>/.
-        run: make fuzz-smoke
+        run: cargo xtask gate fuzz-smoke

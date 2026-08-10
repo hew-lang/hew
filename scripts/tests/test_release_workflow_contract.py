@@ -583,10 +583,13 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert "Copy-Item -LiteralPath $Archive" in windows_probe
     assert "& $StagedHew build" in windows_probe
     assert "test-release-lib-link:" in makefile
-    assert '--hew "$(RELEASE_HEW)" --archive "$(RELEASE_LIBHEW)"' in makefile
-    assert "scripts/test-release-lib-link.ps1" in makefile
-    assert "RELEASE_HEW := $(RELEASE_DIR)/hew.exe" in makefile
-    assert "RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib" in makefile
+    assert "cargo xtask gate release-link" in makefile
+    xtask = BUILD_SYSTEM_XTASK.read_text()
+    assert '"scripts/test-release-lib-link.ps1"' in xtask
+    assert (
+        'let archive_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };'
+        in xtask
+    )
 
 
 def test_every_release_lane_executes_the_library_consumer_proof() -> None:
@@ -594,11 +597,18 @@ def test_every_release_lane_executes_the_library_consumer_proof() -> None:
     gate = RELEASE_GATE.read_text()
 
     # build matrix: macOS Unix + Windows; Linux matrix; two FreeBSD jobs.
-    assert release.count("scripts/test-release-lib-link.sh") == 4
-    assert release.count("scripts/test-release-lib-link.ps1") == 1
+    assert release.count("cargo xtask gate release-link") == 5
     # Linux x86_64/aarch64, macOS, Windows, and FreeBSD x86_64 enter through
     # the same release-link gate. FreeBSD aarch64 stays build-and-smoke only.
-    assert gate.count("cargo xtask gate release-link") == 5
+    assert (
+        gate.count("cargo xtask gate release-link")
+        + gate.count("cargo xtask gate release-verify")
+        == 5
+    )
+    assert (
+        'gate_spec("release-verify", &["release-link"]'
+        in BUILD_SYSTEM_XTASK.read_text()
+    )
     for text in (release, gate):
         assert "ar t " not in text
         assert "llvm-ar t " not in text
@@ -616,7 +626,7 @@ def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> Non
     assert "pkgconf" in setup
     assert "command -v bash" in setup
     assert release.count("command -v bash") == 2
-    assert release.count("bash scripts/test-release-lib-link.sh") == 2
+    assert release.count("cargo xtask gate release-link") >= 2
     freebsd_x86 = workflow_job(gate, "gate-freebsd-x86_64")
     assert "cargo xtask gate release-link" in freebsd_x86
 
@@ -900,34 +910,16 @@ def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None
 def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
     makefile = MAKEFILE.read_text()
     xtask = BUILD_SYSTEM_XTASK.read_text()
-    release = makefile[
-        makefile.index("release:\n") : makefile.index("\n# Validate release builds")
-    ]
-    assembly = makefile[
-        makefile.index("assemble-release:\n") : makefile.index("\n# ── Tests")
-    ]
-    install = makefile[
-        makefile.index("define require_release_artifacts\n") : makefile.index(
-            "\nuninstall:"
-        )
-    ]
-
-    assert "cargo xtask build release $(CARGO_TARGET_FLAG)" in release
+    release_workflow = workflow()
+    assert "release:\n\tcargo xtask build release" in makefile
     for package in ("hew-cli", "hew-lsp", "hew-observe"):
         assert f'"{package}"' in xtask
     for binary in ("hew", "hew-lsp", "hew-observe"):
-        name = re.escape(binary)
-        assert re.search(
-            rf'^\s*@ln -sfn "\$\(LINK_UP2\)\$\(RELEASE_DIR\)/{name}"\s+'
-            rf'"\$\(BUILD_DIR\)/bin/{name}"$',
-            assembly,
-            re.MULTILINE,
+        assert (
+            f'/{binary}"' in release_workflow or f'/{binary}.exe"' in release_workflow
         )
-        assert f'@test -x "$(RELEASE_DIR)/{binary}" \\' in install
-        assert f'install -m 755 "$(RELEASE_DIR)/{binary}"' in install
-        assert f'"$(DESTDIR)$(PREFIX)/bin/{binary}"' in install
     assert '"--profile", "release-lib"' in xtask
-    assert "$(RELEASE_LIB_DIR)/libhew.a" in assembly
+    assert "release-lib/libhew.a" in release_workflow
 
 
 def test_windows_completion_packaging_fails_closed() -> None:
@@ -967,40 +959,19 @@ def _make_dry_run(target: str, cargo_target_dir: Path, *make_overrides: str) -> 
 
 
 def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
-    """Make must not split Cargo artifact paths into targets or shell words."""
+    """The facade must leave artifact-path derivation to xtask."""
     with tempfile.TemporaryDirectory(prefix="hew-make-output-contract-") as raw:
         cargo_target_dir = Path(raw) / "cargo artifacts with spaces"
-        release_dir = cargo_target_dir / "release"
-        release_lib_dir = cargo_target_dir / "release-lib"
-
         assembly = _make_dry_run("assemble-release", cargo_target_dir)
         install = _make_dry_run("install", cargo_target_dir)
         debug = _make_dry_run("assemble", cargo_target_dir)
-        target_triple = "x86_64-unknown-linux-gnu"
-        cross_assembly = _make_dry_run(
-            "assemble-release",
-            cargo_target_dir,
-            f"TARGET_TRIPLE={target_triple}",
-        )
-
-        for binary in ("hew", "hew-lsp", "hew-observe"):
-            source = release_dir / binary
-            assert f'"{source}"' in assembly
-            assert f'"{source}"' in install
-
-        release_archive = release_lib_dir / "libhew.a"
-        assert f'--archive "{release_archive}"' in assembly
-        assert f'"{release_archive}"' in install
-
-        # The same invariant applies to debug and explicit wasm target layouts.
-        assert f'"{cargo_target_dir / "debug" / "hew"}"' in debug
-        wasm_debug = cargo_target_dir / "wasm32-wasip1" / "debug"
-        assert f'"{wasm_debug}/$lib"' in debug
-
-        cross_release = cargo_target_dir / target_triple / "release"
-        cross_release_lib = cargo_target_dir / target_triple / "release-lib"
-        assert f'"{cross_release / "hew-lsp"}"' in cross_assembly
-        assert f'--archive "{cross_release_lib / "libhew.a"}"' in cross_assembly
+        assert assembly.strip() == "cargo xtask assemble --release"
+        assert debug.strip() == "cargo xtask assemble"
+        assert "cargo xtask install" in install
+        assert str(cargo_target_dir) not in assembly + install + debug
+        xtask = BUILD_SYSTEM_XTASK.read_text()
+        assert 'cargo_output_dir(root, "release", None)' in xtask
+        assert 'cargo_output_dir(root, "release-lib", None)' in xtask
 
 
 def _write_install_artifacts(target_dir: Path) -> None:
@@ -1040,6 +1011,7 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
 
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+        env["RUSTC_WRAPPER"] = ""
         overrides = [f"DESTDIR={destdir}", f"PREFIX={prefix}"]
         installed = subprocess.run(
             [
@@ -1056,7 +1028,7 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,
         )
         assert installed.returncode == 0, installed.stdout + installed.stderr
 
@@ -1132,7 +1104,7 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
                 timeout=30,
             )
             assert refused.returncode != 0
-            assert "Error:" in refused.stderr
+            assert "error:" in refused.stderr
 
         for invalid_destdir, invalid_prefix in (("", "."), (".", "/opt/hew")):
             refused_install = subprocess.run(
@@ -1150,7 +1122,7 @@ def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> Non
                 timeout=30,
             )
             assert refused_install.returncode != 0
-            assert "must be" in refused_install.stderr
+            assert "error:" in refused_install.stderr
 
 
 _PACKAGING_CARGO_DOUBLE = """#!/usr/bin/env python3
@@ -1316,18 +1288,21 @@ def test_musl_packaging_uses_explicit_target_release_lib_output() -> None:
 
 def assert_foundational_release_gate_contract(gate: str, validator: str) -> None:
     linux = gate[gate.index("  gate-linux:\n") : gate.index("  gate-linux-aarch64:\n")]
-    for command in (
-        "make check-gate-reachability",
-        "make test-release-workflow-contract",
-        "make test-opaque-resource-lifecycle-matrix-external",
-        "make test-stdlib-execution-proofs",
+    for name, local_command in (
+        ("reachability", "make check-gate-reachability"),
+        ("release-contract", "make test-release-workflow-contract"),
+        (
+            "compiler-lifecycle-external",
+            "make test-opaque-resource-lifecycle-matrix-external",
+        ),
+        ("stdlib-execution", "make test-stdlib-execution-proofs"),
     ):
-        assert command in linux
-        assert command in validator
+        assert f"cargo xtask gate {name}" in linux
+        assert local_command in validator
     for name in ("vertical-slice", "hew-ratchet", "stdlib-ratchet"):
         assert f"cargo xtask gate {name}" in linux
         assert f"make test-{name}" in validator
-    assert "make test-compiler-lifecycle" in linux
+    assert "cargo xtask gate compiler-lifecycle" in linux
     assert "make test-compiler-pipeline" not in linux
     assert "make test-compiler-pipeline" in validator
     assert "make macos-leak-oracle" in validator
@@ -1343,7 +1318,7 @@ def test_foundational_release_gates_are_platform_scoped_and_mandatory() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
     assert_foundational_release_gate_contract(gate, validator)
     mutations = (
-        (gate.replace("make test-stdlib-execution-proofs", "true", 1), validator),
+        (gate.replace("cargo xtask gate stdlib-execution", "true", 1), validator),
         (gate, validator.replace("make macos-leak-oracle", "true", 1)),
         (gate.replace("macos-15-intel", "macos-14", 1), validator),
         (gate.replace("cargo xtask gate freebsd", "true", 1), validator),

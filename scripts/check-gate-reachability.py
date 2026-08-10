@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """check-gate-reachability.py — assert every gate in this repo is actually run.
 
-The sibling gate `scripts/check-preflight-ci-parity.sh` asserts that local
-preflight and CI agree about the checks they *share*. It says nothing about a
-check that neither of them runs. That blind spot let eight gate targets, an
-entire test crate, a whole test binary and a pile of `#[ignore]`d tests sit in
-the tree looking like coverage while executing nowhere.
+The required Linux job executes the local dispatcher directly, so this checker
+expands its fail-closed selection when it builds the hosted command graph.
+It also detects a check absent from both graphs, the blind spot that previously
+left test code in the tree while executing nowhere.
 
 This gate closes it, in five directions:
 
@@ -1697,8 +1696,8 @@ def uncompensated_packages(
 
 # ── Containment: proving a target CI never names is nevertheless run ──────────
 #
-# `make test`, `make test-rust` and `make lint` are local entry points that fan
-# out to work CI does in pieces — CI cannot run `make test-rust` verbatim,
+# `make test` and `make lint` are local entry points that fan out to work CI
+# does in pieces — CI cannot run `make test` verbatim,
 # because its workspace run has no `--exclude hew-cabi` and that crate's
 # cfg(test) symbols collide with hew-runtime's at link time. Deleting the
 # developer entry point is not the answer, and neither is a waiver.
@@ -1706,7 +1705,7 @@ def uncompensated_packages(
 # So: a PROOF, uniform and mechanical. A target no CI step invokes is reached
 # only when every prerequisite is reached AND every command in its recipe is
 # one CI already runs. Anything the rules below cannot classify leaves the
-# target unreached — `lint-wasm-todo`'s `bash scripts/lint-wasm-todo-issue-ref.sh`
+# target unreached — `lint-wasm-todo`'s Python validator
 # is not provable by any of them, which is exactly why it had to be wired into
 # a workflow rather than argued about.
 
@@ -2098,6 +2097,25 @@ def main() -> int:
     live = triggerable(workflows)
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
+    if "ci-preflight-dispatcher.sh" in ci_text:
+        fallback = subprocess.run(
+            [
+                "bash",
+                str(DISPATCHER),
+                "--dry-run",
+                "--",
+                "some-unclassified-root-file.txt",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if fallback.returncode != 0:
+            print(fallback.stderr, file=sys.stderr)
+            return 2
+        step_commands.append(("ci dispatcher fail-closed selection", fallback.stdout))
+        ci_text += "\n" + fallback.stdout
 
     print(
         f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "
@@ -2126,13 +2144,9 @@ def main() -> int:
         )
 
     # ── A1: every gate target is reached ──────────────────────────────────────
-    # Roots are CI workflow invocations ONLY. The local preflight dispatcher is
-    # deliberately NOT a root: it is a convenience that predicts CI, not an
-    # authority that gates merges. Accepting a dispatcher-only edge would let a
-    # gate be "reached" while never running on a pull request — the exact hole
-    # this script exists to close. The reverse direction (a CI-required step
-    # missing from the dispatcher) is check-preflight-ci-parity.sh's job, so
-    # between the two every gate is pinned to both graphs.
+    # Roots are commands reached from CI. When CI invokes the dispatcher, its
+    # fail-closed selection is expanded above from the same executable used by
+    # local preflight instead of from a separately maintained command list.
     members = workspace_members()
     crates = [crate_name(m) for m in members]
     exclusions = profile_ci_exclusions()
@@ -2158,7 +2172,7 @@ def main() -> int:
             print(f"      - {t}")
     # Then the containment proof, to a fixpoint: a target CI never names is
     # reached when every prerequisite is reached and every command in its recipe
-    # is one CI runs anyway. `make test-rust` is the workspace suite CI runs in
+    # is one CI runs anyway. `make test` is the workspace suite CI runs in
     # pieces; `make lint` is CI's clippy invocation plus prerequisites that are
     # each their own CI step. A target with one unclassifiable command — a bash
     # script, a sanitizer-flagged run, a `cargo miri test` — is NOT proved, and

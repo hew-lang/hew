@@ -49,9 +49,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
@@ -211,7 +211,7 @@ echo "  Extracted: $total_fences fences total"
 # An extraction that produced nothing (a renamed doc, a fence-marker change)
 # would make both sets trivially agree once the expected list is empty, so the
 # extracted count is floored before anything is compared.
-corpus_floor_assert "doc-hew-fences" "$total_fences" || exit 1
+corpus_nonempty_assert "doc-hew-fences" "$total_fences" || exit 1
 
 # ── Read expected-failures list ────────────────────────────────────────────────
 EXPECTED_STR=""

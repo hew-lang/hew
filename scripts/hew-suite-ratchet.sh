@@ -51,9 +51,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
@@ -61,10 +61,11 @@ EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
 HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
-TESTS_DIR="$REPO_ROOT/tests/hew"
+TESTS_DIR="${HEW_TESTS_DIR:-$REPO_ROOT/tests/hew}"
 EMIT_O0_OUTCOMES_FILE=""
 JUNIT_OUTPUT="$REPO_ROOT/target/hew-test-reports/hew-suite-ratchet.xml"
 HEW_JUNIT_PY="$REPO_ROOT/scripts/lib/hew_junit.py"
+CACHE_DIR="${HEW_TEST_CACHE_DIR:-$REPO_ROOT/target/hew-test-cache}"
 
 usage() {
     cat <<'EOF'
@@ -146,12 +147,40 @@ while IFS= read -r line; do
     EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
 done < "$EXPECTED_FAILURES_FILE"
 
-# Run hew test, writing a JUnit report (exit code is non-zero when tests
-# fail; we determine pass/fail from the parsed report, not the exit code).
+# Cache one JUnit result per source file. The compiler content is part of every
+# key, so a rebuilt compiler invalidates every fixture while an ordinary rerun
+# does no compilation for sources whose result is already known.
 mkdir -p "$(dirname "$JUNIT_OUTPUT")"
+mkdir -p "$CACHE_DIR"
 STDERR_FILE="$(mktemp /tmp/hew-suite-ratchet-stderr.XXXXXX)"
 trap 'rm -f "$STDERR_FILE"' EXIT
-"$HEW_BIN" test "$TESTS_DIR" --format junit > "$JUNIT_OUTPUT" 2> "$STDERR_FILE" || true
+
+compiler_hash="$(git hash-object "$HEW_BIN")"
+reports=()
+for fixture in "$TESTS_DIR"/*.hew; do
+    [[ -f "$fixture" ]] || continue
+    fixture_hash="$(git hash-object "$fixture")"
+    cache_key="$(printf 'hew-suite-cache-v1\n%s\n%s\n%s\n' "$compiler_hash" "$fixture" "$fixture_hash" | git hash-object --stdin)"
+    cached_report="$CACHE_DIR/$cache_key.xml"
+    if [[ ! -s "$cached_report" ]] || ! python3 "$HEW_JUNIT_PY" "$cached_report" >/dev/null 2>&1; then
+        fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
+        "$HEW_BIN" test "$fixture" --format junit > "$fresh_report" 2>> "$STDERR_FILE" || true
+        if [[ ! -s "$fresh_report" ]] || ! python3 "$HEW_JUNIT_PY" "$fresh_report" >/dev/null; then
+            echo "error: hew test produced an invalid JUnit report for $fixture" >&2
+            rm -f "$fresh_report"
+            cat "$STDERR_FILE" >&2
+            exit 1
+        fi
+        mv "$fresh_report" "$cached_report"
+    fi
+    reports+=("$cached_report")
+done
+
+if [[ ${#reports[@]} -eq 0 ]]; then
+    echo "error: Hew suite selected no fixture files under $TESTS_DIR" >&2
+    exit 1
+fi
+python3 "$HEW_JUNIT_PY" --merge "$JUNIT_OUTPUT" "${reports[@]}"
 
 # Fail closed if the runner produced no report at all: a runner crash before
 # any output must never read as an empty (thus vacuously matching) run.
@@ -200,7 +229,7 @@ fi
 # against the expected list; a run that executed no tests at all reports an
 # empty failing set, which agrees with an empty expected list and would ratchet
 # green over nothing.
-if ! corpus_floor_assert "hew-suite-tests" "$report_total"; then
+if ! corpus_nonempty_assert "hew-suite-tests" "$report_total"; then
     cat "$STDERR_FILE" >&2
     exit 1
 fi

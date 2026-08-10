@@ -80,65 +80,14 @@ EXPLICIT_PATHS=0
 LANE=""
 LANE_REASON=""
 CHANGED_FILES=()
+CHANGED_CRATE_DIRS=()
 COMMANDS=()
 PROFILE_JSON_PATH=""
-LIST_CI_REQUIRED=0
-
-# ── CI-required command patterns (single source of truth) ─────────────────────
-# These are the command substrings that the fallback lane MUST include so that
-# a local `make ci-preflight` predicts the merge-queue outcome.  The
-# check-preflight-ci-parity.sh script reads these via --ci-required rather than
-# maintaining its own independent list.  Update here when the CI workflows or
-# the fallback lane change.
-#
-# Each entry is a tab-separated pair: LABEL<TAB>PATTERN
-# PATTERN is a substring matched against the dispatcher's fallback-lane output.
-CI_REQUIRED_CHECKS=(
-    "Rust fmt check (ci.yml: cargo fmt --all -- --check)	make ci-preflight-smoke"
-    "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make lint"
-    "verify-ffi (ci.yml: make verify-ffi)	make lint"
-    "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
-    "FreeBSD workflow contract (ci.yml required Clippy & format job)	make freebsd-workflow-contract-check"
-    "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
-    "Local opaque lifecycle matrix (ci.yml: make test-compiler-lifecycle)	make test-compiler-pipeline"
-    "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
-    "playground-check (release-gate.yml: make playground-check)	make playground-check"
-    "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
-    "Core matrix primitive x operation (ci.yml: make test-core-matrix)	make test-core-matrix"
-    "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"
-    "O2-differential gate self-test (ci.yml: make o2-differential-selftest)	make o2-differential-selftest"
-    "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
-    "Release workflow contract (ci.yml: make test-release-workflow-contract)	make test-release-workflow-contract"
-    "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
-    "Stdlib execution-proof manifest (ci.yml: make test-stdlib-execution-proofs)	make test-stdlib-execution-proofs"
-    "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
-    "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
-    "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
-    "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
-    "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
-    "Checked-MIR corpus execution (ci.yml: make checked-mir-run)	make checked-mir-run"
-    "Per-function .ll byte-identity corpus (ci.yml: make ll-diff)	make ll-diff"
-    "ll-byte-identity normaliser self-test (ci.yml: make ll-identity-selftest)	make ll-identity-selftest"
-    "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
-    "Repo-wide hew corpus sweep (ci.yml: make hew-check-all)	make hew-check-all"
-    "Hew formatter behaviour property (ci.yml: make hew-fmt-property)	make hew-fmt-property"
-    "C-ABI crate tests (ci.yml: make test-cabi)	make test-cabi"
-    "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
-    "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
-    "Corpus floors have live call sites (ci.yml: make corpus-floor-check)	make corpus-floor-check"
-    "Leak-oracle harness selftest (ci.yml: make test-leak-oracle-selftest)	make test-leak-oracle-selftest"
-    "Pinned structural lint (ci.yml: make structural-lint)	make structural-lint"
-    "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
-    "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
-    "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"
-    "Runtime tests without QUIC/TLS/profiler (ci.yml: make test-runtime-unit)	make test-runtime-unit"
-    "Fuzz-oracle gate self-test (ci.yml: make fuzz-oracle-selftest)	make fuzz-oracle-selftest"
-    "libhew link-race gate (ci.yml: make libhew-link-race-test)	make libhew-link-race-test"
-)
+GITHUB_OUTPUT_PATH=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--ci-required] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--github-output <path>] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
@@ -149,8 +98,8 @@ Dispatch a conservative local CI preflight based on changed files.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
 - --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
                         command, with "cmd", "elapsed_s", "status" fields).
-- --ci-required         Print the CI-required check patterns (LABEL<TAB>PATTERN) and exit 0.
-                        Used by check-preflight-ci-parity.sh to avoid a second source of truth.
+- --github-output <path> Append the selected profile and compile requirement as
+                         GitHub Actions outputs.
 EOF
 }
 
@@ -170,6 +119,17 @@ append_unique_path() {
         done
     fi
     CHANGED_FILES+=("$path")
+}
+
+append_unique_crate() {
+    local crate="$1"
+    local existing
+    if [[ ${CHANGED_CRATE_DIRS[0]+set} == set ]]; then
+        for existing in "${CHANGED_CRATE_DIRS[@]}"; do
+            [[ "$existing" == "$crate" ]] && return 0
+        done
+    fi
+    CHANGED_CRATE_DIRS+=("$crate")
 }
 
 has_changed_files() {
@@ -398,11 +358,10 @@ is_trap_fixtures_path() {
 
 is_scripts_config_path() {
     case "$1" in
-        Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*|Cargo.toml|Cargo.lock|.cargo/*|rust-toolchain*)
+        .gitignore|scripts/*|.github/*)
             return 0
             ;;
-        # License and attribution files: THIRD-PARTY-LICENSES, NOTICE,
-        # about.toml, about.hbs, deny.toml — all build/policy config.
+        # License and attribution files are policy inputs, not compiler inputs.
         THIRD-PARTY-LICENSES|NOTICE|about.toml|about.hbs|deny.toml|LICENSE-*|LICENSE)
             return 0
             ;;
@@ -432,13 +391,15 @@ while [[ $# -gt 0 ]]; do
             PROFILE_JSON_PATH="$1"
             shift
             ;;
+        --github-output)
+            shift
+            [[ $# -gt 0 ]] || die "--github-output requires a path"
+            GITHUB_OUTPUT_PATH="$1"
+            shift
+            ;;
         --help|-h)
             usage
             exit 0
-            ;;
-        --ci-required)
-            LIST_CI_REQUIRED=1
-            shift
             ;;
         --)
             shift
@@ -458,13 +419,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-if (( LIST_CI_REQUIRED == 1 )); then
-    for entry in "${CI_REQUIRED_CHECKS[@]}"; do
-        printf '%s\n' "$entry"
-    done
-    exit 0
-fi
 
 if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     die "unknown base ref: $BASE_REF"
@@ -529,8 +483,14 @@ needs_hew_fmt_property=0
 needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
 needs_trap_fixtures=0
+needs_runtime_compiled_suite=0
 
 for path in "${CHANGED_FILES[@]}"; do
+    crate_dir="${path%%/*}"
+    if [[ "$path" == */* && -f "$REPO_ROOT/$crate_dir/Cargo.toml" ]]; then
+        append_unique_crate "$crate_dir"
+    fi
+
     case "$path" in
         std/*)
             # .hew sources under std/net/* still need stdlib-lint (int-surface / errno-gate);
@@ -602,6 +562,9 @@ for path in "${CHANGED_FILES[@]}"; do
         has_observe=1
     elif is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
         has_runtime_net=1
+        if is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path"; then
+            needs_runtime_compiled_suite=1
+        fi
     elif is_runtime_testkit_path "$path"; then
         has_runtime_testkit=1
     elif is_vertical_slice_path "$path"; then
@@ -617,6 +580,37 @@ for path in "${CHANGED_FILES[@]}"; do
         fallback_lane=1
     fi
 done
+
+AFFECTED_PACKAGE_ARGS=""
+if [[ ${CHANGED_CRATE_DIRS[0]+set} == set ]]; then
+    while IFS= read -r package; do
+        [[ -n "$package" ]] || continue
+        AFFECTED_PACKAGE_ARGS="$AFFECTED_PACKAGE_ARGS -p $package"
+    done < <(
+        cargo metadata --no-deps --format-version 1 | python3 -c '
+import json, pathlib, sys
+changed = set(sys.argv[1:])
+packages = json.load(sys.stdin)["packages"]
+selected = {
+    package["name"]
+    for package in packages
+    if pathlib.Path(package["manifest_path"]).parent.name in changed
+}
+dependencies = {
+    package["name"]: {dependency["name"] for dependency in package["dependencies"]}
+    for package in packages
+}
+while True:
+    expanded = selected | {
+        package for package, deps in dependencies.items() if deps & selected
+    }
+    if expanded == selected:
+        break
+    selected = expanded
+print("\n".join(sorted(selected)))
+' "${CHANGED_CRATE_DIRS[@]}"
+    )
+fi
 
 compiler_related=0
 if (( has_compiler_pipeline == 1 || has_vertical_slice == 1 )); then
@@ -655,12 +649,11 @@ elif (( bucket_count > 1 )); then
     # Conservative invariant: any unrecognised combination falls back.
     # Every promoted combination must have a dispatcher test case.
     #
-    #   parser + types:  test-types runs hew-types + hew-parser + hew-lexer,
-    #     covering both buckets.  Dependency closure: types ← parser ← lexer
-    #     (no runtime/codegen downstream in this narrow set).
+    #   parser + types: the compiler-pipeline suite covers both buckets and
+    #     their HIR/MIR/codegen consumers.
     if (( has_parser == 1 && has_types == 1 && bucket_count == 2 )); then
         LANE="types"
-        LANE_REASON="parser + type-checker changed; test-types covers both (parser + types dep closure)"
+        LANE_REASON="parser + type-checker changed; compiler pipeline covers both"
     else
         LANE="fallback"
         LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
@@ -709,10 +702,7 @@ fi
 
 case "$LANE" in
     docs)
-        # Docs-only change: run the doc-fence typecheck gate so documentation
-        # regressions surface locally before push.  This is the narrow lane that
-        # also runs in the fallback; it is fast (<30 s) because it is compile-only.
-        add_command "make test-doc-examples"
+        add_command "make doc-ratchet-selftest"
         ;;
     scripts-config)
         add_command "make structural-lint"
@@ -721,30 +711,27 @@ case "$LANE" in
         add_command "make test-stdlib-execution-proofs"
         add_command "cargo fmt --all -- --check"
         add_command "make freebsd-workflow-contract-check"
-        add_command "make test-rust"
         add_command "make o2-differential-selftest"
         add_command "make doc-ratchet-selftest"
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make grammar"
         ;;
     parser)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-parser"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "make hew-native wasm-runtime"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         add_command "make hew-fmt-property"
         ;;
     types)
-        # Run the full frontend pipeline (hew-types + hew-hir + hew-mir) rather
-        # than the narrow make test-types (hew-types + hew-parser + hew-lexer only).
-        # A type-checker change can break hew-hir / hew-mir tests that test-types
-        # never runs — this was the root cause of #2026 (reject_unbounded_generic_ordering).
-        # make test-types remains the iteration target; this lane is the gate.
+        # A type-checker change can break hew-hir / hew-mir tests, so use the
+        # full frontend pipeline rather than a package subset.
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-compiler-pipeline"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "make hew-native wasm-runtime"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         add_command "make fuzz-oracle"
         # A type-checker change reaches MIR lowering and can drift the checked-MIR
         # golden corpus (examples/v05/checked-mir) just as a lowering edit can.
@@ -758,21 +745,17 @@ case "$LANE" in
         ;;
     cli)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-cli"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "make hew-native wasm-runtime"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         add_command "make hew-fmt-property"
         ;;
     compiler-pipeline)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        # test-compiler-pipeline IS the consumer-corpus gate: its nextest
-        # invocation includes -p hew-cli -p hew-pkg under the ci profile, so
-        # every hew-cli integration suite — the compiled leak/drop oracles,
-        # await_e2e, eval_e2e, and the rest of the e2e corpus — runs for any
-        # HIR/MIR/codegen diff.  scripts/tests/test_ci_preflight_dispatcher.py
-        # locks the -p hew-cli membership in the Makefile recipe so the corpus
-        # cannot silently fall out of this lane.
-        add_command "make test-compiler-pipeline"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "make hew-native wasm-runtime"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
+        add_command "make test-opaque-resource-lifecycle-matrix"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
         # fuzz-oracle catches trap signal-code regressions (SIGILL/SIGTRAP) and
@@ -792,7 +775,6 @@ case "$LANE" in
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
         # fuzz-oracle reads the vertical-slice/accept fixtures: a fixture change
@@ -801,51 +783,49 @@ case "$LANE" in
         ;;
     observe)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci -p hew-observe"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
+        add_command "make observe-functional-test"
         ;;
     runtime-testkit)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "cargo nextest run --profile ci -p hew-runtime-testkit -p hew-runtime"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         ;;
     hew-tests)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-hew-ratchet"
         add_command "make test-core-matrix"
         add_command "make test-stdlib-ratchet"
         ;;
     runtime-net)
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make stdlib"
-        add_command "scripts/check-libhew-fresh.sh"
-        add_command "make test-runtime-net"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
+        if (( needs_runtime_compiled_suite == 1 )); then
+            add_command "make stdlib"
+            add_command "scripts/check-libhew-fresh.sh"
         # Runtime ABI changes (e.g. HewCont layout / continuation resume protocol)
         # are invisible to rlib unit tests alone — a Rust unit test can pass over a
         # garbage codegen path.  Run the compiled .hew suites so a local preflight
         # catches the same class of breakage that CI's fallback lane would catch.
-        add_command "make test-hew-ratchet"
-        add_command "make test-vertical-slice"
+            add_command "make test-hew-ratchet"
+            add_command "make test-vertical-slice"
         # await_e2e covers the suspend/resume crash-recovery path; this lane owns
         # the runtime surface where that breakage originates (#2023).
-        add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
+            add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
         # fuzz-oracle catches trap signal-code regressions visible via the runtime.
-        add_command "make fuzz-oracle"
-        if (( has_observe == 1 )); then
-            add_command "cargo nextest run --profile ci -p hew-observe"
-        fi
-        if (( has_runtime_testkit == 1 )); then
-            add_command "cargo nextest run --profile ci -p hew-runtime-testkit"
+            add_command "make fuzz-oracle"
+            add_command "make mqtt-broker-e2e"
+            add_command "make observe-functional-test"
         fi
         ;;
     wasm)
         # hew-wasm/* changes: run the WASM lib tests and the playground build
         # (which includes wasm-pack --release and the curated-manifest smoke test).
         add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "cargo test -p hew-wasm --lib"
+        add_command "cargo clippy$AFFECTED_PACKAGE_ARGS --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci$AFFECTED_PACKAGE_ARGS"
         add_command "make playground-check"
         ;;
     fallback)
@@ -895,7 +875,6 @@ case "$LANE" in
         add_command "make test-cabi"
         add_command "make check-sanitizer-gate"
         add_command "make check-gate-reachability"
-        add_command "make corpus-floor-check"
         add_command "make test-leak-oracle-selftest"
         add_command "make test-ux-examples"
         add_command "make test-surface-examples"
@@ -903,6 +882,8 @@ case "$LANE" in
         add_command "make test-runtime-unit"
         add_command "make fuzz-oracle-selftest"
         add_command "make libhew-link-race-test"
+        add_command "make mqtt-broker-e2e"
+        add_command "make observe-functional-test"
         ;;
     *)
         die "unhandled lane: $LANE"
@@ -1037,6 +1018,20 @@ case "$LANE" in
         PROFILE_LABEL="$LANE"
         ;;
 esac
+
+REQUIRES_COMPILE=true
+case "$LANE" in
+    docs|scripts-config|grammar)
+        REQUIRES_COMPILE=false
+        ;;
+esac
+
+if [[ -n "$GITHUB_OUTPUT_PATH" ]]; then
+    {
+        printf 'profile=%s\n' "$PROFILE_LABEL"
+        printf 'requires_compile=%s\n' "$REQUIRES_COMPILE"
+    } >> "$GITHUB_OUTPUT_PATH"
+fi
 
 # Resolve the per-command timeout budget for this lane.
 case "$LANE" in

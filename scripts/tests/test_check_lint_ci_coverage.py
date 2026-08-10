@@ -30,11 +30,13 @@ def main() -> None:
     )
     require_failure(extra, workflow, "no CI step: future-lint")
 
-    missing = workflow.replace("run: make corpus-floor-check", "run: true", 1)
-    require_failure(makefile, missing, "no CI step: corpus-floor-check")
+    missing = workflow.replace("run: make codegen-trap-inventory-check", "run: true", 1)
+    require_failure(makefile, missing, "no CI step: codegen-trap-inventory-check")
 
     replay = workflow.replace(
-        "run: make corpus-floor-check", "run: make lint corpus-floor-check", 1
+        "run: make codegen-trap-inventory-check",
+        "run: make lint codegen-trap-inventory-check",
+        1,
     )
     require_failure(makefile, replay, "must not replay make lint")
 

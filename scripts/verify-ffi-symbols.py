@@ -35,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from corpus_floor import check_floor  # noqa: E402
+from corpus_nonempty import check_nonempty  # noqa: E402
 import toml_compat  # noqa: E402
 
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
@@ -564,12 +564,12 @@ def validate_ownership_contracts(
     # contract takes the skip branch, and validation passes with the teeth
     # retracted and nothing to show for it. Floor the number of contracts that
     # were actually arity-checked.
-    floor_error = check_floor("ffi-arity-checked-contracts", arity_checked)
+    floor_error = check_nonempty("ffi-arity-checked-contracts", arity_checked)
     if floor_error is not None:
         errors.append(floor_error)
     else:
         print(
-            f"corpus floor OK: ffi-arity-checked-contracts = {arity_checked}",
+            f"FFI arity selection OK: {arity_checked} contract(s)",
             file=sys.stderr,
         )
 

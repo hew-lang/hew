@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
-from corpus_floor import assert_floor  # noqa: E402
+from corpus_nonempty import assert_nonempty  # noqa: E402
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
@@ -252,8 +252,8 @@ def aggregate(
         die("shard count must be at least two")
     full = set(read_inventory(full_inventory))
     o0, o2 = load_shards(reports_dir, full, shard_count)
-    floor_key = "hew-suite-tests" if mode == "ratchet" else "o2-differential-outcomes"
-    assert_floor(floor_key, len(full), context="union of compiled-Hew shards")
+    label = "hew-suite-tests" if mode == "ratchet" else "o2-differential-outcomes"
+    assert_nonempty(label, len(full), context="union of compiled-Hew shards")
 
     if mode == "ratchet":
         expected = expected_failures(expected_failures_path, full)

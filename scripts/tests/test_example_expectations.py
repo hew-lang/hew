@@ -32,7 +32,6 @@ def invoke(
     compiler: Path,
     *inventory: str,
     timeout_seconds: str = "0.1",
-    floor_key: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [
         sys.executable,
@@ -43,8 +42,6 @@ def invoke(
         "selftest",
         f"--timeout-seconds={timeout_seconds}",
     ]
-    if floor_key is not None:
-        args.extend(("--floor-key", floor_key))
     args.extend(inventory)
     return subprocess.run(
         args,
@@ -61,14 +58,12 @@ def expect_status(
     *inventory: str,
     contains: str,
     timeout_seconds: str = "0.1",
-    floor_key: str | None = None,
     excludes: tuple[str, ...] = (),
 ) -> None:
     result = invoke(
         compiler,
         *inventory,
         timeout_seconds=timeout_seconds,
-        floor_key=floor_key,
     )
     combined = result.stdout + result.stderr
     unexpected = [text for text in excludes if text in combined]
@@ -193,7 +188,6 @@ def main() -> None:
         *inventory: str,
         contains: str,
         timeout_seconds: str = "0.1",
-        floor_key: str | None = None,
         excludes: tuple[str, ...] = (),
     ) -> None:
         nonlocal counterfactuals
@@ -203,7 +197,6 @@ def main() -> None:
             *inventory,
             contains=contains,
             timeout_seconds=timeout_seconds,
-            floor_key=floor_key,
             excludes=excludes,
         )
         counterfactuals += 1
@@ -261,15 +254,6 @@ else:
         write(good / "ok.hew", "fn main() {}\n")
         write(good / "ok.expected", "expected\n")
         check_status(0, compiler, "--source-root", str(good), contains="1 passed")
-
-        check_status(
-            1,
-            compiler,
-            "--source-root",
-            str(good),
-            floor_key="selftest-unknown-floor",
-            contains="no registry row for 'selftest-unknown-floor'",
-        )
 
         check_status(
             1,

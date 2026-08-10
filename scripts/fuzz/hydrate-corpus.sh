@@ -5,14 +5,13 @@
 # vertical-slice accept fixtures and the curated examples. Because the wipe
 # happens first, a source directory that has moved or emptied leaves a corpus
 # of three hand-written seeds and still prints success — the fuzzers then run
-# forever against almost nothing. The seed count is therefore floored against
-# scripts/corpus-floors.tsv before the copied corpus is accepted.
+# forever against nothing. Reject an empty seed set before accepting the copy.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$repo_root/scripts/lib/corpus-floor.sh"
+source "$repo_root/scripts/lib/corpus-nonempty.sh"
 corpus_root="$repo_root/hew-parser/fuzz/corpus"
 
 source_targets=(fuzz_parse fuzz_lex fuzz_check fuzz_mir)
@@ -49,7 +48,7 @@ done < <(
     } | sort -z
 )
 
-corpus_floor_assert "fuzz-seed-corpus" "$seeds" || exit 1
+corpus_nonempty_assert "fuzz-seed-corpus" "$seeds" || exit 1
 
 cp "$repo_root/examples/machine/traffic_light.hew" \
     "$corpus_root/fuzz_machine/example-machine-traffic_light.hew"

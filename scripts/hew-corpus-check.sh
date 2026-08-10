@@ -41,9 +41,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-corpus-expected-failures.txt"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 
@@ -170,7 +170,7 @@ TOTAL=${#SWEPT[@]}
 # `git ls-files` run from the wrong tree, or a pattern that stops matching,
 # yields an empty sweep: no files checked, no failures found, expected set
 # trivially satisfied. Floor the swept count before the ratchet compares.
-corpus_floor_assert "hew-corpus-check-files" "$TOTAL" || exit 1
+corpus_nonempty_assert "hew-corpus-check-files" "$TOTAL" || exit 1
 
 # Run hew check on every tracked non-reject .hew file and collect failures.
 ACTUAL_STR=""

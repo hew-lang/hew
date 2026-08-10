@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -140,6 +141,25 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
         self.assertIn("shard: [1, 2, 3, 4]", self.workflow)
         self.assertIn('--partition "hash:${{ matrix.shard }}/4"', self.workflow)
         self.assertIn("name: compiled-hew-linux-${{ github.sha }}", self.workflow)
+        for job in (
+            "compiled-hew-linux",
+            "compiled-hew-shards",
+            "compiled-hew-aggregate",
+        ):
+            start = self.workflow.index(f"  {job}:\n")
+            following = re.search(
+                r"^  [a-zA-Z0-9_-]+:\n", self.workflow[start + 1 :], re.MULTILINE
+            )
+            end = (
+                len(self.workflow)
+                if following is None
+                else start + 1 + following.start()
+            )
+            section = self.workflow[start:end]
+            self.assertIn(
+                "RUN_CODE_PATH: ${{ needs.changes.outputs.selected_compile }}",
+                section,
+            )
         self.assertGreaterEqual(
             self.workflow.count("scripts/compiled-hew-artifact.py unpack"), 2
         )

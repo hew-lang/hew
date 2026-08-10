@@ -208,6 +208,8 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         include_ignored,
         ffi_lib.as_deref(),
         timeout,
+        args.jobs
+            .map_or_else(runner::default_jobs, std::num::NonZeroUsize::get),
     );
     output::output_results(&summary, use_color, format);
 

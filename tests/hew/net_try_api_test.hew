@@ -39,6 +39,7 @@ fn test_try_listen_returns_ok_on_available_port() {
 }
 
 #[test]
+#[serial]
 fn test_try_listen_address_in_use_returns_address_in_use() {
     // Bind the same ephemeral address twice; the second bind must fail.
     match net.try_listen(":19731") {

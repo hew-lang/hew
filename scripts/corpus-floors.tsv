@@ -46,7 +46,7 @@ hew-fmt-property-files	min	1774	200	compilable tracked corpus files formatted, r
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
 macos-leak-oracle-binaries	exact	114	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
-macos-leak-oracle-tests	exact	753	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-tests	exact	754	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 opaque-resource-lifecycle-facts	exact	17	-	AST-derived shipped empty opaque resource declarations with one close/release/producer lifecycle
 runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus

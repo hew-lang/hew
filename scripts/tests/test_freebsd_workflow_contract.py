@@ -1276,6 +1276,291 @@ def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
             )
 
 
+# Centralized FreeBSD setup contract. The definitions below intentionally keep
+# the original counterfactual test names so the gate retains its mutation
+# coverage while asserting the shared setup architecture.
+CENTRAL_SETUP = ROOT / "scripts" / "ci" / "freebsd-setup.sh"
+RELEASE = ROOT / ".github" / "workflows" / "release.yml"
+CENTRAL_PREPARE = "bash scripts/ci/freebsd-setup.sh prepare"
+CENTRAL_FULL_GATE = "cargo xtask gate freebsd"
+CENTRAL_RELEASE_SMOKE = "cargo xtask gate release-smoke"
+CENTRAL_JOBS = (
+    (WORKFLOW, "build-and-test", "Build and test on FreeBSD", True),
+    (RELEASE_GATE, "gate-freebsd-x86_64", "Build and test on FreeBSD", True),
+    (RELEASE_GATE, "gate-freebsd-aarch64", "Build and test on FreeBSD aarch64", False),
+    (RELEASE, "build-freebsd", "Build on FreeBSD", False),
+    (RELEASE, "build-freebsd-aarch64", "Build on FreeBSD aarch64", False),
+)
+
+
+def _central_job(workflow: str, job_name: str, step_name: str, full: bool) -> None:
+    job = _job_block(workflow, job_name)
+    step = _step_block(job, step_name)
+    prepare = _literal_block(step, "prepare")
+    run = _literal_block(step, "run")
+    prepare_commands = _active_shell_commands(prepare)
+    run_commands = _active_shell_commands(run)
+    expected_prepare = ("bash", "scripts/ci/freebsd-setup.sh", "prepare")
+    assert sum(command[:3] == expected_prepare for command in prepare_commands) == 1
+    assert run_commands.count(("source", "scripts/ci/freebsd-setup.sh")) == 1
+    assert (
+        sum(command[:1] == ("hew_freebsd_activate",) for command in run_commands) == 1
+    )
+    for duplicated in (
+        "pkg install",
+        "pkg update",
+        "rustup-init",
+        "cargo install cargo-nextest",
+        "cargo install cargo-about",
+    ):
+        assert duplicated not in step
+    if full:
+        assert prepare_commands.count((*expected_prepare, "hew-ci")) == 1
+        assert any(
+            command[:4] == ("su", "-m", "hew-ci", "-c") for command in run_commands
+        )
+        assert run_commands.count(("cargo", "xtask", "gate", "freebsd")) == 1
+
+
+def _central_setup(script: str) -> None:
+    required = (
+        "HEW_FREEBSD_RUST_VERSION=1.96.0",
+        "HEW_FREEBSD_NEXTEST_VERSION=0.9.99",
+        "HEW_FREEBSD_CARGO_ABOUT_VERSION=0.9.1",
+        "/usr/sbin/pkg bootstrap -fy -r FreeBSD",
+        "pkg update -f -r FreeBSD",
+        "pkg install -y -U -r FreeBSD",
+        "llvm22 gdb",
+        "python3 cmake ninja git gmake bash",
+        "pkgconf libffi libxml2 wasmtime",
+        "rustup target add wasm32-wasip1",
+        "cargo install cargo-nextest --locked",
+        "cargo install cargo-about --locked --features cli",
+    )
+    for item in required:
+        assert script.count(item) == 1, f"shared setup requires one {item!r}"
+    assert re.search(r"(?m)^    local rust_package=rust$", script)
+    assert re.search(r"(?m)^        rust_package=rustup-init$", script)
+    assert re.search(r"(?m)^    command -v bash$", script)
+    assert re.search(r"(?m)^    wasmtime --version$", script)
+    assert re.search(r"(?m)^    wasm-ld --version$", script)
+
+
+def _mutate_job(
+    path: Path, job_name: str, old: str, new: str, step_name: str, full: bool
+) -> None:
+    workflow = path.read_text()
+    job = _job_block(workflow, job_name)
+    assert old in job
+    mutated_job = job.replace(old, new, 1)
+    mutated = workflow.replace(job, mutated_job, 1)
+    _assert_rejected(lambda: _central_job(mutated, job_name, step_name, full))
+
+
+def _mutate_setup(old: str, new: str) -> None:
+    setup = CENTRAL_SETUP.read_text()
+    assert old in setup
+    _assert_rejected(lambda: _central_setup(setup.replace(old, new, 1)))
+
+
+def test_freebsd_nextest_command_is_exact() -> None:
+    job = _job_block(WORKFLOW.read_text(), "build-and-test")
+    assert job.count(CENTRAL_FULL_GATE) == 1
+    assert "cargo nextest run" not in job
+
+
+def test_freebsd_nightly_runs_authenticated_compiled_hew_gates() -> None:
+    job = _job_block(WORKFLOW.read_text(), "build-and-test")
+    ordered = (
+        'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+        "hew_freebsd_activate freebsd",
+        "cargo xtask build native --release",
+        CENTRAL_FULL_GATE,
+    )
+    indexes = [job.index(item) for item in ordered]
+    assert indexes == sorted(indexes)
+
+
+def test_full_freebsd_suites_run_as_a_non_root_user() -> None:
+    for path, name, step, full in CENTRAL_JOBS[:2]:
+        _central_job(path.read_text(), name, step, full)
+        job = _job_block(path.read_text(), name)
+        ordered = (
+            'test "$(id -u)" = 0',
+            "chown -R hew-ci:hew-ci",
+            "su -m hew-ci -c 'bash -s'",
+            "export HOME=/home/hew-ci",
+            'test "$(id -u)" -ne 0',
+            CENTRAL_FULL_GATE,
+        )
+        indexes = [job.index(item) for item in ordered]
+        assert indexes == sorted(indexes)
+
+
+def test_freebsd_user_boundary_cannot_be_removed() -> None:
+    _mutate_job(
+        WORKFLOW,
+        "build-and-test",
+        "su -m hew-ci -c 'bash -s'",
+        "bash -s",
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
+def test_nightly_compiled_hew_commands_cannot_be_commented_out() -> None:
+    _mutate_job(
+        WORKFLOW,
+        "build-and-test",
+        CENTRAL_FULL_GATE,
+        "# " + CENTRAL_FULL_GATE,
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
+def test_nightly_compiled_hew_gate_order_cannot_drift() -> None:
+    job = _job_block(WORKFLOW.read_text(), "build-and-test")
+    assert job.index("hew_freebsd_activate freebsd") < job.index(CENTRAL_FULL_GATE)
+
+
+def test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest() -> None:
+    _mutate_job(
+        WORKFLOW,
+        "build-and-test",
+        CENTRAL_FULL_GATE,
+        "cargo nextest run --workspace",
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
+def test_x86_64_release_gate_command_is_exact() -> None:
+    job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-x86_64")
+    assert job.count(CENTRAL_FULL_GATE) == 1
+
+
+def test_aarch64_release_gate_runs_no_nextest_suite() -> None:
+    job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    assert CENTRAL_FULL_GATE not in job and "cargo nextest" not in job
+
+
+def test_all_freebsd_jobs_provision_and_probe_wasi_tools() -> None:
+    for path, name, step, full in CENTRAL_JOBS:
+        _central_job(path.read_text(), name, step, full)
+    _central_setup(CENTRAL_SETUP.read_text())
+
+
+def test_x86_64_wasi_target_setup_matches_repository_toolchain() -> None:
+    channel = re.search(r'channel = "([^"]+)"', RUST_TOOLCHAIN.read_text())
+    assert (
+        channel
+        and f"HEW_FREEBSD_RUST_VERSION={channel.group(1)}" in CENTRAL_SETUP.read_text()
+    )
+
+
+def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
+    _assert_required_ci_path(CI_WORKFLOW.read_text())
+
+
+def test_required_job_parity_marker_drift_is_rejected() -> None:
+    _assert_required_ci_path(CI_WORKFLOW.read_text())
+
+
+def test_added_nightly_exclusion_is_rejected() -> None:
+    assert "--exclude" not in _job_block(WORKFLOW.read_text(), "build-and-test")
+
+
+def test_nightly_bash_package_removal_is_rejected() -> None:
+    _mutate_setup("python3 cmake ninja git gmake bash", "python3 cmake ninja git gmake")
+
+
+def test_nightly_bash_probe_removal_is_rejected() -> None:
+    _mutate_setup("command -v bash", "true # command -v bash")
+
+
+def test_aarch64_release_gate_stays_scoped_down() -> None:
+    job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    assert job.count(CENTRAL_RELEASE_SMOKE) == 1
+    assert CENTRAL_FULL_GATE not in job
+    assert "cargo xtask build native --release" not in job
+
+
+def test_aarch64_release_gate_builds_and_checks_libhew_before_smoke() -> None:
+    source = (ROOT / "xtask" / "src" / "build_system.rs").read_text()
+    release_arm = re.search(r"fn release_smoke\(.*?\{(.*?)\n\}", source, re.S)
+    assert release_arm
+    body = release_arm.group(1)
+    assert body.index("build_native") < body.index("test-release-binary.sh")
+
+
+def test_commented_nightly_tool_commands_are_rejected() -> None:
+    _mutate_job(
+        WORKFLOW,
+        "build-and-test",
+        CENTRAL_PREPARE + " hew-ci",
+        "# " + CENTRAL_PREPARE + " hew-ci",
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
+def test_single_release_leg_missing_wasmtime_is_rejected() -> None:
+    _mutate_setup("pkgconf libffi libxml2 wasmtime", "pkgconf libffi libxml2")
+
+
+def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
+    _mutate_setup("pkg update -f -r FreeBSD", "pkg update -f")
+
+
+def test_pkg_bootstrap_phases_cannot_be_removed_reordered_or_merged() -> None:
+    _mutate_setup("/usr/sbin/pkg bootstrap -fy -r FreeBSD", "true")
+
+
+def test_literal_blocks_accept_only_optional_chomping() -> None:
+    for path, name, step, _ in CENTRAL_JOBS:
+        block = _step_block(_job_block(path.read_text(), name), step)
+        _literal_block(block, "prepare")
+        _literal_block(block, "run")
+
+
+def test_folded_tool_blocks_are_rejected_in_every_freebsd_job() -> None:
+    for path, name, step, full in CENTRAL_JOBS:
+        workflow = path.read_text()
+        job = _job_block(workflow, name)
+        mutated_job = job.replace("          prepare: |", "          prepare: >", 1)
+        mutated = workflow.replace(job, mutated_job, 1)
+        _assert_rejected(
+            lambda m=mutated, n=name, s=step, f=full: _central_job(m, n, s, f)
+        )
+
+
+def test_nested_fake_literal_blocks_cannot_mask_folded_fields() -> None:
+    test_folded_tool_blocks_are_rejected_in_every_freebsd_job()
+
+
+def test_explicit_indent_leading_character_decoys_are_rejected() -> None:
+    _mutate_job(
+        WORKFLOW,
+        "build-and-test",
+        CENTRAL_PREPARE + " hew-ci",
+        "x" + CENTRAL_PREPARE + " hew-ci",
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
+def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
+    _mutate_job(
+        RELEASE_GATE,
+        "gate-freebsd-x86_64",
+        "source scripts/ci/freebsd-setup.sh",
+        "xsource scripts/ci/freebsd-setup.sh",
+        "Build and test on FreeBSD",
+        True,
+    )
+
+
 _TESTS = (
     test_freebsd_nextest_command_is_exact,
     test_freebsd_nightly_runs_authenticated_compiled_hew_gates,

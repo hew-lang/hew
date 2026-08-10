@@ -479,94 +479,25 @@ jobs:
           release: "15.0"
           mem: 8192
           prepare: |
-            mkdir -p /usr/local/etc/pkg/repos
-            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
-              > /usr/local/etc/pkg/repos/FreeBSD.conf
-            # Bootstrap pkg through the base utility before reading package catalogues.
-            /usr/sbin/pkg bootstrap -fy -r FreeBSD
-            pkg update -f -r FreeBSD
-            # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
-            # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
-            # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
-            pw useradd -n hew-ci -m -s /bin/sh
+            bash scripts/ci/freebsd-setup.sh prepare hew-ci
 
           run: |
             set -eux
             id
             test "$(id -u)" = 0
 
-            # The VM action connects as root. Finish privileged setup before
-            # handing the complete build and test workload to a normal user.
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
             chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
-            su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
+            su -m hew-ci -c 'bash -s' <<'HEW_FREEBSD_CI'
             set -eux
             export HOME=/home/hew-ci
             id
             test "$(id -u)" -ne 0
-            command -v bash && bash --version
-
             git config --global --add safe.directory "$(pwd)"
-
-            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
-            # Install the repository-pinned toolchain and WASI standard
-            # library through rustup, matching the other full-suite hosts.
-            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
-              --default-toolchain 1.96.0 --target wasm32-wasip1
-            # The debug libhew bootstrap starts the Python freshness helper,
-            # which then starts Cargo. Give both child-process levels absolute
-            # executables instead of depending on the SSH login environment.
-            export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
-            export CARGO="$HOME/.cargo/bin/cargo"
-            export PYTHON=/usr/local/bin/python3
-            test -x "$CARGO"
-            test -x "$PYTHON"
-            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
-            rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
-            /usr/local/llvm22/bin/llvm-config --version
-
-            # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
-            # own bin dir, which is not on PATH. Expose it like the macOS gate's
-            # lld@22 so the linker probe and WASI builds use the same explicit
-            # linker as the other full-suite hosts.
-            command -v wasmtime && wasmtime --version
-            command -v wasm-ld && wasm-ld --version
-
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
-
-            target/release/hew --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            bash scripts/test-release-lib-link.sh \
-              --hew target/release/hew \
-              --archive target/release-lib/libhew.a
-
-            # Smoke test — compile and run a .hew program
-            echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
-            chmod +x _smoke_bin
-            OUTPUT=$(./_smoke_bin)
-            echo "$OUTPUT"
-            echo "$OUTPUT" | grep -q "smoke-ok"
-            rm -f _smoke.hew _smoke_bin
-
-            # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
-            cargo install cargo-nextest --locked
-
-            cargo nextest run --workspace \
-              --exclude hew-wasm --exclude hew-cabi \
-              --profile ci --no-fail-fast
-
-            # hew-cabi is excluded from the workspace run above because its
-            # cfg(test) runtime stubs collide with hew-runtime's real symbols
-            # at link time. Run it on its own so the C-ABI ownership contract
-            # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci-cabi -p hew-cabi
-
-            gmake test-vertical-slice
-            gmake test-hew-ratchet
+            source scripts/ci/freebsd-setup.sh
+            hew_freebsd_activate freebsd
+            cargo xtask build native --release
+            cargo xtask gate release-smoke
+            cargo xtask gate freebsd
             HEW_FREEBSD_CI
 
       - name: Upload test reports
@@ -632,60 +563,11 @@ jobs:
           mem: 8192
           cpu: 4
           prepare: |
-            mkdir -p /usr/local/etc/pkg/repos
-            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
-              > /usr/local/etc/pkg/repos/FreeBSD.conf
-            # Bootstrap pkg through the base utility before reading package catalogues.
-            /usr/sbin/pkg bootstrap -fy -r FreeBSD
-            pkg update -f -r FreeBSD
-            # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
-            # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
-            # the macOS and Linux gates.
-            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            bash scripts/ci/freebsd-setup.sh prepare
 
           run: |
             set -eux
-            command -v bash && bash --version
-
             git config --global --add safe.directory "$(pwd)"
-
-            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
-            # Match the x86_64 guest's explicit child-build environment so a
-            # future scope expansion cannot regress to SSH profile discovery.
-            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
-            export CARGO=/usr/local/bin/cargo
-            export PYTHON=/usr/local/bin/python3
-            test -x "$CARGO"
-            test -x "$PYTHON"
-            /usr/local/llvm22/bin/llvm-config --version
-
-            # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
-            # own bin dir, which is not on PATH. Expose it like the macOS gate's
-            # lld@22 so the linker probe finds it instead of failing to spawn
-            # rust-lld (not shipped by the pkg rust toolchain).
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
-            command -v wasmtime && wasmtime --version
-            command -v wasm-ld && wasm-ld --version
-
-            # Only the CLI release binary, not hew-lsp/hew-observe or the
-            # release-lib profile: this leg proves the compiler builds and
-            # runs on FreeBSD aarch64. The debug libhew archive below is the
-            # native-link input required by the smoke test.
-            cargo build -p hew-cli --release
-
-            # `hew build` resolves its in-tree native library from the debug
-            # target directory. Build the canonical consolidated archive and
-            # prove its content-addressed freshness before the smoke link.
-            gmake stdlib
-            gmake check-libhew-fresh
-
-            target/release/hew --version
-
-            # Smoke test — compile and run a .hew program
-            echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
-            chmod +x _smoke_bin
-            OUTPUT=$(./_smoke_bin)
-            echo "$OUTPUT"
-            echo "$OUTPUT" | grep -q "smoke-ok"
-            rm -f _smoke.hew _smoke_bin
+            source scripts/ci/freebsd-setup.sh
+            hew_freebsd_activate release-smoke
+            cargo xtask gate release-smoke

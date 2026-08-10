@@ -59,7 +59,7 @@ fn usage() -> String {
         "",
         "commands:",
         "  build [all|native|wasm|release] [--release] [--target TRIPLE]",
-        "  gate <smoke|workspace|platform-smoke|platform-full|cabi|vertical-slice|hew-ratchet|stdlib-ratchet|playground>",
+        "  gate <smoke|workspace|platform-smoke|platform-full|cabi|vertical-slice|hew-ratchet|stdlib-ratchet|playground|release-smoke|freebsd>",
         "  tools --gates GATE[,GATE...] [--field tools|targets|ast-grep]",
         "  tools --verify GATE[,GATE...]",
         "  ci-local [--list]",
@@ -286,8 +286,35 @@ fn gate(root: &Path, args: &[String]) -> Result<()> {
                 &["build", "hew-wasm", "--target", "web", "--release"],
             )
         }
+        "freebsd" => freebsd_gate(root),
+        "release-smoke" => release_smoke(root),
         other => Err(format!("unknown gate {other:?}")),
     }
+}
+
+fn freebsd_gate(root: &Path) -> Result<()> {
+    gate(root, &["workspace".to_string()])?;
+    gate(root, &["cabi".to_string()])?;
+    gate(root, &["vertical-slice".to_string()])?;
+    gate(root, &["hew-ratchet".to_string()])?;
+    cargo(
+        root,
+        &[
+            "nextest",
+            "run",
+            "-p",
+            "hew-cli",
+            "--test",
+            "dwarf_debugger_locals_e2e",
+            "--profile",
+            "ci-focused",
+        ],
+    )
+}
+
+fn release_smoke(root: &Path) -> Result<()> {
+    build_native(root, Profile::Release, None, false)?;
+    run_program(root, "scripts/test-release-binary.sh", &["--no-build"])
 }
 
 fn compiled_hew_script(root: &Path, script: &str, args: &[&str]) -> Result<()> {
@@ -353,7 +380,7 @@ impl ToolPlan {
             .filter(|gate| !gate.is_empty())
         {
             match gate {
-                "workspace" | "platform-smoke" | "platform-full" => {
+                "workspace" | "platform-smoke" | "platform-full" | "freebsd" => {
                     plan.tools.extend([NEXTEST, WASMTIME]);
                     plan.targets.insert("wasm32-wasip1");
                 }
@@ -367,7 +394,8 @@ impl ToolPlan {
                 "lint" => plan.ast_grep = true,
                 "licenses" => plan.tools.extend([CARGO_ABOUT, CARGO_DENY]),
                 "coverage" => plan.tools.extend([LLVM_COV, NEXTEST]),
-                "vertical-slice" | "hew-ratchet" | "stdlib-ratchet" | "build" => {}
+                "vertical-slice" | "hew-ratchet" | "stdlib-ratchet" | "release-smoke" | "build" => {
+                }
                 other => return Err(format!("unknown CI gate {other:?}")),
             }
         }

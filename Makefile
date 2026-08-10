@@ -1288,7 +1288,11 @@ hew-check-all: hew
 
 .PHONY: codegen-carried-identity-gate
 codegen-carried-identity-gate:
-	bash scripts/codegen-carried-identity-gate.sh
+	@if rg -n 'contains\("__recv__"\)|split_once\("__recv__"\)|strip_suffix\("__step"\)|starts_with\("hew_metric_"\)|hew_tcp_connect|hew_dns_|actor_name_from_handler_symbol|actor_layout_key_from_handler_symbol|is_machine_step_symbol|module_uses_blocking_offload' hew-codegen-rs/src; then \
+		echo "error: codegen reintroduced a string consumer for MIR-carried identity" >&2; \
+		exit 1; \
+	fi
+	@echo "codegen carried-identity gate: OK"
 
 .PHONY: codegen-trap-inventory-check
 codegen-trap-inventory-check:
@@ -1340,10 +1344,10 @@ runtime-poison-safe-lint-self-test:
 # WASM-TODO(<stable-backlog-id>): marker. The self-test pins fail-closed
 # behaviour independently of the live corpus.
 lint-wasm-todo: lint-wasm-todo-self-test wasm-capability-check
-	bash scripts/lint-wasm-todo-issue-ref.sh
+	python3 scripts/lint-wasm-todo.py
 
 lint-wasm-todo-self-test:
-	bash scripts/lint-wasm-todo-issue-ref.sh --self-test
+	python3 scripts/lint-wasm-todo.py --self-test
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

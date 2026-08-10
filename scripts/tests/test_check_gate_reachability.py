@@ -523,7 +523,7 @@ def test_a_precondition_on_a_path_the_target_never_declared_is_not() -> None:
 
 
 def test_a_real_command_is_not_smuggled_in_as_a_precondition() -> None:
-    assert not covered("bash scripts/lint-wasm-todo-issue-ref.sh", {"whatever"})
+    assert not covered("python3 scripts/lint-wasm-todo.py", {"whatever"})
     assert not covered("test -f a && cargo miri test", {"a"}), (
         "the precondition rule matches a whole segment; it cannot be used as a "
         "prefix that launders the command after it"

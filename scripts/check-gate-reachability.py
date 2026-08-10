@@ -1706,7 +1706,7 @@ def uncompensated_packages(
 # So: a PROOF, uniform and mechanical. A target no CI step invokes is reached
 # only when every prerequisite is reached AND every command in its recipe is
 # one CI already runs. Anything the rules below cannot classify leaves the
-# target unreached — `lint-wasm-todo`'s `bash scripts/lint-wasm-todo-issue-ref.sh`
+# target unreached — `lint-wasm-todo`'s Python validator
 # is not provable by any of them, which is exactly why it had to be wired into
 # a workflow rather than argued about.
 

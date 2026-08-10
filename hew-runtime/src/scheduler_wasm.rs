@@ -8233,13 +8233,12 @@ mod tests {
             _borrow_mode: i32,
         ) -> *mut c_void {
             DISPATCHED.fetch_add(1, Ordering::Relaxed);
-            // Simulate sleep_ms(500): record a deadline 500 ms from now.
-            // Under the wasm32-pinned virtual clock now == VIRTUAL_BASE_MS; on
-            // native it is the real monotonic clock. Either way the recorded
-            // deadline is now + 500.
+            // Choose the next timer-wheel boundary at least one L0 revolution
+            // away. This forces the request through L1 and verifies that the
+            // boundary tick observes the cascaded sleep entry synchronously.
             // SAFETY: hew_now_ms is safe to call from within dispatch.
             let now = unsafe { hew_now_ms() };
-            let deadline_ms = now + 500;
+            let deadline_ms = now.saturating_add(511) & !255;
             REQUESTED_DEADLINE_MS.store(deadline_ms, Ordering::Release);
             request_sleep(deadline_ms);
 

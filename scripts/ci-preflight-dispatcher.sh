@@ -29,12 +29,13 @@ command_timeout_floor() {
         "make playground-check") echo 150 ;;
         "make test") echo 360 ;;
         # test-compiler-pipeline carries the hew-cli consumer corpus (compiled
-        # leak/drop oracles + e2e suites): 7887 tests, ~234 s wall on a warm
-        # 16-core target.  Without this floor the types lane's 180 s narrow
-        # tier watchdog-kills its own proving gate.  600 s gives cold-cache
-        # headroom and matches the compiler-pipeline lane tier, so that lane's
-        # effective budget is unchanged.
-        "make test-compiler-pipeline") echo 600 ;;
+        # leak/drop oracles + e2e suites).  The 600 s figure came from ~234 s
+        # on a warm 16-core developer machine; hosted runners have far fewer
+        # cores and the corpus has grown, so 600 s killed this gate on CI while
+        # it was still healthy.  1800 s is the scale of its sibling compiled
+        # corpora (ratchet 1500 s, O2 differential 2700 s) and still bounds a
+        # hang.
+        "make test-compiler-pipeline") echo 1800 ;;
         "make test-opaque-resource-lifecycle-matrix-external") echo 600 ;;
         "make test-vertical-slice") echo 240 ;;
         "make test-pkg-import") echo 60 ;;

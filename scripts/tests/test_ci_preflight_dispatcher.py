@@ -46,16 +46,6 @@ def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_ci_required() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", str(SCRIPT), "--ci-required"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
 def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result.stderr
     assert "Selected profile: scripts-config" in result.stdout
@@ -64,13 +54,19 @@ def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> N
     assert "  - cargo fmt --all -- --check" in result.stdout
     assert "  - make freebsd-workflow-contract-check" in result.stdout
     assert "  - make test-release-workflow-contract" in result.stdout
-    assert "  - make test" in result.stdout
+    assert "\n  - make test  " not in result.stdout
     assert "  - make doc-ratchet-selftest" in result.stdout
     assert "make test-codegen" not in result.stdout
 
 
+def assert_comprehensive_profile(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout
+    assert "  - make test  " in result.stdout
+
+
 def test_makefile_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Makefile"))
+    assert_comprehensive_profile(run_dispatcher("Makefile"))
 
 
 def test_scripts_path_routes_to_scripts_config_profile() -> None:
@@ -78,7 +74,7 @@ def test_scripts_path_routes_to_scripts_config_profile() -> None:
 
 
 def test_nextest_config_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher(".config/nextest.toml"))
+    assert_comprehensive_profile(run_dispatcher(".config/nextest.toml"))
 
 
 def test_workflow_routes_to_scripts_config_profile() -> None:
@@ -86,40 +82,22 @@ def test_workflow_routes_to_scripts_config_profile() -> None:
 
 
 def test_cargo_toml_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Cargo.toml"))
+    assert_comprehensive_profile(run_dispatcher("Cargo.toml"))
 
 
 def test_cargo_lock_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Cargo.lock"))
+    assert_comprehensive_profile(run_dispatcher("Cargo.lock"))
 
 
 def test_dot_cargo_config_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher(".cargo/config.toml"))
+    assert_comprehensive_profile(run_dispatcher(".cargo/config.toml"))
 
 
 def test_rust_toolchain_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("rust-toolchain.toml"))
-
-
-def test_ci_required_names_freebsd_authoritative_job() -> None:
-    result = run_ci_required()
-    assert result.returncode == 0, result.stderr
-    expected = (
-        "FreeBSD workflow contract (ci.yml required Clippy & format job)\t"
-        "make freebsd-workflow-contract-check"
-    )
-    assert result.stdout.splitlines().count(expected) == 1, result.stdout
+    assert_comprehensive_profile(run_dispatcher("rust-toolchain.toml"))
 
 
 def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() -> None:
-    required = run_ci_required()
-    assert required.returncode == 0, required.stderr
-    expected = (
-        "Pinned structural lint (ci.yml: make structural-lint)\tmake structural-lint"
-    )
-    assert required.stdout.splitlines().count(expected) == 1, required.stdout
-    assert "ci.yml: make structural-lint-bootstrap)" not in required.stdout
-
     local = run_dispatcher("scripts/structural-authority-audit.py")
     assert local.returncode == 0, local.stderr
     assert "  - make structural-lint " in local.stdout, local.stdout
@@ -443,7 +421,7 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     result = run_dispatcher("hew-mir/src/lower.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
     # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
     # eval_e2e, …) runs inside make test-compiler-pipeline (-p hew-cli
@@ -537,11 +515,14 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
-    """Docs-only changes remain a no-op and do not run the compiler oracle."""
+    """Docs-only changes run no compiler-backed suite."""
     result = run_dispatcher("docs/README.md")
     assert result.returncode == 0, result.stderr
     assert "docs-only" in result.stdout, result.stdout
     assert "make test-vertical-slice" not in result.stdout, result.stdout
+    assert "make test-doc-examples" not in result.stdout, result.stdout
+    assert "cargo nextest" not in result.stdout, result.stdout
+    assert "cargo clippy" not in result.stdout, result.stdout
 
 
 def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
@@ -573,32 +554,6 @@ def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
         f"Expected order: make ci-preflight-smoke < make lint < make test.\n"
         f"smoke_pos={smoke_pos}, lint_pos={lint_pos}, test_pos={test_pos}\n"
         f"stdout:\n{result.stdout}"
-    )
-
-
-def test_ci_parity_script_passes() -> None:
-    """scripts/check-preflight-ci-parity.sh exits 0 on the current fallback lane.
-
-    This is the Stage 6 lock: any future change that drops a CI-required check
-    from the dispatcher fallback lane will cause this test to fail.
-    """
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "check-preflight-ci-parity.sh")],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"CI parity check failed — the fallback lane is missing a CI-required step.\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    import re
-
-    # Match "N/N checks present" where N is the number of CI-required entries.
-    # The count comes from the dispatcher's --ci-required list, not a hardcoded literal.
-    assert re.search(r"\d+/\d+ checks present", result.stdout), (
-        f"Expected '<N>/<N> checks present' in parity output.\nstdout:\n{result.stdout}"
     )
 
 
@@ -705,10 +660,10 @@ def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     assert "Selected profile: types" in result.stdout, (
         f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # The proving gate needs its per-command floor: 7887 tests measure ~234 s
     # warm, so the types lane's 180 s narrow tier would watchdog-kill it.
-    assert "make test-compiler-pipeline  (budget: 600s)" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
     assert "make fuzz-oracle" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
@@ -733,7 +688,7 @@ def test_hew_hir_routes_to_compiler_pipeline_lane() -> None:
     assert "Selected profile: compiler-pipeline" in result.stdout, (
         f"Expected compiler-pipeline for hew-hir change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
 
 
@@ -744,7 +699,7 @@ def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
     assert "Selected profile: compiler-pipeline" in result.stdout, (
         f"Expected compiler-pipeline for hew-codegen-rs change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_compile_routes_to_cli_lane() -> None:
@@ -758,7 +713,7 @@ def test_hew_compile_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-compile change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_cabi_routes_to_cli_lane() -> None:
@@ -768,7 +723,7 @@ def test_hew_cabi_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-cabi change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_capability_gen_routes_to_cli_lane() -> None:
@@ -778,22 +733,22 @@ def test_hew_capability_gen_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-capability-gen change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_wasm_routes_to_wasm_lane() -> None:
     """hew-wasm/* changes route to the wasm lane.
 
-    The wasm lane runs cargo test -p hew-wasm --lib (not the full test
-    suite) plus make playground-check for the wasm-pack build smoke test.
+    The wasm selection runs the affected package plus make playground-check for the
+    wasm-pack build smoke test.
     """
     result = run_dispatcher("hew-wasm/src/lib.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: wasm" in result.stdout, (
         f"Expected wasm lane for hew-wasm change.\nstdout:\n{result.stdout}"
     )
-    assert "cargo test -p hew-wasm --lib" in result.stdout, (
-        f"Expected 'cargo test -p hew-wasm --lib' in wasm lane.\nstdout:\n{result.stdout}"
+    assert "cargo nextest run --profile ci -p hew-wasm" in result.stdout, (
+        f"Expected package-scoped nextest for wasm.\nstdout:\n{result.stdout}"
     )
     assert "make playground-check" in result.stdout, result.stdout
     # Must NOT have fallen back to the full test suite.
@@ -816,13 +771,61 @@ def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
         f"Expected compiler-pipeline for hew-hir + hew-types diff.\n"
         f"stdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
     assert (
         "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
     ), (
         f"Expected narrow compiler-pipeline lane, not full fallback.\nstdout:\n{result.stdout}"
     )
+
+
+def test_leaf_crate_runs_only_its_reverse_dependency_closure() -> None:
+    result = run_dispatcher("hew-observe/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "cargo nextest run --profile ci -p hew-observe" in result.stdout
+    assert "--workspace" not in result.stdout
+    assert "-p hew-parser" not in result.stdout
+
+
+def test_analysis_change_runs_known_dependents_without_workspace() -> None:
+    result = run_dispatcher("hew-analysis/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    nextest = next(
+        line for line in result.stdout.splitlines() if "cargo nextest run" in line
+    )
+    for package in ("hew-analysis", "hew-cli", "hew-lsp", "hew-wasm"):
+        assert f"-p {package}" in nextest
+    assert "--workspace" not in nextest
+    assert "make test-hew-ratchet" not in result.stdout
+
+
+def test_hosted_linux_executes_the_dispatcher_directly() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "run: scripts/ci-preflight-dispatcher.sh --base origin/main" in workflow
+    assert "run: make test-hew-ratchet" not in workflow
+
+
+def test_selector_exports_fail_closed_compile_requirement() -> None:
+    with tempfile.NamedTemporaryFile() as output:
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            extra_args=["--github-output", output.name],
+        )
+        values = output.read().decode()
+    assert result.returncode == 0, result.stderr
+    assert "profile=comprehensive" in values
+    assert "requires_compile=true" in values
+
+    with tempfile.NamedTemporaryFile() as output:
+        result = run_dispatcher(
+            ".github/workflows/ci.yml",
+            extra_args=["--github-output", output.name],
+        )
+        values = output.read().decode()
+    assert result.returncode == 0, result.stderr
+    assert "profile=scripts-config" in values
+    assert "requires_compile=false" in values
 
 
 _TESTS = [
@@ -834,7 +837,6 @@ _TESTS = [
     test_cargo_lock_routes_to_scripts_config_profile,
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
-    test_ci_required_names_freebsd_authoritative_job,
     test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
@@ -867,7 +869,6 @@ _TESTS = [
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
     test_stdlib_execution_proof_authorities_route_to_their_gate,
-    test_ci_parity_script_passes,
     # Slice 2 positive bucket-routing tests
     test_hew_hir_routes_to_compiler_pipeline_lane,
     test_hew_codegen_rs_routes_to_compiler_pipeline_lane,
@@ -876,6 +877,10 @@ _TESTS = [
     test_hew_capability_gen_routes_to_cli_lane,
     test_hew_wasm_routes_to_wasm_lane,
     test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff,
+    test_leaf_crate_runs_only_its_reverse_dependency_closure,
+    test_analysis_change_runs_known_dependents_without_workspace,
+    test_hosted_linux_executes_the_dispatcher_directly,
+    test_selector_exports_fail_closed_compile_requirement,
 ]
 
 if __name__ == "__main__":

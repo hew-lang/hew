@@ -535,6 +535,21 @@ def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     known = set(prereqs) | phony
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
+    if "ci-preflight-dispatcher.sh" in commands:
+        fallback = subprocess.run(
+            [
+                "bash",
+                str(gate.DISPATCHER),
+                "--dry-run",
+                "--",
+                "some-unclassified-root-file.txt",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commands += "\n" + fallback.stdout
     roots = gate.make_targets_in(commands, known)
     reached = gate.close_over_makefile(roots, prereqs, recipes, known)
     required = {
@@ -676,7 +691,7 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         oracle = next(
             (index, run)
             for index, run in enumerate(runnable)
-            if "make mqtt-broker-e2e" in run
+            if "make mqtt-broker-e2e" in run or "ci-preflight-dispatcher.sh" in run
         )
         assert "mosquitto_pub" in provision[1] and "mosquitto_sub" in provision[1], (
             f"{path.name}:{job_name} must verify both MQTT client commands"
@@ -684,9 +699,21 @@ def test_real_linux_workflows_provision_and_run_mqtt_without_hosting_macos_autho
         assert provision[0] < oracle[0], (
             f"{path.name}:{job_name} must provision clients before the MQTT oracle"
         )
-        assert any("make mqtt-broker-e2e" in run for run in runnable), (
-            f"{path.name}:{job_name} must execute the MQTT oracle"
-        )
+        if "ci-preflight-dispatcher.sh" in oracle[1]:
+            selected = subprocess.run(
+                [
+                    "bash",
+                    str(gate.DISPATCHER),
+                    "--dry-run",
+                    "--",
+                    "some-unclassified-root-file.txt",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert "make mqtt-broker-e2e" in selected.stdout
     workflows = gate.load_workflows()
     commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
     assert "macos-leak-oracle" not in gate.make_targets_in(

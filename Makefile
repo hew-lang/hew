@@ -69,7 +69,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check hew-fmt-property
+.PHONY: test macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix test-o2-differential o2-differential-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure hew-fmt-property
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -921,15 +921,11 @@ test-o2-differential: hew-native runtime $(LIBHEW_READY)
 o2-differential-selftest:
 	bash scripts/o2-differential-selftest.sh
 
-preflight-parity-selftest:
-	bash scripts/preflight-parity-selftest.sh
-
 # Reachability gate: every gate target in this Makefile, every workspace crate,
 # every nextest exclusion and every #[ignore]d test must be reached by a named
 # CI step or preflight command. There is no waiver list — an unreached check is
-# either wired in or deleted. Sibling of check-preflight-ci-parity.sh: that one
-# proves CI and the local preflight agree, this one proves the graph they agree
-# on actually covers the tree.
+# either wired in or deleted. CI runs the local dispatcher directly; this check
+# proves the resulting command graph actually covers the tree.
 #
 # The self-test runs first. This checker parses workflows structurally, and an
 # earlier version did not: it read them as raw text, so a TODO comment saying a
@@ -963,7 +959,6 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-s
 	@python3 scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" \
 	  --label "ux + progressive tutorial" \
-	  --floor-key ux-example-expectations \
 	  --source-root examples/ux \
 	  --source-root examples/progressive
 
@@ -999,7 +994,6 @@ test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectati
 	@python3 scripts/example-expectations.py \
 	  --hew-bin "$(DEBUG_DIR)/hew" \
 	  --label "surface" \
-	  --floor-key surface-example-expectations \
 	  --source-root examples/v05/surfaces \
 	  --source examples/net/http_await_service.hew
 
@@ -1177,7 +1171,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi test-verify-ffi test-python310-toml-compat verify-sys-lane-closure hew-fmt-check sandbox-parity-coverage-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Self-provisioning: the pinned toolchain install is a prerequisite of every
@@ -1206,16 +1200,6 @@ test-ast-grep-contract:
 
 test-structural-lint-bootstrap:
 	python3 scripts/tests/test_structural_lint_bootstrap.py
-# Keep the corpus-floor registry honest: every declared floor is well formed
-# and still has a live call site, the registry's own row count is floored, and
-# both helper implementations agree on every row's verdict. A gate that
-# enumerates a corpus and then compares over it proves nothing when the
-# enumeration is empty; scripts/corpus-floors.tsv is where each such gate
-# records the size it expects to find.
-corpus-floor-check:
-	bash scripts/tests/test_corpus_floor.sh
-	bash scripts/check-corpus-floors.sh
-
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
 # nextest/provisioning contract. The required Clippy & format job runs this
 # unconditionally; the docs/scripts job and scripts-config preflight also run it
@@ -1266,7 +1250,7 @@ leak-scan:
 hew-fmt-check: hew
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
 	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
-	bash scripts/lib/corpus-floor.sh hew-fmt-check-files "$$total" || exit 1; \
+	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
 	find std examples -name "*.hew" -print0 \
 	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \

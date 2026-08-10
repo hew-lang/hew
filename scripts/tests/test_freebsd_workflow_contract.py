@@ -771,19 +771,19 @@ def test_required_clippy_job_runs_contract_unconditionally() -> None:
     _assert_required_ci_path(CI_WORKFLOW.read_text())
 
 
-def test_docs_copy_cannot_mask_required_job_mutation() -> None:
+def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
     workflow = CI_WORKFLOW.read_text()
     job = _job_block(workflow, REQUIRED_CI_JOB)
     assert job.count(f"run: {CONTRACT_COMMAND}") == 1
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    assert f'add_command "{CONTRACT_COMMAND}"' in dispatcher
     mutated_job = job.replace(
         f"run: {CONTRACT_COMMAND}",
         "run: echo contract-check-removed",
         1,
     )
     mutated = workflow.replace(job, mutated_job, 1)
-    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 1, (
-        "the optional docs/scripts copy must remain in the mutation control"
-    )
+    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 0
     _assert_rejected(lambda: _assert_required_ci_path(mutated))
 
 
@@ -1289,7 +1289,7 @@ _TESTS = (
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
     test_x86_64_wasi_target_setup_matches_repository_toolchain,
     test_required_clippy_job_runs_contract_unconditionally,
-    test_docs_copy_cannot_mask_required_job_mutation,
+    test_dispatcher_copy_cannot_mask_required_job_mutation,
     test_required_job_parity_marker_drift_is_rejected,
     test_added_nightly_exclusion_is_rejected,
     test_nightly_bash_package_removal_is_rejected,

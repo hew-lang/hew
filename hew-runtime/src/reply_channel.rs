@@ -937,6 +937,47 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
     }
 }
 
+/// Publish cancellation as a terminal, payload-free reply.
+///
+/// This is the sender-side completion path for a handler that cannot produce
+/// its promised value because an awaited child task was cancelled. It marks
+/// the channel cancelled before publishing the null sentinel, so the waiter
+/// observes a status-bearing cancellation error rather than a value.
+///
+/// # Safety
+///
+/// `ch` must be null or the live sender-side reference for the current reply.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_publish_cancelled(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees the live sender reference and single writer.
+    unsafe {
+        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
+        (*ch).cancelled.store(true, Ordering::Release);
+        publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+    }
+}
+
+/// Publish a non-cancellation task failure as a terminal, payload-free reply.
+///
+/// # Safety
+///
+/// `ch` must be null or the live sender-side reference for the current reply.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_publish_task_failed(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees the live sender reference and single writer.
+    unsafe {
+        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
+        hew_reply_channel_mark_failed(ch, crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED);
+        publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+    }
+}
+
 /// Return the attached suspended-await status for a reply channel.
 ///
 /// When no common registration is attached, this reports the legacy channel

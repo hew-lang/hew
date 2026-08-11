@@ -255,6 +255,39 @@ fn mir_guards_affine_hash_projections_and_set_elements_if_upstream_admission_cha
     );
     assert_affine_rejection(&values, "HashMap::values()");
 
+    // `entries()` clones BOTH halves into the tuple, so an affine key or an
+    // affine value must each be rejected on its own. Two cases, because a gate
+    // wired with only one role set would still pass a single-sided probe.
+    let entries_affine_key = constructed_affine_collection_call(
+        ResolvedTy::named_builtin(
+            "HashMap",
+            BuiltinType::HashMap,
+            vec![token_ty(), ResolvedTy::I64],
+        ),
+        "hew_hashmap_entries_layout",
+        MethodTargetFamily::HashMap(HashMapMethod::Entries),
+        vec![
+            TyPattern::Primitive("Token".to_string()),
+            TyPattern::Primitive("i64".to_string()),
+        ],
+    );
+    assert_affine_rejection(&entries_affine_key, "HashMap::entries()");
+
+    let entries_affine_value = constructed_affine_collection_call(
+        ResolvedTy::named_builtin(
+            "HashMap",
+            BuiltinType::HashMap,
+            vec![ResolvedTy::I64, token_ty()],
+        ),
+        "hew_hashmap_entries_layout",
+        MethodTargetFamily::HashMap(HashMapMethod::Entries),
+        vec![
+            TyPattern::Primitive("i64".to_string()),
+            TyPattern::Primitive("Token".to_string()),
+        ],
+    );
+    assert_affine_rejection(&entries_affine_value, "HashMap::entries()");
+
     for (target_symbol, method, operation) in [
         (
             "hew_hashset_clone_layout",

@@ -326,6 +326,7 @@ impl MethodTargetFamily {
             Self::HashMap(
                 HashMapMethod::Clone
                 | HashMapMethod::Get
+                | HashMapMethod::Entries
                 | HashMapMethod::Keys
                 | HashMapMethod::Values,
             )
@@ -897,5 +898,40 @@ mod tests {
         )
         .expect_err("empty registry must not resolve");
         assert!(matches!(err, LookupError::NoImpl { .. }));
+    }
+
+    /// `entries()` allocates a fresh `Vec<(K, V)>` and clones each pair into
+    /// it, exactly as `keys()` and `values()` do for their halves. It must
+    /// therefore report the same clone-owned acquisition, or HIR gives the
+    /// result no typed owner and a discarded temporary leaks its allocation
+    /// and every cloned element.
+    ///
+    /// Discrimination, not presence: `entries` is asserted against the
+    /// siblings it must match AND against `remove`, which is genuinely
+    /// move-out rather than clone-owned.
+    #[test]
+    fn hashmap_entries_reports_clone_owned_like_its_snapshot_siblings() {
+        let entries = MethodTargetFamily::HashMap(HashMapMethod::Entries).result_ownership();
+
+        assert_eq!(
+            entries,
+            MethodTargetFamily::HashMap(HashMapMethod::Keys).result_ownership(),
+            "entries() must match keys() ownership: both clone into a fresh Vec"
+        );
+        assert_eq!(
+            entries,
+            MethodTargetFamily::HashMap(HashMapMethod::Values).result_ownership(),
+            "entries() must match values() ownership: both clone into a fresh Vec"
+        );
+        assert_eq!(
+            entries,
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Clone),
+            "entries() must be clone-owned, not Unknown"
+        );
+        assert_ne!(
+            entries,
+            MethodTargetFamily::HashMap(HashMapMethod::Remove).result_ownership(),
+            "entries() clones; remove() moves out, these must not collapse"
+        );
     }
 }

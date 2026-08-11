@@ -706,6 +706,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
+    crate::timer_periodic::reset_periodic_admission();
 
     // Ignore SIGPIPE process-wide, before ANY background thread is spawned or
     // any socket I/O runs. A broken-pipe write on the main thread (where a

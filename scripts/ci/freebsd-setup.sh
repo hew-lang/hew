@@ -22,7 +22,7 @@ hew_freebsd_prepare() {
         rust_package=rustup-init
     fi
     pkg install -y -U -r FreeBSD \
-        llvm22 gdb "${rust_package}" python3 cmake ninja git gmake bash \
+        llvm22 gdb "${rust_package}" go python3 cmake ninja git gmake bash \
         pkgconf libffi libxml2 wasmtime
 
     ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
@@ -78,6 +78,19 @@ hew_freebsd_activate() {
             cargo about --version | grep -q "${HEW_FREEBSD_CARGO_ABOUT_VERSION}"
             ;;
     esac
+
+    local go_tools
+    go_tools=$(cargo xtask tools --gates "${gates}" --field go-tools)
+    if [[ -n ${go_tools} ]]; then
+        local tool
+        while IFS= read -r tool; do
+            GOBIN="${HOME}/.cargo/bin" go install "${tool}"
+            local package=${tool%@v*}
+            local version=${tool##*@v}
+            local binary=${package##*/}
+            "${HOME}/.cargo/bin/${binary}" --version | grep -F "${version}"
+        done < <(printf '%s\n' "${go_tools//,/$'\n'}")
+    fi
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

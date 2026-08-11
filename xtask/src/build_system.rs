@@ -1,10 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use serde_yaml::Value as YamlValue;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -14,6 +16,8 @@ const CARGO_ABOUT: &str = "cargo-about@0.9.1";
 const LLVM_COV: &str = "cargo-llvm-cov@0.8.7";
 const WASM_PACK: &str = "wasm-pack@0.15.0";
 const WASMTIME: &str = "wasmtime@47.0.3";
+const ACTIONLINT: &str = "actionlint@1.7.12";
+const ACT: &str = "act@0.2.89";
 
 #[derive(Debug, Clone, Copy)]
 struct GateSpec {
@@ -75,6 +79,8 @@ const GATES: &[GateSpec] = &[
     gate_spec("release-link", &[], &[], &[], false),
     gate_spec("release-verify", &["release-link"], &[], &[], false),
     gate_spec("format", &[], &[], &[], false),
+    gate_spec("workflow-lint", &[], &[ACTIONLINT], &[], false),
+    gate_spec("workflow-local", &[], &[ACT], &[], false),
     gate_spec("clippy", &[], &[], &[], false),
     gate_spec("clippy-json", &[], &[], &[], false),
     gate_spec("structural-bootstrap", &[], &[], &[], false),
@@ -157,6 +163,7 @@ const GATES: &[GateSpec] = &[
         "lint",
         &[
             "format",
+            "workflow-lint",
             "structural-bootstrap-contract",
             "freebsd-contract",
             "cutover-contract",
@@ -307,7 +314,7 @@ fn usage() -> String {
         "commands:",
         "  build [all|native|wasm|release] [--release] [--target TRIPLE]",
         "  gate <name> [--filter-expr NEXTEST_EXPRESSION]",
-        "  tools --gates GATE[,GATE...] [--field tools|targets|ast-grep]",
+        "  tools --gates GATE[,GATE...] [--field tools|install-action-tools|go-tools|targets|ast-grep]",
         "  tools --verify GATE[,GATE...]",
         "  ci-local [--list]",
         "  preflight [DISPATCHER_OPTION...]",
@@ -477,6 +484,7 @@ fn run_gate(
     completed: &mut BTreeSet<String>,
 ) -> Result<()> {
     let spec = gate_spec_by_name(name)?;
+    ensure_gate_available(name, current_host_os())?;
     if !completed.insert(name.to_string()) {
         return Ok(());
     }
@@ -558,6 +566,8 @@ fn execute_gate(root: &Path, name: &str, filter_expr: Option<&str>) -> Result<()
         "release-link" => release_link(root),
         "release-verify" => release_verify(root),
         "format" => cargo(root, &["fmt", "--all", "--", "--check"]),
+        "workflow-lint" => workflow_lint(root),
+        "workflow-local" => workflow_local(root, false),
         "clippy" => cargo(
             root,
             &["clippy", "--workspace", "--tests", "--", "-D", "warnings"],
@@ -1690,6 +1700,22 @@ fn tools(args: &[String]) -> Result<()> {
     }
     match field {
         "tools" => println!("{}", plan.tools.into_iter().collect::<Vec<_>>().join(",")),
+        "install-action-tools" => println!(
+            "{}",
+            plan.tools
+                .into_iter()
+                .filter(|tool| !is_go_tool(tool))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        "go-tools" => println!(
+            "{}",
+            plan.tools
+                .into_iter()
+                .filter_map(|tool| go_install_spec(tool))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
         "targets" => println!("{}", plan.targets.into_iter().collect::<Vec<_>>().join(" ")),
         "ast-grep" => println!("{}", plan.ast_grep),
         other => return Err(format!("unknown tools field {other:?}")),
@@ -1722,6 +1748,7 @@ impl ToolPlan {
         if !visited.insert(name.to_string()) {
             return Ok(());
         }
+        ensure_gate_available(name, current_host_os())?;
         let spec = gate_spec_by_name(name)?;
         self.tools.extend(spec.tools.iter().copied());
         self.targets.extend(spec.targets.iter().copied());
@@ -1741,6 +1768,8 @@ impl ToolPlan {
                 LLVM_COV => ("cargo-llvm-cov", "0.8.7"),
                 WASM_PACK => ("wasm-pack", "0.15.0"),
                 WASMTIME => ("wasmtime", "47.0.3"),
+                ACTIONLINT => ("actionlint", "1.7.12"),
+                ACT => ("act", "0.2.89"),
                 _ => return Err(format!("no verifier for {tool}")),
             };
             let output = Command::new(binary)
@@ -1775,18 +1804,312 @@ impl ToolPlan {
 }
 
 fn ci_local(root: &Path, args: &[String]) -> Result<()> {
+    if args == ["--list"] {
+        ensure_gate_available("workflow-local", current_host_os())?;
+        workflow_local(root, true)
+    } else if args.is_empty() {
+        let mut completed = BTreeSet::new();
+        run_gate(root, "workflow-local", None, &mut completed)
+    } else {
+        Err("ci-local accepts only --list".to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostOs {
+    MacOs,
+    Linux,
+    Windows,
+    FreeBsd,
+    Other,
+}
+
+fn current_host_os() -> HostOs {
+    if cfg!(target_os = "macos") {
+        HostOs::MacOs
+    } else if cfg!(target_os = "linux") {
+        HostOs::Linux
+    } else if cfg!(windows) {
+        HostOs::Windows
+    } else if cfg!(target_os = "freebsd") {
+        HostOs::FreeBsd
+    } else {
+        HostOs::Other
+    }
+}
+
+fn ensure_gate_available(name: &str, host: HostOs) -> Result<()> {
+    if name != "workflow-local" {
+        return Ok(());
+    }
+    match host {
+        HostOs::MacOs | HostOs::Linux | HostOs::Windows => Ok(()),
+        HostOs::FreeBsd => Err(
+            "gate \"workflow-local\" is unavailable on FreeBSD: act does not publish a \
+             FreeBSD binary and requires a supported Docker Engine. Dispatch \
+             .github/workflows/ci-local.yml on GitHub Actions instead."
+                .to_string(),
+        ),
+        HostOs::Other => Err(
+            "gate \"workflow-local\" is unavailable on this host: act is supported here only \
+             on macOS, Linux, and Windows. Dispatch .github/workflows/ci-local.yml on GitHub \
+             Actions instead."
+                .to_string(),
+        ),
+    }
+}
+
+fn is_go_tool(tool: &str) -> bool {
+    matches!(tool, ACTIONLINT | ACT)
+}
+
+fn go_install_spec(tool: &str) -> Option<&'static str> {
+    match tool {
+        ACTIONLINT => Some("github.com/rhysd/actionlint/cmd/actionlint@v1.7.12"),
+        ACT => Some("github.com/nektos/act@v0.2.89"),
+        _ => None,
+    }
+}
+
+fn workflow_local(root: &Path, list: bool) -> Result<()> {
     let mut command = Command::new("act");
     command
         .current_dir(root)
         .args(["workflow_dispatch", "-W", ".github/workflows/ci-local.yml"]);
-    if args == ["--list"] {
+    if list {
         command.arg("--list");
-    } else if args.is_empty() {
-        command.args(["-j", "provisioning-smoke"]);
     } else {
-        return Err("ci-local accepts only --list".to_string());
+        command.args(["-j", "provisioning-smoke"]);
     }
     run_command(&mut command, "run local Linux CI")
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalAction {
+    #[serde(default)]
+    inputs: BTreeMap<String, YamlValue>,
+    runs: LocalActionRuns,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalActionRuns {
+    using: String,
+    #[serde(default)]
+    steps: Vec<YamlValue>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntheticWorkflow<'a> {
+    name: &'static str,
+    #[serde(rename = "on")]
+    trigger: SyntheticTrigger,
+    jobs: BTreeMap<String, SyntheticJob<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntheticTrigger {
+    workflow_dispatch: SyntheticDispatch,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntheticDispatch {
+    inputs: BTreeMap<String, SyntheticInput>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntheticInput {
+    description: &'static str,
+    required: bool,
+    #[serde(rename = "type")]
+    input_type: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntheticJob<'a> {
+    #[serde(rename = "runs-on")]
+    runs_on: &'static str,
+    steps: &'a [YamlValue],
+}
+
+fn workflow_lint(root: &Path) -> Result<()> {
+    let workflows = github_yaml_files(&root.join(".github/workflows"))?;
+    if workflows.is_empty() {
+        return Err(".github/workflows contains no YAML files".to_string());
+    }
+    let mut command = Command::new("actionlint");
+    command.current_dir(root).args(&workflows);
+    run_command(&mut command, "lint GitHub Actions workflows")?;
+
+    let actions = github_yaml_files(&root.join(".github/actions"))?;
+    if actions.is_empty() {
+        return Err(".github/actions contains no YAML files".to_string());
+    }
+    for action in actions {
+        lint_local_action(root, &action)?;
+    }
+    Ok(())
+}
+
+fn github_yaml_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_yaml_files(directory, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_yaml_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(directory)
+        .map_err(|err| format!("read {}: {err}", directory.display()))?
+    {
+        let entry = entry.map_err(|err| format!("read {} entry: {err}", directory.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files(&path, files)?;
+        } else if matches!(
+            path.extension().and_then(OsStr::to_str),
+            Some("yml" | "yaml")
+        ) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn lint_local_action(root: &Path, path: &Path) -> Result<()> {
+    let contents =
+        std::fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let action: LocalAction = serde_yaml::from_str(&contents)
+        .map_err(|err| format!("parse action metadata {}: {err}", path.display()))?;
+    if action.runs.using != "composite" {
+        return lint_action_reference(root, path, &action.inputs);
+    }
+
+    let inputs = synthetic_inputs(&action.inputs);
+    let mut steps = Vec::with_capacity(action.runs.steps.len() + 1);
+    let relative = path
+        .parent()
+        .and_then(|directory| directory.strip_prefix(root).ok())
+        .ok_or_else(|| format!("{} is not below {}", path.display(), root.display()))?;
+    steps.push(action_reference_step(relative, &action.inputs));
+    steps.extend(action.runs.steps);
+
+    let mut jobs = BTreeMap::new();
+    jobs.insert(
+        "lint".to_string(),
+        SyntheticJob {
+            runs_on: "ubuntu-latest",
+            steps: &steps,
+        },
+    );
+    let workflow = SyntheticWorkflow {
+        name: "Lint local action",
+        trigger: SyntheticTrigger {
+            workflow_dispatch: SyntheticDispatch { inputs },
+        },
+        jobs,
+    };
+    let source = serde_yaml::to_string(&workflow)
+        .map_err(|err| format!("serialize action lint workflow {}: {err}", path.display()))?;
+    run_actionlint_stdin(root, path, &source)
+}
+
+fn lint_action_reference(
+    root: &Path,
+    path: &Path,
+    inputs: &BTreeMap<String, YamlValue>,
+) -> Result<()> {
+    let relative = path
+        .parent()
+        .and_then(|directory| directory.strip_prefix(root).ok())
+        .ok_or_else(|| format!("{} is not below {}", path.display(), root.display()))?;
+    let steps = [action_reference_step(relative, inputs)];
+    let mut jobs = BTreeMap::new();
+    jobs.insert(
+        "lint".to_string(),
+        SyntheticJob {
+            runs_on: "ubuntu-latest",
+            steps: &steps,
+        },
+    );
+    let workflow = SyntheticWorkflow {
+        name: "Lint local action",
+        trigger: SyntheticTrigger {
+            workflow_dispatch: SyntheticDispatch {
+                inputs: synthetic_inputs(inputs),
+            },
+        },
+        jobs,
+    };
+    let source = serde_yaml::to_string(&workflow)
+        .map_err(|err| format!("serialize action lint workflow {}: {err}", path.display()))?;
+    run_actionlint_stdin(root, path, &source)
+}
+
+fn synthetic_inputs(inputs: &BTreeMap<String, YamlValue>) -> BTreeMap<String, SyntheticInput> {
+    inputs
+        .keys()
+        .map(|name| {
+            (
+                name.clone(),
+                SyntheticInput {
+                    description: "Composite action lint input",
+                    required: false,
+                    input_type: "string",
+                },
+            )
+        })
+        .collect()
+}
+
+fn action_reference_step(relative: &Path, inputs: &BTreeMap<String, YamlValue>) -> YamlValue {
+    let mut reference = serde_yaml::Mapping::new();
+    reference.insert(
+        YamlValue::String("uses".to_string()),
+        YamlValue::String(format!("./{}", relative.display())),
+    );
+    if !inputs.is_empty() {
+        let with = inputs
+            .keys()
+            .map(|name| {
+                (
+                    YamlValue::String(name.clone()),
+                    YamlValue::String(format!("${{{{ inputs.{name} }}}}")),
+                )
+            })
+            .collect();
+        reference.insert(
+            YamlValue::String("with".to_string()),
+            YamlValue::Mapping(with),
+        );
+    }
+    YamlValue::Mapping(reference)
+}
+
+fn run_actionlint_stdin(root: &Path, path: &Path, source: &str) -> Result<()> {
+    use std::io::Write;
+
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut command = Command::new("actionlint");
+    command
+        .current_dir(root)
+        .args(["-stdin-filename"])
+        .arg(relative)
+        .arg("-")
+        .stdin(Stdio::piped());
+    eprintln!("+ {command:?}");
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("lint local action {}: {err}", relative.display()))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "actionlint stdin was not piped".to_string())?
+        .write_all(source.as_bytes())
+        .map_err(|err| format!("write actionlint input for {}: {err}", relative.display()))?;
+    let status = child
+        .wait()
+        .map_err(|err| format!("wait for actionlint on {}: {err}", relative.display()))?;
+    ensure_success(status, &format!("lint local action {}", relative.display()))
 }
 
 fn install(root: &Path) -> Result<()> {
@@ -2118,7 +2441,7 @@ fn cargo_output_dir(root: &Path, profile: &str, target: Option<&str>) -> Result<
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let metadata: Value = serde_json::from_slice(&output.stdout)
+    let metadata: JsonValue = serde_json::from_slice(&output.stdout)
         .map_err(|err| format!("parse cargo metadata: {err}"))?;
     let mut directory = PathBuf::from(
         metadata["target_directory"]
@@ -2172,6 +2495,7 @@ mod tests {
         assert!(plan.tools.contains(NEXTEST));
         assert!(plan.tools.contains(WASMTIME));
         assert!(plan.tools.contains(WASM_PACK));
+        assert!(plan.tools.contains(ACTIONLINT));
         assert_eq!(plan.targets.len(), 2);
         assert!(plan.ast_grep);
     }
@@ -2230,11 +2554,42 @@ mod tests {
     #[test]
     fn tool_plan_follows_transitive_gate_edges() {
         let plan = ToolPlan::for_gates("ci").unwrap();
-        for tool in [NEXTEST, WASMTIME, WASM_PACK, CARGO_ABOUT, CARGO_DENY] {
+        for tool in [
+            NEXTEST,
+            WASMTIME,
+            WASM_PACK,
+            CARGO_ABOUT,
+            CARGO_DENY,
+            ACTIONLINT,
+        ] {
             assert!(plan.tools.contains(tool), "ci plan omitted {tool}");
         }
         assert!(plan.targets.contains("wasm32-wasip1"));
         assert!(plan.targets.contains("wasm32-unknown-unknown"));
         assert!(plan.ast_grep);
+    }
+
+    #[test]
+    fn workflow_local_reports_platform_availability() {
+        for host in [HostOs::MacOs, HostOs::Linux, HostOs::Windows] {
+            assert!(ensure_gate_available("workflow-local", host).is_ok());
+        }
+        let error = ensure_gate_available("workflow-local", HostOs::FreeBsd).unwrap_err();
+        assert!(error.contains("unavailable on FreeBSD"));
+        assert!(error.contains("GitHub Actions instead"));
+    }
+
+    #[test]
+    fn workflow_local_declares_act() {
+        assert_eq!(gate_spec_by_name("workflow-local").unwrap().tools, &[ACT]);
+    }
+
+    #[test]
+    fn go_tool_specs_are_pinned() {
+        assert_eq!(
+            go_install_spec(ACTIONLINT),
+            Some("github.com/rhysd/actionlint/cmd/actionlint@v1.7.12")
+        );
+        assert_eq!(go_install_spec(ACT), Some("github.com/nektos/act@v0.2.89"));
     }
 }

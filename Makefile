@@ -57,6 +57,13 @@ test-release-lib-link:
 lint:
 	cargo xtask gate lint
 
+.PHONY: workflow-lint workflow-local
+workflow-lint:
+	cargo xtask gate workflow-lint
+
+workflow-local:
+	cargo xtask gate workflow-local
+
 .PHONY: structural-lint structural-lint-bootstrap
 structural-lint:
 	cargo xtask gate structural-lint
@@ -203,8 +210,7 @@ publish-docs:
 	cargo xtask gate docs
 
 .PHONY: ci-local-linux
-ci-local-linux:
-	cargo xtask ci-local
+ci-local-linux: workflow-local
 
 .PHONY: bootstrap install-hooks clean
 bootstrap install-hooks:

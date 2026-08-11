@@ -54,11 +54,13 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        tools=$(cargo xtask tools --gates '${{ inputs.gates }}' --field tools)
+        tools=$(cargo xtask tools --gates '${{ inputs.gates }}' --field install-action-tools)
+        go_tools=$(cargo xtask tools --gates '${{ inputs.gates }}' --field go-tools)
         targets=$(cargo xtask tools --gates '${{ inputs.gates }}' --field targets)
         ast_grep=$(cargo xtask tools --gates '${{ inputs.gates }}' --field ast-grep)
         {
           echo "tools=${tools}"
+          echo "go_tools=${go_tools}"
           echo "targets=${targets}"
           echo "ast_grep=${ast_grep}"
         } >> "$GITHUB_OUTPUT"
@@ -73,6 +75,16 @@ runs:
       with:
         tool: ${{ steps.plan.outputs.tools }}
         fallback: none
+
+    - name: Install pinned Go tools
+      if: steps.plan.outputs.go_tools != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        IFS=',' read -ra tools <<< '${{ steps.plan.outputs.go_tools }}'
+        for tool in "${tools[@]}"; do
+          GOBIN="${CARGO_HOME:-${HOME}/.cargo}/bin" go install "${tool}"
+        done
 
     - name: Provision pinned ast-grep toolchain
       if: steps.plan.outputs.ast_grep == 'true'
@@ -102,9 +114,11 @@ runs:
       if: env.ACT != 'true'
       shell: bash
       run: |
-        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "SCCACHE_CACHE_SIZE=2G"
+        } >> "$GITHUB_ENV"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       if: env.ACT != 'true'

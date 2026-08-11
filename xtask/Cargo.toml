@@ -18,3 +18,4 @@ hew-sandbox-wasm = { path = "../hew-sandbox-wasm" }
 insta = "1.48.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_yaml = "0.9"

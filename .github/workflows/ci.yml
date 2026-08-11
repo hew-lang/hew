@@ -225,6 +225,9 @@ jobs:
       - name: Check formatting
         run: cargo xtask gate format
 
+      - name: Lint GitHub Actions workflows
+        run: make workflow-lint
+
       # Keep the bootstrap counterfactuals on the required job after moving
       # provisioning into the shared action.
       - name: Verify structural lint bootstrap contract

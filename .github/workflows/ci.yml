@@ -579,9 +579,11 @@ jobs:
 
       - name: List the independent full suite inventory
         if: env.RUN_CODE_PATH == 'true'
-        run: >-
-          "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew"
-          test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"
+        run: |
+          for fixture in tests/hew/*.hew; do
+            "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
+              test "$fixture" --list --allow-empty
+          done | LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"
 
       # >>> CI-PARITY-STEPS
       - name: Assert shard union and Hew ratchet
@@ -740,6 +742,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         env:
           CI_PREFLIGHT_BASE: origin/main
+          COMPILED_HEW_GATE_OWNER: aggregate
           HEW_O0_OUTCOMES_FILE: ${{ runner.temp }}/hew-o0-outcomes.txt
         run: scripts/ci-preflight-dispatcher.sh --base origin/main
 

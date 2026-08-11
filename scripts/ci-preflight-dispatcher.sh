@@ -207,6 +207,13 @@ collect_paths_from_command() {
 }
 
 add_command() {
+    if [[ "${COMPILED_HEW_GATE_OWNER:-dispatcher}" == "aggregate" ]]; then
+        case "$1" in
+            "make test-hew-ratchet"|"make test-o2-differential")
+                return 0
+                ;;
+        esac
+    fi
     COMMANDS+=("$1")
 }
 

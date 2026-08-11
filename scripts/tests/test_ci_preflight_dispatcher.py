@@ -828,6 +828,24 @@ def test_hosted_linux_executes_the_dispatcher_directly() -> None:
     assert "run: make test-hew-ratchet" not in workflow
 
 
+def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
+    local = run_dispatcher("some-unclassified-root-file.txt")
+    assert local.returncode == 0, local.stderr
+    assert "  - make test-hew-ratchet " in local.stdout, local.stdout
+    assert "  - make test-o2-differential " in local.stdout, local.stdout
+
+    hosted = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        env={"COMPILED_HEW_GATE_OWNER": "aggregate"},
+    )
+    assert hosted.returncode == 0, hosted.stderr
+    assert "make test-hew-ratchet" not in hosted.stdout, hosted.stdout
+    assert "make test-o2-differential" not in hosted.stdout, hosted.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "COMPILED_HEW_GATE_OWNER: aggregate" in workflow, workflow
+
+
 def test_selector_exports_fail_closed_compile_requirement() -> None:
     with tempfile.NamedTemporaryFile() as output:
         result = run_dispatcher(
@@ -902,6 +920,7 @@ _TESTS = [
     test_leaf_crate_runs_only_its_reverse_dependency_closure,
     test_analysis_change_runs_known_dependents_without_workspace,
     test_hosted_linux_executes_the_dispatcher_directly,
+    test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
     test_selector_exports_fail_closed_compile_requirement,
 ]
 

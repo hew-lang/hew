@@ -496,13 +496,30 @@ jobs:
           HEW_SOURCE_REVISION: ${{ github.sha }}
         run: cargo xtask gate compiled-artifact-unpack
 
+      - name: Restore content-addressed Hew verdicts
+        if: env.RUN_CODE_PATH == 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: target/hew-verdict-cache
+          key: hew-verdict-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hew-verdict-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.shard }}-
+
       - name: Run O0 and O2 shard
         if: env.RUN_CODE_PATH == 'true'
         env:
           HEW_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew
           HEW_SHARD_PARTITION: hash:${{ matrix.shard }}/4
           HEW_SHARD_OUTPUT_DIR: target/hew-shards
+          HEW_VERDICT_CACHE_DIR: target/hew-verdict-cache
         run: cargo xtask gate compiled-shard
+
+      - name: Save content-addressed Hew verdicts
+        if: env.RUN_CODE_PATH == 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: target/hew-verdict-cache
+          key: hew-verdict-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload shard reports
         if: always() && env.RUN_CODE_PATH == 'true'

@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from typing import NoReturn
@@ -20,6 +23,26 @@ from corpus_nonempty import assert_nonempty  # noqa: E402
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
+CACHE_FORMAT = "compiled-hew-verdict-v1"
+HOST_ENVIRONMENT = (
+    "AR",
+    "CC",
+    "CFLAGS",
+    "CI",
+    "CPATH",
+    "CXX",
+    "DYLD_LIBRARY_PATH",
+    "LANG",
+    "LC_ALL",
+    "LD",
+    "LDFLAGS",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "PATH",
+    "SDKROOT",
+    "TZ",
+)
 
 
 def die(message: str) -> NoReturn:
@@ -126,6 +149,135 @@ def run_command(
     return result.returncode
 
 
+def hash_file(digest: "hashlib._Hash", path: Path) -> None:
+    digest.update(str(path.relative_to(REPO_ROOT)).encode())
+    digest.update(b"\0")
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    digest.update(b"\0")
+
+
+def tool_identity(name: str) -> str:
+    path = shutil.which(name)
+    if path is None:
+        return f"{name}=missing"
+    result = subprocess.run(
+        [path, "--version"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    return f"{name}={path}\n{result.returncode}\n{result.stdout}"
+
+
+def verdict_cache_key(compiler: Path, partition: str, optimization: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"{CACHE_FORMAT}\0{partition}\0O{optimization}\0".encode())
+    for artifact in (
+        compiler,
+        next(
+            (
+                compiler.parent / name
+                for name in ("libhew.a", "hew.lib")
+                if (compiler.parent / name).is_file()
+            ),
+            None,
+        ),
+        Path(__file__),
+        REPO_ROOT / "scripts/lib/hew_junit.py",
+    ):
+        if artifact is None:
+            die(f"no libhew archive beside compiler {compiler}")
+        resolved = artifact.resolve()
+        digest.update(str(resolved).encode())
+        digest.update(b"\0")
+        with resolved.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        digest.update(b"\0")
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "*.hew", "*.toml", "*.lock"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout.splitlines()
+    for relative in sorted(tracked):
+        path = REPO_ROOT / relative
+        if path.is_file():
+            hash_file(digest, path)
+
+    excluded = {
+        "HEW_BIN",
+        "HEW_SHARD_OUTPUT_DIR",
+        "HEW_VERDICT_CACHE_DIR",
+    }
+    semantic_environment = sorted(
+        (name, value)
+        for name, value in os.environ.items()
+        if name.startswith("HEW_") and name not in excluded
+    )
+    semantic_environment.extend(
+        (name, os.environ.get(name, "")) for name in HOST_ENVIRONMENT
+    )
+    semantic_environment.sort()
+    identity = {
+        "environment": semantic_environment,
+        "image_os": os.environ.get("ImageOS", ""),
+        "image_version": os.environ.get("ImageVersion", ""),
+        "machine": platform.machine(),
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "tools": [tool_identity(name) for name in ("clang", "cc", "ld.lld")],
+    }
+    digest.update(json.dumps(identity, sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def restore_cached_run(
+    cache: Path, report: Path, stderr: Path, expected: set[str]
+) -> int | None:
+    metadata_path = cache / "metadata.json"
+    cached_report = cache / "report.xml"
+    cached_stderr = cache / "stderr.log"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        returncode = int(metadata["returncode"])
+        outcomes = parse_junit(cached_report)
+    except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+    if metadata.get("format") != CACHE_FORMAT or set(outcomes) != expected:
+        return None
+    expected_returncode = 1 if "FAILED" in outcomes.values() else 0
+    if returncode != expected_returncode:
+        return None
+    report.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cached_report, report)
+    if cached_stderr.is_file():
+        shutil.copy2(cached_stderr, stderr)
+    else:
+        stderr.write_text("", encoding="utf-8")
+    return returncode
+
+
+def store_cached_run(cache: Path, report: Path, stderr: Path, returncode: int) -> None:
+    cache.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(report, cache / "report.xml")
+    shutil.copy2(stderr, cache / "stderr.log")
+    (cache / "metadata.json").write_text(
+        json.dumps(
+            {"format": CACHE_FORMAT, "returncode": returncode},
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
     match = PARTITION_RE.fullmatch(partition)
     if match is None or int(match.group(1)) > int(match.group(2)):
@@ -146,25 +298,36 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
     expected = set(read_inventory(inventory))
 
     metadata: dict[str, object] = {"partition": partition, "tests": len(expected)}
+    cache_root = Path(
+        os.environ.get("HEW_VERDICT_CACHE_DIR", REPO_ROOT / "target/hew-verdict-cache")
+    )
     for optimization, label in (("0", "o0"), ("2", "o2")):
         report = output_dir / f"hew-{label}-shard-{shard}.xml"
         stderr = output_dir / f"hew-{label}-shard-{shard}.stderr.log"
-        environment = dict(os.environ)
-        environment["HEW_OPT_LEVEL"] = optimization
-        returncode = run_command(
-            [
-                str(compiler),
-                "test",
-                "tests/hew",
-                "--partition",
-                partition,
-                "--format",
-                "junit",
-            ],
-            report,
-            stderr,
-            environment,
-        )
+        key = verdict_cache_key(compiler, partition, optimization)
+        cache = cache_root / key
+        returncode = restore_cached_run(cache, report, stderr, expected)
+        if returncode is None:
+            environment = dict(os.environ)
+            environment["HEW_OPT_LEVEL"] = optimization
+            returncode = run_command(
+                [
+                    str(compiler),
+                    "test",
+                    "tests/hew",
+                    "--partition",
+                    partition,
+                    "--format",
+                    "junit",
+                ],
+                report,
+                stderr,
+                environment,
+            )
+            store_cached_run(cache, report, stderr, returncode)
+            metadata[f"{label}_cache"] = "miss"
+        else:
+            metadata[f"{label}_cache"] = "hit"
         outcomes = parse_junit(report)
         if set(outcomes) != expected:
             die(
@@ -181,29 +344,6 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
     (output_dir / f"hew-shard-{shard}.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-
-
-def expected_failures(path: Path, full: set[str]) -> set[str]:
-    names: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        value = line.split("#", 1)[0].strip()
-        if value:
-            names.append(value.split()[0])
-    if len(names) != len(set(names)):
-        die(f"expected-failures file contains duplicate names: {path}")
-    by_name: dict[str, list[str]] = {}
-    for identity in full:
-        by_name.setdefault(identity.rsplit("::", 1)[-1], []).append(identity)
-    identities: set[str] = set()
-    for name in names:
-        matches = by_name.get(name, [])
-        if len(matches) != 1:
-            die(
-                f"expected failure {name!r} maps to {len(matches)} full-suite identities; "
-                "expected exactly one"
-            )
-        identities.add(matches[0])
-    return identities
 
 
 def load_shards(
@@ -246,7 +386,6 @@ def aggregate(
     reports_dir: Path,
     full_inventory: Path,
     shard_count: int,
-    expected_failures_path: Path,
 ) -> None:
     if shard_count < 2:
         die("shard count must be at least two")
@@ -256,17 +395,11 @@ def aggregate(
     assert_nonempty(label, len(full), context="union of compiled-Hew shards")
 
     if mode == "ratchet":
-        expected = expected_failures(expected_failures_path, full)
         actual = {identity for identity, outcome in o0.items() if outcome == "FAILED"}
-        if actual != expected:
-            die(
-                "O0 shard failure set differs from the ratchet: "
-                f"unexpected={sorted(actual - expected)[:5]} "
-                f"now_passing={sorted(expected - actual)[:5]}"
-            )
+        if actual:
+            die(f"O0 shards contain failing tests: failures={sorted(actual)[:5]}")
         print(
-            f"compiled-Hew ratchet passed: {len(full)} tests across {shard_count} shards; "
-            f"{len(actual)} tracked failures"
+            f"compiled-Hew suite passed: {len(full)} tests across {shard_count} shards"
         )
         return
 
@@ -299,11 +432,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     aggregate_parser.add_argument("--reports-dir", type=Path, required=True)
     aggregate_parser.add_argument("--full-inventory", type=Path, required=True)
     aggregate_parser.add_argument("--shard-count", type=int, required=True)
-    aggregate_parser.add_argument(
-        "--expected-failures",
-        type=Path,
-        default=REPO_ROOT / "scripts" / "hew-suite-expected-failures.txt",
-    )
     return parser.parse_args(argv)
 
 
@@ -317,7 +445,6 @@ def main(argv: list[str]) -> int:
             args.reports_dir,
             args.full_inventory,
             args.shard_count,
-            args.expected_failures,
         )
     return 0
 

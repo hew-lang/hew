@@ -71,10 +71,10 @@ Use `cargo xtask` for builds and gates. The [Makefile](Makefile) only preserves 
 | Suite | Command | Scope | Speed |
 |---|---|---|---|
 | Full (default) | `make test` | Rust workspace (via nextest) | medium |
-| Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt` | medium |
+| Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep; every file must pass | medium |
 | Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers | medium |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
-| Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |
+| Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`; every test must pass | medium |
 
 Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
 

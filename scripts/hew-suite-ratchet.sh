@@ -1,36 +1,21 @@
 #!/usr/bin/env bash
-# hew-suite-ratchet.sh — Run `hew test tests/hew/` with a ratcheted expected-failures list.
+# Run every compiled-Hew test, with content-addressed per-fixture verdicts.
 #
-# Behaviour:
-#   - Exits 0 if the set of failing tests exactly matches the list in
-#     scripts/hew-suite-expected-failures.txt.
-#   - Exits 1 if any NEW failure appears (unexpected regression).
-#   - Exits 1 if any LISTED failure no longer fails (unexpected fix — delete
-#     the entry from the list to accept the green).
-#
-# WHY: The Hew test suite is ~700 tests converging toward green via in-flight
-# lanes.  Gating on zero failures would block the integration branch.  Gating
-# on nothing would silently accept regressions.  This ratchet is the middle
-# path: known failures are explicitly tracked, anything else is a hard fail.
+# The former failure inventory is empty, so a direct zero-failure assertion is
+# stronger and has no second list to maintain. The historical public command
+# name remains compatible.
 #
 # Parses `hew test --format junit` output (via scripts/lib/hew_junit.py)
 # rather than regex-matching the human-readable text — a cosmetic text-format
 # change can no longer silently break pass/fail extraction, and the same
 # JUnit report this script parses is the one uploaded to the CI checks UI.
 #
-# WHEN OBSOLETE: When the list is empty and all tests are green, drop the
-# ratchet wrapper and have the gate target run `hew test tests/hew/` directly.
-#
-# REAL SOLUTION: Fix the underlying failures (tracked per entry in the list).
-#
 # Usage:
 #   scripts/hew-suite-ratchet.sh [--help]
-#   scripts/hew-suite-ratchet.sh [--expected-failures <path>]
 #   scripts/hew-suite-ratchet.sh [--emit-o0-outcomes <path>]
 #   scripts/hew-suite-ratchet.sh [--junit-output <path>]
 #
 # Options:
-#   --expected-failures <path>   Override default expected-failures file path.
 #   --emit-o0-outcomes <path>    Write the sorted per-test outcome lines (the
 #                                same "test <name> ... ok|PASSED|FAILED|ignored"
 #                                format scripts/o2-differential.sh compares) to
@@ -48,16 +33,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/line-set.sh
-# shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/line-set.sh"
 # shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
-EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
 HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
@@ -69,16 +50,11 @@ CACHE_DIR="${HEW_TEST_CACHE_DIR:-$REPO_ROOT/target/hew-test-cache}"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/hew-suite-ratchet.sh [--expected-failures <path>] [--emit-o0-outcomes <path>]
+Usage: scripts/hew-suite-ratchet.sh [--emit-o0-outcomes <path>]
 
-Run `hew test tests/hew/` and assert the result matches the tracked expected-failures list.
-
-Exits 0 if the failing test set exactly matches the list (or both are empty).
-Exits 1 on any unexpected failure (not in list) or unexpected pass (was in list, now passes).
+Run `hew test tests/hew/` and require every selected test to pass.
 
 Options:
-  --expected-failures <path>   Override the default expected-failures file.
-                               Default: scripts/hew-suite-expected-failures.txt
   --emit-o0-outcomes <path>    Write the full sorted per-test outcome set to <path>
                                for a downstream gate to reuse instead of re-running.
 EOF
@@ -86,12 +62,6 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --expected-failures)
-            shift
-            [[ $# -gt 0 ]] || { echo "error: --expected-failures requires a path" >&2; exit 1; }
-            EXPECTED_FAILURES_FILE="$1"
-            shift
-            ;;
         --emit-o0-outcomes)
             shift
             [[ $# -gt 0 ]] || { echo "error: --emit-o0-outcomes requires a path" >&2; exit 1; }
@@ -127,67 +97,97 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$EXPECTED_FAILURES_FILE" ]]; then
-    echo "error: expected-failures file not found: $EXPECTED_FAILURES_FILE" >&2
-    exit 1
-fi
-
-# Read the expected failures list (ignore blank lines and # comments).
-# Store as newline-separated string for portable bash 3 compatibility.
-EXPECTED_STR=""
-while IFS= read -r line; do
-    # Strip comments and leading/trailing whitespace.
-    name="${line%%#*}"
-    name="${name#"${name%%[! ]*}"}"  # ltrim
-    name="${name%"${name##*[! ]}"}"  # rtrim
-    [[ -z "$name" ]] && continue
-    # Use only the first field (path/name before any whitespace).
-    name="${name%% *}"
-    [[ -z "$name" ]] && continue
-    EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
-done < "$EXPECTED_FAILURES_FILE"
-
-# Cache one JUnit result per source file. The compiler content is part of every
-# key, so a rebuilt compiler invalidates every fixture while an ordinary rerun
-# does no compilation for sources whose result is already known.
+# Cache one JUnit result per source file. The shared digest covers every input
+# that can affect a verdict and deliberately favors misses over a stale green.
 mkdir -p "$(dirname "$JUNIT_OUTPUT")"
 mkdir -p "$CACHE_DIR"
 STDERR_FILE="$(mktemp /tmp/hew-suite-ratchet-stderr.XXXXXX)"
 trap 'rm -f "$STDERR_FILE"' EXIT
 
-compiler_hash="$(git hash-object "$HEW_BIN")"
+libhew_archive=""
+for candidate in "$(dirname "$HEW_BIN")/libhew.a" "$(dirname "$HEW_BIN")/hew.lib"; do
+    if [[ -f "$candidate" ]]; then
+        libhew_archive="$candidate"
+        break
+    fi
+done
+if [[ -z "$libhew_archive" ]]; then
+    echo "error: no libhew archive beside $HEW_BIN; refusing an incomplete cache key" >&2
+    exit 1
+fi
+
+suite_hash="$({
+    printf '%s\n' 'hew-suite-cache-v2' 'hew test <fixture> --format junit --allow-empty'
+    git hash-object "$HEW_BIN" "$libhew_archive" "$0" "$HEW_JUNIT_PY"
+    find "$REPO_ROOT" \
+        \( -path "$REPO_ROOT/target" -o -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/.tmp" \) -prune -o \
+        -type f \( -name '*.hew' -o -name '*.toml' -o -name '*.lock' \) -print \
+        | LC_ALL=C sort
+    find "$REPO_ROOT" \
+        \( -path "$REPO_ROOT/target" -o -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/.tmp" \) -prune -o \
+        -type f \( -name '*.hew' -o -name '*.toml' -o -name '*.lock' \) -print \
+        | LC_ALL=C sort \
+        | git hash-object --stdin-paths
+    # Tests may point at an external fixture directory in harness checks.
+    find "$TESTS_DIR" -type f -name '*.hew' -print | LC_ALL=C sort
+    find "$TESTS_DIR" -type f -name '*.hew' -print \
+        | LC_ALL=C sort \
+        | git hash-object --stdin-paths
+    env | LC_ALL=C sort \
+        | sed -n '/^HEW_/p' \
+        | sed '/^HEW_BIN=/d;/^HEW_TEST_CACHE_DIR=/d'
+    for name in AR CC CFLAGS CI CPATH CXX DYLD_LIBRARY_PATH LANG LC_ALL LD \
+        LDFLAGS LD_LIBRARY_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET PATH \
+        SDKROOT TZ; do
+        printf '%s=%s\n' "$name" "${!name:-}"
+    done
+    uname -a
+    for tool in clang cc ld.lld; do
+        command -v "$tool" || true
+        "$tool" --version 2>/dev/null | sed -n '1p' || true
+    done
+    printf '%s\n' "${ImageOS:-}" "${ImageVersion:-}"
+} | git hash-object --stdin)"
 reports=()
 for fixture in "$TESTS_DIR"/*.hew; do
     [[ -f "$fixture" ]] || continue
     fixture_hash="$(git hash-object "$fixture")"
-    cache_key="$(printf 'hew-suite-cache-v1\n%s\n%s\n%s\n' "$compiler_hash" "$fixture" "$fixture_hash" | git hash-object --stdin)"
+    cache_key="$(printf 'hew-suite-cache-v2\n%s\n%s\n%s\n' "$suite_hash" "$fixture" "$fixture_hash" | git hash-object --stdin)"
     cached_report="$CACHE_DIR/$cache_key.xml"
+    cached_empty="$CACHE_DIR/$cache_key.empty"
+    if [[ -f "$cached_empty" ]]; then
+        continue
+    fi
     if [[ ! -s "$cached_report" ]] || ! python3 "$HEW_JUNIT_PY" "$cached_report" >/dev/null 2>&1; then
         fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
+        fresh_stderr="$CACHE_DIR/$cache_key.stderr.new.$$"
         rc=0
         "$HEW_BIN" test "$fixture" --format junit --allow-empty \
-            > "$fresh_report" 2>> "$STDERR_FILE" || rc=$?
-        # A few fixtures are bare `fn main` oracles with no `#[test]`
-        # functions. Running the directory as a whole ignored them; running
-        # per file must too, or caching turns them into failures. A clean exit
-        # with no report means no tests, not a broken fixture.
-        if [[ $rc -eq 0 && ! -s "$fresh_report" ]]; then
-            rm -f "$fresh_report"
+            > "$fresh_report" 2> "$fresh_stderr" || rc=$?
+        if [[ $rc -eq 0 && ! -s "$fresh_report" ]] \
+            && [[ "$(wc -l < "$fresh_stderr" | tr -d ' ')" == 1 ]] \
+            && grep -qxF 'No test functions found.' "$fresh_stderr"; then
+            printf '%s\n' 'no test functions' > "$cached_empty"
+            rm -f "$fresh_report" "$fresh_stderr"
             continue
         fi
         if [[ $rc -ne 0 || ! -s "$fresh_report" ]] || ! python3 "$HEW_JUNIT_PY" "$fresh_report" >/dev/null; then
-            echo "error: hew test produced an invalid JUnit report for $fixture" >&2
+            echo "error: hew test produced an invalid or failing JUnit report for $fixture" >&2
             rm -f "$fresh_report"
+            cat "$fresh_stderr" >> "$STDERR_FILE"
+            rm -f "$fresh_stderr"
             cat "$STDERR_FILE" >&2
             exit 1
         fi
+        cat "$fresh_stderr" >> "$STDERR_FILE"
+        rm -f "$fresh_stderr"
         mv "$fresh_report" "$cached_report"
     fi
     reports+=("$cached_report")
 done
 
 if [[ ${#reports[@]} -eq 0 ]]; then
-    echo "error: Hew suite selected no fixture files under $TESTS_DIR" >&2
+    echo "error: Hew suite selected no test-bearing fixtures under $TESTS_DIR" >&2
     exit 1
 fi
 python3 "$HEW_JUNIT_PY" --merge "$JUNIT_OUTPUT" "${reports[@]}"
@@ -260,92 +260,23 @@ if [[ "$parsed_failed" -ne "$report_failures" ]]; then
     exit 1
 fi
 
-# Sort actual for deterministic display.
-sorted_actual=""
-if [[ -n "$ACTUAL_STR" ]]; then
-    sorted_actual="$(printf '%s' "$ACTUAL_STR" | sort)"
-fi
-
-# Count entries.
-count_expected=0
-if [[ -n "$EXPECTED_STR" ]]; then
-    count_expected="$(line_set_count "$EXPECTED_STR")"
-fi
-
 count_actual=0
 if [[ -n "$ACTUAL_STR" ]]; then
-    count_actual="$(line_set_count "$ACTUAL_STR")"
+    count_actual="$(printf '%s' "$ACTUAL_STR" | awk 'NF { count++ } END { print count + 0 }')"
 fi
 
-# Find unexpected failures (in actual but not in expected).
-unexpected_failures=""
-while IFS= read -r name; do
-    [[ -z "$name" ]] && continue
-    if ! line_set_contains "$EXPECTED_STR" "$name"; then
-        unexpected_failures="${unexpected_failures}${name}"$'\n'
-    fi
-done <<< "$ACTUAL_STR"
-
-# Find unexpected passes (in expected but not in actual).
-unexpected_passes=""
-while IFS= read -r name; do
-    [[ -z "$name" ]] && continue
-    if ! line_set_contains "$ACTUAL_STR" "$name"; then
-        unexpected_passes="${unexpected_passes}${name}"$'\n'
-    fi
-done <<< "$EXPECTED_STR"
-
-echo "==> Hew suite ratchet"
-echo "Expected failures: $count_expected"
+echo "==> Hew suite"
 echo "Actual failures:   $count_actual"
 echo ""
 
-count_unexpected_fail=0
-[[ -n "$unexpected_failures" ]] && count_unexpected_fail="$(line_set_count "$unexpected_failures")"
-
-count_unexpected_pass=0
-[[ -n "$unexpected_passes" ]] && count_unexpected_pass="$(line_set_count "$unexpected_passes")"
-
-if [[ $count_unexpected_fail -eq 0 && $count_unexpected_pass -eq 0 ]]; then
-    if [[ $count_actual -eq 0 ]]; then
-        echo "All tests passed. Remove the expected-failures file entries when the list is empty."
-    else
-        echo "Expected failure set matches. Tracked failures: $count_actual"
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-            echo "  - $name"
-        done <<< "$sorted_actual"
-    fi
-    echo ""
-    echo "==> Ratchet: PASSED"
+if [[ $count_actual -eq 0 ]]; then
+    echo "All $report_total tests passed."
+    echo "==> Hew suite: PASSED"
     exit 0
 fi
 
-# Report problems.
-if [[ $count_unexpected_fail -gt 0 ]]; then
-    echo "RATCHET FAIL: $count_unexpected_fail UNEXPECTED failure(s) — not in expected list:"
-    while IFS= read -r name; do
-        [[ -z "$name" ]] && continue
-        echo "  UNEXPECTED: $name"
-    done <<< "$unexpected_failures"
-    echo ""
-    echo "  To accept these as known failures, add them to:"
-    echo "  $EXPECTED_FAILURES_FILE"
-    echo ""
-fi
-
-if [[ $count_unexpected_pass -gt 0 ]]; then
-    echo "RATCHET FAIL: $count_unexpected_pass listed failure(s) now PASS — remove from list:"
-    while IFS= read -r name; do
-        [[ -z "$name" ]] && continue
-        echo "  NOW-PASSES: $name"
-    done <<< "$unexpected_passes"
-    echo ""
-    echo "  Delete these lines from:"
-    echo "  $EXPECTED_FAILURES_FILE"
-    echo "  (Do not restore a failing entry to make this green — fix the test.)"
-    echo ""
-fi
+echo "HEW SUITE FAIL: $count_actual test(s) failed:"
+printf '%s' "$ACTUAL_STR" | sort | sed 's/^/  FAILED: /'
 
 # Print the run's stderr (build/FFI errors, warnings) and point at the full
 # JUnit report — the same report a CI job's upload step reads into the
@@ -356,5 +287,5 @@ echo ""
 echo "==> Full JUnit report: $JUNIT_OUTPUT"
 
 echo ""
-echo "==> Ratchet: FAILED"
+echo "==> Hew suite: FAILED"
 exit 1

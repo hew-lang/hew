@@ -160,11 +160,28 @@ pub fn set_hot_tier_enabled(enabled: bool) {
     HOT_TIER_ENABLED.store(enabled, Ordering::Release);
 }
 
+/// Pin the calling thread to its own counter shard.
+///
+/// KEEP(wasm32): the caller is `scheduler::worker_loop`, which every thread
+/// spawned by `hew_sched_init` runs; lib.rs declares `pub mod scheduler` under
+/// `#[cfg(not(target_arch = "wasm32"))]` while `pub mod observe` is
+/// unconditional, so only a wasm32 build sees no caller.
+///
+/// This is a correctness seam, not only a contention one: `current_shard`
+/// indexes `DISPATCH_ACTIVE_TICKETS` in `observe_dispatch_begin` and
+/// `clear_active_dispatch_ticket`. With every worker left on shard 0 they would
+/// overwrite each other's in-flight tickets, `computed_dispatch_watermark`
+/// would advance past live dispatches, and `hew_observe_barrier` could return
+/// OK while work is still running.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn set_current_worker_shard(worker_id: usize) {
     let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
     WORKER_SHARD.with(|slot| slot.set(shard));
 }
 
+// `current_shard`/`shard_add` carry no target gate and no `profiler` gate:
+// `record_actor_turn` reaches them on every target whenever the hot tier is on,
+// so they need no allow of their own — they die only if that recorder does.
 fn current_shard() -> usize {
     WORKER_SHARD.with(Cell::get)
 }
@@ -180,6 +197,8 @@ fn shard_sum(shards: &[AtomicU64; SHARD_COUNT]) -> u64 {
         .sum()
 }
 
+// Reached unconditionally from `reset_live_safe_counters`, whose own KEEP note
+// explains why that entry point is native-only; no allow of its own is needed.
 fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
     for counter in shards {
         counter.store(0, Ordering::Relaxed);

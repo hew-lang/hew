@@ -216,7 +216,7 @@ machine__store_map_value	PASS
 machine__store_vec	NYI-INTERNAL	tests/core-matrix/cells/machine__store_vec.hew:17:5: error: fail-closed: Vec::new has no constructor lowering for element type Named { name: "Counter", args: [], builtin: None, is_opaque: false }
 opaque__across_suspend	NYI-CLEAN	tests/core-matrix/cells/opaque__across_suspend.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layou
 opaque__actor_send	NYI-CLEAN	tests/core-matrix/cells/opaque__actor_send.hew:27:24: error: opaque type `DqH` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. O
-opaque__clone	NYI-CLEAN	tests/core-matrix/cells/opaque__clone.hew:26:13: error: type `Dq` is `#[resource]` and cannot be cloned: `Dq` has an affine close contract and no semantic clone
+opaque__clone	NYI-CLEAN	tests/core-matrix/cells/opaque__clone.hew:26:13: error: type `Dq` is `#[resource]` and cannot be cloned: member `value` contains `Dq`, which has an affine close contract and no semantic clone
 opaque__construct	PASS
 opaque__drop_early_return	PASS
 opaque__drop_panic	PASS
@@ -235,7 +235,7 @@ opaque__store_map_value	NYI-CLEAN	tests/core-matrix/cells/opaque__store_map_valu
 opaque__store_vec	CRASH	PANIC: Vec owned element clone failed
 option__across_suspend	PASS
 option__actor_send	PASS
-option__clone	NYI-CLEAN	tests/core-matrix/cells/option__clone.hew:3:13: error: no method `clone` on `Option<i64>`
+option__clone	PASS
 option__construct	PASS
 option__drop_early_return	PASS
 option__drop_panic	PASS
@@ -273,7 +273,7 @@ record__store_map_value	PASS
 record__store_vec	PASS
 resource__across_suspend	PASS
 resource__actor_send	PASS
-resource__clone	NYI-CLEAN	tests/core-matrix/cells/resource__clone.hew:14:13: error: type `Tok` is `#[resource]` and cannot be cloned: `Tok` has an affine close contract and no semantic clone
+resource__clone	NYI-CLEAN	tests/core-matrix/cells/resource__clone.hew:14:13: error: type `Tok` is `#[resource]` and cannot be cloned: member `value` contains `Tok`, which has an affine close contract and no semantic clone
 resource__construct	PASS
 resource__drop_early_return	PASS
 resource__drop_panic	PASS
@@ -292,7 +292,7 @@ resource__store_map_value	NYI-INTERNAL	tests/core-matrix/cells/resource__store_m
 resource__store_vec	PASS
 result__across_suspend	PASS
 result__actor_send	PASS
-result__clone	NYI-CLEAN	tests/core-matrix/cells/result__clone.hew:3:13: error: no method `clone` on `Result<i64, string>`
+result__clone	PASS
 result__construct	PASS
 result__drop_early_return	PASS
 result__drop_panic	PASS
@@ -342,7 +342,7 @@ traitobj__store_map_value	NYI-CLEAN	tests/core-matrix/cells/traitobj__store_map_
 traitobj__store_vec	NYI-CLEAN	tests/core-matrix/cells/traitobj__store_vec.hew:33:29: error: `dyn Named` cannot be a `Vec` element: trait-object elements are not supported in `Vec` (no clone/drop, index, or push path exists for an opaque `dyn Trait` p
 tuple__across_suspend	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: unsupported value type Tuple([I64, String]) (outside the supported wire-body floor)
 tuple__actor_send	NYI-INTERNAL	E_NOT_YET_IMPLEMENTED: fail-closed: wire CBOR serialize: unsupported value type Tuple([I64, String]) (outside the supported wire-body floor)
-tuple__clone	NYI-CLEAN	tests/core-matrix/cells/tuple__clone.hew:3:13: error: no method `clone` on `(i64, string)`
+tuple__clone	PASS
 tuple__construct	PASS
 tuple__drop_early_return	PASS
 tuple__drop_panic	PASS

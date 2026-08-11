@@ -207,14 +207,21 @@ collect_paths_from_command() {
 }
 
 add_command() {
+    local command="$1"
+    local existing
     if [[ "${COMPILED_HEW_GATE_OWNER:-dispatcher}" == "aggregate" ]]; then
-        case "$1" in
+        case "$command" in
             "make test-hew-ratchet"|"make test-o2-differential")
                 return 0
                 ;;
         esac
     fi
-    COMMANDS+=("$1")
+    if [[ ${COMMANDS[0]+set} == set ]]; then
+        for existing in "${COMMANDS[@]}"; do
+            [[ "$existing" == "$command" ]] && return 0
+        done
+    fi
+    COMMANDS+=("$command")
 }
 
 has_commands() {

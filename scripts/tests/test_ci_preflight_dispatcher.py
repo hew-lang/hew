@@ -354,8 +354,8 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert result.returncode == 1, result.stdout
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "false", "true"]
-    assert [entry["status"] for entry in profile_entries] == [0, 1, 0]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "false"]
+    assert [entry["status"] for entry in profile_entries] == [0, 1]
     for entry in profile_entries:
         assert isinstance(entry["elapsed_s"], int), profile_entries
         assert entry["elapsed_s"] >= 0, profile_entries
@@ -846,6 +846,23 @@ def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
     assert "COMPILED_HEW_GATE_OWNER: aggregate" in workflow, workflow
 
 
+def test_selected_commands_are_unique() -> None:
+    result = run_dispatcher(
+        "Cargo.toml",
+        "hew-sandbox-vm/src/interpreter/parity-runner.ts",
+        "std/string.hew",
+        "tests/fuzz-oracle/bounds.hew",
+    )
+    assert result.returncode == 0, result.stderr
+    commands = [
+        line.removeprefix("  - ").split("  (budget:", 1)[0]
+        for line in result.stdout.splitlines()
+        if line.startswith("  - ") and "  (budget:" in line
+    ]
+    assert len(commands) == len(set(commands)), commands
+    assert commands.count("make sandbox-parity") == 1, commands
+
+
 def test_selector_exports_fail_closed_compile_requirement() -> None:
     with tempfile.NamedTemporaryFile() as output:
         result = run_dispatcher(
@@ -921,6 +938,7 @@ _TESTS = [
     test_analysis_change_runs_known_dependents_without_workspace,
     test_hosted_linux_executes_the_dispatcher_directly,
     test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
+    test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
 ]
 

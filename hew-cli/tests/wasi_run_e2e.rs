@@ -37,30 +37,15 @@ fn run_wasi_example(source: &Path) -> Output {
     run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
 }
 
-// Exact set of curated playground entries that declare wasi: "unsupported".
-// Update this constant AND scripts/gen-playground-manifest.py :: WASI_CAPABILITY
-// together whenever the unsupported set changes intentionally.  The coverage
-// guard in curated_playground_examples_run_under_wasi relies on this to catch
-// misclassified manifest entries before they silently drop out of the runnable loop.
-const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
-    "concurrency/actor_pipeline",
-    "concurrency/async_await",
-    "concurrency/counter_actor",
-    "concurrency/supervisor",
-    "language/string_slicing",
-    "machines/traffic_light",
-    "types/method_clone",
-];
-
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
 
     let manifest = load_playground_manifest();
     // Tracks the curated playground manifest's entry count as a deliberate
-    // tripwire: it forces a human to review EXPECTED_WASI_UNSUPPORTED (and the
-    // runnable loop below) whenever a fixture is added, rather than letting a
-    // new entry silently fall into the wrong bucket. A dynamic count derived
+    // tripwire: it forces a human to review the manifest-owned exclusions and
+    // runnable loop whenever a fixture is added, rather than letting a new
+    // entry silently fall into the wrong bucket. A dynamic count derived
     // from the manifest itself would be tautological against `manifest.len()`
     // and lose that review trigger, so the literal is intentional; bump it
     // alongside manifest.json (currently 44, +1 for types/method_clone).
@@ -70,21 +55,9 @@ fn curated_playground_examples_run_under_wasi() {
         "expected the curated 44-snippet manifest"
     );
 
-    let mut actual_unsupported: Vec<&str> = manifest
-        .iter()
-        .filter(|entry| entry.capabilities.wasi == "unsupported")
-        .map(|entry| entry.id.as_str())
-        .collect();
-    actual_unsupported.sort_unstable();
-
-    assert_eq!(
-        actual_unsupported, EXPECTED_WASI_UNSUPPORTED,
-        "wasi 'unsupported' set mismatch: if a new example is intentionally \
-         unsupported update EXPECTED_WASI_UNSUPPORTED in wasi_run_e2e.rs and \
-         WASI_CAPABILITY in scripts/gen-playground-manifest.py together; if \
-         an example was misclassified, fix its manifest capability instead"
-    );
-
+    // The unsupported set is generated from the typed WASM authority. Do not
+    // duplicate it here. Pass remains non-declarative: every entry omitted
+    // from that set is compiled, executed, and compared below.
     let runnable: Vec<_> = manifest
         .iter()
         .filter(|entry| entry.capabilities.wasi == "runnable")
@@ -146,6 +119,101 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     assert!(
         !stderr.contains("hew.supervisor.new"),
         "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
+    );
+}
+
+#[test]
+fn actor_panic_is_module_fatal_on_production_wasi() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("actor_panic_module_fatal.hew");
+    fs::write(
+        &source,
+        r#"actor Crasher {
+    receive fn fail() -> i64 {
+        panic("intentional actor panic")
+    }
+}
+
+fn main() {
+    let crasher = spawn Crasher;
+    match await crasher.fail() {
+        Ok(_) => println("contained"),
+        Err(_) => println("contained"),
+    }
+    println("survived");
+}
+"#,
+    )
+    .expect("write actor-panic WASI probe");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "production panic=abort must terminate the WASI module, not contain one actor\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("contained") && !stdout.contains("survived"),
+        "control must not return to the awaiting actor after module-fatal panic; stdout:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("intentional actor panic") || stderr.contains("unreachable"),
+        "WASI failure should expose the panic/trap rather than a clean actor restart; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn actor_lifecycle_state_writes_run_under_wasi_without_claiming_panic_containment() {
+    require_wasi_runner();
+
+    let source = repo_root()
+        .join("tests")
+        .join("vertical-slice")
+        .join("accept")
+        .join("actor_lifecycle_state_writes.hew");
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "default/init/start/receive/stop state writes must complete under the cooperative WASI scheduler\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ActorSendFailed") && !stderr.contains("unreachable"),
+        "a non-panicking lifecycle write must not be mistaken for a missing dispatch domain; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn actor_start_panic_remains_module_fatal_on_production_wasi() {
+    require_wasi_runner();
+
+    let source = repo_root()
+        .join("tests")
+        .join("vertical-slice")
+        .join("accept")
+        .join("actor_start_panic_module_fatal.hew");
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "production WASI must not claim actor containment for on(start) panic\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("intentional on(start) panic") || stderr.contains("unreachable"),
+        "the configured panic policy, not lifecycle transaction validation, must terminate the module; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("ActorSendFailed"),
+        "the state write before panic must not fail on an absent lifecycle dispatch domain; stderr:\n{stderr}"
     );
 }
 

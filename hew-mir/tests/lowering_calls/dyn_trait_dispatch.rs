@@ -96,6 +96,166 @@ fn int_to_dyn_display_coercion_emits_coerce_instr() {
     );
 }
 
+#[test]
+fn borrowed_dyn_coercion_temporary_is_owned_and_dropped_by_caller() {
+    use hew_mir::{Place, Terminator, TraitObjectStorage};
+
+    let source = r"
+        fn use_display(value: dyn Display) {
+            value.fmt();
+        }
+
+        fn main() {
+            use_display(42);
+        }
+    ";
+    let p = pipeline(source);
+    let main_raw = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main raw MIR");
+    let coerce_dest = main_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instr| match instr {
+            Instr::CoerceToDynTrait { dest, .. } => Some(*dest),
+            _ => None,
+        })
+        .expect("borrowed dyn argument must materialize a coercion temporary");
+    let call_arg = main_raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call { callee, args, .. } if callee == "use_display" => {
+                args.first().copied()
+            }
+            _ => None,
+        })
+        .expect("use_display call argument");
+    assert_eq!(
+        call_arg, coerce_dest,
+        "the caller-owned drop must cover the exact fat-pointer temporary passed by borrow"
+    );
+
+    let main_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main elaborated MIR");
+    let caller_drops: Vec<_> = main_elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| {
+            drop.place == coerce_dest
+                && matches!(
+                    drop.kind,
+                    DropKind::TraitObject {
+                        storage: TraitObjectStorage::HeapBoxed
+                    }
+                )
+        })
+        .collect();
+    assert_eq!(
+        caller_drops.len(),
+        1,
+        "a borrowed fresh dyn coercion must have exactly one caller-side HeapBoxed drop"
+    );
+    assert!(matches!(coerce_dest, Place::Local(_)));
+
+    let callee_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "use_display")
+        .expect("use_display elaborated MIR");
+    assert!(
+        callee_elab
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| !matches!(drop.kind, DropKind::TraitObject { .. })),
+        "the borrowing dyn parameter must not acquire a competing callee-side owner"
+    );
+}
+
+#[test]
+fn already_dyn_argument_is_not_reboxed_as_its_original_concrete() {
+    use hew_mir::{Terminator, TraitObjectStorage};
+
+    let source = r"
+        fn use_display(value: dyn Display) {
+            value.fmt();
+        }
+
+        fn main() {
+            let displayed: dyn Display = 42;
+            use_display(displayed);
+        }
+    ";
+    let p = pipeline(source);
+    let main_raw = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main raw MIR");
+    let coercion_dests = main_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::CoerceToDynTrait { dest, .. } => Some(*dest),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        coercion_dests.len(),
+        1,
+        "the concrete value is boxed once; passing the resulting dyn value \
+         must not box its fat-pointer bytes again"
+    );
+    let call_arg = main_raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call { callee, args, .. } if callee == "use_display" => {
+                args.first().copied()
+            }
+            _ => None,
+        })
+        .expect("use_display call argument");
+    assert_ne!(
+        call_arg, coercion_dests[0],
+        "the named dyn binding may move to its own local, but must remain an \
+         ordinary fat-pointer value rather than a second coercion destination"
+    );
+
+    let main_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR");
+    let dyn_drops = main_elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                DropKind::TraitObject {
+                    storage: TraitObjectStorage::HeapBoxed
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dyn_drops.len(),
+        1,
+        "the named dyn value retains exactly one HeapBoxed drop authority"
+    );
+}
+
 /// A method call on a `dyn Display` receiver lowers to
 /// `Instr::CallTraitMethod` with the right trait, method, and pre-computed
 /// slot index. Slot 3 = first trait method (slots 0..=2 are the runtime
@@ -194,7 +354,7 @@ fn two_concrete_types_to_dyn_display_emit_distinct_coercions() {
 /// `dyn Trait` local. End-to-end drop-plan integration (registering an
 /// owned `dyn Trait` binding in `owned_locals` from `let`-statement /
 /// parameter lowering) is covered by the MIR-pipeline regression test
-/// `dyn_trait_object_local_elaborates_with_frame_owned_drop`; pinning
+/// `dyn_trait_object_local_elaborates_with_heap_boxed_drop`; pinning
 /// the discriminator-correctness contract here is the unit-level
 /// guarantee that the codegen-bound `DropKind` will match the runtime
 /// ABI's slot-0 dispatch.
@@ -353,7 +513,7 @@ fn walk_for_structural_coercion(expr: &hew_hir::HirExpr, found: &mut bool) {
         *found = true;
     }
     match &expr.kind {
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             walk_for_structural_coercion(callee, found);
             for arg in args {
                 walk_for_structural_coercion(arg, found);
@@ -451,7 +611,7 @@ fn structural_impl_lowers_through_to_3_identically_to_nominal() {
 
 /// W3.031 Stage 1 regression: an owned `dyn Trait` local introduced by
 /// a `CoerceToDynTrait` site is elaborated through `build_lifo_drops`
-/// with `DropKind::TraitObject { storage: FrameOwned }`.
+/// with `DropKind::TraitObject { storage: HeapBoxed }`.
 ///
 /// Pre-Stage-1, `dyn Trait` locals were classified as
 /// `ValueClass::PersistentShare` and silently skipped by
@@ -461,11 +621,11 @@ fn structural_impl_lowers_through_to_3_identically_to_nominal() {
 /// per-binding `dyn_trait_storage` side table populated at the
 /// introducing `let` statement.
 ///
-/// `let d = <coerce-to-dyn>` populates the storage as `FrameOwned`
-/// (the fat pointer's `data` word aliases the concrete value's frame
-/// slot; no `hew_dyn_box_free` runs at drop time).
+/// `let d = <coerce-to-dyn>` populates the storage as `HeapBoxed`
+/// (codegen transfers the concrete value into persistent dyn-box storage;
+/// `hew_dyn_box_free` runs after slot-0 drop at scope exit).
 #[test]
-fn dyn_trait_object_local_elaborates_with_frame_owned_drop() {
+fn dyn_trait_object_local_elaborates_with_heap_boxed_drop() {
     use hew_mir::{ElabDrop, Place, TraitObjectStorage};
 
     let source = r"
@@ -506,9 +666,9 @@ fn dyn_trait_object_local_elaborates_with_frame_owned_drop() {
     assert_eq!(
         drop.kind,
         hew_mir::DropKind::TraitObject {
-            storage: TraitObjectStorage::FrameOwned
+            storage: TraitObjectStorage::HeapBoxed
         },
-        "coerced dyn Trait local must select FrameOwned storage"
+        "coerced dyn Trait local must select HeapBoxed storage"
     );
     assert_eq!(
         drop.drop_fn, None,
@@ -600,7 +760,7 @@ fn non_dyn_resource_local_still_elaborates_as_resource_drop() {
 /// `let c = <concrete @resource>; let d: dyn T = c;` — the concrete
 /// binding's `DropKind::Resource` is suppressed at the
 /// `CoerceToDynTrait` producer site, and only the dyn binding's
-/// `DropKind::TraitObject { FrameOwned }` is elaborated.
+/// `DropKind::TraitObject { HeapBoxed }` is elaborated.
 #[test]
 fn coerce_to_dyn_trait_suppresses_concrete_source_drop() {
     use hew_mir::{DropKind, ElabDrop, TraitObjectStorage};
@@ -662,7 +822,7 @@ fn coerce_to_dyn_trait_suppresses_concrete_source_drop() {
     assert_eq!(
         dyn_drops[0].kind,
         DropKind::TraitObject {
-            storage: TraitObjectStorage::FrameOwned
+            storage: TraitObjectStorage::HeapBoxed
         },
     );
 }
@@ -702,9 +862,9 @@ fn transitive_dyn_rebind_suppresses_source_drop_once() {
     assert_eq!(
         dyn_drops[0].kind,
         DropKind::TraitObject {
-            storage: TraitObjectStorage::FrameOwned
+            storage: TraitObjectStorage::HeapBoxed
         },
-        "rebind must propagate the source binding's FrameOwned storage",
+        "rebind must propagate the source binding's HeapBoxed storage",
     );
 }
 
@@ -743,7 +903,7 @@ fn three_link_dyn_rebind_chain_collapses_to_single_drop() {
     assert_eq!(
         dyn_drops[0].kind,
         DropKind::TraitObject {
-            storage: TraitObjectStorage::FrameOwned
+            storage: TraitObjectStorage::HeapBoxed
         },
     );
 }

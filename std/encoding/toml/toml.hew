@@ -37,7 +37,9 @@ pub enum ParseError {
 /// Represents any TOML type: string, integer, float, boolean, array,
 /// table, or datetime. The canonical shared wire tag prefix reserves
 /// `0` for null, even though TOML itself has no null value. Must be freed
-/// with `free()` when no longer needed.
+/// Values close automatically at the end of their ownership scope;
+/// `close()` performs the same release explicitly.
+#[resource]
 #[opaque]
 pub type Value {
 }
@@ -79,39 +81,49 @@ trait ValueMethods: CanonicalValueMethods {
     /// when that failure should be returned as an error.
     fn stringify(self) -> string;
 
-    /// Release the value resources.
-    fn free(self);
+    /// Consuming compatibility alias for the inherent `close()`.
+    fn free(consuming self);
 
     // ── Fluent builders ─────────────────────────────────────────
     /// Set a string field on a table. Returns the table for chaining.
-    fn with_string(self, key: string, val: string) -> Value;
+    #[returns_receiver]
+    fn with_string(consuming self, key: string, val: string) -> Self;
 
     /// Set an integer field. Returns the table for chaining.
-    fn with_int(self, key: string, val: i64) -> Value;
+    #[returns_receiver]
+    fn with_int(consuming self, key: string, val: i64) -> Self;
 
     /// Set a float field. Returns the table for chaining.
-    fn with_float(self, key: string, val: f64) -> Value;
+    #[returns_receiver]
+    fn with_float(consuming self, key: string, val: f64) -> Self;
 
     /// Set a boolean field. Returns the table for chaining.
-    fn with_bool(self, key: string, val: bool) -> Value;
+    #[returns_receiver]
+    fn with_bool(consuming self, key: string, val: bool) -> Self;
 
     /// Set a Value child on a table. The child is consumed. Returns the table.
-    fn with(self, key: string, child: Value) -> Value;
+    #[returns_receiver]
+    fn with(consuming self, key: string, consume child: Value) -> Self;
 
     /// Push a Value onto an array. The child is consumed. Returns the array.
-    fn push(self, child: Value) -> Value;
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Self;
 
     /// Push an integer onto an array. Returns the array.
-    fn push_int(self, val: i64) -> Value;
+    #[returns_receiver]
+    fn push_int(consuming self, val: i64) -> Self;
 
     /// Push a string onto an array. Returns the array.
-    fn push_string(self, val: string) -> Value;
+    #[returns_receiver]
+    fn push_string(consuming self, val: string) -> Self;
 
     /// Push a float onto an array. Returns the array.
-    fn push_float(self, val: f64) -> Value;
+    #[returns_receiver]
+    fn push_float(consuming self, val: f64) -> Self;
 
     /// Push a boolean onto an array. Returns the array.
-    fn push_bool(self, val: bool) -> Value;
+    #[returns_receiver]
+    fn push_bool(consuming self, val: bool) -> Self;
 }
 
 impl CanonicalValueMethods for Value {
@@ -172,74 +184,92 @@ impl CanonicalValueMethods for Value {
             text
         }
     }
-    fn free(val: Value) {
-        unsafe {
-            hew_toml_free(val)
-        };
+    fn free(consuming self) {
+        self.close();
     }
-    fn with_string(tbl: Value, key: string, val: string) -> Value {
+    #[returns_receiver]
+    fn with_string(consuming self, key: string, val: string) -> Value {
         unsafe {
-            hew_toml_table_set_string(tbl, key, val)
+            hew_toml_table_set_string(self, key, val)
         };
-        tbl
+        self
     }
-    fn with_int(tbl: Value, key: string, val: i64) -> Value {
+    #[returns_receiver]
+    fn with_int(consuming self, key: string, val: i64) -> Value {
         unsafe {
-            hew_toml_table_set_int(tbl, key, val as i64)
+            hew_toml_table_set_int(self, key, val as i64)
         };
-        tbl // INTERNAL-ABI: C ABI takes i64
+        self // INTERNAL-ABI: C ABI takes i64
     }
-    fn with_float(tbl: Value, key: string, val: f64) -> Value {
+    #[returns_receiver]
+    fn with_float(consuming self, key: string, val: f64) -> Value {
         unsafe {
-            hew_toml_table_set_float(tbl, key, val)
+            hew_toml_table_set_float(self, key, val)
         };
-        tbl
+        self
     }
-    fn with_bool(tbl: Value, key: string, val: bool) -> Value {
+    #[returns_receiver]
+    fn with_bool(consuming self, key: string, val: bool) -> Value {
         unsafe {
-            hew_toml_table_set_bool(tbl, key, val as i32)
+            hew_toml_table_set_bool(self, key, val as i32)
         };
-        tbl
+        self
     }
-    fn with(tbl: Value, key: string, child: Value) -> Value {
+    #[returns_receiver]
+    fn with(consuming self, key: string, consume child: Value) -> Value {
         unsafe {
-            hew_toml_table_set(tbl, key, child)
+            hew_toml_table_set(self, key, child)
         };
-        tbl
+        self
     }
-    fn push(arr: Value, child: Value) -> Value {
+    #[returns_receiver]
+    fn push(consuming self, consume child: Value) -> Value {
         unsafe {
-            hew_toml_array_push(arr, child)
+            hew_toml_array_push(self, child)
         };
-        arr
+        self
     }
-    fn push_int(arr: Value, val: i64) -> Value {
+    #[returns_receiver]
+    fn push_int(consuming self, val: i64) -> Value {
         unsafe {
-            hew_toml_array_push_int(arr, val as i64)
+            hew_toml_array_push_int(self, val as i64)
         };
-        arr // INTERNAL-ABI: C ABI takes i64
+        self // INTERNAL-ABI: C ABI takes i64
     }
-    fn push_string(arr: Value, val: string) -> Value {
+    #[returns_receiver]
+    fn push_string(consuming self, val: string) -> Value {
         unsafe {
-            hew_toml_array_push_string(arr, val)
+            hew_toml_array_push_string(self, val)
         };
-        arr
+        self
     }
-    fn push_float(arr: Value, val: f64) -> Value {
+    #[returns_receiver]
+    fn push_float(consuming self, val: f64) -> Value {
         unsafe {
-            hew_toml_array_push_float(arr, val)
+            hew_toml_array_push_float(self, val)
         };
-        arr
+        self
     }
-    fn push_bool(arr: Value, val: bool) -> Value {
+    #[returns_receiver]
+    fn push_bool(consuming self, val: bool) -> Value {
         unsafe {
-            hew_toml_array_push_bool(arr, val as i32)
+            hew_toml_array_push_bool(self, val as i32)
         };
-        arr
+        self
     }
 }
 
 impl ValueMethods for Value {
+}
+
+// `close` is the sole compiler-visible disposer. `free` above remains a
+// terminal consuming compatibility alias and delegates here.
+impl Value {
+    fn close(consuming self) {
+        unsafe {
+            hew_toml_free(self)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -347,7 +377,7 @@ extern "C" {
     fn hew_toml_array_get(val: Value, index: i32) -> Value;
     fn hew_toml_stringify(val: Value) -> string;
     fn hew_toml_last_serialize_error() -> string;
-    fn hew_toml_free(val: Value);
+    fn hew_toml_free(consume val: Value);
     // Builders
     fn hew_toml_table_new() -> Value;
     fn hew_toml_array_new() -> Value;
@@ -355,8 +385,8 @@ extern "C" {
     fn hew_toml_table_set_int(tbl: Value, key: string, val: i64);
     fn hew_toml_table_set_float(tbl: Value, key: string, val: f64);
     fn hew_toml_table_set_bool(tbl: Value, key: string, val: i32);
-    fn hew_toml_table_set(tbl: Value, key: string, child: Value);
-    fn hew_toml_array_push(arr: Value, child: Value);
+    fn hew_toml_table_set(tbl: Value, key: string, consume child: Value);
+    fn hew_toml_array_push(arr: Value, consume child: Value);
     fn hew_toml_array_push_int(arr: Value, val: i64);
     fn hew_toml_array_push_string(arr: Value, val: string);
     fn hew_toml_array_push_float(arr: Value, val: f64);

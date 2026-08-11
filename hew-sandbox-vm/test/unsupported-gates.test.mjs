@@ -40,7 +40,7 @@ test("actor.send (tell) does not trap when no reply token is present", () => {
   const bytecode = {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:tell-no-trap",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -364,7 +364,7 @@ function earlyReturnActorPackage() {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:early-return-ask",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -498,7 +498,7 @@ function normalExitActorPackage() {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:normal-exit-ask",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -598,7 +598,7 @@ function statefulEarlyReturnCounterPackage() {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:stateful-early-return-counter",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -769,7 +769,7 @@ function statefulEarlyReturnPairPackage() {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:stateful-early-return-pair",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -960,7 +960,7 @@ function packageWithInstruction(op, args) {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: `pkg:${op.replaceAll(".", "-")}`,
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },

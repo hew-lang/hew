@@ -1,4 +1,4 @@
-use hew_mir::{Instr, IrPipeline};
+use hew_mir::{Instr, IrPipeline, Place};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TryConversionKind};
 
 fn pipeline(source: &str) -> IrPipeline {
@@ -112,6 +112,165 @@ fn lowers_full_checker_admitted_matrix_examples_to_numeric_cast_instrs() {
         assert!(
             casts.contains(&expected),
             "missing NumericCast {expected:?}; got {casts:#?}"
+        );
+    }
+}
+
+fn local_ty(function: &hew_mir::RawMirFunction, place: Place) -> &ResolvedTy {
+    let Place::Local(local) = place else {
+        panic!("integer normalization must materialise local operands: {place:?}");
+    };
+    &function.locals[local as usize]
+}
+
+#[test]
+fn normalizes_checker_admitted_mixed_width_arithmetic_before_checked_mir() {
+    let p = pipeline(
+        r"
+        fn count() -> i32 { 1 }
+
+        fn main() -> i64 {
+            var passed = 0;
+            passed = passed + count();
+            passed
+        }
+        ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let instructions: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .collect();
+    assert!(
+        instructions.iter().any(|instr| matches!(
+            instr,
+            Instr::NumericCast {
+                from_ty: ResolvedTy::I32,
+                to_ty: ResolvedTy::I64,
+                ..
+            }
+        )),
+        "the i32 call result must be widened once before arithmetic: {instructions:#?}"
+    );
+    let checked = instructions
+        .iter()
+        .find_map(|instr| match instr {
+            Instr::IntArithChecked { dest, lhs, rhs, .. } => Some((*dest, *lhs, *rhs)),
+            _ => None,
+        })
+        .expect("checked add lowered");
+    assert_eq!(local_ty(main, checked.0), &ResolvedTy::I64);
+    assert_eq!(local_ty(main, checked.1), &ResolvedTy::I64);
+    assert_eq!(local_ty(main, checked.2), &ResolvedTy::I64);
+}
+
+#[test]
+fn direct_assignment_adopts_literal_bindings_concrete_width() {
+    let p = pipeline(
+        r"
+        fn narrow() -> i32 { 7 }
+
+        fn main() -> i32 {
+            var best = 0;
+            best = narrow();
+            best
+        }
+        ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let call_dest = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            hew_mir::Terminator::Call {
+                callee,
+                dest: Some(dest),
+                ..
+            } if callee == "narrow" => Some(*dest),
+            _ => None,
+        })
+        .expect("narrow call lowered");
+    assert_eq!(local_ty(main, call_dest), &ResolvedTy::I32);
+    assert!(
+        main.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::Move { dest, src }
+                    if *src == call_dest
+                        && local_ty(main, *dest) == &ResolvedTy::I32
+            )),
+        "the direct assignment must keep its i32 source and destination aligned: {main:#?}"
+    );
+}
+
+#[test]
+fn normalizes_checker_admitted_default_literal_binding_before_int_cmp() {
+    let p = pipeline(
+        r"
+        fn narrow() -> i32 { 7 }
+
+        fn main() -> bool {
+            let total = narrow();
+            let expected = 7;
+            total == expected
+        }
+        ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let comparisons: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::IntCmp { lhs, rhs, .. } => Some((*lhs, *rhs)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(comparisons.len(), 1, "comparisons: {comparisons:#?}");
+    for (lhs, rhs) in comparisons {
+        assert_eq!(local_ty(main, lhs), &ResolvedTy::I32);
+        assert_eq!(local_ty(main, rhs), &ResolvedTy::I32);
+    }
+}
+
+#[test]
+fn incompatible_integer_families_stay_outside_the_mir_coercion_boundary() {
+    for source in [
+        "fn main() -> i64 { let a: i32 = 1; let b: u32 = 2; a + b }",
+        "fn main() -> isize { let a: isize = 1; let b: i64 = 2; a + b }",
+    ] {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(
+            !output.errors.is_empty(),
+            "mixed signedness and platform/fixed-width pairs require explicit conversion: {source}"
         );
     }
 }

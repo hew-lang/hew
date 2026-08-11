@@ -1,0 +1,43 @@
+name: Setup pinned ast-grep
+description: >
+  Provision the pinned ast-grep binary and the Hew tree-sitter grammar into
+  .ast-grep/, the way setup-llvm and the wasmtime install provision their
+  toolchains: cache the built tree, then run the idempotent bootstrap, which
+  re-verifies the pinned version and archive checksum even on a cache hit.
+  Jobs that run gates reading .ast-grep/tool/bin/ast-grep (the opaque-resource
+  lifecycle evidence) use this instead of making the install a make-time
+  prerequisite of a test target.
+
+runs:
+  using: composite
+  steps:
+    # Keyed on every input the build consumes: the pinned lock (ast-grep and
+    # tree-sitter-cli versions, grammar revision and archive digest, ABI), the
+    # two scripts that assemble the tree, and the source dialect patch. The
+    # compiled grammar is a native shared object, so the runner OS and arch
+    # are part of the key. A miss costs the cargo installs; a hit costs the
+    # verification only.
+    - name: Cache pinned ast-grep toolchain
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: .ast-grep
+        key: ast-grep-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ast-grep.lock', 'tools/tree-sitter-hew-consume-parameter.patch', 'scripts/ast-grep-lint.sh', 'scripts/build-ast-grep-lang.sh') }}
+
+    # Fail-closed by construction: the bootstrap re-checks the installed
+    # binary's --version against tools/ast-grep.lock and the cached grammar
+    # archive's SHA-256 on every invocation, so a corrupted or stale cache is
+    # rebuilt rather than trusted. --install-only stops before the authority
+    # scan, which stays owned by the lint job's `make structural-lint`.
+    - name: Bootstrap pinned ast-grep toolchain
+      shell: bash
+      run: make structural-lint-bootstrap-install
+
+    # The consumers read this exact path. Prove it exists and runs here,
+    # where the diagnostic is "provisioning failed", rather than several
+    # steps later as "bootstrap pinned ast-grep before lifecycle fact test".
+    - name: Verify pinned ast-grep runs
+      shell: bash
+      run: |
+        set -euo pipefail
+        .ast-grep/tool/bin/ast-grep --version
+        test -f .ast-grep/hew-lang.so

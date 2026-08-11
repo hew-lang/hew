@@ -1,0 +1,21 @@
+// Peer file of the `greeting` directory module: the implementing type lives
+// in a DIFFERENT file from the trait that declares the defaults.
+pub type Dog {
+    call_sign: string;
+}
+
+pub fn make_dog(call_sign: string) -> Dog {
+    Dog { call_sign: call_sign }
+}
+
+impl Greeter for Dog {
+    fn name(d: Dog) -> string {
+        d.call_sign
+    }
+}
+
+// Same-module caller: the default must resolve on the bare `Dog` spelling too,
+// not only on the importer's qualified `greeting.Dog`.
+pub fn describe(d: Dog) -> string {
+    d.greet()
+}

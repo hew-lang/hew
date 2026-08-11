@@ -2,6 +2,8 @@
 // Add new lowering_expr-behaviour tests under `tests/lowering_expr/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "lowering_expr/actor_handler_bytes_ownership_authority.rs"]
+mod actor_handler_bytes_ownership_authority;
 #[path = "lowering_expr/anonymous_owned_temp_drop.rs"]
 mod anonymous_owned_temp_drop;
 #[path = "lowering_expr/audited_extern_argument_provenance.rs"]
@@ -12,10 +14,14 @@ mod audited_extern_result_provenance;
 mod binder_shape_release_sweep;
 #[path = "lowering_expr/binop_bitwise_logical.rs"]
 mod binop_bitwise_logical;
+#[path = "lowering_expr/borrowed_forwarder_retained_owner_class.rs"]
+mod borrowed_forwarder_retained_owner_class;
 #[path = "lowering_expr/bytes_literal_lowering.rs"]
 mod bytes_literal_lowering;
 #[path = "lowering_expr/closure_env_ownership.rs"]
 mod closure_env_ownership;
+#[path = "lowering_expr/conditional_ask_return_ownership.rs"]
+mod conditional_ask_return_ownership;
 #[path = "lowering_expr/conditional_move_drop.rs"]
 mod conditional_move_drop;
 #[path = "lowering_expr/cstring_container_domain_canary.rs"]
@@ -27,6 +33,8 @@ mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
 mod extern_wrapper_result_opacity;
 
+#[path = "lowering_expr/for_in_hash_projection_types.rs"]
+mod for_in_hash_projection_types;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]
@@ -39,6 +47,8 @@ mod gen_block_mir_lowering;
 mod generic_record_layout_test;
 #[path = "lowering_expr/hashmap_hashset_local_drop.rs"]
 mod hashmap_hashset_local_drop;
+#[path = "lowering_expr/http_ws_string_temp_drop_canary.rs"]
+mod http_ws_string_temp_drop_canary;
 #[path = "lowering_expr/identity_lowering.rs"]
 mod identity_lowering;
 #[path = "lowering_expr/lambda_captures.rs"]
@@ -61,6 +71,8 @@ mod match_project;
 mod monomorph_lowering_test;
 #[path = "lowering_expr/numeric_cast_lowering.rs"]
 mod numeric_cast_lowering;
+#[path = "lowering_expr/observe_string_temp_drop_canary.rs"]
+mod observe_string_temp_drop_canary;
 #[path = "lowering_expr/owned_string_temp_drop_canary.rs"]
 mod owned_string_temp_drop_canary;
 #[path = "lowering_expr/owner_mint_warrant_seams.rs"]
@@ -69,10 +81,16 @@ mod owner_mint_warrant_seams;
 mod plain_vec_local_drop;
 #[path = "lowering_expr/polymorphic_mir_typeparam.rs"]
 mod polymorphic_mir_typeparam;
+#[path = "lowering_expr/quic_string_temp_drop_canary.rs"]
+mod quic_string_temp_drop_canary;
+#[path = "lowering_expr/range_integer_normalization.rs"]
+mod range_integer_normalization;
 #[path = "lowering_expr/rc_weak_lowering.rs"]
 mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]
 mod regex_predicate_lowering;
+#[path = "lowering_expr/returned_member_cancel_drop.rs"]
+mod returned_member_cancel_drop;
 #[path = "lowering_expr/runtime_abi_instr.rs"]
 mod runtime_abi_instr;
 #[path = "lowering_expr/select_arm_dataflow.rs"]

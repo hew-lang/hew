@@ -172,10 +172,9 @@ impl<'src> Parser<'src> {
     /// change the meaning of any previously valid program.
     pub(crate) fn peek_is_consume_param_modifier(&self) -> bool {
         matches!(self.peek(), Some(Token::Identifier(name)) if *name == "consume")
-            && matches!(
-                self.peek_at(self.pos + 1),
-                Some(Token::Var | Token::Identifier(_))
-            )
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(|token| matches!(token, Token::Var) || Self::is_ident_token(token))
     }
 
     /// Check whether the current token starts with `>` (i.e. is `>`, `>>`, `>=`, or `>>=`).
@@ -376,13 +375,36 @@ impl<'src> Parser<'src> {
         });
     }
 
+    /// Report that the current token cannot start a pattern.
+    ///
+    /// A reserved keyword gets a targeted message naming it as reserved, the
+    /// same fact [`Self::expect_ident`] reports in a name position. Without it
+    /// a reserved word (`let record = 1`, `match x { record => … }`) is
+    /// indistinguishable from a typo: the generic form only echoes the raw
+    /// token, so the reader has no way to tell "this word is off-limits" from
+    /// "the parser did not recognise this token".
+    ///
+    /// The structured [`ParseDiagnosticKind::InvalidPattern`] classification is
+    /// unchanged in both arms — a pattern really was required here — so LSP
+    /// consumers keying on the kind see no drift.
     pub(crate) fn error_invalid_pattern(&mut self, got: impl Into<String>) {
         let got = got.into();
         let span = self.peek_span();
+        let keyword = self.peek().and_then(hew_lexer::Token::keyword_str);
+        let (message, hint) = match keyword {
+            Some(kw) => (
+                format!("expected pattern, found reserved word `{kw}`"),
+                Some(format!(
+                    "`{kw}` is a reserved word and cannot be used as a binding name; \
+                     rename this binding to something other than `{kw}`"
+                )),
+            ),
+            None => (format!("expected pattern, found {got}"), None),
+        };
         self.errors.push(ParseError {
-            message: format!("expected pattern, found {got}"),
+            message,
             span,
-            hint: None,
+            hint,
             severity: Severity::Error,
             kind: ParseDiagnosticKind::InvalidPattern { got },
         });

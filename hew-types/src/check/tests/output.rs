@@ -175,10 +175,15 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             module_idx: 0,
         },
         MethodCallRewrite::RewriteToFunction {
+            target: CallTarget::Unsupported {
+                reason: "orphaned test metadata".to_string(),
+            },
             c_symbol: "hew_bar_method".to_string(),
             descriptor: None,
+            extern_identity: None,
             elem_ty: None,
             consumes_receiver: false,
+            returns_receiver_identity: false,
         },
     );
 
@@ -385,6 +390,302 @@ fn main() {
         "expected pure-Hew stdlib wrapper to rewrite to module-qualified symbol, got: {:?}",
         output.method_call_rewrites
     );
+}
+
+#[test]
+fn checked_expression_publication_covers_blocks_empty_blocks_if_and_match_tails() {
+    let source = r#"
+fn nested(flag: bool) -> string {
+    { if flag { "a" + "b" } else { "c" + "d" } }
+}
+
+fn selected(value: i64) -> string {
+    match value {
+        0 => { "zero" + "!" },
+        _ => { "other" + "!" },
+    }
+}
+
+fn empty() {
+    {}
+}
+"#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_eq!(
+        output.produced_value_ownership.len(),
+        output.expr_types.len(),
+        "every surviving checked expression must publish exactly one ownership fact"
+    );
+    assert!(
+        output
+            .expr_types
+            .keys()
+            .all(|key| output.produced_value_ownership.contains_key(key)),
+        "ownership publication must cover Block/default/If/Match expression roots"
+    );
+}
+
+#[test]
+fn tail_ok_publication_preserves_the_source_payload_type() {
+    let source = "fn wrap(value: i64) -> Result<i64, string> {\n    value\n}\n";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let start = source.rfind("value\n").expect("tail identifier");
+    let key = output
+        .tail_ok_coercions
+        .iter()
+        .find(|key| key.start == start && key.module_idx == 0)
+        .expect("tail identifier must carry the Ok-coercion marker");
+    assert_eq!(output.expr_types.get(key), Some(&Ty::I64));
+    assert_eq!(
+        output
+            .produced_value_ownership
+            .get(key)
+            .map(|fact| fact.ownership),
+        Some(crate::runtime_call::ProducedValueOwnership::NoOwner)
+    );
+}
+
+fn ownership_graph_key(start: usize, module_idx: u32) -> SpanKey {
+    SpanKey {
+        start,
+        end: start + 1,
+        module_idx,
+    }
+}
+
+fn borrowed_fact() -> ProducedValueFact {
+    ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Borrowed)
+}
+
+#[test]
+fn ownership_graph_rejects_missing_leaf_and_orphan_dependency() {
+    let parent = ownership_graph_key(1, 0);
+    let child = ownership_graph_key(2, 0);
+    let expr_types = HashMap::from([(parent.clone(), Ty::String)]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .produced_value_dependencies
+        .insert(parent.clone(), ProducedValueDependency::Identity(child));
+
+    let invalid = checker.validate_produced_value_graph(&expr_types, &HashMap::new());
+    assert!(invalid.contains(&parent));
+    assert!(checker.errors.iter().any(|error| {
+        error.message.contains("no raw produced-value fact")
+            || error.message.contains("no surviving expression")
+    }));
+}
+
+#[test]
+fn ownership_graph_rejects_cycle_and_cross_module_edge() {
+    let first = ownership_graph_key(10, 0);
+    let second = ownership_graph_key(20, 0);
+    let foreign = ownership_graph_key(30, 1);
+    let expr_types = HashMap::from([
+        (first.clone(), Ty::String),
+        (second.clone(), Ty::String),
+        (foreign.clone(), Ty::String),
+    ]);
+    let leaves = HashMap::from([
+        (first.clone(), borrowed_fact()),
+        (second.clone(), borrowed_fact()),
+        (foreign.clone(), borrowed_fact()),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.produced_value_dependencies.insert(
+        first.clone(),
+        ProducedValueDependency::Identity(second.clone()),
+    );
+    checker.produced_value_dependencies.insert(
+        second.clone(),
+        ProducedValueDependency::Join(vec![first.clone(), foreign]),
+    );
+
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&first));
+    assert!(invalid.contains(&second));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|error| error.message.contains("dependency cycle")));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|error| error.message.contains("crosses modules")));
+}
+
+#[test]
+fn ownership_graph_rejects_type_changing_identity() {
+    let parent = ownership_graph_key(31, 0);
+    let child = ownership_graph_key(32, 0);
+    let expr_types = HashMap::from([
+        (parent.clone(), Ty::result(Ty::String, Ty::String)),
+        (child.clone(), Ty::String),
+    ]);
+    let leaves = HashMap::from([
+        (parent.clone(), borrowed_fact()),
+        (child.clone(), borrowed_fact()),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .produced_value_dependencies
+        .insert(parent.clone(), ProducedValueDependency::Identity(child));
+
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&parent));
+    assert!(checker
+        .errors
+        .iter()
+        .any(|error| error.message.contains("identity dependency changes type")));
+}
+
+#[test]
+fn empty_select_and_match_publish_no_empty_join_but_validator_rejects_one() {
+    let recovery_sources = [
+        ("fn main() { let _ = select {}; }", false),
+        ("fn main() { let _ = match missing() {}; }", true),
+    ];
+
+    for (source, expects_source_error) in recovery_sources {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "recovery fixture must reach the checker: {:#?}",
+            parsed.errors,
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&parsed.program);
+        assert_eq!(
+            !output.errors.is_empty(),
+            expects_source_error,
+            "unexpected source diagnostics for `{source}`: {:#?}",
+            output.errors,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .all(|error| !error.message.contains("produced-value graph is incomplete")),
+            "recovery must preserve only source diagnostics: {:#?}",
+            output.errors,
+        );
+        assert!(
+            checker
+                .produced_value_dependencies
+                .values()
+                .all(|dependency| !matches!(dependency, ProducedValueDependency::Join(children) if children.is_empty())),
+            "source recovery must never publish an empty ownership join: {:#?}",
+            checker.produced_value_dependencies,
+        );
+    }
+
+    let parent = ownership_graph_key(35, 0);
+    let expr_types = HashMap::from([(parent.clone(), Ty::Unit)]);
+    let leaves = HashMap::from([(
+        parent.clone(),
+        ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::NoOwner),
+    )]);
+    let mut malformed = Checker::new(ModuleRegistry::new(vec![]));
+    malformed
+        .produced_value_dependencies
+        .insert(parent.clone(), ProducedValueDependency::Join(Vec::new()));
+
+    let invalid = malformed.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&parent));
+    assert!(malformed
+        .errors
+        .iter()
+        .any(|error| error.message.contains("join dependency has no children")));
+}
+
+#[test]
+fn ownership_graph_requires_exact_receiver_identity_and_call_shape() {
+    use crate::runtime_call::{
+        ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,
+    };
+
+    let receiver = ownership_graph_key(40, 0);
+    let call = ownership_graph_key(50, 0);
+    let mut expr_types =
+        HashMap::from([(receiver.clone(), Ty::String), (call.clone(), Ty::String)]);
+    let mut leaves = HashMap::from([
+        (receiver.clone(), borrowed_fact()),
+        (
+            call.clone(),
+            ProducedValueFact {
+                ownership: Ownership::ReceiverIdentity,
+                receiver_span: Some(receiver),
+                receiver_boundary: Some(Boundary::Transfer),
+                arguments: vec![Boundary::Borrow],
+            },
+        ),
+    ]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .produced_call_arities
+        .insert(call.clone(), (true, 1));
+    assert!(checker
+        .validate_produced_value_graph(&expr_types, &leaves)
+        .is_empty());
+
+    expr_types.insert(call.clone(), Ty::I64);
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(
+        invalid.contains(&call),
+        "receiver-identity transfer must reject type-changing storage"
+    );
+    expr_types.insert(call.clone(), Ty::String);
+
+    let malformed = leaves.get_mut(&call).expect("call fact");
+    malformed.receiver_span = None;
+    malformed.receiver_boundary = None;
+    malformed.arguments.clear();
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&call));
+    assert!(checker.errors.iter().any(|error| {
+        error.message.contains("receiver-identity result")
+            || error.message.contains("call boundary arity mismatch")
+            || error.message.contains("receiver-boundary mismatch")
+    }));
+}
+
+#[test]
+fn broken_dependency_cannot_publish_owned_or_inflate_final_roots() {
+    use crate::runtime_call::{
+        ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+    };
+
+    let parent = ownership_graph_key(60, 0);
+    let missing_child = ownership_graph_key(70, 0);
+    let expr_types = HashMap::from([(parent.clone(), Ty::String)]);
+    let leaves = HashMap::from([(
+        parent.clone(),
+        ProducedValueFact::result(Ownership::owned(Acquisition::Fresh)),
+    )]);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.produced_value_dependencies.insert(
+        parent.clone(),
+        ProducedValueDependency::Identity(missing_child),
+    );
+    let invalid = checker.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&parent));
+
+    let mut visiting = HashSet::new();
+    let mut memo = HashMap::new();
+    let resolved = resolve_produced_node(
+        &parent,
+        &checker.produced_value_dependencies,
+        &leaves,
+        &expr_types,
+        &checker.registry,
+        &invalid,
+        &mut visiting,
+        &mut memo,
+    );
+    assert_eq!(resolved.ownership, Ownership::Unknown);
+    let finalized = HashMap::from([(parent, resolved)]);
+    assert_eq!(finalized.len(), expr_types.len());
 }
 
 // Helper functions for testing AST construction

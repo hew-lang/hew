@@ -1,0 +1,48 @@
+// Lifecycle state stores run outside the scheduler dispatch transaction. This
+// fixture covers a declared default, explicit init overwrite, on(start)
+// overwrite, ordinary receive overwrite, and on(stop) overwrite with an owned
+// Vec field. Each replacement must release the previous Vec exactly once and
+// final teardown must release the last generation exactly once.
+
+actor LifecycleWriter {
+    var values: Vec<i64> = Vec::new();
+
+    init() {
+        let next: Vec<i64> = Vec::new();
+        next.push(1);
+        values = next;
+    }
+
+    #[on(start)]
+    fn start() {
+        let next: Vec<i64> = Vec::new();
+        next.push(2);
+        values = next;
+    }
+
+    receive fn replace() {
+        let next: Vec<i64> = Vec::new();
+        next.push(3);
+        values = next;
+    }
+
+    receive fn current() -> i64 {
+        values[0]
+    }
+
+    #[on(stop)]
+    fn stop() {
+        let next: Vec<i64> = Vec::new();
+        next.push(4);
+        values = next;
+    }
+}
+
+fn main() -> i64 {
+    let writer = spawn LifecycleWriter;
+    writer.replace();
+    match await writer.current() {
+        Ok(value) => value,
+        Err(_) => 0,
+    }
+}

@@ -4,6 +4,136 @@
 )]
 pub(super) use super::*;
 
+#[test]
+fn user_receiver_recv_is_not_a_channel_select_source() {
+    let output = check_source(
+        r"
+        type Receiver<T> { value: T; }
+        impl<T> Receiver<T> {
+            fn recv(self) -> T { self.value }
+        }
+
+        fn main() {
+            let rx = Receiver { value: 1 };
+            let _ = select {
+                value from rx.recv() => value,
+                after 1ms => 0,
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("select arm source must be actor.method(args)")
+        }),
+        "a same-spelling user Receiver must not acquire channel select semantics: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_stop_publishes_typed_runtime_target() {
+    let output = check_source(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+        supervisor App {
+            child worker: Worker
+        }
+        fn main() {
+            let app = spawn App;
+            supervisor_stop(app);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "builtin supervisor_stop must typecheck: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::SupervisorStop
+            )
+        )),
+        "builtin supervisor_stop must publish its typed runtime family: {:#?}",
+        output.direct_call_targets
+    );
+}
+
+#[test]
+fn user_supervisor_stop_shadow_keeps_user_target() {
+    let output = check_source(
+        r"
+        fn supervisor_stop(value: i64) -> i64 { value + 1 }
+        fn main() {
+            let value: i64 = supervisor_stop(1);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "user supervisor_stop shadow must retain its declared signature: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::User(id)
+                if id.full_path() == "supervisor_stop"
+        )),
+        "user supervisor_stop must publish the user declaration target: {:#?}",
+        output.direct_call_targets
+    );
+    assert!(
+        !output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::SupervisorStop
+            )
+        )),
+        "user supervisor_stop must not acquire the builtin runtime family: {:#?}",
+        output.direct_call_targets
+    );
+}
+
+#[test]
+fn instant_now_publishes_typed_runtime_target() {
+    let output = check_source(
+        r"
+        fn main() {
+            let start = instant::now();
+            sleep_until(start);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "instant::now must typecheck as a compiler builtin: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::InstantNow
+            )
+        )),
+        "instant::now must publish its typed runtime family: {:#?}",
+        output.direct_call_targets
+    );
+}
+
 // ── Supervisor child slot index tests ────────────────────────────────────
 //
 // These tests verify that the checker assigns correct slot indices to

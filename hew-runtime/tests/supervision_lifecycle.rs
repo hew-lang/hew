@@ -1128,7 +1128,7 @@ unsafe extern "C" fn supervisor_child_state_drop(_state: *mut c_void) {
 }
 
 #[test]
-fn supervisor_restart_runs_state_drop_on_new_actor() {
+fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
@@ -1185,6 +1185,7 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             (*child).state_drop_fn.is_some(),
             "initial actor must have state_drop_fn registered"
         );
+        assert!((*child).state_drop_borrowed.load(Ordering::Acquire));
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
@@ -1206,22 +1207,23 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             (*restarted).state_drop_fn.is_some(),
             "restarted actor must have state_drop_fn registered"
         );
+        assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
 
         hew_deterministic_reset();
     }
-    // TestSupervisor::Drop runs hew_supervisor_stop, which tears down the
-    // restarted actor and triggers the drop callback exactly once.
+    // TestSupervisor::Drop tears down another shallow alias, which likewise
+    // carries no typed-drop authority.
 
     drop(sup);
     let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
     assert_eq!(
-        drops, 1,
-        "state_drop_fn must fire for the restarted actor's teardown (got {drops})"
+        drops, 0,
+        "borrowed shallow actors must never claim typed-drop authority (got {drops})"
     );
 }
 
 #[test]
-fn dynamic_child_restart_runs_state_drop() {
+fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
@@ -1275,6 +1277,7 @@ fn dynamic_child_restart_runs_state_drop() {
             (*child).state_drop_fn.is_some(),
             "dynamic child must have state_drop_fn registered after set_child_state_drop"
         );
+        assert!((*child).state_drop_borrowed.load(Ordering::Acquire));
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
@@ -1295,6 +1298,7 @@ fn dynamic_child_restart_runs_state_drop() {
             (*restarted).state_drop_fn.is_some(),
             "restarted dynamic child must have state_drop_fn registered"
         );
+        assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
 
         hew_deterministic_reset();
     }
@@ -1302,8 +1306,8 @@ fn dynamic_child_restart_runs_state_drop() {
     drop(sup);
     let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
     assert_eq!(
-        drops, 1,
-        "state_drop_fn must fire once for the restarted dynamic child (got {drops})"
+        drops, 0,
+        "borrowed dynamic shallow actors must never claim typed-drop authority (got {drops})"
     );
 }
 
@@ -1313,7 +1317,7 @@ fn dynamic_child_restart_runs_state_drop() {
     reason = "two HewChildSpec literals each gained the trailing init_fn/config/config_size \
               fields (v0.6 init-closure ABI); the test body is a linear setup-assert sequence"
 )]
-fn one_for_all_suppresses_state_drop_on_sibling_restart() {
+fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
     const STRATEGY_ONE_FOR_ALL: i32 = 1;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
@@ -1398,12 +1402,20 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             (*child0).state_drop_fn.is_some(),
             "child 0 must have state_drop_fn registered"
         );
+        assert!(
+            (*child0).state_drop_borrowed.load(Ordering::Acquire),
+            "legacy shallow child 0 must explicitly carry borrowed provenance"
+        );
 
         let child1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!child1.is_null(), "child 1 must be spawned");
         assert!(
             (*child1).state_drop_fn.is_some(),
             "child 1 must have state_drop_fn registered"
+        );
+        assert!(
+            (*child1).state_drop_borrowed.load(Ordering::Acquire),
+            "legacy shallow child 1 must explicitly carry borrowed provenance"
         );
 
         let id0 = (*child0).id;
@@ -1418,7 +1430,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
         let drops_after_restart = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
         assert_eq!(
             drops_after_restart, 0,
-            "state_drop must be suppressed during ONE_FOR_ALL restart (got {drops_after_restart})"
+            "borrowed shallow aliases must not claim typed-drop authority during restart (got {drops_after_restart})"
         );
 
         let restarted0 = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
@@ -1427,6 +1439,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             (*restarted0).state_drop_fn.is_some(),
             "restarted child 0 must have state_drop_fn registered"
         );
+        assert!((*restarted0).state_drop_borrowed.load(Ordering::Acquire));
 
         let restarted1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!restarted1.is_null(), "restarted child 1 must appear");
@@ -1434,6 +1447,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             (*restarted1).state_drop_fn.is_some(),
             "restarted child 1 must have state_drop_fn registered"
         );
+        assert!((*restarted1).state_drop_borrowed.load(Ordering::Acquire));
 
         hew_deterministic_reset();
     }
@@ -1441,7 +1455,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
     drop(sup);
     let drops_after_stop = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
     assert_eq!(
-        drops_after_stop, 2,
-        "state_drop_fn must fire for each restarted actor on supervisor stop (got {drops_after_stop})"
+        drops_after_stop, 0,
+        "borrowed shallow aliases must remain non-owners through final stop (got {drops_after_stop})"
     );
 }

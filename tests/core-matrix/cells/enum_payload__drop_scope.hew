@@ -1,0 +1,20 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+enum Held {
+    Nothing;
+    One(Tok);
+}
+
+fn main() {
+    let h: Held = One(Tok { id: 1 });
+    println("body");
+}

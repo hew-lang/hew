@@ -1,10 +1,39 @@
 use super::{
-    base_local, stream_handle_drop_descriptor, vec_iter_init_vec_source_expr, BindingId, Builder,
-    BuiltinType, Disposition, HashSet, HirExpr, HirExprKind, Instr, LoopFrame, MirDiagnostic,
-    MirDiagnosticKind, Place, ResolvedRef, ResolvedTy, ScopeId, ScopeInfoEntry,
+    base_local, stream_handle_drop_descriptor, vec_iter_init_vec_source_expr,
+    vec_iter_let_cursor_owns_handle, BindingId, Builder, BuiltinType, Disposition, HashSet,
+    HirExpr, HirExprKind, Instr, LoopFrame, MirDiagnostic, MirDiagnosticKind, Place, ResolvedRef,
+    ResolvedTy, ScopeId, ScopeInfoEntry, VecElementRelease,
 };
+use crate::ownership::CowHeapRelease;
 
 impl Builder {
+    /// Whether a non-binding `VecIter<T>` value arrives as an independent
+    /// snapshot owner. Synthetic `.iter()` / `.into_iter()` struct initialisers
+    /// use the topology-specific authority; other expressions must satisfy the
+    /// compiler's fresh-materialised-owner proof (notably a function call
+    /// returning a freshly built cursor).
+    pub(crate) fn vec_iter_value_is_owned(&self, value: &HirExpr) -> bool {
+        if matches!(value.kind, HirExprKind::StructInit { .. }) {
+            return vec_iter_let_cursor_owns_handle(value)
+                && !self.vec_iter_source_projects_actor_state_field(value)
+                && !self.vec_iter_source_indexes_owned_element_vec(value);
+        }
+        // A `VecIter<T>` returned through the Hew call ABI is an ownership
+        // transfer. The callee's return edge suppresses its local cursor drop,
+        // so the caller's return-slot value is the unique owner even when the
+        // generic record freshness summary conservatively declines a
+        // binding-returning wrapper.
+        if matches!(value.kind, HirExprKind::Call { .. }) {
+            return true;
+        }
+        Self::expr_is_materialized_owner(
+            value,
+            &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            &self.funcupdate_param_ids,
+            &self.proven_foreign_bindings,
+        )
+    }
+
     /// Materialize all pending defers for `scope_id` in LIFO order.
     ///
     /// Called at every exit from a scope: the tail of a `Block` expression,
@@ -43,6 +72,22 @@ impl Builder {
         if let Some(span) = self.current_span {
             self.binding_decl_byte.insert(binding, span.0);
             self.note_scope_span(span);
+        }
+    }
+
+    /// Record a binding against a known lexical scope rather than the current
+    /// lowering cursor's scope.
+    ///
+    /// Match payload binders are materialised before their body expression is
+    /// lowered. HIR supplies the synthetic arm scope that encloses bindings,
+    /// guard, and body, and match lowering pushes that scope before
+    /// materialising the binders. Recording the explicit id here keeps the
+    /// lifetime authoritative even when the arm is expression-bodied and has no
+    /// body block scope of its own.
+    pub(crate) fn record_binding_scope_in(&mut self, binding: BindingId, scope: ScopeId) {
+        self.binding_scope.insert(binding, scope);
+        if let Some(span) = self.current_span {
+            self.binding_decl_byte.insert(binding, span.0);
         }
     }
     /// Widen the active scope's recorded byte-extent to cover `span`, and record
@@ -113,27 +158,150 @@ impl Builder {
             });
         }
     }
+    /// The scope-exit release symbol for a sole-owner `for x in …` cursor's
+    /// (`VecIter<T>`) `vec` field — `hew_vec_free` for a plain-element snapshot
+    /// (`BitCopy` scalar / value-aggregate, or `string` walked by the runtime's
+    /// `ElemKind::String` path) and `hew_vec_free_owned` for an owned-element or
+    /// closure-pair snapshot (the per-element descriptor `drop_fn` runs before
+    /// the buffer free). `None` when the element's release protocol is unwired
+    /// (`Unsupported`) — such a cursor is not registered for a scope-exit drop
+    /// (fail-closed leak), and its program is independently rejected at compile
+    /// by `unsupported_vec_element_in_ty`, so `None` never reaches codegen.
+    ///
+    /// This is the SAME `classify_vec_element_release` authority the source
+    /// binding's own `let v: Vec<T>` scope-exit drop consults, so a cursor's
+    /// snapshot is freed with exactly the release its element layout was
+    /// constructed for — the pick is congruent with construction and can never
+    /// run `hew_vec_free_owned`'s per-element descriptor walk over a plain buffer
+    /// (which owns no per-element heap), nor leave an owned element's heaps
+    /// unwalked. A borrowing `for x in v` cursor (which shares the live source's
+    /// buffer) is never registered — `vec_iter_let_cursor_owns_handle` classifies
+    /// it as a borrow — so this symbol is only ever emitted against a snapshot
+    /// the cursor solely owns. Every accepted `VecIter::next` read clones out
+    /// through `hew_vec_get_clone`, independent of ordinary indexing semantics.
+    pub(crate) fn vec_iter_cursor_release_symbol(
+        &self,
+        cursor_ty: &ResolvedTy,
+    ) -> Option<&'static str> {
+        self.vec_iter_cursor_release_protocol(cursor_ty)
+            .map(CowHeapRelease::release_symbol)
+    }
+
+    /// Typed release protocol for the owned `vec` field of a `VecIter<T>`.
+    ///
+    /// This is shared by the normal inline `RecordFieldDrop` and the
+    /// elaborated abandon-edge `DropKind::VecIterCursor`, so both paths retain
+    /// the identical Vec element refinement.
+    pub(crate) fn vec_iter_cursor_release_protocol(
+        &self,
+        cursor_ty: &ResolvedTy,
+    ) -> Option<CowHeapRelease> {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::VecIter),
+            ..
+        } = cursor_ty
+        else {
+            return None;
+        };
+        if args.len() != 1 {
+            return None;
+        }
+        let elem = args.first()?;
+        match self.classify_vec_element_release(elem) {
+            VecElementRelease::Plain => Some(CowHeapRelease::VecPlain),
+            VecElementRelease::OwnedElement => Some(CowHeapRelease::VecOwnedElement),
+            VecElementRelease::ClosurePair => Some(CowHeapRelease::VecClosurePairs),
+            VecElementRelease::Unsupported(_) => None,
+        }
+    }
+
+    /// Register the path-sensitive release obligation for a first-class
+    /// `VecIter<T>` binding.
+    ///
+    /// Fresh `.iter()` / `.into_iter()` values lower as `VecIter { vec, idx }`
+    /// and own the `vec` field when the existing topology predicates say so.
+    /// Every cursor binding gets a runtime ownership bit: fresh owners start at
+    /// zero, borrowing topologies start moved (one), and whole-value rebinds
+    /// start owned after the `BindingRef` consume seam marks their registered
+    /// source moved. Both declaration entries remain in the static ledger; only
+    /// instructions on the executed CFG path mutate their bits. This is what
+    /// keeps an untaken conditional move from globally deleting the source's
+    /// cleanup.
+    pub(crate) fn register_vec_iter_scope_owner(
+        &mut self,
+        binding: BindingId,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+        slot_is_wired: bool,
+    ) {
+        if !slot_is_wired
+            || self.vec_iter_cursor_release_symbol(binding_ty).is_none()
+            || self.vec_iter_drop_flags.contains_key(&binding)
+        {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.vec_iter_drop_flags.insert(binding, flag);
+        self.vec_iter_scope_owner_ledger
+            .push((binding, binding_ty.clone()));
+        if let Some(scope) = self.active_scopes.last().copied() {
+            self.scope_vec_iter_bindings
+                .push((scope, binding, binding_ty.clone()));
+            if let Some(source) = vec_iter_init_vec_source_expr(value) {
+                if source.intent == hew_hir::IntentKind::Capture {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source_binding),
+                        ..
+                    } = &source.kind
+                    {
+                        self.vec_iter_borrowed_sources
+                            .push((scope, *source_binding));
+                    }
+                }
+            }
+        }
+        if let Some(value_flag) = self.vec_iter_value_drop_flags.get(&value.site).copied() {
+            self.push_instr(Instr::Move {
+                dest: flag,
+                src: value_flag,
+            });
+            return;
+        }
+        let owns_snapshot = self.vec_iter_value_is_owned(value);
+        self.push_instr(Instr::ConstI64 {
+            dest: flag,
+            value: i64::from(!owns_snapshot),
+        });
+    }
+
     /// Release the `vec` handle of every sole-owner `for x in …` cursor
     /// (`VecIter<T>`) declared in `scope_id` when that scope closes, so the
     /// handle is freed on every outer-loop iteration rather than leaking one per
     /// iteration. #1949.
     ///
-    /// Mirrors [`Self::emit_scope_generator_drops`]: it emits the release inline
-    /// as an `Instr::RecordFieldDrop` on the cursor's `vec` field (declaration-
-    /// order field 0), removes the cursor from `owned_locals` so the function-exit
-    /// LIFO pass cannot fire a second free, and the inline drop is null-safe
-    /// (`hew_vec_free` no-ops on null). Only cursors the registration gate
-    /// admitted are here — a sole-owner cursor with a `BitCopy`-element `vec`
-    /// (`vec_iter_ty_drop_safe`) and an rvalue/consumed source
-    /// (`vec_iter_let_cursor_owns_handle`). A `CowShare` place-source cursor and
-    /// any owned/string-element cursor were never registered, so the handle is
-    /// freed exactly once (by the source binding's drop for a place source, or
-    /// left undropped for an owned-element vec — fail-closed leak, never a shared-
-    /// element double-free).
+    /// Emits a runtime ownership-bit guard around `Instr::RecordFieldDrop` on
+    /// the cursor's `vec` field (declaration-order field 0). `VecIter` bindings
+    /// never enter `owned_locals`, so this guarded inline path is the sole
+    /// release authority. All wired cursors are registered: sole-owner
+    /// snapshots start with a zero bit, while `CowShare`/projected borrowing
+    /// topologies start moved (one) and skip the release.
     ///
-    /// The element is `BitCopy` by the registration gate, so the `vec` handle's
-    /// release is the plain `hew_vec_free` (buffer + handle; no per-element
-    /// release path, hence no shared-element double-free hazard).
+    /// #58 (B2 leak-3) — the release symbol is chosen per element class by
+    /// `vec_iter_cursor_release_symbol`: `hew_vec_free` for a plain / `string`
+    /// snapshot (buffer + handle; the runtime walks `string` slots itself) and
+    /// `hew_vec_free_owned` for an owned-element / closure-pair snapshot (the
+    /// per-element descriptor `drop_fn` runs before the buffer free). The loop
+    /// body receives a descriptor-backed `hew_vec_get_clone` owner, so releasing
+    /// the snapshot never frees storage handed to the body.
+    ///
+    /// This is the LEXICAL (fall-through) release only. An early
+    /// `break @outer` / `continue @outer` / `return` jumps past this point, and
+    /// the `ScopeReleased` disposition set here also removes the cursor from the
+    /// function-exit LIFO the terminator drop plans are built from — so those
+    /// edges carry their own inline release via
+    /// [`Self::emit_vec_iter_drops_for_exit_edge`], whose scope window makes the
+    /// two mutually exclusive.
     pub(crate) fn emit_scope_vec_iter_drops(&mut self, scope_id: ScopeId) {
         let mut to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = Vec::new();
         self.scope_vec_iter_bindings.retain(|(s, binding, ty)| {
@@ -145,32 +313,182 @@ impl Builder {
             }
         });
         for (binding, cursor_ty) in to_drop.into_iter().rev() {
-            let Some(place) = self.binding_locals.get(&binding).copied() else {
-                continue;
-            };
-            // The cursor's `vec` field is `Vec<T>` where `T` is the cursor's sole
-            // type argument; the registration gate proved `T` is `BitCopy`, so the
-            // release is the plain `hew_vec_free`.
-            let ResolvedTy::Named { args, .. } = &cursor_ty else {
-                continue;
-            };
-            let Some(elem_ty) = args.first().cloned() else {
-                continue;
-            };
-            let vec_ty = ResolvedTy::Named {
-                name: "Vec".to_string(),
-                args: vec![elem_ty],
-                builtin: Some(BuiltinType::Vec),
-                is_opaque: false,
-            };
-            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
-            self.push_instr(Instr::RecordFieldDrop {
-                record: place,
-                field_offset: crate::model::FieldOffset(0),
-                ty: vec_ty,
-                drop_fn: crate::model::DropFnSpec::Release("hew_vec_free"),
+            let _ = self.emit_flag_gated_vec_iter_cursor_release(binding, &cursor_ty);
+        }
+        self.vec_iter_borrowed_sources
+            .retain(|(scope, _)| *scope != scope_id);
+    }
+
+    /// Release the `vec` handle of every registered `for x in …` cursor
+    /// (`VecIter<T>`) that a `break` / `continue` / `return` edge ABANDONS — the
+    /// cursor analogue of [`Self::emit_stream_drops_for_exit_edge`], and the
+    /// reason an early exit out of a loop body is not a leak.
+    ///
+    /// #58 (B2 leak-3, round 3) — [`Self::emit_scope_vec_iter_drops`] is a
+    /// LEXICAL release: it only runs on the fall-through path out of the
+    /// cursor's declaring block. An early exit that jumps past that block has
+    /// no lexical release, and `VecIter` deliberately has no function-exit LIFO
+    /// entry, so
+    /// `for w in make_vec() { …; return; }` leaked the whole snapshot tree once
+    /// per call.
+    ///
+    /// WINDOW — why this can never double-release against the lexical close.
+    /// `min_scope_depth` bounds the release to `active_scopes[min_scope_depth..]`.
+    /// A `for` desugars to `Block(D) { let cursor = …; loop { body B } }`, the
+    /// cursor registers against `D`, and every loop form records its frame's
+    /// `scope_depth` as the index of its own body scope `B` — one deeper than
+    /// `D`. So:
+    ///   - `break`/`continue` of the cursor's OWN loop passes that frame's depth,
+    ///     whose window starts at `B` and EXCLUDES `D`: nothing is emitted here
+    ///     and the edge lands inside `D`, whose fall-through close is the single
+    ///     release. (It must also stay silent on `continue` — the cursor is still
+    ///     being iterated.)
+    ///   - an escape from an ENCLOSING loop (`break @outer` / `continue @outer`)
+    ///     passes that outer frame's depth, whose window contains `D`; the edge
+    ///     is sealed with a `Goto` past `D`'s close, so this release is the
+    ///     single one.
+    ///   - `return` passes `0` — it leaves every enclosing scope — and is sealed
+    ///     with `Terminator::Return`, so `D`'s close is likewise unreachable
+    ///     from it.
+    ///
+    /// CLONE discipline (mirrors the stream and generator exit-edge releases):
+    /// entries are NOT removed from `scope_vec_iter_bindings`, because the
+    /// mutually-exclusive fall-through path still needs its own guarded
+    /// release. Codegen null-stores the field slot after a
+    /// `RecordFieldDrop`, so even a structurally-reachable second release
+    /// degrades to `hew_vec_free*(null)` — a no-op (`raii-null-after-move`).
+    ///
+    /// ADMISSION is the registration gate's alone: every actual `VecIter<T>`
+    /// with a wired element release is present, and its ownership bit decides
+    /// whether the edge releases. Clone-totality is checked before HIR, and
+    /// `VecIter::next` always clones out.
+    pub(crate) fn emit_vec_iter_drops_for_exit_edge(&mut self, min_scope_depth: usize) {
+        self.emit_vec_iter_drops_for_exit_edge_except(min_scope_depth, None);
+    }
+
+    /// Exit-edge cursor cleanup with one optional whole-value owner transferred
+    /// to the return slot. The exclusion is path-local: the registration stays
+    /// live for sibling/fall-through paths.
+    pub(crate) fn emit_vec_iter_drops_for_exit_edge_except(
+        &mut self,
+        min_scope_depth: usize,
+        returned_binding: Option<BindingId>,
+    ) {
+        let window: HashSet<ScopeId> = self.active_scopes[min_scope_depth..]
+            .iter()
+            .copied()
+            .collect();
+        let to_drop: Vec<(hew_hir::BindingId, ResolvedTy)> = self
+            .scope_vec_iter_bindings
+            .iter()
+            .rev()
+            .filter(|(s, binding, _)| window.contains(s) && Some(*binding) != returned_binding)
+            .map(|(_, binding, ty)| (*binding, ty.clone()))
+            .collect();
+        for (binding, cursor_ty) in to_drop {
+            let _ = self.emit_flag_gated_vec_iter_cursor_release(binding, &cursor_ty);
+        }
+    }
+
+    /// Emit `if owner_flag == 0 { drop cursor.vec }` and continue at a shared
+    /// successor. The flag is the path-sensitive ownership authority; the
+    /// declaration ledger only identifies which lexical exits need this test.
+    pub(crate) fn emit_flag_gated_vec_iter_cursor_release(
+        &mut self,
+        binding: hew_hir::BindingId,
+        cursor_ty: &ResolvedTy,
+    ) -> bool {
+        let Some(flag) = self.vec_iter_drop_flags.get(&binding).copied() else {
+            return false;
+        };
+        let Some(place) = self.binding_locals.get(&binding).copied() else {
+            return false;
+        };
+        self.emit_flag_gated_vec_iter_value_release(place, cursor_ty, flag)
+    }
+
+    /// Emit `if owner_flag == 0 { drop value.vec }` for a materialized cursor
+    /// value that is not itself a registered binding (notably a discarded
+    /// block/if/match result).
+    pub(crate) fn emit_flag_gated_vec_iter_value_release(
+        &mut self,
+        place: Place,
+        cursor_ty: &ResolvedTy,
+        flag: Place,
+    ) -> bool {
+        let zero = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero,
+            value: 0,
+        });
+        let still_owned = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            dest: still_owned,
+            pred: super::CmpPred::Eq,
+            lhs: flag,
+            rhs: zero,
+        });
+        let release_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(super::Terminator::Branch {
+            cond: still_owned,
+            then_target: release_bb,
+            else_target: cont_bb,
+        });
+        self.start_block(release_bb);
+        let emitted = self.emit_vec_iter_value_release(place, cursor_ty);
+        if emitted {
+            // The sidecar is the single path-sensitive release authority, not
+            // merely a move bit. Disarm it after the normal inline release so
+            // a later cancellation checkpoint in the same lexical CFG cannot
+            // re-run the abandon plan for an already-closed cursor slot.
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
             });
         }
+        self.finish_current_block(super::Terminator::Goto { target: cont_bb });
+        self.start_block(cont_bb);
+        emitted
+    }
+
+    /// Emit one registered cursor's `vec`-handle release as an inline
+    /// `Instr::RecordFieldDrop` on declaration-order field 0. Shared by the
+    /// lexical scope close and the exit-edge release so both can only ever pick
+    /// the same symbol for the same cursor. `true` when the instruction was
+    /// emitted.
+    ///
+    /// The cursor's `vec` field is `Vec<T>` where `T` is the cursor's sole type
+    /// argument. The release symbol follows the element class through the same
+    /// authority the source binding's own drop consults
+    /// (`vec_iter_cursor_release_symbol` → `classify_vec_element_release`):
+    /// `hew_vec_free` for a plain / `string` element, `hew_vec_free_owned` for
+    /// an owned-element / closure-pair element. The registration gate proved
+    /// this is `Some`; a `None` (unwired release) cursor was never registered,
+    /// so every early return here is defence-in-depth, never expected.
+    fn emit_vec_iter_value_release(&mut self, place: Place, cursor_ty: &ResolvedTy) -> bool {
+        let Some(release) = self.vec_iter_cursor_release_symbol(cursor_ty) else {
+            return false;
+        };
+        let ResolvedTy::Named { args, .. } = cursor_ty else {
+            return false;
+        };
+        let Some(elem_ty) = args.first().cloned() else {
+            return false;
+        };
+        let vec_ty = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+            builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
+        };
+        self.push_instr(Instr::RecordFieldDrop {
+            record: place,
+            field_offset: crate::model::FieldOffset(0),
+            ty: vec_ty,
+            drop_fn: crate::model::DropFnSpec::Release(release),
+        });
+        true
     }
     /// True when the `for x in …` cursor `value` (a HIR `VecIter { vec, idx }`
     /// struct-init) iterates a field/tuple PROJECTION rooted at a bare actor

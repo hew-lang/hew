@@ -1,0 +1,8 @@
+fn main() {
+    let x = |v: i64| v * 2;
+    let y = clone x;
+    let y_r = y(21);
+    println(f"{y_r}");
+    let x_r = x(21);
+    println(f"{x_r}");
+}

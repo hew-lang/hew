@@ -181,10 +181,10 @@ fn hashmap_string_i64_insert_resolves_to_map_impl() {
         .expect("HashMap<String,i64>::insert must resolve");
     assert_eq!(resolved.impl_id, map_id);
     assert_eq!(resolved.method_name, "insert");
-    assert_eq!(resolved.target.symbol_name, "hew_hashmap_insert");
-    assert_eq!(resolved.target.abi, RuntimeAbi::ByRefMut);
-    assert_eq!(resolved.target.call_hint, CallAbiHint::RuntimeShim);
-    assert!(!resolved.target.consumes_receiver);
+    assert_eq!(resolved.method_target.symbol_name, "hew_hashmap_insert");
+    assert_eq!(resolved.method_target.abi, RuntimeAbi::ByRefMut);
+    assert_eq!(resolved.method_target.call_hint, CallAbiHint::RuntimeShim);
+    assert!(!resolved.method_target.consumes_receiver);
     // type_args follow first-occurrence order of vars in self_pattern: K, V.
     assert_eq!(
         resolved.type_args,
@@ -245,8 +245,8 @@ fn vec_push_resolves_with_no_bounds() {
     let resolved = resolve_method_call(&r, "Vec", "push", &receiver, &hash_eq_satisfied)
         .expect("Vec<i64>::push must resolve (no where-bounds)");
     assert_eq!(resolved.impl_id, vec_id);
-    assert_eq!(resolved.target.symbol_name, "hew_vec_push");
-    assert_eq!(resolved.target.call_hint, CallAbiHint::Direct);
+    assert_eq!(resolved.method_target.symbol_name, "hew_vec_push");
+    assert_eq!(resolved.method_target.call_hint, CallAbiHint::Direct);
 }
 
 #[test]
@@ -347,15 +347,15 @@ fn production_registry_exposes_vec_seq_methods_with_one_type_arg() {
             "Seq::{method} must carry the single Vec element type arg"
         );
         assert!(
-            resolved.target.symbol_name.starts_with("hew_vec_"),
+            resolved.method_target.symbol_name.starts_with("hew_vec_"),
             "Seq::{method} placeholder must stay in the hew_vec_* family"
         );
         assert!(
-            resolved.target.symbol_name.ends_with("_FAMILY"),
+            resolved.method_target.symbol_name.ends_with("_FAMILY"),
             "Seq::{method} registry symbol is a placeholder until Vec's per-element override runs"
         );
-        assert_eq!(resolved.target.abi, target.abi);
-        assert_eq!(resolved.target.call_hint, CallAbiHint::RuntimeShim);
-        assert!(!resolved.target.consumes_receiver);
+        assert_eq!(resolved.method_target.abi, target.abi);
+        assert_eq!(resolved.method_target.call_hint, CallAbiHint::RuntimeShim);
+        assert!(!resolved.method_target.consumes_receiver);
     }
 }

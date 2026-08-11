@@ -1,0 +1,8 @@
+fn main() {
+    let x: (i64, string) = (1, "x0");
+    let y = clone x;
+    let (y_a, y_b) = y;
+    println(f"{y_a} {y_b}");
+    let (x_a, x_b) = x;
+    println(f"{x_a} {x_b}");
+}

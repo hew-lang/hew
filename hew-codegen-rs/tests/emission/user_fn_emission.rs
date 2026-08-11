@@ -62,6 +62,22 @@ fn emit_ll(source: &str, module_name: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
+fn function_ir<'a>(ll: &'a str, name: &str) -> &'a str {
+    let symbol = format!("@{name}(");
+    let header = ll
+        .lines()
+        .find(|line| line.starts_with("define ") && line.contains(&symbol))
+        .unwrap_or_else(|| panic!("LLVM IR must define `{name}`:\n{ll}"));
+    let start = ll
+        .find(header)
+        .expect("a line selected from the LLVM IR must have an offset");
+    let body = &ll[start..];
+    let end = body
+        .find("\n}")
+        .unwrap_or_else(|| panic!("LLVM definition for `{name}` must be closed:\n{body}"));
+    &body[..end + 2]
+}
+
 /// `fn add(a: i64, b: i64) -> i64 { a + b }` called as `add(2, 3)` from
 /// `main` must produce LLVM IR containing `call i64 @add(i64 2, i64 3)`.
 ///
@@ -119,5 +135,31 @@ fn callee_define_has_i64_params() {
     assert!(
         ll.contains("@add(i64") && ll.contains("i64 @add("),
         "LLVM IR must define @add with at least one i64 param;\n--- IR ---\n{ll}"
+    );
+}
+
+#[test]
+fn unsafe_audited_extern_string_temp_emits_one_release() {
+    let ll = emit_ll(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn direct(node: i64) -> i64 {
+    borrow_len(unsafe { hew_xml_to_string(node) })
+}
+"#,
+        "unsafe_extern_string_temp",
+    );
+    let direct = function_ir(&ll, "direct");
+    assert_eq!(
+        direct.matches("call void @hew_string_drop(").count(),
+        1,
+        "the transferred extern result must reach exactly one LLVM release:\n{direct}"
     );
 }

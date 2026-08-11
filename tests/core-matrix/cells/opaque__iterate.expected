@@ -1,0 +1,4 @@
+dq 1 len=0
+dq 2 len=0
+close 1
+close 2

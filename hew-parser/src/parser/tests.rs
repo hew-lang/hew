@@ -313,6 +313,79 @@ fn toplevel_fn_reserved_keyword_name_emits_single_clear_error() {
     );
 }
 
+/// A reserved word in a BINDING position must be named as reserved. The
+/// generic invalid-pattern message only echoes the raw token, which leaves a
+/// reserved word indistinguishable from a typo — the reader cannot tell "this
+/// word is off-limits" from "the parser did not recognise this token".
+#[test]
+fn let_binding_reserved_keyword_names_it_as_reserved() {
+    let result = parse("fn f() { let record = 1 }");
+    let diagnostic = result
+        .errors
+        .iter()
+        .find(|err| matches!(err.kind, ParseDiagnosticKind::InvalidPattern { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an invalid-pattern error, got: {:?}",
+                result.errors
+            )
+        });
+    assert!(
+        diagnostic.message.contains("reserved word `record`"),
+        "message must name `record` as reserved; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.contains("record")),
+        "a reserved word in a binding position must carry a rename hint; got: {:?}",
+        diagnostic.hint
+    );
+}
+
+/// The same fact through the other pattern position.
+#[test]
+fn match_arm_reserved_keyword_names_it_as_reserved() {
+    let result = parse("fn f() { match 1 { record => 0 } }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|err| err.message.contains("reserved word `record`")),
+        "expected a reserved-word pattern diagnostic, got: {:?}",
+        result.errors
+    );
+}
+
+/// A non-keyword token that cannot start a pattern keeps the generic message —
+/// the reserved-word arm must not swallow ordinary syntax errors.
+#[test]
+fn non_keyword_invalid_pattern_keeps_generic_message() {
+    let result = parse("fn f() { match 1 { => 0 } }");
+    let diagnostic = result
+        .errors
+        .iter()
+        .find(|err| matches!(err.kind, ParseDiagnosticKind::InvalidPattern { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an invalid-pattern error, got: {:?}",
+                result.errors
+            )
+        });
+    assert!(
+        !diagnostic.message.contains("reserved word"),
+        "a non-keyword token must not be reported as reserved; got: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.hint.is_none(),
+        "the generic invalid-pattern arm carries no hint; got: {:?}",
+        diagnostic.hint
+    );
+}
+
 #[test]
 fn toplevel_fn_actor_name_still_reports_reserved_word() {
     let source = "fn actor() {}";
@@ -2925,6 +2998,31 @@ fn capture_doc_comment_on_trait_method() {
 }
 
 #[test]
+fn trait_method_preserves_receiver_identity_and_consuming_self() {
+    let source = r"
+trait Fluent {
+    #[returns_receiver]
+    fn with(consuming self, consume child: Child) -> Self;
+}
+";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Trait(t) = &result.program.items[0].0 else {
+        panic!("expected trait");
+    };
+    let TraitItem::Method(m) = &t.items[0] else {
+        panic!("expected method");
+    };
+    assert!(m.consumes_self);
+    assert_eq!(m.attributes.len(), 1);
+    assert_eq!(m.attributes[0].name, "returns_receiver");
+    assert_eq!(m.params.len(), 2);
+    assert_eq!(m.params[0].name, "self");
+    assert_eq!(m.params[1].name, "child");
+    assert!(m.params[1].is_consume);
+}
+
+#[test]
 fn capture_doc_comment_on_enum_variant() {
     let source = "enum E {\n    /// The only variant.\n    A;\n}\n";
     let result = parse(source);
@@ -3328,6 +3426,121 @@ fn unmarked_type_has_no_resource_marker() {
     };
     assert_eq!(td.resource_marker, ResourceMarker::None);
     assert!(td.consuming_methods.is_empty());
+}
+
+#[test]
+fn resource_markers_reject_unsupported_top_level_items_in_every_visibility_form() {
+    let source = r"
+#[resource] record PrivateRecord { id: i64 }
+#[linear] pub record PublicRecord { id: i64 }
+#[resource] package record PackageRecord { id: i64 }
+
+#[linear] fn private_fn() {}
+#[resource] pub fn public_fn() {}
+#[linear] package fn package_fn() {}
+
+#[resource] actor PrivateActor {}
+#[linear] pub actor PublicActor {}
+#[resource] package actor PackageActor {}
+
+#[linear] trait PrivateTrait {}
+#[resource] pub trait PublicTrait {}
+#[linear] package trait PackageTrait {}
+
+#[resource] type PrivateAlias = i64;
+#[linear] pub type PublicAlias = i64;
+#[resource] package type PackageAlias = i64;
+
+#[linear] impl PrivateRecord { fn close(self) {} }
+";
+    let result = parse(source);
+    let marker_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .collect();
+
+    assert_eq!(
+        marker_errors.len(),
+        16,
+        "every ownership marker on a non-TypeDecl item must fail closed: {:?}",
+        result.errors
+    );
+    for error in marker_errors {
+        assert!(
+            source[error.span.clone()].starts_with("#[resource]")
+                || source[error.span.clone()].starts_with("#[linear]"),
+            "ownership-marker diagnostic must point at its attribute: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn resource_markers_remain_valid_on_nominal_type_and_enum_declarations() {
+    let source = r"
+#[resource] type PrivateResource { id: i64 }
+#[linear] pub type PublicLinear { id: i64 }
+#[resource] package type PackageResource { id: i64 }
+#[linear] enum PrivateLinear { Open; }
+#[resource] pub enum PublicResource { Open; }
+#[linear] package indirect enum PackageLinear { Open; }
+";
+    let result = parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "nominal type and enum ownership markers must remain valid: {:?}",
+        result.errors
+    );
+    assert_eq!(result.program.items.len(), 6);
+}
+
+#[test]
+fn resource_markers_reject_nested_declarations_that_do_not_carry_them() {
+    let source = r#"
+type Host {
+    #[resource]
+    fn inline_method() {}
+}
+
+trait Surface {
+    #[linear]
+    fn call();
+}
+
+impl Host {
+    #[resource]
+    fn helper(self) {}
+}
+
+extern "C" {
+    #[linear]
+    fn host_call();
+}
+
+actor Worker {
+    #[resource]
+    receive fn handle() {}
+    #[linear]
+    fn lifecycle() {}
+}
+"#;
+    let result = parse(source);
+    let marker_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|error| error.message.contains("E_RESOURCE_MARKER_TARGET"))
+        .collect();
+
+    assert_eq!(
+        marker_errors.len(),
+        6,
+        "nested ownership-marker misuse must fail closed: {:?}",
+        result.errors
+    );
+    assert!(marker_errors.iter().all(|error| {
+        source[error.span.clone()].starts_with("#[resource]")
+            || source[error.span.clone()].starts_with("#[linear]")
+    }));
 }
 
 #[test]

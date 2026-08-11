@@ -1,0 +1,5 @@
+fn main() {
+    let x: (i64, string) = (1, "x0");
+    let (x_a, x_b) = x;
+    println(f"{x_a} {x_b}");
+}

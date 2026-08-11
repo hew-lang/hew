@@ -1,0 +1,52 @@
+// A supervised incarnation runs init/on(start), handles a message, restarts,
+// repeats init/on(start), handles another message, then runs on(stop) during
+// supervisor teardown. Every hook mutates state outside a same-actor scheduler
+// dispatch transaction; the receive handler still runs inside one.
+
+actor Worker {
+    var value: i64;
+
+    init() {
+        value = 10;
+    }
+
+    #[on(start)]
+    fn start() {
+        value = value + 1;
+    }
+
+    receive fn get() -> i64 {
+        value
+    }
+
+    receive fn crash() {
+        panic("restart lifecycle phase writer");
+    }
+
+    #[on(stop)]
+    fn stop() {
+        value = 0;
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child worker: Worker(value: 7);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let first = match await sup.worker.get() {
+        Ok(value) => value,
+        Err(_) => return 1,
+    };
+    sup.worker.crash();
+    let restarted = await_restart sup.worker;
+    let second = match await restarted.get() {
+        Ok(value) => value,
+        Err(_) => return 2,
+    };
+    first + second
+}

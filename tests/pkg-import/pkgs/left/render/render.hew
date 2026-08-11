@@ -1,0 +1,64 @@
+//! Left owner in the same-final-component canonical-identity runtime fixture.
+
+pub trait Render {
+    fn render(value: Self) -> string;
+
+    fn provided(value: Self) -> string {
+        "left-default"
+    }
+}
+
+pub type Box<T> {
+    value: T;
+}
+
+// Deliberately shares both its leaf name and generic shape with
+// `right::render::Parcel`.  The owning module path is part of the layout key.
+pub enum Parcel<T> {
+    Filled(T);
+    Empty;
+}
+
+pub fn identity() -> string {
+    "left-free"
+}
+
+pub fn render_value<T: Render>(value: T) -> string {
+    value.render()
+}
+
+pub fn default_value<T: Render>(value: T) -> string {
+    value.provided()
+}
+
+pub fn specialized_box() -> Box<i64> {
+    Box { value: 1 }
+}
+
+pub fn generic_box() -> Box<bool> {
+    Box { value: true }
+}
+
+pub fn make_parcel() -> Parcel<string> {
+    Parcel::Filled("left-parcel")
+}
+
+pub fn clone_and_consume_parcel(value: Parcel<string>) -> string {
+    let cloned = value.clone();
+    match cloned {
+        Parcel::Filled(label) => label,
+        Parcel::Empty => "left-empty",
+    }
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "left-generic"
+    }
+}
+
+impl Render for Box<i64> {
+    fn render(value: Box<i64>) -> string {
+        "left-specialized"
+    }
+}

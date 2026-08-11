@@ -1,0 +1,277 @@
+{
+  "schema_version": 2,
+  "resources": [
+    {
+      "source_path": "std/channel/channel.hew",
+      "resource": "ChannelPair",
+      "runtime": {
+        "path": "hew-runtime/src/channel.rs",
+        "test": "pair_held_receiver_releases_queued_owned_elements",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
+      },
+      "release_symbol": "hew_channel_pair_free"
+    },
+    {
+      "source_path": "std/encoding/json/json.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/json.rs",
+        "test": "roundtrip_complex_builder_structure",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
+      },
+      "release_symbol": "hew_json_free"
+    },
+    {
+      "source_path": "std/encoding/toml/toml.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/toml.rs",
+        "test": "test_builder_stringify_roundtrip",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
+      },
+      "release_symbol": "hew_toml_free"
+    },
+    {
+      "source_path": "std/encoding/yaml/yaml.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/yaml.rs",
+        "test": "roundtrip_complex_builder_structure",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
+      },
+      "release_symbol": "hew_yaml_free"
+    },
+    {
+      "source_path": "std/fs.hew",
+      "resource": "FileReadStream",
+      "runtime": {
+        "path": "hew-runtime/src/stream.rs",
+        "test": "nominal_file_read_resource_endpoints_share_one_live_handle",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_file_read_stream_close"
+    },
+    {
+      "source_path": "std/net/net.hew",
+      "resource": "Connection",
+      "runtime": {
+        "path": "hew-runtime/src/transport.rs",
+        "test": "exact_tcp_connection_and_listener_release_valid_handles",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_tcp_close"
+    },
+    {
+      "source_path": "std/net/net.hew",
+      "resource": "Listener",
+      "runtime": {
+        "path": "hew-runtime/src/transport.rs",
+        "test": "exact_tcp_connection_and_listener_release_valid_handles",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_tcp_listener_close"
+    },
+    {
+      "source_path": "std/net/http/http.hew",
+      "resource": "Server",
+      "runtime": {
+        "path": "hew-std/src/http/server.rs",
+        "test": "server_close_cancels_streaming_responses_and_drains_threads",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_http_server_close"
+    },
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICConnection",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_quic_conn_disconnect"
+    },
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICEndpoint",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_quic_endpoint_close"
+    },
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICStream",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_quic_stream_close"
+    },
+    {
+      "source_path": "std/net/smtp/smtp.hew",
+      "resource": "Conn",
+      "runtime": {
+        "path": "hew-std/src/smtp.rs",
+        "test": "successful_send_clears_last_error",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_smtp_close"
+    },
+    {
+      "source_path": "std/net/tls/tls.hew",
+      "resource": "TlsStream",
+      "runtime": {
+        "path": "hew-std/src/tls.rs",
+        "test": "close_reaps_a_live_blocked_reader_without_hanging",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_tls_close"
+    },
+    {
+      "source_path": "std/net/websocket/websocket.hew",
+      "resource": "Conn",
+      "runtime": {
+        "path": "hew-std/src/websocket.rs",
+        "test": "attach_reader_exits_when_conn_closes_before_actor_stop",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_ws_close"
+    },
+    {
+      "source_path": "std/net/websocket/websocket.hew",
+      "resource": "Server",
+      "runtime": {
+        "path": "hew-std/src/websocket.rs",
+        "test": "server_accept_cancel_returns_cancelled",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_ws_server_close"
+    },
+    {
+      "source_path": "std/process.hew",
+      "resource": "ProcessResultHandle",
+      "runtime": {
+        "path": "hew-runtime/src/process.rs",
+        "test": "run_echo_command",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_process_result_free"
+    },
+    {
+      "source_path": "std/stream.hew",
+      "resource": "StreamPair",
+      "runtime": {
+        "path": "hew-runtime/src/stream.rs",
+        "test": "layout_stream_owned_roundtrip_and_close_releases_queued",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
+      },
+      "release_symbol": "hew_stream_pair_free"
+    }
+  ]
+}

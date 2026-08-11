@@ -368,8 +368,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let tmp = std::env::temp_dir().join(format!("hew-d10-failclosed-{}", std::process::id()));

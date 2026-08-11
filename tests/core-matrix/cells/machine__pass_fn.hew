@@ -1,0 +1,22 @@
+machine Counter {
+    events { Inc; Reset; }
+    state Zero;
+    state NonZero { value: i64; }
+    on Inc: Zero => NonZero { NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Zero }
+    default { state }
+}
+
+fn use_it(v: Counter) {
+    match v {
+        Zero => println("zero"),
+        NonZero { value } => println(f"n {value}"),
+    }
+}
+
+fn main() {
+    var x = Zero;
+    x.step(Inc);
+    use_it(x);
+}

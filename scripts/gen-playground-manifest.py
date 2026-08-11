@@ -31,6 +31,7 @@ class ManifestEntry(TypedDict):
 ROOT = Path(__file__).resolve().parent.parent
 PLAYGROUND_DIR = ROOT / "examples" / "playground"
 OUTPUT_FILE = PLAYGROUND_DIR / "manifest.json"
+WASM_CAPABILITY_FILE = PLAYGROUND_DIR / "wasm-capabilities.json"
 HEADER_PATTERN = re.compile(r"^//!\s*@(?P<key>name|description)\s+(?P<value>.+?)\s*$")
 CATEGORY_ORDER = ("basics", "concurrency", "language", "machines", "types")
 # Keep the checked-in manifest aligned with the current curated snippet order.
@@ -214,27 +215,47 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "types/method_clone": "runnable",
 }
 
-# Entries omitted from WASI_CAPABILITY default to "runnable".
-WASI_CAPABILITY: dict[str, str] = {
-    # Actor examples currently require the native actor/coroutine runtime ABI;
-    # the WASI runtime gap is tracked by #1821.
-    "concurrency/actor_pipeline": "unsupported",
-    "concurrency/async_await": "unsupported",
-    "concurrency/counter_actor": "unsupported",
-    "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
-    # traffic_light now has fn main() but the machine runtime is not yet wired
-    # into the WASI/LLVM path; remains unsupported in WASI until that lands.
-    "machines/traffic_light": "unsupported",
-    # language/string_slicing: `hew_string_slice` aborts under wasm32-wasi with a
-    # wasm-ld function-signature mismatch ((i32,i64,i64)->i32); the example runs
-    # at native↔sandbox parity but is not WASI-runnable until that ABI gap closes.
-    "language/string_slicing": "unsupported",
-    # types/method_clone: the wasm32-wasip1 runtime has no regex FFI symbols at
-    # all (hew_regex_new/is_match/clone/close are undefined at link time) — a
-    # pre-existing wasm32-wasi gap, not a clone-specific one. Runs at
-    # native↔sandbox parity; not WASI-runnable until regex ships for wasm32-wasi.
-    "types/method_clone": "unsupported",
-}
+
+def load_wasi_capabilities() -> dict[str, str]:
+    """Load manifest-generated non-runnable decisions.
+
+    Runnable is intentionally the absence of an override: the WASI E2E test
+    must compile and execute every such entry before it is treated as pass.
+    """
+    try:
+        raw = json.loads(WASM_CAPABILITY_FILE.read_text())
+    except FileNotFoundError as error:
+        raise SystemExit(
+            "error: missing generated examples/playground/wasm-capabilities.json; "
+            "run cargo run -p hew-capability-gen"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"error: invalid generated capability JSON: {error}"
+        ) from error
+
+    if not isinstance(raw, list):
+        raise SystemExit("error: generated WASI capability decisions must be a list")
+
+    decisions: dict[str, str] = {}
+    for row in raw:
+        if not isinstance(row, dict):
+            raise SystemExit("error: generated WASI capability row must be an object")
+        entry_id = row.get("id")
+        status = row.get("status")
+        if not isinstance(entry_id, str) or not entry_id:
+            raise SystemExit("error: generated WASI capability row has invalid id")
+        if status != "unsupported":
+            raise SystemExit(
+                f"error: generated WASI capability {entry_id!r} must be "
+                f"'unsupported', got {status!r}"
+            )
+        if entry_id in decisions:
+            raise SystemExit(
+                f"error: duplicate generated WASI capability decision: {entry_id}"
+            )
+        decisions[entry_id] = status
+    return decisions
 
 
 def curated_source_paths() -> list[Path]:
@@ -323,6 +344,7 @@ def fail_on_curated_scope_mismatch(curated_paths: list[Path]) -> None:
 def build_manifest_entries() -> list[ManifestEntry]:
     curated_paths = curated_source_paths()
     fail_on_curated_scope_mismatch(curated_paths)
+    wasi_capabilities = load_wasi_capabilities()
 
     entries: list[ManifestEntry] = []
     for source_path in curated_paths:
@@ -332,7 +354,7 @@ def build_manifest_entries() -> list[ManifestEntry]:
         expected_path = source_path.with_suffix(".expected")
         category = source_path.parent.name
         entry_id = f"{category}/{source_path.stem}"
-        wasi_capability = WASI_CAPABILITY.get(entry_id, "runnable")
+        wasi_capability = wasi_capabilities.get(entry_id, "runnable")
         if wasi_capability == "runnable" and not expected_path.is_file():
             rel_path = expected_path.relative_to(ROOT)
             raise SystemExit(f"error: missing expected output file for {rel_path}")
@@ -360,6 +382,14 @@ def build_manifest_entries() -> list[ManifestEntry]:
     if not entries:
         raise SystemExit(
             "error: no playground snippets found under examples/playground"
+        )
+
+    curated_ids = {entry["id"] for entry in entries}
+    unknown_decisions = sorted(set(wasi_capabilities) - curated_ids)
+    if unknown_decisions:
+        raise SystemExit(
+            "error: generated WASI capability decisions reference non-curated examples:\n  - "
+            + "\n  - ".join(unknown_decisions)
         )
 
     return entries

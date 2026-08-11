@@ -1,0 +1,33 @@
+machine Counter {
+    events { Inc; Reset; }
+    state Zero;
+    state NonZero { value: i64; }
+    on Inc: Zero => NonZero { NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Zero }
+    default { state }
+}
+
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: Counter) -> i64 {
+        sleep(2ms);
+        match v {
+            Zero => println("zero"),
+            NonZero { value } => println(f"n {value}"),
+        }
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    var x = Zero;
+    x.step(Inc);
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

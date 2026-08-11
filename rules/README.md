@@ -1,23 +1,27 @@
 # ast-grep rule set for Hew
 
-Structural lint rules run by `ast-grep scan` (wired via `sgconfig.yml` `ruleDirs`).
+Structural lint rules run through the repository-pinned ast-grep tool (wired via
+`sgconfig.yml` `ruleDirs`).
 
 ## Running
 
 ```sh
-scripts/build-ast-grep-lang.sh   # once: compile the .hew grammar (for rules/hew)
-scripts/ast-grep-lint.sh          # run every rule over the repo
-ast-grep scan --rule rules/rust/fail-closed/ok-question-in-codegen.yml   # one rule
+make structural-lint-bootstrap  # first use: acquire pinned tool + grammar, then scan
+make structural-lint            # later: cache-only pinned scan + authority ratchets
+.ast-grep/tool/bin/ast-grep scan --rule rules/rust/fail-closed/ok-question-in-lowering.yml  # one pinned rule
 ```
 
-`scripts/ast-grep-lint.sh` exits non-zero when an `error`-severity rule matches, so it can
-gate CI. `warning`/`info`/`hint` rules report without failing.
+Bootstrap is explicit so ordinary local lint never downloads dependencies. Every
+error-severity rule is fail-closed; a deliberate local exception must carry the
+rule's explicit source annotation and rationale. `warning`/`info`/`hint` rules
+report without failing.
 
 ## Layout
 
 | Path | Domain | Invariant |
 |------|--------|-----------|
 | `rules/rust/fail-closed/` | codegen + checker fail-closed | CLAUDE.md §2 (Fail-Closed Codegen), §3 (Type Inference Boundary) |
+| `scripts/structural-authority-audit.py` | cross-stage semantic authority | Parsed AST inventory plus intraprocedural owner-shortening flow into registry/ID/call-target keys. |
 | `rules/rust/panics-nyi/` | panic / NYI hygiene | no new NYI; `unreachable!("desc")`; propagate errors |
 | `rules/rust/concurrency-drop/` | concurrency + drop safety | CLAUDE.md §1 (Drop Safety), §9 (Concurrency Safety) |
 | `rules/rust/hygiene/` | unsafe / debug hygiene | `// SAFETY:` justification, `transmute` audit, no `dbg!` |
@@ -38,8 +42,9 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 ### Rust — fail-closed (`error`, gates CI)
 | Rule | Hits | Catches |
 |------|------|---------|
-| `ok-question-in-lowering` | 6 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
+| `ok-question-in-lowering` | 0 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
 | `ty-var-constructed-post-inference` | 0 | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3). |
+| `semantic-owner-shortening-sink` (authority audit) | inventory-ratcheted | `short_name(owner)`, qualified-path leaf extraction, or a module alias flowing through local bindings into registry, `DefId`, `NominalId`, or `CallTarget` keys. Display/diagnostic formatting and ordinary collection `.last()` calls are controls. |
 
 ### Rust — panics / NYI (`warning`)
 | Rule | Hits | Catches |
@@ -49,9 +54,10 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 | `no-unimplemented-macro` | 0 | `unimplemented!()`. |
 | `expect-empty-message` | 0 | `.expect("")` with an empty/whitespace message. |
 
-### Rust — concurrency / drop (`info` / `hint`, advisory)
+### Rust — concurrency / drop
 | Rule | Hits | Catches |
 |------|------|---------|
+| `no-lifecycle-state-drop-suppression` (`error`) | 0 | Restart/lifecycle-specific actor-free helpers or state-drop suppression options that bypass explicit borrowed/consumed incarnation authority. |
 | `lock-unwrap` | 10 | `$M.lock().unwrap()/.expect()` — unwraps a poisoned lock (CLAUDE.md §9; prefer the poison-safe accessor). |
 | `explicit-leak-review` | 3 | `mem::forget` / `Box::leak` — RAII escapes to audit for drop-safety (CLAUDE.md §1). |
 
@@ -84,8 +90,6 @@ ast-grep's native `// ast-grep-ignore` (or `// ast-grep-ignore: <rule-id>`) supp
 
 ## Gating status
 
-`scripts/ast-grep-lint.sh` exits non-zero only on `error`-severity findings. The
-`ok-question-in-lowering` rule currently reports 6 — five genuine error-swallows worth fixing
-and one intentional parse helper to annotate — so adopting it in CI means triaging those first.
-The `warning`/`info`/`hint` rules report without failing the run.
-
+`make structural-lint` runs the complete pinned scan and the fail-closed authority
+inventory. Every error finding fails the gate. The `warning`/`info`/`hint` rules
+remain advisory.

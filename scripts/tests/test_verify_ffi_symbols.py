@@ -4,6 +4,7 @@ import io
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -64,6 +65,29 @@ def run_script(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def ownership_errors_for_source(source: str) -> list[str]:
+    with tempfile.TemporaryDirectory() as directory:
+        classification_path = Path(directory) / "jit-symbol-classification.toml"
+        classification_path.write_text(source, encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            classification_path,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            return verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
 
 
 def test_classify_stable_outputs_sorted_names_only() -> None:
@@ -199,6 +223,200 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
     assert not (LOCAL_PID_NON_DECLARABLE_EXPORTS & classification["stable-stdlib"])
 
 
+def test_string_to_bytes_transfer_contract_is_exact() -> None:
+    document = verify_ffi_symbols.toml_compat.loads(
+        verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+            encoding=verify_ffi_symbols.SOURCE_ENCODING
+        )
+    )
+    rows = {row["symbol"]: row for row in document["ownership"]["contracts"]}
+    assert rows["hew_string_to_bytes"] == {
+        "symbol": "hew_string_to_bytes",
+        "result": "fresh",
+        "params": ["borrow"],
+        "release-symbol": "hew_bytes_drop",
+        "discharge-depth": "shallow",
+        "result-retention": "transferred",
+    }
+
+
+def test_malformed_string_to_bytes_retention_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = (
+        'symbol = "hew_string_to_bytes"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'release-symbol = "hew_bytes_drop"\n'
+        'discharge-depth = "shallow"\n'
+        'result-retention = "transferred"'
+    )
+    bad = good.replace(
+        'result-retention = "transferred"',
+        'result-retention = "callee-keeps-alias"',
+    )
+    assert source.count(good) == 1, "fixture must target exactly one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "ownership contract for hew_string_to_bytes result-retention must be one of"
+        in error
+        for error in errors
+    ), errors
+
+
+def test_transferred_result_with_resource_basis_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    transferred = (
+        'symbol = "hew_string_to_bytes"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'release-symbol = "hew_bytes_drop"\n'
+        'discharge-depth = "shallow"\n'
+        'result-retention = "transferred"\n'
+    )
+    assert source.count(transferred) == 1
+    malformed = transferred + 'result-retention-basis = "stray resource claim"\n'
+    errors = ownership_errors_for_source(source.replace(transferred, malformed))
+    assert any(
+        "ownership contract for hew_string_to_bytes result-retention-basis is "
+        "meaningful only for resource-transfer retention" in error
+        for error in errors
+    ), errors
+
+
+def test_resource_transfer_without_body_basis_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    basis = (
+        'result-retention-basis = "accept inserts the newly accepted TcpStream under a '
+        'fresh table handle; only that returned token selects its hew_tcp_close removal"\n'
+    )
+    assert source.count(basis) == 1
+    errors = ownership_errors_for_source(source.replace(basis, ""))
+    assert any(
+        "ownership contract for hew_tcp_accept resource-transfer retention requires "
+        "a non-empty result-retention-basis" in error
+        for error in errors
+    ), errors
+
+
+def test_unmeasured_resource_result_is_accepted_without_mint_authority() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    measured = (
+        'result-retention = "resource-transfer"\n'
+        'result-retention-basis = "accept inserts the newly accepted TcpStream under a '
+        'fresh table handle; only that returned token selects its hew_tcp_close removal"\n'
+    )
+    assert source.count(measured) == 1
+    errors = ownership_errors_for_source(source.replace(measured, ""))
+    assert not any(
+        "ownership contract for hew_tcp_accept" in error for error in errors
+    ), errors
+
+
+def test_malformed_resource_result_type_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = (
+        'symbol = "hew_stream_channel"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'resource-result-type = "std.stream.StreamPair"'
+    )
+    bad = good.replace(
+        'resource-result-type = "std.stream.StreamPair"',
+        'resource-result-type = "StreamPair"',
+    )
+    assert source.count(good) == 1, "fixture must target exactly one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "ownership contract for hew_stream_channel resource-result-type must be a qualified nominal"
+        in error
+        for error in errors
+    ), errors
+
+
+def test_malformed_resource_param_types_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = 'resource-param-types = ["std.fs.FileReadStream"]'
+    bad = 'resource-param-types = ["FileReadStream"]'
+    assert source.count(good) >= 1, "fixture must target at least one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad, 1), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "resource-param-types[0] must be a qualified nominal" in error
+        for error in errors
+    ), errors
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
@@ -208,6 +426,13 @@ _TESTS = [
     test_io_runtime_exports_are_jit_stable,
     test_c_unwind_machine_emit_exports_are_classified,
     test_local_pid_runtime_surface_is_jit_stable,
+    test_string_to_bytes_transfer_contract_is_exact,
+    test_malformed_string_to_bytes_retention_fails_verification,
+    test_transferred_result_with_resource_basis_fails_verification,
+    test_resource_transfer_without_body_basis_fails_verification,
+    test_unmeasured_resource_result_is_accepted_without_mint_authority,
+    test_malformed_resource_result_type_fails_verification,
+    test_malformed_resource_param_types_fails_verification,
 ]
 
 if __name__ == "__main__":

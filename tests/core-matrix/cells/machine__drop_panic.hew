@@ -1,0 +1,32 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+machine Gate {
+    events { Open; Shut; }
+    state Closed;
+    state Opened { tok: Tok; }
+    on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
+    on Shut: Opened => Closed { Closed }
+    default { state }
+}
+
+fn run() -> i64 {
+    var h = Closed;
+    h.step(Open);
+    let v: Vec<i64> = Vec::new();
+    println("before trap");
+    v[3]
+}
+
+fn main() {
+    let n = run();
+    println(f"n={n}");
+}

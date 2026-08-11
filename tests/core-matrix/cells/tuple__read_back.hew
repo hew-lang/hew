@@ -1,0 +1,12 @@
+fn main() {
+    let x: (i64, string) = (1, "x0");
+    let v: Vec<(i64, string)> = Vec::new();
+    v.push(x);
+    match v.get(0) {
+        Some(e) => {
+            let (e_a, e_b) = e;
+            println(f"{e_a} {e_b}");
+        },
+        None => println("missing"),
+    }
+}

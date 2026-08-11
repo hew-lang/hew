@@ -1,0 +1,14 @@
+fn main() {
+    let a: Vec<i64> = Vec::new();
+    a.push(10);
+    a.push(20);
+    let b: Vec<i64> = Vec::new();
+    b.push(10);
+    b.push(20);
+    let c: Vec<i64> = Vec::new();
+    c.push(11);
+    c.push(21);
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

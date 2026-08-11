@@ -93,7 +93,6 @@ const ADMITTED_DECL_VIA_OTHER_SEAM: &[&str] = &[
     "hew_duplex_try_send",
     "hew_dyn_box_alloc",
     "hew_dyn_box_free",
-    "hew_lambda_actor_clone",
     "hew_lambda_actor_weak_clone",
     "hew_supervisor_nested_get",
     "hew_vtable_dispatch_panic_on_oob",

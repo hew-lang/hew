@@ -64,7 +64,7 @@ fn pipeline_with_extern(
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args,
                 dest,
                 next: 1,
@@ -161,8 +161,7 @@ fn pipeline_with_extern(
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

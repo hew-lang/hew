@@ -42,7 +42,9 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use support::{describe_output, hew_binary, require_codegen, run_bounded_command, tempdir};
+use support::{
+    describe_output, hew_binary, repo_root, require_codegen, run_bounded_command, tempdir,
+};
 
 /// The spy staticlib. Non-copying throughout: it stores and inspects the exact
 /// pointer Hew passes, and never clones, duplicates, or re-allocates a handle.
@@ -354,7 +356,12 @@ fn build_and_run(dir: &Path, name: &str, source: &str, lib: Option<&Path>) -> St
     if let Some(lib) = lib {
         compile.arg("--link-lib").arg(lib);
     }
-    compile.arg(&prog).arg("-o").arg(&bin).current_dir(dir);
+    compile
+        .arg(&prog)
+        .arg("-o")
+        .arg(&bin)
+        .current_dir(dir)
+        .env("HEWPATH", repo_root());
     let compiled = run_bounded_command(compile, "hew build");
     assert!(
         compiled.status.success(),
@@ -1467,7 +1474,12 @@ fn build_expecting_failure(dir: &Path, name: &str, source: &str, lib: Option<&Pa
     if let Some(lib) = lib {
         compile.arg("--link-lib").arg(lib);
     }
-    compile.arg(&prog).arg("-o").arg(&bin).current_dir(dir);
+    compile
+        .arg(&prog)
+        .arg("-o")
+        .arg(&bin)
+        .current_dir(dir)
+        .env("HEWPATH", repo_root());
     let compiled = run_bounded_command(compile, "hew build");
     assert!(
         !compiled.status.success(),

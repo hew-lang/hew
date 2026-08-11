@@ -5,7 +5,6 @@
 #
 # Artifacts per platform:
 #   bin/hew           — compiler driver (Rust + LLVM via inkwell)
-#   bin/adze          — package manager
 #   bin/hew-lsp       — Language Server Protocol server
 #   bin/hew-observe   — actor observer TUI
 #   lib/libhew.a      — combined runtime + stdlib static library
@@ -258,14 +257,29 @@ jobs:
 
       # ── Rust builds ─────────────────────────────────────────────────────
 
-      - name: Build hew, adze, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build hew, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         # The shipped archive builds under the non-LTO release-lib profile:
         # external Rust staticlibs (--link-lib packages) cannot dedupe their
         # verbatim libstd members against a fat-LTO archive.
         run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Prove release library consumer linking (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: |
+          scripts/test-release-lib-link.sh \
+            --hew "target/${{ matrix.rust_target }}/release/hew" \
+            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+
+      - name: Prove release library consumer linking (Windows)
+        if: startsWith(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          ./scripts/test-release-lib-link.ps1 `
+            -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
+            -Archive "target/${{ matrix.rust_target }}/release-lib/hew.lib"
 
       - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -301,19 +315,13 @@ jobs:
 
           # Binaries
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
-          cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-observe"      "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          # Combined runtime + stdlib library (flat path — universal fallback),
-          # from the non-LTO release-lib profile. Fail-closed shape check: the
-          # shipped archive must carry verbatim libstd members (std-*.o) or
-          # external Rust staticlibs cannot link against it.
-          ar t "${RELEASE_LIB_DIR}/libhew.a" | grep -q '^std-' || {
-            echo "::error::${RELEASE_LIB_DIR}/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
-            exit 1
-          }
+          # The executable consumer proof above is the authority for the
+          # release library contract. Copying remains fail-closed if the
+          # validated artifact is absent.
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
 
           # Target-specific lib subtree so find_hew_lib() prefers lib/<triple>/
@@ -327,7 +335,6 @@ jobs:
           # Generate shell completions from built binaries
           for shell in bash zsh fish; do
             "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
           done
 
           # Licenses and docs
@@ -379,29 +386,36 @@ jobs:
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
-          Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-observe.exe"        "${ArchiveName}/bin/"
 
-          # Combined runtime + stdlib library (non-LTO release-lib profile).
-          # Fail-closed shape check: the shipped archive must carry verbatim
-          # prebuilt libstd members (std-*.o); a fat-LTO archive cannot link
-          # external Rust staticlibs and must never ship. llvm-ar comes from
-          # the C:\llvm-22\bin PATH entry configured above (BSD ar / MSVC lib
-          # do not resolve the COFF long-name table carrying the member names).
-          $StdMembers = & llvm-ar t "${ReleaseLibDir}/hew.lib" | Select-String -Pattern '^std-'
-          if (-not $StdMembers) {
-            throw "${ReleaseLibDir}/hew.lib has no verbatim libstd members (std-*.o) — built with LTO; refusing to package"
-          }
+          # The executable consumer proof above is the authority for the
+          # release library contract. Copy-Item fails closed if it is absent.
           Copy-Item "${ReleaseLibDir}/hew.lib"                                   "${ArchiveName}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
 
-          # Generate shell completions from built binaries
+          # Generate shell completions from built binaries. Native-command
+          # failures are not terminating errors in every PowerShell version,
+          # so capture the output and check both status and content explicitly.
+          function Write-Completion {
+            param(
+              [string]$Executable,
+              [string]$Shell,
+              [string]$Destination
+            )
+            $Completion = & $Executable completions $Shell
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Executable completions $Shell exited $LASTEXITCODE"
+            }
+            if ([string]::IsNullOrWhiteSpace(($Completion -join "`n"))) {
+              throw "$Executable completions $Shell produced empty output"
+            }
+            $Completion | Out-File -Encoding utf8NoBOM $Destination
+          }
           foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
-            & "${ArchiveName}/bin/hew.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/hew.${shell}"
-            & "${ArchiveName}/bin/adze.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/adze.${shell}"
+            Write-Completion "${ArchiveName}/bin/hew.exe" $shell "${ArchiveName}/completions/hew.${shell}"
           }
 
           # Licenses and docs
@@ -471,13 +485,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-lsp hew-observe; do
+          for bin in hew hew-lsp hew-observe; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-lsp hew-observe; do
+          for bin in hew hew-lsp hew-observe; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -674,13 +688,19 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
-      - name: Build hew, adze, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build hew, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         # Non-LTO release-lib profile: the shipped archive must keep verbatim
         # libstd members so external Rust staticlibs (--link-lib) can dedupe.
         run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Prove release library consumer linking
+        run: |
+          scripts/test-release-lib-link.sh \
+            --hew "target/${{ matrix.rust_target }}/release/hew" \
+            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
       - name: Install cargo-about
         run: cargo install cargo-about --locked --features cli --version 0.9.0
@@ -692,7 +712,6 @@ jobs:
         run: |
           ldd --version 2>&1 | sed -n "1p"
           "target/${{ matrix.rust_target }}/release/hew" --version
-          "target/${{ matrix.rust_target }}/release/adze" --version
           "target/${{ matrix.rust_target }}/release/hew-lsp" --version
           "target/${{ matrix.rust_target }}/release/hew-observe" --version
           test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
@@ -713,17 +732,12 @@ jobs:
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
 
           cp "${RELEASE_DIR}/hew" "${ARCHIVE_NAME}/bin/"
-          cp "${RELEASE_DIR}/adze" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/hew-lsp" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/hew-observe" "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          # Fail-closed shape check: the shipped archive must carry verbatim
-          # libstd members (std-*.o); a fat-LTO archive is refused.
-          ar t "${RELEASE_LIB_DIR}/libhew.a" | grep -q '^std-' || {
-            echo "::error::${RELEASE_LIB_DIR}/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
-            exit 1
-          }
+          # The executable consumer proof above is the authority; copying
+          # remains fail-closed if the validated archive is absent.
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
           mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
           cp "${RELEASE_LIB_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
@@ -732,12 +746,11 @@ jobs:
 
           for shell in bash zsh fish; do
             "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
           done
 
           cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
-          for b in hew adze hew-lsp hew-observe; do
+          for b in hew hew-lsp hew-observe; do
             strip "${ARCHIVE_NAME}/bin/${b}"
           done
 
@@ -813,10 +826,11 @@ jobs:
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
               > /usr/local/etc/pkg/repos/FreeBSD.conf
             pkg update -f
-            pkg install -y llvm22 rust cmake ninja git pkgconf libffi libxml2
+            pkg install -y llvm22 rust cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
+            command -v bash && bash --version
 
             # The VM user differs from the synced checkout owner; without
             # this the build script cannot read git metadata and the shipped
@@ -829,8 +843,11 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
+            bash scripts/test-release-lib-link.sh \
+              --hew target/release/hew \
+              --archive target/release-lib/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -844,17 +861,12 @@ jobs:
 
             # Binaries
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
-            # Combined runtime + stdlib library (non-LTO release-lib profile).
-            # Fail-closed shape check: verbatim libstd members must be present.
-            ar t target/release-lib/libhew.a | grep -q '^std-' || {
-              echo "ERROR: target/release-lib/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
-              exit 1
-            }
+            # The executable consumer proof above is the authority; cp fails
+            # closed if the validated archive is absent.
             cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
@@ -863,7 +875,6 @@ jobs:
             # Generate shell completions from built binaries
             for shell in bash zsh fish; do
               "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
             done
 
             # Licenses and docs
@@ -872,9 +883,9 @@ jobs:
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
             # existing files must still fail the job.
-            for b in hew adze hew-lsp hew-observe; do
+            for b in hew hew-lsp hew-observe; do
               bin="${ARCHIVE_NAME}/bin/${b}"
-              if [[ -f "${bin}" ]]; then
+              if [ -f "${bin}" ]; then
                 strip "${bin}"
               fi
             done
@@ -939,10 +950,11 @@ jobs:
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
               > /usr/local/etc/pkg/repos/FreeBSD.conf
             pkg update -f
-            pkg install -y llvm22 rust cmake ninja git pkgconf libffi libxml2
+            pkg install -y llvm22 rust cmake ninja git bash pkgconf libffi libxml2
 
           run: |
             set -eux
+            command -v bash && bash --version
 
             # The VM user differs from the synced checkout owner; without
             # this the build script cannot read git metadata and the shipped
@@ -955,8 +967,11 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
+            bash scripts/test-release-lib-link.sh \
+              --hew target/release/hew \
+              --archive target/release-lib/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -970,17 +985,12 @@ jobs:
 
             # Binaries
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
-            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
-            # Combined runtime + stdlib library (non-LTO release-lib profile).
-            # Fail-closed shape check: verbatim libstd members must be present.
-            ar t target/release-lib/libhew.a | grep -q '^std-' || {
-              echo "ERROR: target/release-lib/libhew.a has no verbatim libstd members — built with LTO; refusing to package"
-              exit 1
-            }
+            # The executable consumer proof above is the authority; cp fails
+            # closed if the validated archive is absent.
             cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
@@ -989,7 +999,6 @@ jobs:
             # Generate shell completions from built binaries
             for shell in bash zsh fish; do
               "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
             done
 
             # Licenses and docs
@@ -998,9 +1007,9 @@ jobs:
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
             # existing files must still fail the job.
-            for b in hew adze hew-lsp hew-observe; do
+            for b in hew hew-lsp hew-observe; do
               bin="${ARCHIVE_NAME}/bin/${b}"
-              if [[ -f "${bin}" ]]; then
+              if [ -f "${bin}" ]; then
                 strip "${bin}"
               fi
             done
@@ -1038,7 +1047,10 @@ jobs:
     # rpm Version and Arch pkgver forbid hyphens, so a -rcN tag cannot build
     # distro packages; release candidates validate via the tarballs instead
     # and packages ship with the final tag.
-    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.ref_name, '-rc') }}
+    # `workflow_dispatch` runs on the selected branch, so github.ref_name is
+    # not the release identity there. Keep prerelease policy tied to the tag
+    # that every build and publication step actually uses.
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.event.inputs.tag || github.ref_name, '-rc') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1193,7 +1205,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
+        shell: bash
         run: |
+          set -euo pipefail
           cd artifacts
           VERSION="${RELEASE_TAG#v}"
           if compgen -G "hew-vmain-*" > /dev/null; then
@@ -1201,14 +1215,33 @@ jobs:
             ls -1 hew-vmain-*
             exit 1
           fi
-          if [ ! -f "hew-v${VERSION}-windows-x86_64.zip" ]; then
-            echo "::error::Missing Windows release archive: hew-v${VERSION}-windows-x86_64.zip"
-            exit 1
+          required_assets=(
+            "hew-v${VERSION}-darwin-aarch64.tar.gz"
+            "hew-v${VERSION}-darwin-x86_64.tar.gz"
+            "hew-v${VERSION}-windows-x86_64.zip"
+            "hew-v${VERSION}-linux-x86_64.tar.gz"
+            "hew-v${VERSION}-linux-aarch64.tar.gz"
+            "hew-v${VERSION}-freebsd-x86_64.tar.gz"
+            "hew-v${VERSION}-freebsd-aarch64.tar.gz"
+          )
+          for asset in "${required_assets[@]}"; do
+            if [ ! -f "${asset}" ]; then
+              echo "::error::Missing required release archive: ${asset}"
+              exit 1
+            fi
+          done
+
+          assets=("${required_assets[@]}")
+          if [[ "${RELEASE_TAG}" != *-* ]]; then
+            shopt -s nullglob
+            package_assets=(hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst)
+            if [ "${#package_assets[@]}" -eq 0 ]; then
+              echo "::error::Final release has no Linux package artifacts"
+              exit 1
+            fi
+            assets+=("${package_assets[@]}")
           fi
-          sha256sum \
-            hew-v*-*.tar.gz hew-v*-*.zip \
-            hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst \
-            2>/dev/null | tee checksums.txt
+          sha256sum "${assets[@]}" | tee checksums.txt
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
@@ -1217,7 +1250,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           generate_release_notes: false
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-rc') }}
           files: |
             artifacts/hew-v*-*.tar.gz
             artifacts/hew-v*-*.zip
@@ -1230,9 +1263,12 @@ jobs:
   # Docker — multi-arch image pushed to ghcr.io/hew-lang/hew
   # ─────────────────────────────────────────────────────────────────────────
   docker:
-    needs: [build, build-linux]
+    # Do not publish a container when the canonical release failed to assemble.
+    # This also makes the image a post-release artifact rather than a parallel
+    # public side effect of a partial tag run.
+    needs: release
     runs-on: ubuntu-24.04
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     # 180: the arm64 leg compiles the workspace under QEMU emulation —
     # three 60-minute attempts timed out at exactly the wall. Native local
     # builds + a manifest push are the faster path when iterating.
@@ -1260,9 +1296,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
+      - name: Extract image tags
         id: version
-        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          {
+            echo "version=${VERSION}"
+            echo "tags<<EOF"
+            echo "ghcr.io/hew-lang/hew:${VERSION}"
+            # A candidate is installable by its exact tag but must never move
+            # the stable Docker channel.
+            if [[ "${RELEASE_TAG}" != *-* ]]; then
+              echo "ghcr.io/hew-lang/hew:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
@@ -1273,9 +1323,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/hew-lang/hew:${{ steps.version.outputs.version }}
-            ghcr.io/hew-lang/hew:latest
+          tags: ${{ steps.version.outputs.tags }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Homebrew — trigger formula update in hew-lang/homebrew-hew
@@ -1284,7 +1332,7 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     # Formula updates are for final releases; -rc tags must not touch the tap.
-    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.ref_name, '-rc') }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.event.inputs.tag || github.ref_name, '-rc') }}
     timeout-minutes: 5
 
     steps:
@@ -1433,9 +1481,11 @@ jobs:
   # VS Code Extension — package + publish with bundled hew-lsp per platform
   # ─────────────────────────────────────────────────────────────────────────
   vscode-extension:
-    needs: [build, build-linux]
+    # The extension is a public release artifact; do not package or publish it
+    # until the canonical archive release has succeeded.
+    needs: release
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     timeout-minutes: 15
 
     # Map hew release targets to VS Code platform identifiers
@@ -1508,7 +1558,7 @@ jobs:
   vscode-publish:
     needs: vscode-extension
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.vscode-extension.result != 'failure' }}
+    if: ${{ !cancelled() && needs.vscode-extension.result == 'success' }}
     timeout-minutes: 10
 
     steps:

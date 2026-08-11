@@ -1,0 +1,175 @@
+//! Generational-index slotmap (`Arena<T>`).
+//!
+//! An `Arena<T>` is an owned, `Vec`-backed store that hands out stable,
+//! generation-checked handles (`Key<T>`) instead of pointers. An arena owns
+//! mutable identity state and cannot be cloned; its keys remain plain values.
+//! Insertion and removal use O(1) slot bookkeeping; returning an owned `T`
+//! follows the value model and may additionally cost O(size of T). A key keeps
+//! working across unrelated mutations and fails closed once the value it named
+//! is removed, even if the slot is later reused. This is the primitive for
+//! stable references under the value model: graph/tree node stores, ECS-style
+//! component tables, interner back-stores, and handle registries.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::arena;
+//!
+//! fn main() {
+//!     let store: arena.Arena<string> = arena.new();
+//!     let key = store.insert("hello");
+//!     println(store.get(key).unwrap());   // hello
+//!     store.remove(key);
+//!     println(store.get(key).is_none());  // true
+//! }
+//! ```
+
+/// A stable, generation-checked handle into an `Arena<T>`.
+///
+/// Returned by `insert`; pass it to `get`, `remove`, or `contains`. A key
+/// stays valid until its value is removed. Once removed, the key fails
+/// closed forever — `get` returns `None` even after the slot is reused by a
+/// later `insert`, because that reuse issues a fresh key with a higher
+/// generation. The `T` tag prevents cross-element-type use, and the instance
+/// identity prevents an independently-constructed same-typed arena from
+/// accepting an issued key.
+pub type Key<T> {
+    arena_id: i64;
+    index: i64;
+    generation: i64;
+}
+
+// A slot in the backing store. `value: None` marks the slot free. Every
+// `insert` mints a fresh arena-local generation, so slot reuse cannot recreate
+// an issued `Key`.
+type Slot<T> {
+    generation: i64;
+    value: Option<T>;
+}
+
+// An Arena owns mutable identity state and must not fork. A no-op affine
+// witness makes clone admissibility fail closed transitively, including when
+// an Arena is nested in another record. The witness owns no runtime resource.
+// WHEN OBSOLETE: once Hew has a first-class non-cloneable-without-close
+// attribute (an affine marker independent of `#[resource]`'s close-obligation
+// semantics), this witness field goes away and `Arena` carries that attribute
+// directly. WHAT: `#[noclone]` or equivalent, applied straight to `Arena<T>`.
+#[resource]
+type ArenaCloneGuard {
+    marker: i64;
+}
+
+impl ArenaCloneGuard {
+    fn close(self) {}
+}
+
+/// A generational-index slotmap with O(1) slot bookkeeping.
+///
+/// Construct with `arena.new()`. Values are owned by the arena; accessors
+/// return `Option<T>` copies under the value model, never references. An arena
+/// is non-cloneable because forking its identity state could issue ambiguous
+/// keys.
+pub type Arena<T> {
+    clone_guard: ArenaCloneGuard;
+    arena_id: i64;
+    generation_counter: Vec<i64>;
+    slots: Vec<Slot<T>>;
+    free: Vec<i64>;
+}
+
+/// Create a new, empty arena.
+///
+/// The element type is inferred from the binding, e.g.
+/// `let store: arena.Arena<i64> = arena.new();`.
+pub fn new<T>() -> Arena<T> {
+    let arena_id = unsafe {
+        hew_arena_instance_id_new()
+    };
+    if arena_id == 0 {
+        panic("arena.new: arena identity space exhausted");
+    }
+    let slots: Vec<Slot<T>> = Vec::new();
+    let free: Vec<i64> = Vec::new();
+    let generation_counter: Vec<i64> = [1];
+    let clone_guard = ArenaCloneGuard { marker: 0 };
+    Arena { clone_guard: clone_guard, arena_id: arena_id, generation_counter: generation_counter, slots: slots, free: free }
+}
+
+impl<T> Arena<T> {
+    /// Insert `value` and return a fresh `Key<T>` naming it.
+    ///
+    /// Reuses a freed slot when one is available; otherwise appends a new slot.
+    /// Every insertion receives a fresh monotonic generation. O(1).
+    fn insert(self, value: T) -> Key<T> {
+        let generation = self.generation_counter[0];
+        if generation == 9223372036854775807 {
+            panic("arena.insert: key generation space exhausted");
+        }
+        self.generation_counter.set(0, generation + 1);
+        if self.free.is_empty() {
+            self.slots.push(Slot { generation: generation, value: Some(value) });
+            Key { arena_id: self.arena_id, index: self.slots.len() - 1, generation: generation }
+        } else {
+            let index = self.free.pop();
+            self.slots.set(index, Slot { generation: generation, value: Some(value) });
+            Key { arena_id: self.arena_id, index: index, generation: generation }
+        }
+    }
+    /// Return the value named by `key`, or `None` if the key is stale.
+    ///
+    /// Fails closed: a key whose slot was removed (or whose generation no
+    /// longer matches after slot reuse) returns `None`, as does an
+    /// out-of-range key.
+    fn get(self, key: Key<T>) -> Option<T> {
+        if key.arena_id != self.arena_id {
+            return None;
+        }
+        match self.slots.get(key.index) {
+            Some(slot) => match slot.value {
+                Some(value) => if slot.generation == key.generation {
+                    Some(value)
+                } else {
+                    None
+                },
+                None => None,
+            },
+            None => None,
+        }
+    }
+    /// Remove and return the value named by `key`.
+    ///
+    /// On a live match: frees the slot and returns `Some(value)`. The next
+    /// insertion mints a fresh generation. On a stale, already-removed, or
+    /// out-of-range key: returns `None`. Double-remove is idempotent — the
+    /// second call returns `None`.
+    fn remove(self, key: Key<T>) -> Option<T> {
+        if key.arena_id != self.arena_id {
+            return None;
+        }
+        match self.slots.get(key.index) {
+            Some(slot) => match slot.value {
+                Some(value) => if slot.generation == key.generation {
+                    self.slots.set(key.index, Slot { generation: slot.generation, value: None });
+                    self.free.push(key.index);
+                    Some(value)
+                } else {
+                    None
+                },
+                None => None,
+            },
+            None => None,
+        }
+    }
+    /// The number of live values in the arena.
+    fn len(self) -> i64 {
+        self.slots.len() - self.free.len()
+    }
+    /// Return `true` if `key` still names a live value.
+    fn contains(self, key: Key<T>) -> bool {
+        self.get(key).is_some()
+    }
+}
+
+extern "C" {
+    fn hew_arena_instance_id_new() -> i64;
+}

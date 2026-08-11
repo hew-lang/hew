@@ -98,6 +98,7 @@ import std::net;
 ///
 /// Created by `quic.new_client()` or `quic.new_server(addr)`.
 /// Must be released with `close()`.
+#[resource]
 #[opaque]
 pub type QUICEndpoint {
 }
@@ -107,6 +108,7 @@ pub type QUICEndpoint {
 /// A connection multiplexes many independent streams over a single UDP path.
 /// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
 /// Must be released with `disconnect()`.
+#[resource]
 #[opaque]
 pub type QUICConnection {
 }
@@ -119,6 +121,7 @@ pub type QUICConnection {
 /// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
 /// Finish the send side with `finish()` when no more data will be sent;
 /// the receive side drains naturally.
+#[resource]
 #[opaque]
 pub type QUICStream {
 }
@@ -181,9 +184,6 @@ trait QUICEndpointMethods {
     /// Returns an established `QUICConnection` or a zero-value on failure.
     fn accept(self) -> QUICConnection;
 
-    /// Close the endpoint and release all associated resources.
-    fn close(self);
-
     /// Block until the next queued QUIC event on this endpoint.
     ///
     /// Events are recorded by successful `connect()` and `accept()` calls and
@@ -205,11 +205,6 @@ impl QUICEndpointMethods for QUICEndpoint {
             hew_quic_endpoint_accept(ep)
         }
     }
-    fn close(ep: QUICEndpoint) {
-        unsafe {
-            hew_quic_endpoint_close(ep)
-        };
-    }
     fn on_event(ep: QUICEndpoint) -> QUICEvent {
         unsafe {
             QUICEvent { handle: hew_quic_endpoint_on_event(ep) }
@@ -217,6 +212,15 @@ impl QUICEndpointMethods for QUICEndpoint {
     }
     fn observe(ep: QUICEndpoint) -> QUICEndpointObservation {
         endpoint_observe(ep)
+    }
+}
+
+impl QUICEndpoint {
+    /// Release this endpoint early. Scope exit performs the same release.
+    fn close(consuming self) {
+        unsafe {
+            hew_quic_endpoint_close(self)
+        };
     }
 }
 
@@ -236,7 +240,7 @@ trait QUICConnectionMethods {
     /// Gracefully close this connection and release its resources.
     ///
     /// Returns `Ok(())` on success or `Err(net.NetError)` on failure.
-    fn disconnect(self) -> Result<(), net.NetError>;
+    fn disconnect(consuming self) -> Result<(), net.NetError>;
 
     /// Block until the next queued QUIC event on this connection.
     ///
@@ -259,8 +263,8 @@ impl QUICConnectionMethods for QUICConnection {
             hew_quic_conn_accept_stream(conn)
         }
     }
-    fn disconnect(conn: QUICConnection) -> Result<(), net.NetError> {
-        connection_disconnect(conn)
+    fn disconnect(consuming self) -> Result<(), net.NetError> {
+        connection_disconnect(self)
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
         unsafe {
@@ -269,6 +273,17 @@ impl QUICConnectionMethods for QUICConnection {
     }
     fn observe(conn: QUICConnection) -> QUICConnectionObservation {
         connection_observe(conn)
+    }
+}
+
+impl QUICConnection {
+    /// Release this connection without reporting shutdown status.
+    /// `disconnect()` remains the consuming compatibility API when callers
+    /// need the result.
+    fn close(consuming self) {
+        unsafe {
+            hew_quic_conn_disconnect(self)
+        };
     }
 }
 
@@ -312,11 +327,6 @@ trait QUICStreamMethods {
     /// `Err(net.NetError)` on failure.
     fn stop(self, error_code: i64) -> Result<(), net.NetError>;
 
-    /// Release the local stream handle.
-    ///
-    /// Call `finish()` first if you want the peer to observe a graceful EOF.
-    fn close(self);
-
     /// Send a UTF-8 string on this stream.
     ///
     /// Convenience wrapper around `send` that converts `msg` to bytes first.
@@ -354,11 +364,6 @@ impl QUICStreamMethods for QUICStream {
     fn stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError> {
         stream_stop(strm, error_code)
     }
-    fn close(strm: QUICStream) {
-        unsafe {
-            hew_quic_stream_close(strm)
-        };
-    }
     fn send_string(strm: QUICStream, msg: string) -> Result<(), net.NetError> {
         stream_send_string(strm, msg)
     }
@@ -367,6 +372,15 @@ impl QUICStreamMethods for QUICStream {
     }
     fn observe(strm: QUICStream) -> QUICStreamObservation {
         stream_observe(strm)
+    }
+}
+
+impl QUICStream {
+    /// Release this stream early. Scope exit performs the same release.
+    fn close(consuming self) {
+        unsafe {
+            hew_quic_stream_close(self)
+        };
     }
 }
 
@@ -518,7 +532,7 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
 /// QUIC-level error string because QUIC errors carry no OS errno.
 /// After calling `connection_disconnect`, the connection handle must
 /// not be used again.
-pub fn connection_disconnect(conn: QUICConnection) -> Result<(), net.NetError> {
+pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.NetError> {
     // QUIC errors carry no OS errno; error string available via conn.observe().last_error
     unsafe {
         let status = hew_quic_conn_disconnect(conn);
@@ -696,7 +710,7 @@ extern "C" {
     // Endpoint methods
     fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: string, server_name: string) -> QUICConnection;
     fn hew_quic_endpoint_accept(ep: QUICEndpoint) -> QUICConnection;
-    fn hew_quic_endpoint_close(ep: QUICEndpoint);
+    fn hew_quic_endpoint_close(consume ep: QUICEndpoint);
     fn hew_quic_endpoint_on_event(ep: QUICEndpoint) -> QUICEventHandle;
     fn hew_quic_endpoint_local_addr(ep: QUICEndpoint) -> string;
     fn hew_quic_endpoint_accepted_connections(ep: QUICEndpoint) -> i64;
@@ -705,7 +719,7 @@ extern "C" {
     // Connection methods
     fn hew_quic_conn_open_stream(conn: QUICConnection) -> QUICStream;
     fn hew_quic_conn_accept_stream(conn: QUICConnection) -> QUICStream;
-    fn hew_quic_conn_disconnect(conn: QUICConnection) -> i32;
+    fn hew_quic_conn_disconnect(consume conn: QUICConnection) -> i32;
     fn hew_quic_conn_on_event(conn: QUICConnection) -> QUICEventHandle;
     fn hew_quic_conn_local_addr(conn: QUICConnection) -> string;
     fn hew_quic_conn_peer_addr(conn: QUICConnection) -> string;
@@ -726,7 +740,7 @@ extern "C" {
     fn hew_quic_stream_last_recv_status() -> i32; // INTERNAL-ABI: thread-local status; 0=ok-or-EOF, -1=transport error, -2=timeout
     fn hew_quic_stream_finish(stream: QUICStream) -> i32;
     fn hew_quic_stream_stop(stream: QUICStream, error_code: i64) -> i32;
-    fn hew_quic_stream_close(stream: QUICStream) -> i32;
+    fn hew_quic_stream_close(consume stream: QUICStream) -> i32;
     fn hew_quic_stream_bytes_sent(stream: QUICStream) -> i64;
     fn hew_quic_stream_bytes_received(stream: QUICStream) -> i64;
     fn hew_quic_stream_send_closed(stream: QUICStream) -> bool;

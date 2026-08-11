@@ -1,0 +1,28 @@
+enum Shape {
+    Empty;
+    Circle(i64);
+    Rect { w: i64; h: i64 }
+}
+
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: Shape) -> i64 {
+        match v {
+            Empty => println("empty"),
+            Circle(v_r) => println(f"circle {v_r}"),
+            Rect { w, h } => println(f"rect {w}x{h}"),
+        }
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    let x: Shape = Circle(3);
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

@@ -1,0 +1,49 @@
+import std::link_monitor::{MonitorRef};
+
+#[resource]
+type Handle {
+    name: string
+}
+
+impl Handle {
+    fn close(self) {}
+}
+
+type Wrapper {
+    handle: Handle
+}
+
+record PositionalWrapper(Handle);
+
+fn count<T>(items: Vec<T>) -> i64 {
+    var count = 0;
+    for _item in items {
+        count = count + 1;
+    }
+    count
+}
+
+// The parameter is enough to instantiate count<Handle>; no Handle
+// constructor or unsafe value fabrication is needed for the fail-closed proof.
+fn count_handles(items: Vec<Handle>) -> i64 {
+    count(items)
+}
+
+// An unmarked outer record must not hide the nested resource marker.
+fn count_wrappers(items: Vec<Wrapper>) -> i64 {
+    count(items)
+}
+
+// Positional payloads are stored fields even though `.0` access is not exposed.
+// Their resource marker must participate in the concrete MIR clone proof.
+fn count_positional_wrappers(items: Vec<PositionalWrapper>) -> i64 {
+    count(items)
+}
+
+// MonitorRef is a builtin field-bearing resource record. Its u64 field is
+// structurally cloneable, but the monitor registration itself is not.
+fn count_monitor_refs(items: Vec<MonitorRef>) -> i64 {
+    count(items)
+}
+
+fn main() {}

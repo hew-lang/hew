@@ -266,14 +266,24 @@ pub fn try_histogram(name: string) -> Result<Histogram, MetricsError> {
 // (>= 0 valid, -1 on a cap / charset / collision rejection); the mutators
 // take that handle plus an i64 delta or an f64 observation.
 extern "C" {
+    #[runtime_capability(metrics)]
     fn hew_metric_counter_register(name: string) -> i64;
+    #[runtime_capability(metrics)]
     fn hew_metric_counter_inc(handle: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_counter_add(handle: i64, n: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_gauge_register(name: string) -> i64;
+    #[runtime_capability(metrics)]
     fn hew_metric_gauge_inc(handle: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_gauge_dec(handle: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_gauge_set(handle: i64, n: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_gauge_add(handle: i64, n: i64);
+    #[runtime_capability(metrics)]
     fn hew_metric_histogram_register_simple(name: string) -> i64;
+    #[runtime_capability(metrics)]
     fn hew_metric_histogram_record(handle: i64, v: f64);
 }

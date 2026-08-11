@@ -1,0 +1,38 @@
+// Linux ASan/LSan oracle for one-share owned string return carriers.
+//
+// `passthru` returns a retained by-value parameter. `choose` alternates between
+// a retained record-field projection and a retained forwarded parameter. Their
+// direct f-string consumers must release each anonymous result exactly once.
+record Holder {
+    value: string,
+}
+
+fn passthru(value: string) -> string {
+    value
+}
+
+fn choose(holder: Holder, fallback: string, project: bool) -> string {
+    if project {
+        holder.value
+    } else {
+        fallback
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 200 {
+        println(f"direct={passthru(f"owned-carrier-token-{i}")}");
+
+        let holder = Holder { value: f"a-{i}" };
+        let fallback = f"b-{i}";
+        println(f"mixed={choose(holder, fallback, i % 2 == 0)}");
+
+        i = i + 1;
+    }
+
+    if i != 200 {
+        return 91;
+    }
+    0
+}

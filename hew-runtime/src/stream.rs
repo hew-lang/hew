@@ -48,7 +48,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +74,12 @@ use hew_cabi::vec::HewVec;
 #[no_mangle]
 pub extern "C" fn hew_stream_is_valid(stream: *const HewStream) -> i32 {
     i32::from(!stream.is_null())
+}
+
+/// Nominally typed validity probe for the `std.fs.FileReadStream` adapter.
+#[no_mangle]
+pub extern "C" fn hew_file_read_stream_is_valid(stream: *const HewStream) -> i32 {
+    hew_stream_is_valid(stream)
 }
 
 /// Returns 1 if the sink pointer is non-null (valid), 0 otherwise.
@@ -939,6 +945,25 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
     core.close_sink();
 }
 
+fn tcp_sink_write(stream: &mut TcpStream, data: &[u8]) {
+    if let Err(error) = stream.write_all(data) {
+        set_last_error(format!("TCP sink write failed: {error}"));
+    }
+}
+
+fn tcp_sink_flush(stream: &mut TcpStream) {
+    if let Err(error) = stream.flush() {
+        set_last_error(format!("TCP sink flush failed: {error}"));
+    }
+}
+
+fn tcp_sink_close(stream: &mut TcpStream) {
+    tcp_sink_flush(stream);
+    if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
+        set_last_error(format!("TCP sink shutdown failed: {error}"));
+    }
+}
+
 /// Bridge a live TCP connection into a `(Stream<bytes>, Sink<bytes>)` pair.
 ///
 /// Clones the underlying socket twice (once for the read backing, once for
@@ -970,7 +995,7 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 /// # Platform
 ///
 /// Not available on `wasm32` targets; TCP transport is unavailable there.
-/// See `WASM-TODO(#1451)`.  The `wasm32` stub returns `null` so the symbol
+/// See `WASM-TODO(tcp-networking):`. The `wasm32` stub returns `null` so the symbol
 /// resolves at link time, but every call returns `null` without side-effects.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
@@ -1049,6 +1074,22 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
         }
     };
 
+    // Suspended listener accepts leave their accepted socket non-blocking
+    // because the reactor must never park. The Stream backing, however, owns a
+    // blocking `recv()` contract: a transient WouldBlock is not EOF. Restore
+    // blocking mode after both clones exist; duplicated descriptors share the
+    // underlying file status flags, so this covers both halves before the
+    // original table entry is released.
+    if let Err(error) = read_stream.set_nonblocking(false) {
+        tcp_full_close_conn(conn);
+        set_last_error_with_errno_and_kind(
+            format!("hew_tcp_stream_from_conn: could not restore blocking mode: {error}"),
+            error.raw_os_error().unwrap_or(libc::EIO),
+            io_error_kind_tag(error.kind()),
+        );
+        return ptr::null_mut();
+    }
+
     // Release the original handle from the connection table WITHOUT calling
     // shutdown.  TcpStream clones share a single OS file descriptor on Unix;
     // calling shutdown on any clone shuts down the shared socket, which would
@@ -1062,9 +1103,11 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
         stream: read_stream,
     });
 
-    // Build the sink (write) half using the Write-backed sink constructor,
-    // matching the `hew_stream_from_file_write` pattern.
-    let sink_ptr = into_write_sink_ptr(write_stream);
+    // Build the sink (write) half with a TCP-specific close callback. Closing
+    // one duplicated descriptor is not enough to publish FIN while the read
+    // half still owns another clone; `shutdown(Write)` makes eager sink closure
+    // observable to the peer without disturbing the live read half.
+    let sink_ptr = into_sink_ptr(write_stream, tcp_sink_write, tcp_sink_flush, tcp_sink_close);
 
     Box::into_raw(Box::new(HewStreamPair {
         // ALLOCATOR-PAIRING: GlobalAlloc
@@ -1082,7 +1125,7 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
 /// `net.Connection`, including `into_stream_sink`.  This stub is never
 /// reachable through valid Hew code compiled for wasm32.
 ///
-/// WASM-TODO(#1451): TCP transport gap.
+/// WASM-TODO(tcp-networking): add a WASM TCP-to-stream bridge.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_stream_from_conn(_conn: c_int) -> *mut HewStreamPair {
@@ -1198,6 +1241,20 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
             ptr::null_mut()
         }
     }
+}
+
+/// Nominally typed file-read handle constructor used by `std.fs`.
+///
+/// The generic stream API retains `hew_stream_from_file_read`; this distinct
+/// endpoint gives generated ownership contracts one unambiguous source type.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_from_file_read`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_open(path: *const c_char) -> *mut HewStream {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_from_file_read(path) }
 }
 
 /// Open a file for streaming writes.
@@ -1797,6 +1854,17 @@ pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     }
 }
 
+/// Nominally typed file-read handle release used by `std.fs`.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_close`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_close(stream: *mut HewStream) {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_close(stream) };
+}
+
 /// Write one item to a sink.
 ///
 /// Blocks with backpressure if the backing buffer is full.
@@ -1841,6 +1909,25 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
         // SAFETY: sink was allocated with Box::into_raw.
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+    }
+}
+
+/// Shut down a sink's backing resource without consuming its wrapper.
+///
+/// This is the eager-close form for a sink stored in actor state: terminal
+/// handlers cannot move a state field out, but they must still make peer EOF
+/// observable before the actor's remaining strong references are released.
+/// The later owning drop remains safe because [`HewSink::close`] takes the
+/// backing exactly once and becomes a no-op on subsequent calls.
+///
+/// # Safety
+///
+/// `sink` must be a valid pointer created by a stream sink constructor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_shutdown(sink: *mut HewSink) {
+    if !sink.is_null() {
+        // SAFETY: sink is valid per caller contract.
+        unsafe { (*sink).close() };
     }
 }
 
@@ -2034,6 +2121,23 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     // SAFETY: ptr is len bytes allocated above; buffer.as_ptr() points to len bytes.
     unsafe { ptr::copy_nonoverlapping(buffer.as_ptr(), ptr.cast::<u8>(), len) };
     ptr.cast::<c_char>()
+}
+
+/// Drain and consume a nominal `std.fs.FileReadStream` into one string.
+///
+/// This distinct endpoint prevents the same C symbol from carrying both the
+/// generic `Stream<string>` and `FileReadStream` source signatures. The raw
+/// representation and consuming runtime operation are identical.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_collect_string`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_collect_string(
+    stream: *mut HewStream,
+) -> *mut c_char {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_collect_string(stream) }
 }
 
 /// Count remaining items in a stream.
@@ -3535,6 +3639,27 @@ mod tests {
             let all: Vec<u8> = items.into_iter().flatten().collect();
             assert_eq!(all, content);
             hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn nominal_file_read_resource_endpoints_share_one_live_handle() {
+        let path = temp_path("nominal_file_read_resource");
+        let content = b"one nominal owner";
+        std::fs::write(&path, content).unwrap();
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path names an existing file, and the returned handle is
+        // released exactly once through its nominal close endpoint.
+        unsafe {
+            let stream = hew_file_read_stream_open(c_path.as_ptr());
+            assert_eq!(hew_file_read_stream_is_valid(stream), 1);
+            assert_eq!(hew_file_read_stream_is_valid(ptr::null()), 0);
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, content);
+            hew_file_read_stream_close(stream);
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -5074,6 +5199,82 @@ mod tests {
         unsafe {
             hew_stream_close(stream_ptr);
             drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_sink_shutdown_publishes_eof_while_read_half_remains_live() {
+        use std::io::Read as _;
+        use std::time::Duration;
+
+        let _guard = crate::runtime_test_guard();
+        let (conn_handle, mut peer) = make_loopback_conn();
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set peer read timeout");
+
+        // SAFETY: conn_handle and the returned pair are live runtime handles.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(!pair.is_null());
+        // SAFETY: each extraction consumes one pointer slot in the pair.
+        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        // SAFETY: the sink slot remains live and has not been extracted yet.
+        let sink_ptr = unsafe { hew_stream_pair_sink_bytes(pair) };
+        assert!(!stream_ptr.is_null() && !sink_ptr.is_null());
+
+        // SAFETY: sink_ptr is live and remains wrapper-owned after shutdown.
+        unsafe { hew_sink_shutdown(sink_ptr) };
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            peer.read(&mut byte).expect("peer observes sink shutdown"),
+            0,
+            "TCP sink shutdown must publish EOF without waiting for the read half"
+        );
+
+        // SAFETY: the wrappers and pair are still singly owned here.
+        unsafe {
+            hew_stream_close(stream_ptr);
+            hew_sink_close(sink_ptr);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_bridge_restores_blocking_reads_after_nonblocking_accept_mode() {
+        use std::time::Duration;
+
+        let _guard = crate::runtime_test_guard();
+        let (conn_handle, mut peer) = make_loopback_conn();
+        assert!(
+            crate::transport::tcp_conn_set_nonblocking(conn_handle, true),
+            "test connection enters the reactor's accepted-socket mode"
+        );
+
+        // SAFETY: conn_handle and the returned pair are live runtime handles.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(!pair.is_null());
+        // SAFETY: extraction consumes the stream slot in the pair.
+        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        assert!(!stream_ptr.is_null());
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            peer.write_all(b"ready").expect("delayed peer write");
+        });
+        let mut size = 0usize;
+        // SAFETY: stream_ptr is live and size is writable.
+        let data = unsafe { hew_stream_next_sized(stream_ptr, &raw mut size) };
+        writer.join().expect("delayed writer joins");
+        assert!(!data.is_null(), "WouldBlock must not masquerade as EOF");
+        assert_eq!(size, 5);
+
+        // SAFETY: the returned bytes use malloc, and the wrappers remain
+        // singly owned here.
+        unsafe {
+            libc::free(data);
+            hew_stream_close(stream_ptr);
             hew_stream_pair_free(pair);
         }
     }

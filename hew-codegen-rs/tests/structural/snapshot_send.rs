@@ -110,14 +110,19 @@ fn snapshot_send_materializes_independent_record_carriers() {
         2,
         "direct spawns must register the typed message drop callback:\n{ll}"
     );
-    assert!(
-        ll.contains("call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_10)"),
-        "{ll}"
-    );
-    assert!(
-        ll.contains("call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_12)"),
-        "{ll}"
-    );
+    // Each send's packed-args record must be released exactly once, on its
+    // own local slot. The slot NUMBER is renumbering noise; the drop type,
+    // kind, and once-per-carrier count are the invariant.
+    for packed_drop in [
+        "call void @__hew_record_drop_inplace___hew_packed_args_main_0(ptr %local_",
+        "call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_",
+    ] {
+        assert_eq!(
+            ll.matches(packed_drop).count(),
+            1,
+            "each packed-args carrier must be dropped in place exactly once:\n{ll}"
+        );
+    }
 }
 
 #[test]

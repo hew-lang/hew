@@ -1,0 +1,36 @@
+#[opaque]
+type DqH {
+}
+
+#[resource]
+type Dq {
+    handle: DqH;
+    tag: i64;
+}
+
+impl Dq {
+    fn close(self) {
+        unsafe { hew_deque_free(self.handle) };
+        println(f"close {self.tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> DqH;
+    fn hew_deque_free(dq: DqH);
+    fn hew_deque_len(dq: DqH) -> i64;
+}
+
+fn main() {
+    let x = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
+    let m: HashMap<string, Dq> = HashMap::new();
+    m.insert("k", x);
+    match m.get("k") {
+        Some(e) => {
+            let e_l = unsafe { hew_deque_len(e.handle) };
+            let e_t = e.tag;
+            println(f"dq {e_t} len={e_l}");
+        },
+        None => println("missing"),
+    }
+}

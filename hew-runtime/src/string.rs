@@ -1205,7 +1205,9 @@ fn static_string_bounds() -> (usize, usize) {
 /// (`malloc_cstring` / `str_to_malloc` / `alloc_cstring*`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
-    cabi_guard!(s.is_null() || is_static_string(s.cast()));
+    if s.is_null() || is_static_string(s.cast()) {
+        return;
+    }
     // SAFETY: Not null and not a static string — must be a live header-aware
     // heap string produced by malloc_cstring / alloc_cstring* (the universal
     // String allocator path); free_cstring recovers the base, validates the

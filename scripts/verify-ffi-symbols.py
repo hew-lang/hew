@@ -30,13 +30,13 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from corpus_floor import check_floor  # noqa: E402
+from corpus_nonempty import check_nonempty  # noqa: E402
+import toml_compat  # noqa: E402
 
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 STDLIB_SRC = ROOT / "hew-std" / "src"
@@ -47,13 +47,13 @@ OWNERSHIP_RESULTS = {"fresh", "retained", "borrowed", "none"}
 PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
 DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 # The RETENTION axis: whether the callee provably keeps no pointer into the
-# allocation it returned. Only "transferred" is spellable, and only on an
-# owned result; the axis is absent by default because absent is the
+# allocation it returned, or whether the result is an independently balanced
+# refcount share of existing storage. The axis is absent by default because absent is the
 # fail-closed answer (no caller-side release is minted from an unanswered
-# row). A row may only claim "transferred" once an executable oracle has
-# established it for that symbol -- see hew-runtime/tests/
-# last_error_result_retention.rs and hew-std/src/last_error_retention.rs.
-RESULT_RETENTIONS = {"transferred"}
+# row). A row may only claim a positive answer once an executable oracle has
+# established it for that symbol -- see the `*_result_retention.rs` tests in
+# hew-runtime/tests/ and hew-std/src/.
+RESULT_RETENTIONS = {"resource-transfer", "shared-refcount", "transferred"}
 
 # Exact function names that are codegen-internal (intercepted/rewritten, never linked).
 # For example, hew_log_debug is rewritten to hew_log_emit with a level argument.
@@ -271,6 +271,29 @@ def _extract_fn_param_counts(source_dirs: list[Path]) -> dict[str, set[int]]:
     return counts
 
 
+def _contract_arity_error(
+    location: str, contract_arity: int, declared_arities: set[int]
+) -> str | None:
+    """Return the ownership error for any stale cfg-specific declaration.
+
+    Every declaration variant must agree with the one positional ownership
+    signature. A single matching variant cannot mask a conflicting sibling.
+
+    >>> _contract_arity_error("row", 1, {1}) is None
+    True
+    >>> _contract_arity_error("row", 1, {1, 2})
+    'row declares 1 params but the FFI cfg declarations have [1, 2] parameters'
+    >>> _contract_arity_error("row", 1, {2})
+    'row declares 1 params but the FFI cfg declarations have [2] parameters'
+    """
+    if declared_arities == {contract_arity}:
+        return None
+    return (
+        f"{location} declares {contract_arity} params but the FFI "
+        f"cfg declarations have {sorted(declared_arities)} parameters"
+    )
+
+
 def extract_runtime_exports() -> set[str]:
     """Return native exports defined by hew-runtime."""
     return _extract_native_exports(RUNTIME_SRC)
@@ -317,7 +340,7 @@ def validate_ownership_contracts(
     fn_param_counts: dict[str, set[int]],
 ) -> list[str]:
     errors: list[str] = []
-    document = tomllib.loads(
+    document = toml_compat.loads(
         JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     )
     ownership = document.get("ownership")
@@ -329,6 +352,7 @@ def validate_ownership_contracts(
 
     classified = set().union(*classification.values())
     contracted: set[str] = set()
+    contract_by_symbol: dict[str, dict] = {}
     arity_checked = 0
     for index, contract in enumerate(contracts, start=1):
         location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract #{index}"
@@ -345,6 +369,7 @@ def validate_ownership_contracts(
             errors.append(f"{location} is duplicated")
             continue
         contracted.add(symbol)
+        contract_by_symbol[symbol] = contract
         if symbol not in classified:
             errors.append(f"{location} is not ABI-classified")
 
@@ -363,15 +388,62 @@ def validate_ownership_contracts(
             )
         elif symbol in fn_param_counts:
             arity_checked += 1
-            if len(params) not in fn_param_counts[symbol]:
+            declared_arities = fn_param_counts[symbol]
+            arity_error = _contract_arity_error(location, len(params), declared_arities)
+            if arity_error is not None:
                 # Arity teeth: a contract whose params row no longer matches the C
-                # signature of the implementation is stale and must fail here, not
-                # silently mis-describe ownership positionally. Macro-generated
-                # exports have no literal signature and are skipped.
-                found = sorted(fn_param_counts[symbol])
+                # signature of ANY cfg-specific implementation is stale and must
+                # fail here, not silently accept whichever variant happened to
+                # match. Macro-generated exports have no literal signature and
+                # are skipped.
+                errors.append(arity_error)
+
+        # Resource-typed ABI positions are scalar for TCP, so the ordinary
+        # `(symbol, index)` contract is not enough authority to grant a
+        # source-level borrow. When present, this parallel row must be exact:
+        # short, non-string, unqualified, or Retain entries all fail the
+        # verifier rather than silently weakening the generated table.
+        resource_param_types = contract.get("resource-param-types")
+        if resource_param_types is not None:
+            if not isinstance(resource_param_types, list) or any(
+                not isinstance(resource_type, str)
+                for resource_type in resource_param_types
+            ):
                 errors.append(
-                    f"{location} declares {len(params)} params but the FFI "
-                    f"declaration has {found} parameters"
+                    f"{location} resource-param-types must be an array of strings"
+                )
+            elif not isinstance(params, list) or len(resource_param_types) != len(
+                params
+            ):
+                errors.append(
+                    f"{location} resource-param-types must have one entry per params position"
+                )
+            else:
+                for param_index, resource_type in enumerate(resource_param_types):
+                    if not resource_type:
+                        continue
+                    if "." not in resource_type:
+                        errors.append(
+                            f"{location} resource-param-types[{param_index}] must be a qualified nominal"
+                        )
+                    if params[param_index] not in {"borrow", "consume"}:
+                        errors.append(
+                            f"{location} typed resource param {param_index} must be borrow or consume"
+                        )
+
+        resource_result_type = contract.get("resource-result-type")
+        if resource_result_type is not None:
+            if (
+                not isinstance(resource_result_type, str)
+                or not resource_result_type
+                or "." not in resource_result_type
+            ):
+                errors.append(
+                    f"{location} resource-result-type must be a qualified nominal"
+                )
+            if result not in {"fresh", "retained"}:
+                errors.append(
+                    f"{location} resource-result-type requires an owned result"
                 )
 
         release_symbol = contract.get("release-symbol")
@@ -420,6 +492,71 @@ def validate_ownership_contracts(
                     f"{location} result-retention is meaningless without an "
                     "owned result"
                 )
+            elif retention == "shared-refcount" and result != "retained":
+                errors.append(
+                    f"{location} shared-refcount retention requires a retained result"
+                )
+            elif retention == "resource-transfer":
+                if resource_result_type is None:
+                    errors.append(
+                        f"{location} resource-transfer retention requires resource-result-type"
+                    )
+                basis = contract.get("result-retention-basis")
+                if not isinstance(basis, str) or not basis.strip():
+                    errors.append(
+                        f"{location} resource-transfer retention requires a non-empty "
+                        "result-retention-basis"
+                    )
+            elif "result-retention-basis" in contract:
+                errors.append(
+                    f"{location} result-retention-basis is meaningful only for "
+                    "resource-transfer retention"
+                )
+        elif "result-retention-basis" in contract:
+            errors.append(
+                f"{location} result-retention-basis is meaningless without result-retention"
+            )
+
+    # A typed resource result is admitted only through an exact edge in this
+    # same ownership graph. The producer's release row must consume one
+    # position of the same qualified nominal and may not itself produce an
+    # owner. This is a contract join, not a symbol-name convention.
+    for symbol, contract in contract_by_symbol.items():
+        resource_result_type = contract.get("resource-result-type")
+        if not isinstance(resource_result_type, str) or not resource_result_type:
+            continue
+        release_symbol = contract.get("release-symbol")
+        release = contract_by_symbol.get(release_symbol)
+        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract for {symbol}"
+        if release is None:
+            errors.append(
+                f"{location} resource-result-type names release-symbol "
+                f"{release_symbol!r} without an ownership contract"
+            )
+            continue
+        if release.get("result") != "none":
+            errors.append(
+                f"{location} release-symbol {release_symbol!r} must produce no "
+                "owned result"
+            )
+        release_params = release.get("params")
+        release_types = release.get("resource-param-types")
+        matching_positions = 0
+        if (
+            isinstance(release_params, list)
+            and isinstance(release_types, list)
+            and len(release_params) == len(release_types)
+        ):
+            matching_positions = sum(
+                1
+                for mode, nominal in zip(release_params, release_types, strict=True)
+                if mode == "consume" and nominal == resource_result_type
+            )
+        if matching_positions != 1:
+            errors.append(
+                f"{location} release-symbol {release_symbol!r} must consume "
+                f"exactly one {resource_result_type}"
+            )
 
     # The arity check above only bites for a symbol present in fn_param_counts.
     # That map is built by scanning Rust sources with a regex; if the sources
@@ -427,16 +564,18 @@ def validate_ownership_contracts(
     # contract takes the skip branch, and validation passes with the teeth
     # retracted and nothing to show for it. Floor the number of contracts that
     # were actually arity-checked.
-    floor_error = check_floor("ffi-arity-checked-contracts", arity_checked)
+    floor_error = check_nonempty("ffi-arity-checked-contracts", arity_checked)
     if floor_error is not None:
         errors.append(floor_error)
     else:
         print(
-            f"corpus floor OK: ffi-arity-checked-contracts = {arity_checked}",
+            f"FFI arity selection OK: {arity_checked} contract(s)",
             file=sys.stderr,
         )
 
-    ratchet = tomllib.loads(FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING))
+    ratchet = toml_compat.loads(
+        FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING)
+    )
 
     expected_unclassified = ratchet.get("unclassified")
     if not isinstance(expected_unclassified, int) or expected_unclassified < 0:

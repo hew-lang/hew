@@ -24,19 +24,22 @@
 
 use std::collections::HashMap;
 
-use hew_hir::{ids::IdGen, ExternProvenance, HirExternFn, HirItem, HirModule};
+use hew_hir::{ids::IdGen, ExternProvenance, HirExternFn, HirItem, HirModule, TypeClassTable};
 use hew_mir::{
     classify_extern_string_ownership, lower_hir_module, ExternStringOwnership, MirDiagnosticKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{DefId, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),
@@ -58,9 +61,14 @@ fn extern_item(
     abi: &str,
     provenance: ExternProvenance,
 ) -> HirItem {
+    let declaration = match &provenance {
+        ExternProvenance::Root => DefId::new(name),
+        ExternProvenance::Module(module) => DefId::new(format!("{module}.{name}")),
+    };
     HirItem::ExternFn(HirExternFn {
         id: ids.item(),
         node: ids.node(),
+        declaration,
         name: name.to_string(),
         abi: abi.to_string(),
         param_tys: vec![],
@@ -182,6 +190,21 @@ fn classified_runtime_symbol_from_root_is_guarded_to_header_aware() {
     ));
     assert_eq!(
         classify_extern_string_ownership(&ExternProvenance::Root, "hew_io_read_line"),
+        ExternStringOwnership::HeaderAware,
+    );
+}
+
+#[test]
+fn classified_encrypt_open_wrapper_from_root_is_header_aware() {
+    // `open` is the non-`must_` direct FFI spelling in std::crypto::encrypt.
+    // It allocates through `str_to_malloc`, just like the already-classified
+    // siblings. The stable classification keeps a root declaration from
+    // incorrectly taking the foreign-malloc adoption path.
+    assert!(hew_types::jit_symbols::is_classified_hew_ffi_symbol(
+        "hew_encrypt_open_hew"
+    ));
+    assert_eq!(
+        classify_extern_string_ownership(&ExternProvenance::Root, "hew_encrypt_open_hew"),
         ExternStringOwnership::HeaderAware,
     );
 }

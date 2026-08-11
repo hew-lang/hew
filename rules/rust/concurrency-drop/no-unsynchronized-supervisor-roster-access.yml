@@ -1,0 +1,167 @@
+id: no-unsynchronized-supervisor-roster-access
+language: rust
+severity: error
+message: >-
+  SupervisorRoster is reachable only through its poison-safe mutex guard. Do
+  not bypass the mutex, access before acquisition/after drop, accept a raw
+  roster borrow without an audited helper marker, or retain a guard across an
+  arbitrary callback or blocking wait.
+files:
+  - '**/supervisor.rs'
+rule:
+  any:
+    # The mutex projection must immediately feed the canonical poison-safe lock
+    # operation. This rejects get_mut, into_inner, raw reference escapes, and
+    # alternate unsynchronized access paths.
+    - all:
+        - pattern: $S.roster
+        - not:
+            inside:
+              any:
+                - pattern: $S.roster.lock_or_recover()
+                - pattern: unsafe { &$S.roster }.lock_or_recover()
+                - pattern: unsafe { &($S.roster) }.lock_or_recover()
+              stopBy: end
+        - not:
+            inside:
+              kind: mod_item
+              stopBy: end
+              has:
+                field: name
+                regex: '^(tests|.*_tests|test_support)$'
+    # A helper that accepts SupervisorRoster directly must declare that its
+    # borrow is guard-bounded. Normal runtime entry points acquire the guard
+    # locally and therefore do not expose SupervisorRoster in their signature.
+    - all:
+        - kind: function_item
+        - has:
+            regex: 'SupervisorRoster'
+            field: parameters
+        - has:
+            any:
+              - pattern: $S.children
+              - pattern: $S.child_specs
+              - pattern: $S.child_count
+              - pattern: $S.child_supervisors
+              - pattern: $S.child_supervisor_tokens
+              - pattern: $S.child_supervisor_specs
+              - pattern: $S.restart_times
+              - pattern: $S.restart_count
+              - pattern: $S.restart_head
+              - pattern: $S.restart_notify
+              - pattern: $S.pool_slots
+              - pattern: $S.pool_specs
+              - pattern: $S.config_buf
+              - pattern: $S.config_size
+              - pattern: $S.config_drop_fn
+            stopBy: end
+        - not:
+            has:
+              kind: line_comment
+              regex: 'ROSTER-GUARDED-HELPER'
+              stopBy: end
+    # Access which precedes acquisition is invalid even if a same-named guard
+    # is created later in the block.
+    - all:
+        - kind: let_declaration
+        - has:
+            any:
+              - pattern: $S.children
+              - pattern: $S.child_specs
+              - pattern: $S.child_count
+              - pattern: $S.child_supervisors
+              - pattern: $S.pool_slots
+              - pattern: $S.pool_specs
+            stopBy: end
+        - precedes:
+            any:
+              - pattern: let $S = $LOCK.lock_or_recover()
+              - pattern: let mut $S = $LOCK.lock_or_recover()
+            stopBy: end
+        - not:
+            inside:
+              kind: mod_item
+              stopBy: end
+              has:
+                field: name
+                regex: '^(tests|.*_tests|test_support)$'
+    # Once a guard is explicitly dropped, later use of the same receiver is a
+    # stale-authority error. Target the drop statement so statement ordering is
+    # structural rather than inferred from function-wide text.
+    - all:
+        - pattern:
+            context: 'fn f() { drop($G); }'
+            selector: expression_statement
+        - precedes:
+            has:
+              any:
+                - pattern: $G.children
+                - pattern: $G.child_specs
+                - pattern: $G.child_count
+                - pattern: $G.child_supervisors
+                - pattern: $G.pool_slots
+                - pattern: $G.pool_specs
+              stopBy: end
+            stopBy: end
+        - not:
+            inside:
+              kind: mod_item
+              stopBy: end
+              has:
+                field: name
+                regex: '^(tests|.*_tests|test_support)$'
+    # Never carry a roster guard into user/codegen function pointers. Snapshot
+    # owned state, release the guard, then invoke the callback.
+    - all:
+        - any:
+            - pattern: let $G = $LOCK.lock_or_recover()
+            - pattern: let mut $G = $LOCK.lock_or_recover()
+        - precedes:
+            has:
+              any:
+                - pattern: callback($$$ARGS)
+                - pattern: clone_fn($$$ARGS)
+                - pattern: state_clone_fn($$$ARGS)
+                - pattern: drop_fn($$$ARGS)
+                - pattern: state_drop_fn($$$ARGS)
+                - pattern: init_fn($$$ARGS)
+                - pattern: lifecycle_fn($$$ARGS)
+                - pattern: on_crash($$$ARGS)
+              stopBy: end
+            stopBy:
+              has:
+                pattern: drop($G)
+                stopBy: end
+        - not:
+            inside:
+              kind: mod_item
+              stopBy: end
+              has:
+                field: name
+                regex: '^(tests|.*_tests|test_support)$'
+    # Likewise, no Condvar/channel/thread wait may extend a roster critical
+    # section. These are the blocking primitives used in this runtime module.
+    - all:
+        - any:
+            - pattern: let $G = $LOCK.lock_or_recover()
+            - pattern: let mut $G = $LOCK.lock_or_recover()
+        - precedes:
+            has:
+              any:
+                - pattern: $W.wait($$$ARGS)
+                - pattern: $W.wait_timeout($$$ARGS)
+                - pattern: $W.recv($$$ARGS)
+                - pattern: $W.join($$$ARGS)
+                - pattern: std::thread::sleep($$$ARGS)
+              stopBy: end
+            stopBy:
+              has:
+                pattern: drop($G)
+                stopBy: end
+        - not:
+            inside:
+              kind: mod_item
+              stopBy: end
+              has:
+                field: name
+                regex: '^(tests|.*_tests|test_support)$'

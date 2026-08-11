@@ -3,8 +3,6 @@ source_filename = "r4_arith"
 target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20"
 target triple = "wasm32-unknown-unknown"
 
-%CrashInfo = type { i64, ptr }
-
 @str_lit = private unnamed_addr constant [3 x i8] c"ns\00", align 1
 
 declare void @hew_sleep_ns(i64)
@@ -1426,15 +1424,18 @@ entry:
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %hew_duration_nanos = load i64, ptr %local_0, align 8
-  %hew_duration_nanos_call = call i64 @hew_duration_nanos(i64 %hew_duration_nanos)
-  store i64 %hew_duration_nanos_call, ptr %local_1, align 8
-  %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 4
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_result = call i64 @hew_duration_nanos(i64 %call_arg)
+  store i64 %call_result, ptr %local_1, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
+  %call_arg1 = load i64, ptr %local_1, align 8
+  %call_result2 = call ptr @hew_i64_to_string(i64 %call_arg1)
+  store ptr %call_result2, ptr %local_2, align 4
+  br label %bb2
+
+bb2:                                              ; preds = %bb1
   store ptr @str_lit, ptr %local_3, align 4
   %"hew_string_concat arg0" = load ptr, ptr %local_2, align 4
   %"hew_string_concat arg1" = load ptr, ptr %local_3, align 4
@@ -1461,60 +1462,11 @@ entry:
   ret i64 %__original_main_call
 }
 
-define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
+define i32 @__hew_wasi_main() {
 entry:
-  br label %step_0_clone
-
-success:                                          ; preds = %step_0_store
-  ret i32 0
-
-fail:                                             ; preds = %rb_step_0
-  ret i32 1
-
-rb_step_0:                                        ; preds = %step_0_clone
-  br label %fail
-
-step_0_store:                                     ; preds = %step_0_clone
-  %dst_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  store ptr %clone_helper_f1, ptr %dst_f1_ptr, align 4
-  br label %success
-
-step_0_clone:                                     ; preds = %entry
-  %src_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %src_f1 = load ptr, ptr %src_f1_ptr, align 4
-  %clone_helper_f1 = call ptr @hew_string_clone(ptr %src_f1)
-  %cloned_f1_int = ptrtoint ptr %clone_helper_f1 to i64
-  %cloned_f1_null = icmp eq i64 %cloned_f1_int, 0
-  br i1 %cloned_f1_null, label %rb_step_0, label %step_0_store
-}
-
-define internal void @__hew_record_drop_inplace_CrashInfo(ptr %0) {
-entry:
-  %rec_int = ptrtoint ptr %0 to i64
-  %rec_is_null = icmp eq i64 %rec_int, 0
-  br i1 %rec_is_null, label %done, label %do_drop
-
-do_drop:                                          ; preds = %entry
-  %drop_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %drop_f1 = load ptr, ptr %drop_f1_ptr, align 4
-  call void @hew_string_drop(ptr %drop_f1)
-  br label %done
-
-done:                                             ; preds = %do_drop, %entry
-  ret void
-}
-
-declare void @hew_string_drop(ptr)
-
-define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
-entry:
-  %ow_slot_0 = alloca ptr, align 4
-  store ptr null, ptr %ow_slot_0, align 4
-  %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
-  store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
-  call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
-  ret void
+  %hew_source_main_call = call i64 @__original_main()
+  %wasi_exit_trunc = trunc i64 %hew_source_main_call to i32
+  ret i32 %wasi_exit_trunc
 }
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
@@ -1532,6 +1484,8 @@ declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #0
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #0
+
+declare void @hew_string_drop(ptr)
 
 attributes #0 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
 attributes #1 = { cold noreturn nounwind memory(inaccessiblemem: write) }

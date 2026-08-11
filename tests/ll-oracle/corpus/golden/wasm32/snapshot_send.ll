@@ -7,7 +7,6 @@ target triple = "wasm32-unknown-unknown"
 %Sink = type { i64 }
 %__hew_packed_args_main_0 = type { %Boxed, i64 }
 %__hew_packed_args_main_1 = type { %Boxed, i64 }
-%CrashInfo = type { i64, ptr }
 
 @str_actor_meta_name_Sink = private unnamed_addr constant [5 x i8] c"Sink\00", align 1
 @str_actor_meta_handler_Sink_0_take = private unnamed_addr constant [5 x i8] c"take\00", align 1
@@ -338,9 +337,13 @@ entry:
   %local_27 = alloca i8, align 1
   store %Boxed %1, ptr %local_0, align 4
   store i64 %2, ptr %local_1, align 8
-  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
-  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+  %helper_crash_cleanup_token_0 = alloca i64, align 8
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_active_0 = alloca i1, align 1
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  %helper_crash_cleanup_borrow_is_copy = icmp eq i32 %3, 0
+  %state_f0_replacement = alloca i64, align 8
+  br i1 %helper_crash_cleanup_borrow_is_copy, label %helper_crash_cleanup_guard_live, label %helper_crash_cleanup_guard_merge
 
 bb0:                                              ; preds = %borrow_escape_ok
   %field_0_load_ptr = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
@@ -369,8 +372,8 @@ bb1:                                              ; preds = %bb0
   br i1 %cond_nz, label %bb2, label %bb3
 
 bb2:                                              ; preds = %bb1
-  %borrow_drop_is_copy4 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy4, label %borrow_drop_copy_only5, label %borrow_drop_merge6
+  %helper_crash_cleanup_drop_active4 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active4, label %helper_crash_cleanup_retire5, label %helper_crash_cleanup_retire_merge6
 
 bb3:                                              ; preds = %bb1
   %"hew_vec_get_i64 arg0" = load ptr, ptr %local_3, align 4
@@ -386,115 +389,115 @@ bb3:                                              ; preds = %bb1
   %checked_overflow_widen = zext i1 %checked_overflow to i8
   store i64 %checked_result, ptr %local_9, align 8
   store i8 %checked_overflow_widen, ptr %local_10, align 1
-  %cond_load7 = load i8, ptr %local_10, align 1
-  %cond_nz8 = icmp ne i8 %cond_load7, 0
-  br i1 %cond_nz8, label %bb4, label %bb5
+  %cond_load14 = load i8, ptr %local_10, align 1
+  %cond_nz15 = icmp ne i8 %cond_load14, 0
+  br i1 %cond_nz15, label %bb4, label %bb5
 
 bb4:                                              ; preds = %bb3
-  %borrow_drop_is_copy9 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy9, label %borrow_drop_copy_only10, label %borrow_drop_merge11
+  %helper_crash_cleanup_drop_active16 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active16, label %helper_crash_cleanup_retire17, label %helper_crash_cleanup_retire_merge18
 
 bb5:                                              ; preds = %bb3
-  %field_0_load_ptr12 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
-  %field_0_load13 = load ptr, ptr %field_0_load_ptr12, align 4
-  store ptr %field_0_load13, ptr %local_11, align 4
+  %field_0_load_ptr26 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
+  %field_0_load27 = load ptr, ptr %field_0_load_ptr26, align 4
+  store ptr %field_0_load27, ptr %local_11, align 4
   store i64 1, ptr %local_12, align 8
-  %"hew_vec_len arg014" = load ptr, ptr %local_11, align 4
-  %hew_vec_len_call15 = call i64 @hew_vec_len(ptr %"hew_vec_len arg014")
-  store i64 %hew_vec_len_call15, ptr %local_13, align 8
-  %cmp_lhs16 = load i64, ptr %local_12, align 8
-  %cmp_rhs17 = load i64, ptr %local_13, align 8
-  %cmp_bit18 = icmp uge i64 %cmp_lhs16, %cmp_rhs17
-  %cmp_zext19 = zext i1 %cmp_bit18 to i8
-  store i8 %cmp_zext19, ptr %local_14, align 1
-  %cond_load20 = load i8, ptr %local_14, align 1
-  %cond_nz21 = icmp ne i8 %cond_load20, 0
-  br i1 %cond_nz21, label %bb6, label %bb7
+  %"hew_vec_len arg028" = load ptr, ptr %local_11, align 4
+  %hew_vec_len_call29 = call i64 @hew_vec_len(ptr %"hew_vec_len arg028")
+  store i64 %hew_vec_len_call29, ptr %local_13, align 8
+  %cmp_lhs30 = load i64, ptr %local_12, align 8
+  %cmp_rhs31 = load i64, ptr %local_13, align 8
+  %cmp_bit32 = icmp uge i64 %cmp_lhs30, %cmp_rhs31
+  %cmp_zext33 = zext i1 %cmp_bit32 to i8
+  store i8 %cmp_zext33, ptr %local_14, align 1
+  %cond_load34 = load i8, ptr %local_14, align 1
+  %cond_nz35 = icmp ne i8 %cond_load34, 0
+  br i1 %cond_nz35, label %bb6, label %bb7
 
 bb6:                                              ; preds = %bb5
-  %borrow_drop_is_copy22 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy22, label %borrow_drop_copy_only23, label %borrow_drop_merge24
+  %helper_crash_cleanup_drop_active36 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active36, label %helper_crash_cleanup_retire37, label %helper_crash_cleanup_retire_merge38
 
 bb7:                                              ; preds = %bb5
-  %"hew_vec_get_i64 arg025" = load ptr, ptr %local_11, align 4
-  %"hew_vec_get_i64 arg126" = load i64, ptr %local_12, align 8
-  %hew_vec_get_i64_call27 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg025", i64 %"hew_vec_get_i64 arg126")
-  store i64 %hew_vec_get_i64_call27, ptr %local_15, align 8
+  %"hew_vec_get_i64 arg046" = load ptr, ptr %local_11, align 4
+  %"hew_vec_get_i64 arg147" = load i64, ptr %local_12, align 8
+  %hew_vec_get_i64_call48 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg046", i64 %"hew_vec_get_i64 arg147")
+  store i64 %hew_vec_get_i64_call48, ptr %local_15, align 8
   store i64 100, ptr %local_16, align 8
-  %checked_lhs28 = load i64, ptr %local_15, align 8
-  %checked_rhs29 = load i64, ptr %local_16, align 8
-  %with_overflow30 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs28, i64 %checked_rhs29)
-  %checked_result31 = extractvalue { i64, i1 } %with_overflow30, 0
-  %checked_overflow32 = extractvalue { i64, i1 } %with_overflow30, 1
-  %checked_overflow_widen33 = zext i1 %checked_overflow32 to i8
-  store i64 %checked_result31, ptr %local_17, align 8
-  store i8 %checked_overflow_widen33, ptr %local_18, align 1
-  %cond_load34 = load i8, ptr %local_18, align 1
-  %cond_nz35 = icmp ne i8 %cond_load34, 0
-  br i1 %cond_nz35, label %bb8, label %bb9
+  %checked_lhs49 = load i64, ptr %local_15, align 8
+  %checked_rhs50 = load i64, ptr %local_16, align 8
+  %with_overflow51 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs49, i64 %checked_rhs50)
+  %checked_result52 = extractvalue { i64, i1 } %with_overflow51, 0
+  %checked_overflow53 = extractvalue { i64, i1 } %with_overflow51, 1
+  %checked_overflow_widen54 = zext i1 %checked_overflow53 to i8
+  store i64 %checked_result52, ptr %local_17, align 8
+  store i8 %checked_overflow_widen54, ptr %local_18, align 1
+  %cond_load55 = load i8, ptr %local_18, align 1
+  %cond_nz56 = icmp ne i8 %cond_load55, 0
+  br i1 %cond_nz56, label %bb8, label %bb9
 
 bb8:                                              ; preds = %bb7
-  %borrow_drop_is_copy36 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy36, label %borrow_drop_copy_only37, label %borrow_drop_merge38
+  %helper_crash_cleanup_drop_active57 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active57, label %helper_crash_cleanup_retire58, label %helper_crash_cleanup_retire_merge59
 
 bb9:                                              ; preds = %bb7
-  %checked_lhs39 = load i64, ptr %local_9, align 8
-  %checked_rhs40 = load i64, ptr %local_17, align 8
-  %with_overflow41 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs39, i64 %checked_rhs40)
-  %checked_result42 = extractvalue { i64, i1 } %with_overflow41, 0
-  %checked_overflow43 = extractvalue { i64, i1 } %with_overflow41, 1
-  %checked_overflow_widen44 = zext i1 %checked_overflow43 to i8
-  store i64 %checked_result42, ptr %local_19, align 8
-  store i8 %checked_overflow_widen44, ptr %local_20, align 1
-  %cond_load45 = load i8, ptr %local_20, align 1
-  %cond_nz46 = icmp ne i8 %cond_load45, 0
-  br i1 %cond_nz46, label %bb10, label %bb11
+  %checked_lhs67 = load i64, ptr %local_9, align 8
+  %checked_rhs68 = load i64, ptr %local_17, align 8
+  %with_overflow69 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs67, i64 %checked_rhs68)
+  %checked_result70 = extractvalue { i64, i1 } %with_overflow69, 0
+  %checked_overflow71 = extractvalue { i64, i1 } %with_overflow69, 1
+  %checked_overflow_widen72 = zext i1 %checked_overflow71 to i8
+  store i64 %checked_result70, ptr %local_19, align 8
+  store i8 %checked_overflow_widen72, ptr %local_20, align 1
+  %cond_load73 = load i8, ptr %local_20, align 1
+  %cond_nz74 = icmp ne i8 %cond_load73, 0
+  br i1 %cond_nz74, label %bb10, label %bb11
 
 bb10:                                             ; preds = %bb9
-  %borrow_drop_is_copy47 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy47, label %borrow_drop_copy_only48, label %borrow_drop_merge49
+  %helper_crash_cleanup_drop_active75 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active75, label %helper_crash_cleanup_retire76, label %helper_crash_cleanup_retire_merge77
 
 bb11:                                             ; preds = %bb9
-  %field_0_load_ptr50 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
-  %field_0_load51 = load ptr, ptr %field_0_load_ptr50, align 4
-  store ptr %field_0_load51, ptr %local_21, align 4
+  %field_0_load_ptr85 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
+  %field_0_load86 = load ptr, ptr %field_0_load_ptr85, align 4
+  store ptr %field_0_load86, ptr %local_21, align 4
   store i64 2, ptr %local_22, align 8
-  %"hew_vec_len arg052" = load ptr, ptr %local_21, align 4
-  %hew_vec_len_call53 = call i64 @hew_vec_len(ptr %"hew_vec_len arg052")
-  store i64 %hew_vec_len_call53, ptr %local_23, align 8
-  %cmp_lhs54 = load i64, ptr %local_22, align 8
-  %cmp_rhs55 = load i64, ptr %local_23, align 8
-  %cmp_bit56 = icmp uge i64 %cmp_lhs54, %cmp_rhs55
-  %cmp_zext57 = zext i1 %cmp_bit56 to i8
-  store i8 %cmp_zext57, ptr %local_24, align 1
-  %cond_load58 = load i8, ptr %local_24, align 1
-  %cond_nz59 = icmp ne i8 %cond_load58, 0
-  br i1 %cond_nz59, label %bb12, label %bb13
+  %"hew_vec_len arg087" = load ptr, ptr %local_21, align 4
+  %hew_vec_len_call88 = call i64 @hew_vec_len(ptr %"hew_vec_len arg087")
+  store i64 %hew_vec_len_call88, ptr %local_23, align 8
+  %cmp_lhs89 = load i64, ptr %local_22, align 8
+  %cmp_rhs90 = load i64, ptr %local_23, align 8
+  %cmp_bit91 = icmp uge i64 %cmp_lhs89, %cmp_rhs90
+  %cmp_zext92 = zext i1 %cmp_bit91 to i8
+  store i8 %cmp_zext92, ptr %local_24, align 1
+  %cond_load93 = load i8, ptr %local_24, align 1
+  %cond_nz94 = icmp ne i8 %cond_load93, 0
+  br i1 %cond_nz94, label %bb12, label %bb13
 
 bb12:                                             ; preds = %bb11
-  %borrow_drop_is_copy60 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy60, label %borrow_drop_copy_only61, label %borrow_drop_merge62
+  %helper_crash_cleanup_drop_active95 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active95, label %helper_crash_cleanup_retire96, label %helper_crash_cleanup_retire_merge97
 
 bb13:                                             ; preds = %bb11
-  %"hew_vec_get_i64 arg063" = load ptr, ptr %local_21, align 4
-  %"hew_vec_get_i64 arg164" = load i64, ptr %local_22, align 8
-  %hew_vec_get_i64_call65 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg063", i64 %"hew_vec_get_i64 arg164")
-  store i64 %hew_vec_get_i64_call65, ptr %local_25, align 8
-  %checked_lhs66 = load i64, ptr %local_19, align 8
-  %checked_rhs67 = load i64, ptr %local_25, align 8
-  %with_overflow68 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs66, i64 %checked_rhs67)
-  %checked_result69 = extractvalue { i64, i1 } %with_overflow68, 0
-  %checked_overflow70 = extractvalue { i64, i1 } %with_overflow68, 1
-  %checked_overflow_widen71 = zext i1 %checked_overflow70 to i8
-  store i64 %checked_result69, ptr %local_26, align 8
-  store i8 %checked_overflow_widen71, ptr %local_27, align 1
-  %cond_load72 = load i8, ptr %local_27, align 1
-  %cond_nz73 = icmp ne i8 %cond_load72, 0
-  br i1 %cond_nz73, label %bb14, label %bb15
+  %"hew_vec_get_i64 arg0105" = load ptr, ptr %local_21, align 4
+  %"hew_vec_get_i64 arg1106" = load i64, ptr %local_22, align 8
+  %hew_vec_get_i64_call107 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg0105", i64 %"hew_vec_get_i64 arg1106")
+  store i64 %hew_vec_get_i64_call107, ptr %local_25, align 8
+  %checked_lhs108 = load i64, ptr %local_19, align 8
+  %checked_rhs109 = load i64, ptr %local_25, align 8
+  %with_overflow110 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs108, i64 %checked_rhs109)
+  %checked_result111 = extractvalue { i64, i1 } %with_overflow110, 0
+  %checked_overflow112 = extractvalue { i64, i1 } %with_overflow110, 1
+  %checked_overflow_widen113 = zext i1 %checked_overflow112 to i8
+  store i64 %checked_result111, ptr %local_26, align 8
+  store i8 %checked_overflow_widen113, ptr %local_27, align 1
+  %cond_load114 = load i8, ptr %local_27, align 1
+  %cond_nz115 = icmp ne i8 %cond_load114, 0
+  br i1 %cond_nz115, label %bb14, label %bb15
 
 bb14:                                             ; preds = %bb13
-  %borrow_drop_is_copy74 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy74, label %borrow_drop_copy_only75, label %borrow_drop_merge76
+  %helper_crash_cleanup_drop_active116 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active116, label %helper_crash_cleanup_retire117, label %helper_crash_cleanup_retire_merge118
 
 bb15:                                             ; preds = %bb13
   %ctx_actor_ptr_slot = getelementptr i8, ptr %0, i64 0
@@ -502,24 +505,62 @@ bb15:                                             ; preds = %bb13
   %actor_state_slot = getelementptr i8, ptr %ctx_actor_ptr, i64 16
   %actor_state_ptr = load ptr, ptr %actor_state_slot, align 4
   %actor_state_field_0_ptr = getelementptr inbounds nuw %Sink, ptr %actor_state_ptr, i32 0, i32 0
-  %actor_state_field_0_src = load i64, ptr %local_26, align 8
-  store i64 %actor_state_field_0_src, ptr %actor_state_field_0_ptr, align 8
-  %borrow_drop_is_copy77 = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy77, label %borrow_drop_copy_only78, label %borrow_drop_merge79
+  %state_f0_crash_begin_replace_call = call i1 @hew_dispatch_state_cleanup_begin_replace(ptr %actor_state_field_0_ptr, i64 8)
+  br i1 %state_f0_crash_begin_replace_call, label %state_f0_crash_begin_replace_accepted, label %state_f0_crash_begin_replace_rejected
 
-cancel_exit:                                      ; preds = %entry
-  %borrow_drop_is_copy = icmp eq i32 %3, 0
-  br i1 %borrow_drop_is_copy, label %borrow_drop_copy_only, label %borrow_drop_merge
+helper_crash_cleanup_guard_live:                  ; preds = %entry
+  %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_0, i64 4, i64 4, ptr @__hew_frame_cleanup_cd3565128175cb7f, i32 1, i32 0)
+  %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
+  br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
 
-after_cooperate:                                  ; preds = %entry
+helper_crash_cleanup_guard_merge:                 ; preds = %frame_cleanup_registered, %entry
+  %hew_actor_cooperate = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
+  br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
+
+frame_cleanup_registered:                         ; preds = %helper_crash_cleanup_guard_live
+  store i64 %arm_typed_crash_cleanup, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 true, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_guard_merge
+
+frame_cleanup_rejected:                           ; preds = %helper_crash_cleanup_guard_live
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+cancel_exit:                                      ; preds = %helper_crash_cleanup_guard_merge
+  %helper_crash_cleanup_drop_active = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
+
+after_cooperate:                                  ; preds = %helper_crash_cleanup_guard_merge
   %borrow_escape_is_live = icmp ne i32 %3, 0
   br i1 %borrow_escape_is_live, label %borrow_escape_trap, label %borrow_escape_ok
 
-borrow_drop_copy_only:                            ; preds = %cancel_exit
+helper_crash_cleanup_retire:                      ; preds = %cancel_exit
+  %helper_crash_cleanup_retire_token = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token)
+  br i1 %helper_crash_cleanup_retire_call, label %helper_crash_cleanup_retire_accepted, label %helper_crash_cleanup_retire_rejected
+
+helper_crash_cleanup_retire_merge:                ; preds = %helper_crash_cleanup_retire_accepted, %cancel_exit
+  %borrow_drop_is_copy = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy, label %borrow_drop_copy_only, label %borrow_drop_merge
+
+helper_crash_cleanup_retire_accepted:             ; preds = %helper_crash_cleanup_retire
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge
+
+helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanup_retire
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only:                            ; preds = %helper_crash_cleanup_retire_merge
   call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
   br label %borrow_drop_merge
 
-borrow_drop_merge:                                ; preds = %borrow_drop_copy_only, %cancel_exit
+borrow_drop_merge:                                ; preds = %borrow_drop_copy_only, %helper_crash_cleanup_retire_merge
   ret i8 0
 
 borrow_escape_ok:                                 ; preds = %after_cooperate
@@ -529,75 +570,259 @@ borrow_escape_trap:                               ; preds = %after_cooperate
   call void @hew_panic()
   unreachable
 
-borrow_drop_copy_only5:                           ; preds = %bb2
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge6
+helper_crash_cleanup_retire5:                     ; preds = %bb2
+  %helper_crash_cleanup_retire_token7 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call8 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token7)
+  br i1 %helper_crash_cleanup_retire_call8, label %helper_crash_cleanup_retire_accepted9, label %helper_crash_cleanup_retire_rejected10
 
-borrow_drop_merge6:                               ; preds = %borrow_drop_copy_only5, %bb2
+helper_crash_cleanup_retire_merge6:               ; preds = %helper_crash_cleanup_retire_accepted9, %bb2
+  %borrow_drop_is_copy11 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy11, label %borrow_drop_copy_only12, label %borrow_drop_merge13
+
+helper_crash_cleanup_retire_accepted9:            ; preds = %helper_crash_cleanup_retire5
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge6
+
+helper_crash_cleanup_retire_rejected10:           ; preds = %helper_crash_cleanup_retire5
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only12:                          ; preds = %helper_crash_cleanup_retire_merge6
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge13
+
+borrow_drop_merge13:                              ; preds = %borrow_drop_copy_only12, %helper_crash_cleanup_retire_merge6
   call void @hew_trap_with_code(i32 205)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only10:                          ; preds = %bb4
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge11
+helper_crash_cleanup_retire17:                    ; preds = %bb4
+  %helper_crash_cleanup_retire_token19 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call20 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token19)
+  br i1 %helper_crash_cleanup_retire_call20, label %helper_crash_cleanup_retire_accepted21, label %helper_crash_cleanup_retire_rejected22
 
-borrow_drop_merge11:                              ; preds = %borrow_drop_copy_only10, %bb4
+helper_crash_cleanup_retire_merge18:              ; preds = %helper_crash_cleanup_retire_accepted21, %bb4
+  %borrow_drop_is_copy23 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy23, label %borrow_drop_copy_only24, label %borrow_drop_merge25
+
+helper_crash_cleanup_retire_accepted21:           ; preds = %helper_crash_cleanup_retire17
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge18
+
+helper_crash_cleanup_retire_rejected22:           ; preds = %helper_crash_cleanup_retire17
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only24:                          ; preds = %helper_crash_cleanup_retire_merge18
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge25
+
+borrow_drop_merge25:                              ; preds = %borrow_drop_copy_only24, %helper_crash_cleanup_retire_merge18
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only23:                          ; preds = %bb6
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge24
+helper_crash_cleanup_retire37:                    ; preds = %bb6
+  %helper_crash_cleanup_retire_token39 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call40 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token39)
+  br i1 %helper_crash_cleanup_retire_call40, label %helper_crash_cleanup_retire_accepted41, label %helper_crash_cleanup_retire_rejected42
 
-borrow_drop_merge24:                              ; preds = %borrow_drop_copy_only23, %bb6
+helper_crash_cleanup_retire_merge38:              ; preds = %helper_crash_cleanup_retire_accepted41, %bb6
+  %borrow_drop_is_copy43 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy43, label %borrow_drop_copy_only44, label %borrow_drop_merge45
+
+helper_crash_cleanup_retire_accepted41:           ; preds = %helper_crash_cleanup_retire37
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge38
+
+helper_crash_cleanup_retire_rejected42:           ; preds = %helper_crash_cleanup_retire37
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only44:                          ; preds = %helper_crash_cleanup_retire_merge38
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge45
+
+borrow_drop_merge45:                              ; preds = %borrow_drop_copy_only44, %helper_crash_cleanup_retire_merge38
   call void @hew_trap_with_code(i32 205)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only37:                          ; preds = %bb8
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge38
+helper_crash_cleanup_retire58:                    ; preds = %bb8
+  %helper_crash_cleanup_retire_token60 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call61 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token60)
+  br i1 %helper_crash_cleanup_retire_call61, label %helper_crash_cleanup_retire_accepted62, label %helper_crash_cleanup_retire_rejected63
 
-borrow_drop_merge38:                              ; preds = %borrow_drop_copy_only37, %bb8
+helper_crash_cleanup_retire_merge59:              ; preds = %helper_crash_cleanup_retire_accepted62, %bb8
+  %borrow_drop_is_copy64 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy64, label %borrow_drop_copy_only65, label %borrow_drop_merge66
+
+helper_crash_cleanup_retire_accepted62:           ; preds = %helper_crash_cleanup_retire58
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge59
+
+helper_crash_cleanup_retire_rejected63:           ; preds = %helper_crash_cleanup_retire58
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only65:                          ; preds = %helper_crash_cleanup_retire_merge59
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge66
+
+borrow_drop_merge66:                              ; preds = %borrow_drop_copy_only65, %helper_crash_cleanup_retire_merge59
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only48:                          ; preds = %bb10
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge49
+helper_crash_cleanup_retire76:                    ; preds = %bb10
+  %helper_crash_cleanup_retire_token78 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call79 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token78)
+  br i1 %helper_crash_cleanup_retire_call79, label %helper_crash_cleanup_retire_accepted80, label %helper_crash_cleanup_retire_rejected81
 
-borrow_drop_merge49:                              ; preds = %borrow_drop_copy_only48, %bb10
+helper_crash_cleanup_retire_merge77:              ; preds = %helper_crash_cleanup_retire_accepted80, %bb10
+  %borrow_drop_is_copy82 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy82, label %borrow_drop_copy_only83, label %borrow_drop_merge84
+
+helper_crash_cleanup_retire_accepted80:           ; preds = %helper_crash_cleanup_retire76
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge77
+
+helper_crash_cleanup_retire_rejected81:           ; preds = %helper_crash_cleanup_retire76
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only83:                          ; preds = %helper_crash_cleanup_retire_merge77
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge84
+
+borrow_drop_merge84:                              ; preds = %borrow_drop_copy_only83, %helper_crash_cleanup_retire_merge77
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only61:                          ; preds = %bb12
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge62
+helper_crash_cleanup_retire96:                    ; preds = %bb12
+  %helper_crash_cleanup_retire_token98 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call99 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token98)
+  br i1 %helper_crash_cleanup_retire_call99, label %helper_crash_cleanup_retire_accepted100, label %helper_crash_cleanup_retire_rejected101
 
-borrow_drop_merge62:                              ; preds = %borrow_drop_copy_only61, %bb12
+helper_crash_cleanup_retire_merge97:              ; preds = %helper_crash_cleanup_retire_accepted100, %bb12
+  %borrow_drop_is_copy102 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy102, label %borrow_drop_copy_only103, label %borrow_drop_merge104
+
+helper_crash_cleanup_retire_accepted100:          ; preds = %helper_crash_cleanup_retire96
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge97
+
+helper_crash_cleanup_retire_rejected101:          ; preds = %helper_crash_cleanup_retire96
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only103:                         ; preds = %helper_crash_cleanup_retire_merge97
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge104
+
+borrow_drop_merge104:                             ; preds = %borrow_drop_copy_only103, %helper_crash_cleanup_retire_merge97
   call void @hew_trap_with_code(i32 205)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only75:                          ; preds = %bb14
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge76
+helper_crash_cleanup_retire117:                   ; preds = %bb14
+  %helper_crash_cleanup_retire_token119 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call120 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token119)
+  br i1 %helper_crash_cleanup_retire_call120, label %helper_crash_cleanup_retire_accepted121, label %helper_crash_cleanup_retire_rejected122
 
-borrow_drop_merge76:                              ; preds = %borrow_drop_copy_only75, %bb14
+helper_crash_cleanup_retire_merge118:             ; preds = %helper_crash_cleanup_retire_accepted121, %bb14
+  %borrow_drop_is_copy123 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy123, label %borrow_drop_copy_only124, label %borrow_drop_merge125
+
+helper_crash_cleanup_retire_accepted121:          ; preds = %helper_crash_cleanup_retire117
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge118
+
+helper_crash_cleanup_retire_rejected122:          ; preds = %helper_crash_cleanup_retire117
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only124:                         ; preds = %helper_crash_cleanup_retire_merge118
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge125
+
+borrow_drop_merge125:                             ; preds = %borrow_drop_copy_only124, %helper_crash_cleanup_retire_merge118
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
 
-borrow_drop_copy_only78:                          ; preds = %bb15
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  br label %borrow_drop_merge79
+state_f0_crash_begin_replace_accepted:            ; preds = %bb15
+  %actor_state_field_0_src = load i64, ptr %local_26, align 8
+  store i64 %actor_state_field_0_src, ptr %state_f0_replacement, align 8
+  call void @hew_dispatch_state_cleanup_prepare(ptr %state_f0_replacement, ptr %actor_state_field_0_ptr, i64 8)
+  store i64 %actor_state_field_0_src, ptr %actor_state_field_0_ptr, align 8
+  %helper_crash_cleanup_drop_active126 = load i1, ptr %helper_crash_cleanup_active_0, align 1
+  br i1 %helper_crash_cleanup_drop_active126, label %helper_crash_cleanup_retire127, label %helper_crash_cleanup_retire_merge128
 
-borrow_drop_merge79:                              ; preds = %borrow_drop_copy_only78, %bb15
+state_f0_crash_begin_replace_rejected:            ; preds = %bb15
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_retire127:                   ; preds = %state_f0_crash_begin_replace_accepted
+  %helper_crash_cleanup_retire_token129 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_retire_call130 = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token129)
+  br i1 %helper_crash_cleanup_retire_call130, label %helper_crash_cleanup_retire_accepted131, label %helper_crash_cleanup_retire_rejected132
+
+helper_crash_cleanup_retire_merge128:             ; preds = %helper_crash_cleanup_retire_accepted131, %state_f0_crash_begin_replace_accepted
+  %borrow_drop_is_copy133 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy133, label %borrow_drop_copy_only134, label %borrow_drop_merge135
+
+helper_crash_cleanup_retire_accepted131:          ; preds = %helper_crash_cleanup_retire127
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_retire_merge128
+
+helper_crash_cleanup_retire_rejected132:          ; preds = %helper_crash_cleanup_retire127
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only134:                         ; preds = %helper_crash_cleanup_retire_merge128
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge135
+
+borrow_drop_merge135:                             ; preds = %borrow_drop_copy_only134, %helper_crash_cleanup_retire_merge128
+  %helper_crash_cleanup_return_token_0 = load i64, ptr %helper_crash_cleanup_token_0, align 8
+  %helper_crash_cleanup_return_has_token_0 = icmp ne i64 %helper_crash_cleanup_return_token_0, 0
+  br i1 %helper_crash_cleanup_return_has_token_0, label %helper_crash_cleanup_return_retire_0, label %helper_crash_cleanup_return_merge_0
+
+helper_crash_cleanup_return_merge_0:              ; preds = %helper_crash_cleanup_return_retire_0_accepted, %borrow_drop_merge135
   ret i8 0
+
+helper_crash_cleanup_return_retire_0:             ; preds = %borrow_drop_merge135
+  %helper_crash_cleanup_return_retire_0_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_0)
+  br i1 %helper_crash_cleanup_return_retire_0_call, label %helper_crash_cleanup_return_retire_0_accepted, label %helper_crash_cleanup_return_retire_0_rejected
+
+helper_crash_cleanup_return_retire_0_accepted:    ; preds = %helper_crash_cleanup_return_retire_0
+  store i64 0, ptr %helper_crash_cleanup_token_0, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_0, align 1
+  br label %helper_crash_cleanup_return_merge_0
+
+helper_crash_cleanup_return_retire_0_rejected:    ; preds = %helper_crash_cleanup_return_retire_0
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
 }
 
 define i8 @__original_main() {
@@ -624,6 +849,10 @@ entry:
   %local_18 = alloca i64, align 8
   %local_19 = alloca %Boxed, align 8
   %local_20 = alloca %Boxed, align 8
+  %helper_crash_cleanup_token_12 = alloca i64, align 8
+  store i64 0, ptr %helper_crash_cleanup_token_12, align 8
+  %helper_crash_cleanup_active_12 = alloca i1, align 1
+  store i1 false, ptr %helper_crash_cleanup_active_12, align 1
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
@@ -727,13 +956,8 @@ bb3:                                              ; preds = %bb2
   %field_0_init_ptr22 = getelementptr inbounds nuw %Boxed, ptr %local_11, i32 0, i32 0
   %field_0_init_src23 = load ptr, ptr %local_10, align 4
   store ptr %field_0_init_src23, ptr %field_0_init_ptr22, align 4
-  %move_load24 = load %Boxed, ptr %local_11, align 4
-  store %Boxed %move_load24, ptr %local_12, align 4
-  store i64 7, ptr %local_13, align 8
-  call void @llvm.memcpy.p0.p0.i64(ptr align 4 %local_19, ptr align 4 %local_12, i64 4, i1 false)
-  %record_clone_Boxed = call i32 @__hew_record_clone_inplace_Boxed(ptr %local_12, ptr %local_19)
-  %record_clone_Boxed_failed = icmp ne i32 %record_clone_Boxed, 0
-  br i1 %record_clone_Boxed_failed, label %clone_trap, label %clone_ok
+  %helper_crash_cleanup_was_active = load i1, ptr %helper_crash_cleanup_active_12, align 1
+  br i1 %helper_crash_cleanup_was_active, label %helper_crash_cleanup_deactivate, label %helper_crash_cleanup_deactivate_merge
 
 bb4:                                              ; preds = %clone_ok
   store i64 8, ptr %local_15, align 8
@@ -753,9 +977,8 @@ bb5:                                              ; preds = %clone_ok29
   br label %bb6
 
 bb6:                                              ; preds = %bb5
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_12)
-  call void @hew_wasm_runtime_exit()
-  ret i8 0
+  %helper_crash_cleanup_drop_active = load i1, ptr %helper_crash_cleanup_active_12, align 1
+  br i1 %helper_crash_cleanup_drop_active, label %helper_crash_cleanup_retire, label %helper_crash_cleanup_retire_merge
 
 cancel_exit:                                      ; preds = %entry
   ret i8 0
@@ -763,7 +986,43 @@ cancel_exit:                                      ; preds = %entry
 after_cooperate:                                  ; preds = %entry
   br label %bb0
 
-clone_ok:                                         ; preds = %bb3
+helper_crash_cleanup_deactivate:                  ; preds = %bb3
+  %helper_crash_cleanup_token = load i64, ptr %helper_crash_cleanup_token_12, align 8
+  %helper_crash_cleanup_deactivate_call = call i1 @hew_cont_crash_cleanup_deactivate(i64 %helper_crash_cleanup_token)
+  br i1 %helper_crash_cleanup_deactivate_call, label %helper_crash_cleanup_deactivate_accepted, label %helper_crash_cleanup_deactivate_rejected
+
+helper_crash_cleanup_deactivate_merge:            ; preds = %helper_crash_cleanup_deactivate_accepted, %bb3
+  %move_load24 = load %Boxed, ptr %local_11, align 4
+  store %Boxed %move_load24, ptr %local_12, align 4
+  %helper_crash_cleanup_prior_token = load i64, ptr %helper_crash_cleanup_token_12, align 8
+  %arm_typed_crash_cleanup = call i64 @hew_cont_crash_cleanup_arm(i64 %helper_crash_cleanup_prior_token, ptr %local_12, i64 4, i64 4, ptr @__hew_frame_cleanup_cd3565128175cb7f, i32 1, i32 0)
+  %frame_cleanup_arm_failed = icmp eq i64 %arm_typed_crash_cleanup, -1
+  br i1 %frame_cleanup_arm_failed, label %frame_cleanup_rejected, label %frame_cleanup_registered
+
+helper_crash_cleanup_deactivate_accepted:         ; preds = %helper_crash_cleanup_deactivate
+  store i1 false, ptr %helper_crash_cleanup_active_12, align 1
+  br label %helper_crash_cleanup_deactivate_merge
+
+helper_crash_cleanup_deactivate_rejected:         ; preds = %helper_crash_cleanup_deactivate
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+frame_cleanup_registered:                         ; preds = %helper_crash_cleanup_deactivate_merge
+  store i64 %arm_typed_crash_cleanup, ptr %helper_crash_cleanup_token_12, align 8
+  store i1 true, ptr %helper_crash_cleanup_active_12, align 1
+  store i64 7, ptr %local_13, align 8
+  call void @llvm.memcpy.p0.p0.i64(ptr align 4 %local_19, ptr align 4 %local_12, i64 4, i1 false)
+  %record_clone_Boxed = call i32 @__hew_record_clone_inplace_Boxed(ptr %local_12, ptr %local_19)
+  %record_clone_Boxed_failed = icmp ne i32 %record_clone_Boxed, 0
+  br i1 %record_clone_Boxed_failed, label %clone_trap, label %clone_ok
+
+frame_cleanup_rejected:                           ; preds = %helper_crash_cleanup_deactivate_merge
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+clone_ok:                                         ; preds = %frame_cleanup_registered
   %field_0_init_ptr25 = getelementptr inbounds nuw %__hew_packed_args_main_0, ptr %local_14, i32 0, i32 0
   %field_0_init_src26 = load %Boxed, ptr %local_19, align 4
   store %Boxed %field_0_init_src26, ptr %field_0_init_ptr25, align 4
@@ -777,7 +1036,8 @@ clone_ok:                                         ; preds = %bb3
   %send_not_ok = icmp ne i32 %hew_actor_send_by_id_call, 0
   br i1 %send_not_ok, label %actor_send_fail, label %bb4
 
-clone_trap:                                       ; preds = %bb3
+clone_trap:                                       ; preds = %frame_cleanup_registered
+  call void @hew_trap_with_code(i32 200)
   call void @llvm.trap()
   unreachable
 
@@ -802,11 +1062,51 @@ clone_ok29:                                       ; preds = %bb4
   br i1 %send_not_ok40, label %actor_send_fail39, label %bb5
 
 clone_trap30:                                     ; preds = %bb4
+  call void @hew_trap_with_code(i32 200)
   call void @llvm.trap()
   unreachable
 
 actor_send_fail39:                                ; preds = %clone_ok29
   call void @__hew_record_drop_inplace___hew_packed_args_main_1(ptr %local_16)
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_retire:                      ; preds = %bb6
+  %helper_crash_cleanup_retire_token = load i64, ptr %helper_crash_cleanup_token_12, align 8
+  %helper_crash_cleanup_retire_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_retire_token)
+  br i1 %helper_crash_cleanup_retire_call, label %helper_crash_cleanup_retire_accepted, label %helper_crash_cleanup_retire_rejected
+
+helper_crash_cleanup_retire_merge:                ; preds = %helper_crash_cleanup_retire_accepted, %bb6
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_12)
+  %helper_crash_cleanup_return_token_12 = load i64, ptr %helper_crash_cleanup_token_12, align 8
+  %helper_crash_cleanup_return_has_token_12 = icmp ne i64 %helper_crash_cleanup_return_token_12, 0
+  br i1 %helper_crash_cleanup_return_has_token_12, label %helper_crash_cleanup_return_retire_12, label %helper_crash_cleanup_return_merge_12
+
+helper_crash_cleanup_retire_accepted:             ; preds = %helper_crash_cleanup_retire
+  store i64 0, ptr %helper_crash_cleanup_token_12, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_12, align 1
+  br label %helper_crash_cleanup_retire_merge
+
+helper_crash_cleanup_retire_rejected:             ; preds = %helper_crash_cleanup_retire
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
+
+helper_crash_cleanup_return_merge_12:             ; preds = %helper_crash_cleanup_return_retire_12_accepted, %helper_crash_cleanup_retire_merge
+  call void @hew_wasm_runtime_exit()
+  ret i8 0
+
+helper_crash_cleanup_return_retire_12:            ; preds = %helper_crash_cleanup_retire_merge
+  %helper_crash_cleanup_return_retire_12_call = call i1 @hew_cont_crash_cleanup_retire(i64 %helper_crash_cleanup_return_token_12)
+  br i1 %helper_crash_cleanup_return_retire_12_call, label %helper_crash_cleanup_return_retire_12_accepted, label %helper_crash_cleanup_return_retire_12_rejected
+
+helper_crash_cleanup_return_retire_12_accepted:   ; preds = %helper_crash_cleanup_return_retire_12
+  store i64 0, ptr %helper_crash_cleanup_token_12, align 8
+  store i1 false, ptr %helper_crash_cleanup_active_12, align 1
+  br label %helper_crash_cleanup_return_merge_12
+
+helper_crash_cleanup_return_retire_12_rejected:   ; preds = %helper_crash_cleanup_return_retire_12
   call void @hew_trap_with_code(i32 206)
   call void @llvm.trap()
   unreachable
@@ -1413,15 +1713,18 @@ entry:
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %hew_duration_nanos = load i64, ptr %local_0, align 8
-  %hew_duration_nanos_call = call i64 @hew_duration_nanos(i64 %hew_duration_nanos)
-  store i64 %hew_duration_nanos_call, ptr %local_1, align 8
-  %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 4
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_result = call i64 @hew_duration_nanos(i64 %call_arg)
+  store i64 %call_result, ptr %local_1, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
+  %call_arg1 = load i64, ptr %local_1, align 8
+  %call_result2 = call ptr @hew_i64_to_string(i64 %call_arg1)
+  store ptr %call_result2, ptr %local_2, align 4
+  br label %bb2
+
+bb2:                                              ; preds = %bb1
   store ptr @str_lit, ptr %local_3, align 4
   %"hew_string_concat arg0" = load ptr, ptr %local_2, align 4
   %"hew_string_concat arg1" = load ptr, ptr %local_3, align 4
@@ -1448,12 +1751,19 @@ entry:
   ret i8 %__original_main_call
 }
 
+define i32 @__hew_wasi_main() {
+entry:
+  %hew_source_main_call = call i8 @__original_main()
+  ret i32 0
+}
+
 define internal ptr @__hew_actor_dispatch_Sink(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4, i32 %5) {
 entry:
   %dispatch_is_borrow = icmp ne i32 %5, 0
   br i1 %dispatch_is_borrow, label %borrow_src, label %copy_src
 
 unknown_msg_type:                                 ; preds = %payload_src
+  call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
   unreachable
 
@@ -1494,6 +1804,8 @@ msg_1476289385:                                   ; preds = %payload_src
 declare ptr @hew_msg_envelope_payload_ptr(ptr)
 
 declare void @hew_panic()
+
+declare void @hew_trap_with_code(i32)
 
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
@@ -1608,51 +1920,6 @@ step_0_clone:                                     ; preds = %entry
 
 declare ptr @hew_vec_clone_owned(ptr)
 
-define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
-entry:
-  br label %step_0_clone
-
-success:                                          ; preds = %step_0_store
-  ret i32 0
-
-fail:                                             ; preds = %rb_step_0
-  ret i32 1
-
-rb_step_0:                                        ; preds = %step_0_clone
-  br label %fail
-
-step_0_store:                                     ; preds = %step_0_clone
-  %dst_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  store ptr %clone_helper_f1, ptr %dst_f1_ptr, align 4
-  br label %success
-
-step_0_clone:                                     ; preds = %entry
-  %src_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %src_f1 = load ptr, ptr %src_f1_ptr, align 4
-  %clone_helper_f1 = call ptr @hew_string_clone(ptr %src_f1)
-  %cloned_f1_int = ptrtoint ptr %clone_helper_f1 to i64
-  %cloned_f1_null = icmp eq i64 %cloned_f1_int, 0
-  br i1 %cloned_f1_null, label %rb_step_0, label %step_0_store
-}
-
-define internal void @__hew_record_drop_inplace_CrashInfo(ptr %0) {
-entry:
-  %rec_int = ptrtoint ptr %0 to i64
-  %rec_is_null = icmp eq i64 %rec_int, 0
-  br i1 %rec_is_null, label %done, label %do_drop
-
-do_drop:                                          ; preds = %entry
-  %drop_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %drop_f1 = load ptr, ptr %drop_f1_ptr, align 4
-  call void @hew_string_drop(ptr %drop_f1)
-  br label %done
-
-done:                                             ; preds = %do_drop, %entry
-  ret void
-}
-
-declare void @hew_string_drop(ptr)
-
 define internal void @__hew_record_overwrite_release_Boxed(ptr %0, ptr %1) {
 entry:
   %ow_slot_0 = alloca ptr, align 4
@@ -1670,17 +1937,6 @@ entry:
   %ow_old_d0_f0_neutralized = select i1 %ow_old_d0_f0_matched0, ptr null, ptr %ow_old_d0_f0_val
   store ptr %ow_old_d0_f0_neutralized, ptr %ow_old_d0_f0_ptr, align 4
   call void @__hew_record_drop_inplace_Boxed(ptr %0)
-  ret void
-}
-
-define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
-entry:
-  %ow_slot_0 = alloca ptr, align 4
-  store ptr null, ptr %ow_slot_0, align 4
-  %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
-  store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
-  call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
 }
 
@@ -1725,15 +1981,27 @@ done:                                             ; preds = %do_drop, %entry
   ret void
 }
 
+define internal void @__hew_frame_cleanup_cd3565128175cb7f(ptr %0) {
+entry:
+  call void @__hew_record_drop_inplace_Boxed(ptr %0)
+  ret void
+}
+
+declare i64 @hew_cont_crash_cleanup_arm(i64, ptr, i64, i64, ptr, i32, i32)
+
 declare i32 @hew_actor_cooperate()
 
-declare void @hew_trap_with_code(i32)
+declare i1 @hew_cont_crash_cleanup_retire(i64)
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #2
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #2
+
+declare i1 @hew_dispatch_state_cleanup_begin_replace(ptr, i64)
+
+declare void @hew_dispatch_state_cleanup_prepare(ptr, ptr, i64)
 
 declare i32 @hew_sched_init()
 
@@ -1754,6 +2022,8 @@ declare void @hew_actor_set_message_drop(ptr, ptr)
 declare void @hew_actor_set_sys_dispatch(ptr, ptr)
 
 declare ptr @hew_vec_new_i64()
+
+declare i1 @hew_cont_crash_cleanup_deactivate(i64)
 
 declare i32 @hew_actor_send_by_id(i64, ptr, i32, ptr, i32)
 
@@ -1788,6 +2058,8 @@ done:                                             ; preds = %do_drop, %entry
 }
 
 declare void @hew_wasm_runtime_exit()
+
+declare void @hew_string_drop(ptr)
 
 attributes #0 = { cold noreturn nounwind memory(inaccessiblemem: write) }
 attributes #1 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }

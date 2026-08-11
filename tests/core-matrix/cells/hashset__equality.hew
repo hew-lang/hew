@@ -1,0 +1,14 @@
+fn main() {
+    let a: HashSet<i64> = HashSet::new();
+    a.insert(1);
+    a.insert(2);
+    let b: HashSet<i64> = HashSet::new();
+    b.insert(1);
+    b.insert(2);
+    let c: HashSet<i64> = HashSet::new();
+    c.insert(2);
+    c.insert(3);
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

@@ -14,7 +14,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
+# ROOT resolves the repository-owned helper.
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
 DIR="${ROOT}/tests/pkg-import"
 PKGS="${DIR}/pkgs"
 
@@ -26,6 +29,17 @@ actual_output="${ROOT}/.tmp/pkg-import-actual.txt"
 trap 'rm -f "${actual_output}"' EXIT
 
 fixtures=(
+  # Two nested module paths (`left::render`, `right::render`) share their final
+  # component and export the same type/trait/method/free-function leaves. Named
+  # aliases must carry distinct canonical owners through native codegen. The
+  # output covers direct free calls, generic + specialized static dispatch, and
+  # inherited imported trait defaults from both owners.
+  canonical_same_leaf_nested
+  # Same nested module paths and same generic enum leaf (`Parcel<T>`), with
+  # distinct owned payload layouts.  Both factory/match/clone paths must retain
+  # the full declaration owner through generic-enum layout registration and
+  # clone/drop helper synthesis.
+  canonical_same_leaf_nested_generic_enum
   imported_actor_ask_i32
   imported_actor_ask_i64
   imported_actor_ask_string
@@ -830,6 +844,57 @@ if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${ambig_out}"; then
 fi
 echo "PASS ${ambig_fixture}"
 
+# Same-bare-name publication must fail at the checker/frontend boundary in
+# every namespace, for both named and glob imports. Each fixture imports a pair
+# of single-symbol modules so an unrelated trait or generated machine method
+# cannot mask the namespace under test. A downstream HIR/MIR/codegen rejection
+# is not sufficient: the source binding itself is ambiguous and must be rejected
+# before lowering.
+assert_sameleaf_binding_ambiguous() {
+  local fixture="$1"
+  local symbol="$2"
+  local out
+  out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+    echo "FAIL ${fixture}: hew check unexpectedly succeeded (ambiguous bare ${symbol} silently selected one publisher)" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  if ! grep -qE "ambiguous.*${symbol}|${symbol}.*defined multiple times" <<<"${out}"; then
+    echo "FAIL ${fixture}: rejected outside the source-binding ambiguity boundary" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_HIR|E_MIR|E_CODEGEN_FRONT|E_NOT_YET_IMPLEMENTED" <<<"${out}"; then
+    echo "FAIL ${fixture}: ambiguous bare ${symbol} reached a downstream lowering boundary" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
+for import_form in named glob; do
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_function_ambiguous" "clash_fn"
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_const_ambiguous" "CLASH_CONST"
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_trait_ambiguous" "ClashTrait"
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_type_ambiguous" "ClashType"
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_actor_ambiguous" "ClashActor"
+  assert_sameleaf_binding_ambiguous "sameleaf_${import_form}_machine_ambiguous" "ClashMachine"
+done
+
+# Positive complement: distinct qualifiers/aliases for the working function,
+# nominal-type, and trait surfaces must remain accepted while the bare controls
+# above reject. Actor aliases currently lack a MIR actor layout; constants lack
+# a qualified HIR binding; same-named machines collide in generated step symbols,
+# so those unsupported positive surfaces are not smuggled into this acceptance
+# control.
+sameleaf_accept="sameleaf_qualified_alias_accept"
+sameleaf_accept_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${sameleaf_accept}.hew" 2>&1)" || {
+  echo "FAIL ${sameleaf_accept}: distinct qualified/aliased bindings were rejected" >&2
+  echo "${sameleaf_accept_out}" >&2
+  exit 1
+}
+echo "PASS ${sameleaf_accept}"
+
 # Reject fixture: two plain imports both export `Gadget` but neither publishes
 # it bare, so a bare `Gadget` is not in scope. The checker must fail closed at
 # the type boundary naming both exporting modules.
@@ -888,6 +953,29 @@ if grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_ok_out}"; the
 fi
 echo "PASS ${imported_trait_ok}"
 
+# Reject structural clone of package-imported, module-qualified affine record
+# identities. The marker registry accepts both bare declaration names and
+# qualified consumer spellings; both `.clone()` and prefix `clone` must consult
+# that same authority for `#[resource]` and `#[linear]`.
+qualified_affine_clone_reject="qualified_affine_record_clone_reject"
+qualified_affine_clone_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${qualified_affine_clone_reject}.hew" 2>&1)" && {
+  echo "FAIL ${qualified_affine_clone_reject}: imported affine record clones unexpectedly typechecked" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+}
+if [[ "$(grep -c "cannot be cloned" <<<"${qualified_affine_clone_out}")" -ne 4 ]]; then
+  echo "FAIL ${qualified_affine_clone_reject}: expected four clone rejections (two markers x two syntaxes)" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+fi
+if ! grep -q 'affineclone.ResourceToken.*#\[resource\]' <<<"${qualified_affine_clone_out}" ||
+   ! grep -q 'affineclone.LinearTicket.*#\[linear\]' <<<"${qualified_affine_clone_out}"; then
+  echo "FAIL ${qualified_affine_clone_reject}: diagnostics lost the module-qualified affine identity" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+fi
+echo "PASS ${qualified_affine_clone_reject}"
+
 # KNOWN-GAP REJECT PIN (#2653) — the boundary of the #2744 fix, NOT a
 # desired-behaviour test.
 #
@@ -913,7 +1001,7 @@ two_module_generic_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${t
   echo "${two_module_generic_reject_out}" >&2
   exit 1
 }
-two_module_generic_diagnostic="generic type layout collision for \`Key<i32>\`: modules \`keyleft\` and \`keyright\` export incompatible layouts for \`Key\`; rename one type, or use a qualified/aliased import to select one definition"
+two_module_generic_diagnostic="generic type layout collision for \`Key<i32>\`: modules \`hew.keyleft\` and \`hew.keyright\` export incompatible layouts for \`Key\`; rename one type, or use a qualified/aliased import to select one definition"
 if ! grep -Fq "${two_module_generic_diagnostic}" <<<"${two_module_generic_reject_out}"; then
   echo "FAIL ${two_module_generic_reject}: expected the clear checker-level same-name generic collision diagnostic (#2653 known gap)" >&2
   echo "${two_module_generic_reject_out}" >&2

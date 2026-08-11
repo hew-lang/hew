@@ -1,0 +1,13 @@
+fn make() -> HashMap<string, i64> {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m
+}
+
+fn main() {
+    let x = make();
+    let x_l = x.len();
+    let x_a = match x.get("a") { Some(x_g) => x_g, None => -1, };
+    println(f"len={x_l} a={x_a}");
+}

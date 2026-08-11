@@ -492,6 +492,8 @@ mod non_root_module_inference_scope {
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "answer".to_string(),
                 type_params: None,
                 params: vec![Param {
@@ -546,6 +548,8 @@ mod non_root_module_inference_scope {
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "answer".to_string(),
                 type_params: None,
                 params: vec![],
@@ -596,6 +600,8 @@ mod non_root_module_inference_scope {
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "answer".to_string(),
                 type_params: None,
                 params: vec![Param {

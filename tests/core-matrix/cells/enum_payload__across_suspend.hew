@@ -1,0 +1,29 @@
+enum Shape {
+    Empty;
+    Circle(i64);
+    Rect { w: i64; h: i64 }
+}
+
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: Shape) -> i64 {
+        sleep(2ms);
+        match v {
+            Empty => println("empty"),
+            Circle(v_r) => println(f"circle {v_r}"),
+            Rect { w, h } => println(f"rect {w}x{h}"),
+        }
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x: Shape = Circle(3);
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

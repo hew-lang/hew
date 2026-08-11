@@ -197,11 +197,12 @@ pub fn run_machine_mono_pass(
     for item in items {
         match item {
             HirItem::Machine(md) => {
+                let qualified_name = md.qualified_name();
                 machine_decls.insert(
-                    md.name.clone(),
+                    qualified_name.clone(),
                     (md.id, md.type_params.clone(), md.span.clone()),
                 );
-                known_type_names.insert(md.name.clone());
+                known_type_names.insert(qualified_name);
             }
             HirItem::Function(f) => {
                 origin_fns.insert(f.id, f);
@@ -251,7 +252,7 @@ pub fn run_machine_mono_pass(
             if !md.type_params.is_empty() {
                 continue;
             }
-            let key = MachineMonoKey::new(md.id, md.name.clone(), Vec::new());
+            let key = MachineMonoKey::new(md.id, md.qualified_name(), Vec::new());
             try_insert(
                 key,
                 md.span.clone(),
@@ -1177,7 +1178,10 @@ fn walk_expr(
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             walk_expr(
                 receiver,
                 subst,
@@ -1388,7 +1392,7 @@ fn walk_expr(
                 );
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr(
                 callee,
                 subst,

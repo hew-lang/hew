@@ -242,8 +242,7 @@ impl Checker {
                     return false;
                 }
                 let resolved = self.project_assoc_types(&self.subst.resolve(scrutinee_ty));
-                let short = name.rsplit("::").next().unwrap_or(name);
-                self.resolve_variant_match(short, &resolved, name).is_none()
+                self.resolve_variant_match(name, &resolved).is_none()
             }
             _ => false,
         }
@@ -284,7 +283,7 @@ impl Checker {
         };
         variants
             .iter()
-            .all(|(name, shape)| self.variant_covered(patterns, name, shape))
+            .all(|(name, shape)| self.variant_covered(patterns, &resolved, name, shape))
     }
 
     /// Resolution-based irrefutability test for a payload subpattern slot,
@@ -316,8 +315,7 @@ impl Checker {
 
                 // Unqualified: irrefutable iff it does NOT resolve as a variant.
                 let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
-                let short = name.rsplit("::").next().unwrap_or(name);
-                self.resolve_variant_match(short, &resolved, name).is_none()
+                self.resolve_variant_match(name, &resolved).is_none()
             }
             Pattern::Tuple(pats) => {
                 if pats.is_empty() {
@@ -348,7 +346,7 @@ impl Checker {
                     return false;
                 }
                 let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
-                self.resolve_variant_match(name, &resolved, name).is_none()
+                self.resolve_variant_match(name, &resolved).is_none()
             }
             Pattern::Tuple(pats) => {
                 let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
@@ -395,6 +393,7 @@ impl Checker {
     pub(super) fn variant_covered(
         &self,
         patterns: &[&Pattern],
+        enum_ty: &Ty,
         variant_name: &str,
         shape: &VariantPayloadShape,
     ) -> bool {
@@ -412,19 +411,20 @@ impl Checker {
             match pattern {
                 Pattern::Constructor { name, patterns } => {
                     let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_name {
+                    if short == variant_name && self.variant_surface_owner_matches(name, enum_ty) {
                         ctor_rows.push(patterns.as_slice());
                     }
                 }
                 Pattern::Identifier(name) => {
                     let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_name {
+                    if short == variant_name && self.variant_surface_owner_matches(name, enum_ty) {
                         has_unit_row = true;
                     }
                 }
                 Pattern::Struct { name, fields, .. } => {
                     let short = name.rsplit("::").next().unwrap_or(name);
                     if short == variant_name
+                        && self.variant_surface_owner_matches(name, enum_ty)
                         && fields.iter().all(|pf| {
                             pf.pattern.as_ref().is_none_or(|(sub, _)| {
                                 struct_field_tys
@@ -580,6 +580,12 @@ impl Checker {
         let Some(type_name) = resolved.type_name() else {
             return;
         };
+        if matches!(pattern, Pattern::Struct { .. })
+            && !self.variant_surface_owner_matches(pattern_name, &resolved)
+        {
+            self.invalid_pattern_plan_spans.insert(key);
+            return;
+        }
         let Some(td) = self.lookup_type_def(type_name) else {
             return;
         };
@@ -749,7 +755,7 @@ impl Checker {
                                 self.project_assoc_types(&self.subst.resolve(&field_ty));
                             if binding.contains("::")
                                 || self
-                                    .resolve_variant_match(binding, &resolved_field, binding)
+                                    .resolve_variant_match(binding, &resolved_field)
                                     .is_some()
                             {
                                 (
@@ -980,16 +986,36 @@ impl Checker {
                 }
             }
             Pattern::Identifier(name) => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 // Determine if this identifier names a constructor (unit variant) so we
                 // can gate `reject_machine_event_pattern_outside_transition`.  Use scope
                 // resolution rather than the old uppercase-first casing heuristic (#2116):
                 // a bare name is a constructor only if `resolve_variant_match` returns a
                 // match; otherwise it is a plain binding regardless of case.
                 let is_constructor_like = if name.contains("::") {
+                    if self.resolve_variant_match(name, ty).is_none()
+                        && !matches!(ty, Ty::Var(_) | Ty::Error)
+                    {
+                        let expected = ty.user_facing().to_string();
+                        self.report_error(
+                            TypeErrorKind::Mismatch {
+                                expected: expected.clone(),
+                                actual: name.clone(),
+                            },
+                            span,
+                            format!(
+                                "variant `{name}` is not a member of scrutinee type `{expected}`"
+                            ),
+                        );
+                    }
                     true
                 } else {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    self.resolve_variant_match(short, ty, name).is_some()
+                    self.resolve_variant_match(name, ty).is_some()
                 };
                 if is_constructor_like {
                     // A unit-variant constructor pattern introduces no binding. Gate the
@@ -1007,6 +1033,12 @@ impl Checker {
                     .define_with_span(name.clone(), ty.clone(), is_mutable, span.clone());
             }
             Pattern::Constructor { name, patterns } => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }
@@ -1057,7 +1089,28 @@ impl Checker {
                 }
             }
             Pattern::Struct { name, fields, .. } => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
+                    return;
+                }
+                if !self.variant_surface_owner_matches(name, ty) {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: name.clone(),
+                        },
+                        span,
+                        format!(
+                            "struct-variant pattern `{name}` does not belong to scrutinee type `{expected}`"
+                        ),
+                    );
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     return;
                 }
                 let key = super::types::SpanKey::in_module(span, self.current_module_idx);
@@ -1507,8 +1560,7 @@ impl Checker {
                 // is a Binding regardless of case. This allows uppercase plain
                 // binders like `INF` or `MAX` against non-enum types.
                 if name.contains("::") {
-                    let short_name = name.rsplit("::").next().unwrap_or(name);
-                    let variant_match = self.resolve_variant_match(short_name, scrutinee_ty, name);
+                    let variant_match = self.resolve_variant_match(name, scrutinee_ty);
                     ArmResolution {
                         pattern_kind: PatternKind::VariantCtor,
                         variant_match,
@@ -1516,7 +1568,7 @@ impl Checker {
                         payload_variant_patterns: vec![],
                     }
                 } else {
-                    let variant_match = self.resolve_variant_match(name, scrutinee_ty, name);
+                    let variant_match = self.resolve_variant_match(name, scrutinee_ty);
                     if variant_match.is_some() {
                         ArmResolution {
                             pattern_kind: PatternKind::VariantCtor,
@@ -1536,7 +1588,7 @@ impl Checker {
             }
             Pattern::Constructor { name, patterns } => {
                 let short_name = name.rsplit("::").next().unwrap_or(name);
-                let variant_match = self.resolve_variant_match(short_name, scrutinee_ty, name);
+                let variant_match = self.resolve_variant_match(name, scrutinee_ty);
                 let payload_tys = self
                     .lookup_variant_types(name, scrutinee_ty, patterns.len())
                     .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
@@ -1562,11 +1614,7 @@ impl Checker {
                             Some((n.as_str(), &[] as &[(Pattern, Span)]))
                         }
                         Pattern::Identifier(n) => {
-                            let short = n.rsplit("::").next().unwrap_or(n);
-                            if self
-                                .resolve_variant_match(short, &resolved_payload, n)
-                                .is_some()
-                            {
+                            if self.resolve_variant_match(n, &resolved_payload).is_some() {
                                 Some((n.as_str(), &[] as &[(Pattern, Span)]))
                             } else {
                                 None // plain binding regardless of case
@@ -1660,17 +1708,19 @@ impl Checker {
                 //   struct-variants use their variant field Vec; plain records use
                 //   TypeDef::field_order so PayloadBinding.field_idx matches MIR's
                 //   RecordFieldLoad declaration-order offset.
-                let (variant_match, field_tys, field_order) = if let Some(type_name) = type_name_opt
-                {
-                    if let Some(td) = self.lookup_type_def(type_name) {
-                        if td.variants.contains_key(short_name) {
-                            // Enum struct-variant
-                            let vm = VariantMatch {
-                                type_name: type_name.to_string(),
-                                variant_name: short_name.to_string(),
-                            };
-                            let (field_ty_map, order) =
-                                if let Some(VariantDef::Struct(vf)) = td.variants.get(short_name) {
+                let owner_matches = self.variant_surface_owner_matches(name, scrutinee_ty);
+                let (variant_match, field_tys, field_order) = if owner_matches {
+                    if let Some(type_name) = type_name_opt {
+                        if let Some(td) = self.lookup_type_def(type_name) {
+                            if td.variants.contains_key(short_name) {
+                                // Enum struct-variant
+                                let vm = VariantMatch {
+                                    type_name: type_name.to_string(),
+                                    variant_name: short_name.to_string(),
+                                };
+                                let (field_ty_map, order) = if let Some(VariantDef::Struct(vf)) =
+                                    td.variants.get(short_name)
+                                {
                                     let type_params = td.type_params.clone();
                                     let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
                                         args.clone()
@@ -1698,36 +1748,43 @@ impl Checker {
                                 } else {
                                     (std::collections::HashMap::new(), None)
                                 };
-                            (Some(vm), field_ty_map, order)
+                                (Some(vm), field_ty_map, order)
+                            } else {
+                                // Plain record struct — TypeDef::field_order is the
+                                // canonical ABI order used by MIR/codegen. Synthetic
+                                // test TypeDefs may leave it empty, in which case we
+                                // fall back to sorted field names only for recovery.
+                                let type_params = td.type_params.clone();
+                                let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
+                                    args.clone()
+                                } else {
+                                    vec![]
+                                };
+                                let ftm: std::collections::HashMap<String, Ty> = td
+                                    .fields
+                                    .iter()
+                                    .map(|(fname, fty)| {
+                                        (
+                                            fname.clone(),
+                                            substitute_pattern_field_ty(
+                                                fty,
+                                                &type_params,
+                                                &type_args,
+                                            ),
+                                        )
+                                    })
+                                    .collect();
+                                let order = if td.field_order.is_empty() {
+                                    let mut names: Vec<String> = ftm.keys().cloned().collect();
+                                    names.sort();
+                                    names
+                                } else {
+                                    td.field_order.clone()
+                                };
+                                (None, ftm, Some(order))
+                            }
                         } else {
-                            // Plain record struct — TypeDef::field_order is the
-                            // canonical ABI order used by MIR/codegen. Synthetic
-                            // test TypeDefs may leave it empty, in which case we
-                            // fall back to sorted field names only for recovery.
-                            let type_params = td.type_params.clone();
-                            let type_args = if let Ty::Named { args, .. } = scrutinee_ty {
-                                args.clone()
-                            } else {
-                                vec![]
-                            };
-                            let ftm: std::collections::HashMap<String, Ty> = td
-                                .fields
-                                .iter()
-                                .map(|(fname, fty)| {
-                                    (
-                                        fname.clone(),
-                                        substitute_pattern_field_ty(fty, &type_params, &type_args),
-                                    )
-                                })
-                                .collect();
-                            let order = if td.field_order.is_empty() {
-                                let mut names: Vec<String> = ftm.keys().cloned().collect();
-                                names.sort();
-                                names
-                            } else {
-                                td.field_order.clone()
-                            };
-                            (None, ftm, Some(order))
+                            (None, std::collections::HashMap::new(), None)
                         }
                     } else {
                         (None, std::collections::HashMap::new(), None)
@@ -1757,7 +1814,7 @@ impl Checker {
                                         field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
                                     let resolved_field =
                                         self.project_assoc_types(&self.subst.resolve(&field_ty));
-                                    self.resolve_variant_match(n, &resolved_field, n).is_some()
+                                    self.resolve_variant_match(n, &resolved_field).is_some()
                                 };
                                 if is_nested_ctor {
                                     self.report_error_with_note(
@@ -1819,7 +1876,7 @@ impl Checker {
                                         field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
                                     let resolved_field =
                                         self.project_assoc_types(&self.subst.resolve(&field_ty));
-                                    self.resolve_variant_match(n, &resolved_field, n).is_some()
+                                    self.resolve_variant_match(n, &resolved_field).is_some()
                                 };
                                 if is_nested_ctor {
                                     self.report_error_with_note(
@@ -1928,7 +1985,7 @@ impl Checker {
                             let elem_ty = elem_tys.get(idx).cloned().unwrap_or(Ty::Error);
                             let resolved_elem =
                                 self.project_assoc_types(&self.subst.resolve(&elem_ty));
-                            self.resolve_variant_match(n, &resolved_elem, n).is_some()
+                            self.resolve_variant_match(n, &resolved_elem).is_some()
                         };
                         if is_nested_ctor {
                             self.report_error_with_note(
@@ -2061,8 +2118,7 @@ impl Checker {
     ) -> Option<PayloadVariantPattern> {
         let resolved_payload_ty = self.project_assoc_types(&self.subst.resolve(payload_ty));
         let short_name = ctor_name.rsplit("::").next().unwrap_or(ctor_name);
-        let Some(variant_match) =
-            self.resolve_variant_match(short_name, &resolved_payload_ty, ctor_name)
+        let Some(variant_match) = self.resolve_variant_match(ctor_name, &resolved_payload_ty)
         else {
             // `bind_pattern` already reported a mismatch for
             // `Pattern::Constructor` shapes (it recursed through the payload),
@@ -2106,11 +2162,7 @@ impl Checker {
                     Some((n.as_str(), &[] as &[(Pattern, Span)]))
                 }
                 Pattern::Identifier(n) => {
-                    let short = n.rsplit("::").next().unwrap_or(n);
-                    if self
-                        .resolve_variant_match(short, &resolved_inner, n)
-                        .is_some()
-                    {
+                    if self.resolve_variant_match(n, &resolved_inner).is_some() {
                         Some((n.as_str(), &[] as &[(Pattern, Span)]))
                     } else {
                         None // plain binding regardless of case
@@ -2191,16 +2243,22 @@ impl Checker {
     }
 
     /// Resolve the source variant-match descriptor for a constructor written at
-    /// `variant_surface_name` against `scrutinee_ty`.  Returns `None` only for
+    /// `variant_surface_name` against `scrutinee_ty`. Returns `None` only for
     /// built-in types whose variant resolution failed (which also fails
     /// `bind_pattern`), so callers can treat `None` as "checker already emitted
     /// an error for this arm".
     fn resolve_variant_match(
         &self,
-        short_name: &str,
+        variant_surface_name: &str,
         scrutinee_ty: &Ty,
-        _full_name: &str,
     ) -> Option<VariantMatch> {
+        if !self.variant_surface_owner_matches(variant_surface_name, scrutinee_ty) {
+            return None;
+        }
+        let short_name = variant_surface_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(variant_surface_name);
         // Built-in Option<T>
         if scrutinee_ty.as_option().is_some() {
             return match short_name {
@@ -2241,6 +2299,9 @@ impl Checker {
         enum_ty: &Ty,
         fallback_arity: usize,
     ) -> Option<Vec<Ty>> {
+        if !self.variant_surface_owner_matches(variant_name, enum_ty) {
+            return None;
+        }
         // Strip enum prefix from qualified names (e.g., "Option::Some" -> "Some")
         let short_name = variant_name.rsplit("::").next().unwrap_or(variant_name);
         // Handle Option<T> variants
@@ -2258,31 +2319,6 @@ impl Checker {
                 "Err" => Some(vec![err.clone()]),
                 _ => None,
             };
-        }
-        let stdlib_root_builtin_enum = |name: &str| {
-            self.current_module_short().is_none() && crate::lookup_builtin_type(name).is_some()
-        };
-        if self.current_module_short() == Some("option") || stdlib_root_builtin_enum("Option") {
-            if let Ty::Named { name, args, .. } = enum_ty {
-                if name == "Option" && args.len() == 1 {
-                    return match short_name {
-                        "Some" => Some(vec![args[0].clone()]),
-                        "None" => Some(vec![]),
-                        _ => None,
-                    };
-                }
-            }
-        }
-        if self.current_module_short() == Some("result") || stdlib_root_builtin_enum("Result") {
-            if let Ty::Named { name, args, .. } = enum_ty {
-                if name == "Result" && args.len() == 2 {
-                    return match short_name {
-                        "Ok" => Some(vec![args[0].clone()]),
-                        "Err" => Some(vec![args[1].clone()]),
-                        _ => None,
-                    };
-                }
-            }
         }
         let type_name_opt = enum_ty.type_name();
         if let Some(type_name) = type_name_opt {

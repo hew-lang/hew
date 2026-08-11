@@ -39,6 +39,7 @@ impl Parser<'_> {
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
             }
+            self.reject_resource_marker_attributes(&attrs);
 
             // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
             // methods — not on actor body members (init, receive fn,
@@ -539,10 +540,15 @@ impl Parser<'_> {
         //   on Event: Source => Target;                     ← no body (unit)
         //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
         //   on Event: Source => Target { expression }       ← explicit body
-        let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
+        let (body, body_form, body_start, body_end) = if self.eat(&Token::Semicolon) {
             let span_pos = self.peek_span().start;
             let body_expr = Expr::Identifier(target_state.clone());
-            (body_expr, span_pos, span_pos)
+            (
+                body_expr,
+                MachineTransitionBodyForm::Implicit,
+                span_pos,
+                span_pos,
+            )
         } else if target_state != "_" && self.is_struct_init_body() {
             let bs = self.peek_span().start;
             self.expect(&Token::LeftBrace)?;
@@ -564,12 +570,17 @@ impl Parser<'_> {
                 type_args: None,
                 base: None,
             };
-            (struct_init, bs, be)
+            (
+                struct_init,
+                MachineTransitionBodyForm::PayloadShorthand,
+                bs,
+                be,
+            )
         } else {
             let bs = self.peek_span().start;
             let block = self.parse_block()?;
             let be = self.peek_span().start;
-            (Expr::Block(block), bs, be)
+            (Expr::Block(block), MachineTransitionBodyForm::Block, bs, be)
         };
 
         let body = if head_bindings.is_empty() {
@@ -586,6 +597,7 @@ impl Parser<'_> {
             composite_prelude_len: 0,
             guard,
             body: (body, body_start..body_end),
+            body_form,
             reenter,
         })
     }

@@ -87,7 +87,7 @@ pub type HewSysDispatchFn = unsafe extern "C-unwind" fn(
 /// policy is applied. Receives the execution context, the crash code
 /// (trap kind integer), the crash message (diagnostic string, may be null),
 /// and the actor's current state pointer; returns the hook's `CrashAction`
-/// control decision as an `i32` tag.
+/// control decision through its natural two-byte tagged-union ABI.
 ///
 /// # Arguments
 ///
@@ -104,6 +104,11 @@ pub type HewSysDispatchFn = unsafe extern "C-unwind" fn(
 ///   underlying buffer stays with the caller (the supervisor), which is
 ///   responsible for its lifetime across the call. Null is rendered as the
 ///   empty string by the codegen prologue.
+/// - `actor_state_ptr: *mut c_void` — the child's supervisor-owned restart
+///   template. The crashed actor itself has already been torn down, and the
+///   hook runs in the supervisor's execution context, so this explicit pointer
+///   is the only authoritative state address for hook field reads and writes.
+///   A successful write is observed by the next restarted child.
 ///
 /// # Return value
 ///

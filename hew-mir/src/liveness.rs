@@ -132,7 +132,7 @@ fn apply_terminator_backward(
 /// instruction that both reads and writes the same local (`x = x + 1`) leaves
 /// that local live.
 fn apply_instr_backward(instr: &Instr, live: &mut HashSet<u32>) {
-    let (reads, writes) = instr_reads_writes(instr);
+    let (reads, writes, _) = instr_reads_writes(instr);
     for place in writes {
         if let Some(n) = full_def_local(place) {
             live.remove(&n);

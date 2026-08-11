@@ -303,6 +303,58 @@ impl Parser<'_> {
         }
     }
 
+    /// Reject ownership markers on a top-level item that cannot store a
+    /// [`ResourceMarker`].
+    ///
+    /// `type Name { ... }`, `enum Name { ... }`, and `indirect enum Name {
+    /// ... }` are the only item forms that lower through `TypeDecl` and may
+    /// therefore carry `#[resource]` or `#[linear]`. Type aliases deliberately
+    /// do not qualify: they have no independent ownership contract.
+    fn reject_resource_markers_on_unsupported_item(&mut self, attrs: &[Attribute]) {
+        let target_pos = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
+            self.pos + 1
+        } else {
+            self.pos
+        };
+
+        let supports_resource_marker = match self.peek_at(target_pos) {
+            Some(Token::Enum | Token::Indirect) => true,
+            Some(Token::Type) => {
+                !self
+                    .tokens
+                    .get(target_pos + 1)
+                    .is_some_and(|(token, _)| Self::is_ident_token(token))
+                    || !matches!(self.tokens.get(target_pos + 2), Some((Token::Equal, _)))
+            }
+            _ => false,
+        };
+
+        if !supports_resource_marker {
+            self.reject_resource_marker_attributes(attrs);
+        }
+    }
+
+    /// Emit a source-spanned error for ownership markers in a context that
+    /// cannot carry [`ResourceMarker`].
+    ///
+    /// Attribute-bearing nested declarations (trait items, impl methods,
+    /// extern functions, and actor members) call this directly because they do
+    /// not pass through [`Self::parse_item`].
+    pub(crate) fn reject_resource_marker_attributes(&mut self, attrs: &[Attribute]) {
+        for attr in attrs {
+            if matches!(attr.name.as_str(), "resource" | "linear") {
+                self.error_at(
+                    format!(
+                        "#[{}] is only valid on `type` or `enum` declarations \
+                         [E_RESOURCE_MARKER_TARGET]",
+                        attr.name
+                    ),
+                    attr.span.clone(),
+                );
+            }
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
     pub(crate) fn parse_item(&mut self) -> Option<Spanned<Item>> {
         // Collect any outer doc comments (`///`) and attributes before this item.
@@ -343,6 +395,14 @@ impl Parser<'_> {
                 (None, None)
             };
         let has_wire_attr = attrs.iter().any(|a| a.name == "wire");
+
+        // `#[resource]` and `#[linear]` are ownership declarations, not
+        // general-purpose item attributes. Only `type` / `enum` declarations
+        // carry `ResourceMarker` in the AST; accepting either marker on another
+        // item would parse successfully and then silently discard ownership.
+        // Validate before dispatch so every visibility form receives the same
+        // source-spanned, fail-closed diagnostic.
+        self.reject_resource_markers_on_unsupported_item(&attrs);
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -1056,6 +1116,7 @@ impl Parser<'_> {
                 if doc_comment.is_none() {
                     doc_comment = self.collect_doc_comments();
                 }
+                self.reject_resource_marker_attributes(&attributes);
 
                 // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
                 // methods — not on methods declared inline in a type body.
@@ -1200,22 +1261,8 @@ impl Parser<'_> {
     pub(crate) fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
         let attrs = self.parse_attributes();
-
-        // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
-        // methods — not on trait-item declarations. Trait items describe
-        // an abstract surface; the C-ABI binding lives on the concrete
-        // `impl` method.
-        for attr in &attrs {
-            if attr.name == "extern_symbol" {
-                self.error_at(
-                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
-                     concrete `impl` method instead"
-                        .to_string(),
-                    attr.span.clone(),
-                );
-            }
-        }
+        self.reject_resource_marker_attributes(&attrs);
+        self.reject_extern_symbol_on_trait_item(&attrs);
 
         match self.peek() {
             Some(Token::Fn) => {
@@ -1225,7 +1272,26 @@ impl Parser<'_> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params_with_implicit_self(true);
+                let consuming_self_span = self.peek_span();
+                let consumes_self = self.eat_consuming_self_receiver();
+                let mut params = self.parse_params_with_implicit_self(true);
+                if consumes_self {
+                    params.insert(
+                        0,
+                        Param {
+                            name: "self".to_string(),
+                            ty: (
+                                TypeExpr::Named {
+                                    name: "Self".to_string(),
+                                    type_args: None,
+                                },
+                                consuming_self_span,
+                            ),
+                            is_mutable: false,
+                            is_consume: false,
+                        },
+                    );
+                }
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -1245,6 +1311,7 @@ impl Parser<'_> {
                     .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
 
                 Some(TraitItem::Method(TraitMethod {
+                    attributes: attrs,
                     name,
                     type_params,
                     params,
@@ -1254,6 +1321,7 @@ impl Parser<'_> {
                     span: fn_start..fn_end,
                     doc_comment,
                     lang_item,
+                    consumes_self,
                 }))
             }
             Some(Token::Type) => {
@@ -1295,6 +1363,22 @@ impl Parser<'_> {
         }
     }
 
+    fn reject_extern_symbol_on_trait_item(&mut self, attrs: &[Attribute]) {
+        // Trait items describe an abstract surface; bind the C ABI symbol on
+        // the concrete implementation method instead.
+        for attr in attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
+                     concrete `impl` method instead"
+                        .to_string(),
+                    attr.span.clone(),
+                );
+            }
+        }
+    }
+
     pub(crate) fn parse_impl_decl(&mut self) -> Option<ImplDecl> {
         let type_params = self.parse_opt_type_params()?;
 
@@ -1322,6 +1406,7 @@ impl Parser<'_> {
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
             let method_attrs = self.parse_attributes();
+            self.reject_resource_marker_attributes(&method_attrs);
             let vis = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
                 self.parse_visibility()
             } else {
@@ -1423,6 +1508,7 @@ impl Parser<'_> {
             // Doc comments are not supported inside extern blocks today; only
             // attributes between the opening `{` and the next `fn` are parsed.
             let attributes = self.parse_attributes();
+            self.reject_resource_marker_attributes(&attributes);
             if self.peek() == Some(&Token::Fn) {
                 let item_start = attributes
                     .first()

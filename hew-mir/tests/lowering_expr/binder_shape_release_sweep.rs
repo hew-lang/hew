@@ -515,7 +515,7 @@ fn release_count_is_invariant_across_producer_route() {
 
 /// The sweep is only meaningful if a withheld release actually moves the number
 /// it reads. Pin that the instrument has resolution: the `discard` shape, whose
-/// result is never bound, must still plan strictly fewer releases than the
+/// result is discharged immediately, plans fewer delayed releases than the
 /// `if_let` shape that binds and projects the payload.
 ///
 /// Without this, a `release_count` that returned a constant — the elaborated
@@ -538,10 +538,10 @@ fn the_sweep_can_observe_a_difference_in_release_count() {
         SCALAR[0].1,
     )));
     assert!(
-        discard > 0 && if_let > discard,
+        discard == 0 && if_let > discard,
         "the release counter must have resolution — binding and projecting the payload \
          (`if_let` = {if_let}) must plan strictly more releases than discarding the call \
-         result (`discard` = {discard}), and neither may be zero"
+         result (`discard` = {discard}), which is discharged inline"
     );
 }
 

@@ -4,7 +4,7 @@
 //! Returned `bytes` use the runtime `HewVec` allocation path; returned strings
 //! are allocated with `libc::malloc` and must follow the standard runtime drop
 //! path (`free`).
-// WASM-TODO(#1451): `std::crypto::encrypt` mirrors the sibling native-only crypto
+// WASM-TODO(crypto-encrypt): `std::crypto::encrypt` mirrors the sibling native-only crypto
 // modules and is excluded from the wasm runtime's ecosystem-FFI link set.
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};

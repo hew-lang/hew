@@ -12,6 +12,8 @@ mod call_scrutinee_return_provenance;
 mod dyn_trait_dispatch;
 #[path = "lowering_calls/extern_string_ownership.rs"]
 mod extern_string_ownership;
+#[path = "lowering_calls/hash_collection_affine_clone.rs"]
+mod hash_collection_affine_clone;
 #[path = "lowering_calls/link_monitor_spawn_binding.rs"]
 mod link_monitor_spawn_binding;
 #[path = "lowering_calls/producer_call_runtime_abi.rs"]
@@ -32,5 +34,7 @@ mod static_trait_dispatch_mir;
 mod trait_default_method_mir;
 #[path = "lowering_calls/user_fn_call.rs"]
 mod user_fn_call;
+#[path = "lowering_calls/vec_iter_clone_out.rs"]
+mod vec_iter_clone_out;
 #[path = "lowering_calls/vec_resolved_impl_call.rs"]
 mod vec_resolved_impl_call;

@@ -1,0 +1,7 @@
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    println(f"v={x}");
+}

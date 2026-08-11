@@ -1,0 +1,53 @@
+// `select` scoping, both directions in one file.
+//
+// Only the BODIES of a select are alternatives: dispatch has already chosen a
+// winner by the time one runs, so consuming the same handle in each body is one
+// consume per path and must be accepted. The sources are NOT alternatives —
+// every arm's source is prepared before a winner exists — so they thread
+// sequentially, and so does the timeout duration that arms the deadline.
+//
+// The teeth are after the join: whichever body ran, the handle is gone, so the
+// use below the select is rejected. The absence of any diagnostic inside the
+// select is the accept half; the single diagnostic after it is the reject half.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+actor Sink {
+    receive fn ping(n: i64) -> i64 {
+        n
+    }
+}
+
+fn select_bodies_are_alternatives(held: Conn) -> i64 {
+    let a = spawn Sink;
+    let b = spawn Sink;
+    let _winner = select {
+        x from a.ping(1) => {
+            held.close();
+            x
+        },
+        y from b.ping(2) => {
+            held.close();
+            y
+        },
+        after 100ms => {
+            held.close();
+            0
+        },
+    };
+    held.detach()
+}
+
+fn main() {
+    let _ = select_bodies_are_alternatives(Conn { fd: 1 });
+    sleep(50ms);
+}

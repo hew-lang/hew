@@ -1,7 +1,7 @@
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
     BasicBlock, FunctionCallConv, Instr, IrPipeline, MachineLayout, MachineVariantLayout, Place,
-    RawMirFunction, Terminator,
+    RawMirFunction, RecordLayout, Terminator,
 };
 use hew_types::ResolvedTy;
 
@@ -29,8 +29,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -66,6 +65,7 @@ fn unit_variant(name: &str) -> MachineVariantLayout {
 fn traffic_light_layout() -> MachineLayout {
     MachineLayout {
         name: "TrafficLight".to_string(),
+        event_name: "TrafficLightEvent".to_string(),
         tag_width: 2,
         variants: vec![
             unit_variant("Red"),
@@ -116,6 +116,103 @@ fn traffic_light_uses_i8_tagged_union_struct() {
     assert!(
         ll.contains("%TrafficLight = type { i8, [1 x i8] }"),
         "TrafficLight must use an i8 tag for three states:\n{ll}"
+    );
+}
+
+#[test]
+fn generic_machine_in_direct_and_nested_record_fields_resolves_class_key() {
+    let machine_key = hew_hir::machine_layout_key("Lifecycle", &[ResolvedTy::I64]);
+    let event_key = hew_hir::machine_layout_key("LifecycleEvent", &[ResolvedTy::I64]);
+    let machine_ty = ResolvedTy::Named {
+        name: "Lifecycle".to_string(),
+        args: vec![ResolvedTy::I64],
+        builtin: None,
+        is_opaque: false,
+    };
+    let mut pipeline = empty_pipeline(vec![MachineLayout {
+        name: machine_key.clone(),
+        event_name: event_key,
+        tag_width: 1,
+        variants: vec![unit_variant("Start"), unit_variant("End")],
+        events: vec![unit_variant("Tick")],
+    }]);
+    pipeline.record_layouts = vec![
+        RecordLayout {
+            name: "Inner".to_string(),
+            field_tys: vec![machine_ty],
+            field_names: vec!["lifecycle".to_string()],
+        },
+        RecordLayout {
+            name: "Outer".to_string(),
+            field_tys: vec![ResolvedTy::Named {
+                name: "Inner".to_string(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            }],
+            field_names: vec!["inner".to_string()],
+        },
+    ];
+
+    let ll = emit_ll(&pipeline, "generic_machine_nested_record")
+        .expect("concrete machine field must not reach the D10 named-type fallback");
+    assert!(
+        ll.contains(&machine_key),
+        "LLVM must predeclare the exact concrete machine layout key:\n{ll}"
+    );
+}
+
+#[test]
+fn generic_machine_event_tag_load_uses_concrete_layout_key() {
+    let machine_key = hew_hir::machine_layout_key("Lifecycle", &[ResolvedTy::I64]);
+    let event_key = hew_hir::machine_layout_key("LifecycleEvent", &[ResolvedTy::I64]);
+    let event_ty = ResolvedTy::Named {
+        name: "LifecycleEvent".to_string(),
+        args: vec![ResolvedTy::I64],
+        builtin: None,
+        is_opaque: false,
+    };
+    let mut pipeline = empty_pipeline(vec![MachineLayout {
+        name: machine_key.clone(),
+        event_name: event_key.clone(),
+        tag_width: 1,
+        variants: vec![unit_variant("Start")],
+        events: vec![unit_variant("Tick")],
+    }]);
+    pipeline.raw_mir = vec![RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "generic_machine_event_tag".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: Vec::new(),
+        locals: vec![event_ty, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![Instr::EnumTagLoad {
+                src: Place::Local(0),
+                dest: Place::Local(1),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    }];
+
+    let ll = emit_ll(&pipeline, "generic_machine_event_tag")
+        .expect("event-tag dispatch must use the concrete machine event layout");
+    assert!(
+        ll.contains(&event_key),
+        "LLVM must predeclare and use the exact concrete event layout key:\n{ll}"
     );
 }
 
@@ -176,6 +273,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         .collect();
     let mut pipeline = empty_pipeline(vec![MachineLayout {
         name: "WideTags".to_string(),
+        event_name: "WideTagsEvent".to_string(),
         tag_width: 9,
         variants,
         events: Vec::new(),
@@ -215,6 +313,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
 }
 
 fn constructor_pipeline() -> IrPipeline {
+    let machine_key = hew_hir::machine_layout_key("Fiction", &[]);
     let machine_ty = ResolvedTy::Named {
         name: "Fiction".to_string(),
         args: Vec::new(),
@@ -222,7 +321,8 @@ fn constructor_pipeline() -> IrPipeline {
         is_opaque: false,
     };
     let layout = MachineLayout {
-        name: "Fiction".to_string(),
+        name: machine_key,
+        event_name: hew_hir::machine_layout_key("FictionEvent", &[]),
         tag_width: 1,
         variants: vec![
             unit_variant("Red"),
@@ -292,7 +392,7 @@ fn variant_construction_emits_payload_gep_and_tag_store() {
     let ll = emit_ll(&constructor_pipeline(), "fiction_ctor").expect("constructor must emit");
 
     assert!(
-        ll.contains("%Fiction = type { i8, [1 x i64] }"),
+        ll.contains("%\"mc$$Fiction$$\" = type { i8, [1 x i64] }"),
         "Fiction must use an i8 tag and max-sized payload storage:\n{ll}"
     );
     assert!(
@@ -351,6 +451,7 @@ fn over_65536_states_returns_unsupported() {
         .collect();
     let pipeline = empty_pipeline(vec![MachineLayout {
         name: "TooManyStates".to_string(),
+        event_name: "TooManyStatesEvent".to_string(),
         tag_width: 17,
         variants,
         events: Vec::new(),

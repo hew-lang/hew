@@ -1,0 +1,30 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: Tok) -> i64 {
+        let v_i = v.id;
+        println(f"tok {v_i}");
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    let x = Tok { id: 1 };
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

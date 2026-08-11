@@ -1,0 +1,14 @@
+fn main() {
+    let a: HashMap<string, i64> = HashMap::new();
+    a.insert("a", 1);
+    a.insert("b", 2);
+    let b: HashMap<string, i64> = HashMap::new();
+    b.insert("a", 1);
+    b.insert("b", 2);
+    let c: HashMap<string, i64> = HashMap::new();
+    c.insert("a", 2);
+    c.insert("b", 3);
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

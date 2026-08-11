@@ -1,0 +1,4 @@
+fn main() {
+    let x: (i64, string) = (1, "x0");
+    println(f"v={x}");
+}

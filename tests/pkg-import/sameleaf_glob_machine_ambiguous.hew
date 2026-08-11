@@ -1,0 +1,6 @@
+import ambiguity::machine_left::*;
+import ambiguity::machine_right::*;
+
+fn main() {
+    let _state = ClashMachine::Idle;
+}

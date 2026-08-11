@@ -1,0 +1,8 @@
+fn main() {
+    let a: Option<i64> = Some(5);
+    let b: Option<i64> = Some(5);
+    let c: Option<i64> = Some(6);
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

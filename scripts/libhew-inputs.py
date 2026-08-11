@@ -12,20 +12,27 @@ The set is derived, never hand-listed:
   * Rust sources, `Cargo.toml` and `build.rs` come from walking those crates;
   * embedded assets come from the `include_str!` / `include_bytes!` sites in
     those sources;
-  * the workspace manifest and lockfile are always included, because a
-    lockfile-selected dependency bump changes the archive while every crate
-    source stays byte-identical.
+  * the workspace manifest is always included; the semantic lockfile closure
+    is included in `digest`, so a selected dependency bump changes the archive
+    while an unrelated workspace lock entry does not.
 
 Usage:
   libhew-inputs.py files   # every input file, workspace-relative, one per line
   libhew-inputs.py crates  # the resolved crate directories, one per line
+  libhew-inputs.py digest  # semantic SHA-256 of the archive's input closure
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import tomllib
+import hashlib
+import json
+import re
+from typing import NoReturn
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import toml_compat
 
 ROOT_INPUT_CRATE = "hew-lib"
 INPUT_FILE_NAMES = ("Cargo.toml", "build.rs")
@@ -36,7 +43,7 @@ ASSET_MACROS = ("include_str", "include_bytes")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def die(message: str) -> "NoReturn":  # type: ignore[valid-type]
+def die(message: str) -> NoReturn:
     print(f"libhew-inputs: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -53,7 +60,7 @@ def sibling_crate_name(path: str, manifest: str) -> str:
 
 def path_dependencies(manifest: str) -> list[str]:
     with open(manifest, "rb") as handle:
-        table = tomllib.load(handle)
+        table = toml_compat.load(handle)
 
     tables = [table]
     tables.extend(
@@ -309,12 +316,164 @@ def input_files() -> list[str]:
     return sorted(files)
 
 
+def dependency_package_name(name: str, spec: object) -> str:
+    """Return the package name Cargo uses for a manifest dependency."""
+    if isinstance(spec, dict):
+        package = spec.get("package", name)
+        if not isinstance(package, str):
+            die(f"dependency {name!r} has a non-string package name")
+        return package
+    return name
+
+
+def non_dev_dependency_names(manifest: str) -> set[str]:
+    """The direct non-dev dependency package names of one local crate."""
+    with open(manifest, "rb") as handle:
+        table = toml_compat.load(handle)
+    tables = [table]
+    tables.extend(
+        cfg for cfg in table.get("target", {}).values() if isinstance(cfg, dict)
+    )
+    names: set[str] = set()
+    for scope in tables:
+        for section in ("dependencies", "build-dependencies"):
+            entries = scope.get(section, {})
+            if not isinstance(entries, dict):
+                continue
+            for name, spec in entries.items():
+                # A local path crate is traversed through its manifest rather
+                # than through the (dev-inclusive) lockfile package table.
+                if isinstance(spec, dict) and "path" in spec:
+                    continue
+                names.add(dependency_package_name(name, spec))
+    return names
+
+
+_LOCK_DEPENDENCY = re.compile(r"^(?P<name>[^ ]+)(?: (?P<version>[^ ]+))?")
+
+
+def lock_dependency_candidates(
+    dependency: str, packages: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Resolve Cargo.lock's compact dependency spelling conservatively.
+
+    A lock entry can omit a version when there is only one candidate.  In that
+    case keeping every same-name candidate is intentionally fail-closed: a
+    rare ambiguous lockfile becomes an extra rebuild, never a stale archive.
+    """
+    match = _LOCK_DEPENDENCY.match(dependency)
+    if match is None:
+        die(f"Cargo.lock has an unreadable dependency entry {dependency!r}")
+    name, version = match.group("name"), match.group("version")
+    found = [p for p in packages if p.get("name") == name]
+    if version is not None:
+        exact = [p for p in found if p.get("version") == version]
+        if exact:
+            return exact
+    return found
+
+
+def relevant_lock_packages(crates: list[str]) -> list[dict[str, object]]:
+    """Return only Cargo.lock packages that can feed hew-lib.
+
+    Cargo.lock is workspace-wide.  Hashing it byte-for-byte makes a lock-only
+    edit to (say) hew-pkg invalidate libhew even when Cargo correctly reports
+    `hew-lib` up to date.  Start with the non-dev dependencies declared by the
+    local hew-lib closure and then follow the lockfile graph.  This does not
+    need a Git revision and remains project-relative.
+    """
+    lock_path = os.path.join(REPO_ROOT, "Cargo.lock")
+    with open(lock_path, "rb") as handle:
+        lock = toml_compat.load(handle)
+    raw_packages = lock.get("package", [])
+    if not isinstance(raw_packages, list):
+        die("Cargo.lock has no package list")
+    packages = [p for p in raw_packages if isinstance(p, dict)]
+
+    local_dependencies: dict[str, set[str]] = {}
+    for crate in crates:
+        manifest = os.path.join(REPO_ROOT, crate, "Cargo.toml")
+        local_dependencies[crate] = non_dev_dependency_names(manifest)
+
+    pending: list[dict[str, object]] = []
+    for package in packages:
+        crate = package.get("name")
+        if crate not in local_dependencies:
+            continue
+        deps = package.get("dependencies", [])
+        if not isinstance(deps, list):
+            die(f"Cargo.lock package {package.get('name')!r} has invalid dependencies")
+        for dep in deps:
+            if not isinstance(dep, str):
+                die("Cargo.lock has a non-string dependency")
+            match = _LOCK_DEPENDENCY.match(dep)
+            if match and match.group("name") in local_dependencies[crate]:
+                pending.extend(lock_dependency_candidates(dep, packages))
+
+    selected: dict[tuple[object, object, object], dict[str, object]] = {}
+    while pending:
+        package = pending.pop()
+        key = (package.get("name"), package.get("version"), package.get("source"))
+        if key in selected:
+            continue
+        selected[key] = package
+        deps = package.get("dependencies", [])
+        if not isinstance(deps, list):
+            die(f"Cargo.lock package {package.get('name')!r} has invalid dependencies")
+        for dep in deps:
+            if not isinstance(dep, str):
+                die("Cargo.lock has a non-string dependency")
+            pending.extend(lock_dependency_candidates(dep, packages))
+
+    # json's explicit ordering makes this independent of lockfile formatting
+    # and package ordering. Dependency order also has no Cargo meaning. Retain
+    # every package field (not merely version), notably registry checksums and
+    # exact dependency edges.
+    canonical = []
+    for key in sorted(selected, key=lambda k: repr(k)):
+        package = dict(selected[key])
+        if isinstance(package.get("dependencies"), list):
+            package["dependencies"] = sorted(package["dependencies"])
+        canonical.append(package)
+    return canonical
+
+
+def input_digest() -> str:
+    """Hash project-relative source identity plus the relevant lock closure."""
+    digest = hashlib.sha256()
+    digest.update(b"hew-lib-inputs-v2\\0")
+    files = input_files()
+    for rel in files:
+        if rel == "Cargo.lock":
+            continue
+        path = os.path.join(REPO_ROOT, rel)
+        try:
+            with open(path, "rb") as handle:
+                contents = handle.read()
+        except OSError as exc:
+            die(f"could not read input {rel}: {exc}")
+        digest.update(b"file\\0")
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\\0")
+        digest.update(contents)
+        digest.update(b"\\0")
+    projection = json.dumps(
+        relevant_lock_packages(input_crates()), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    digest.update(b"relevant-cargo-lock\\0")
+    digest.update(projection)
+    return digest.hexdigest()
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[1] not in ("files", "crates"):
+    if len(argv) != 2 or argv[1] not in ("files", "crates", "digest"):
         print(__doc__, file=sys.stderr)
         return 2
-    lines = input_files() if argv[1] == "files" else input_crates()
-    print("\n".join(lines))
+    if argv[1] == "digest":
+        print(input_digest())
+    else:
+        lines = input_files() if argv[1] == "files" else input_crates()
+        print("\n".join(lines))
     return 0
 
 

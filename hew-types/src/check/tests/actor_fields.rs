@@ -1177,12 +1177,13 @@ mod every_attribute {
     /// Build a program with two distinct non-root modules, each containing one
     /// actor, and a root with just `fn main()`. Used to prove the cross-actor
     /// collision checker covers actors in separate modules (not just root actors).
-    fn check_two_module_actors(
+    fn two_module_actor_program(
         alpha_src: &str,
         alpha_path: Vec<String>,
         beta_src: &str,
         beta_path: Vec<String>,
-    ) -> TypeCheckOutput {
+        root_src: &str,
+    ) -> Program {
         let alpha_parsed = hew_parser::parse(alpha_src);
         assert!(
             alpha_parsed.errors.is_empty(),
@@ -1195,7 +1196,7 @@ mod every_attribute {
             "beta module must parse cleanly, got: {:#?}",
             beta_parsed.errors
         );
-        let root_parsed = hew_parser::parse("fn main() {}");
+        let root_parsed = hew_parser::parse(root_src);
         assert!(root_parsed.errors.is_empty());
 
         let root_id = ModuleId::root();
@@ -1223,24 +1224,101 @@ mod every_attribute {
         // topo: both non-root modules before root
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
-        let program = Program {
+        Program {
             module_graph: Some(mg),
             items: root_parsed.program.items,
             module_doc: None,
-        };
+        }
+    }
 
+    fn check_two_module_actors(
+        alpha_src: &str,
+        alpha_path: Vec<String>,
+        beta_src: &str,
+        beta_path: Vec<String>,
+    ) -> TypeCheckOutput {
+        let program =
+            two_module_actor_program(alpha_src, alpha_path, beta_src, beta_path, "fn main() {}");
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.check_program(&program)
     }
 
     #[test]
+    fn same_leaf_nested_actor_collection_keeps_full_owner_identities() {
+        let program = two_module_actor_program(
+            "actor Worker { receive fn handle(value: i64) -> i64 { value } }",
+            vec!["left".to_string(), "render".to_string()],
+            "actor Worker { receive fn handle(value: bool) -> bool { value } }",
+            vec!["right".to_string(), "render".to_string()],
+            "fn main() {}",
+        );
+
+        let mut identities: Vec<_> = collect_program_actors(&program)
+            .into_iter()
+            .map(|(identity, _)| identity)
+            .collect();
+        identities.sort();
+        assert_eq!(
+            identities,
+            ["left.render.Worker", "right.render.Worker"],
+            "the shared leaf `render` must never collapse actor owners"
+        );
+    }
+
+    #[test]
+    fn same_leaf_nested_actor_descriptors_use_owner_specific_signatures() {
+        let program = two_module_actor_program(
+            "actor Worker { receive fn handle(value: i64) -> i64 { value } }",
+            vec!["left".to_string(), "render".to_string()],
+            "actor Worker { receive fn handle(value: bool) -> bool { value } }",
+            vec!["right".to_string(), "render".to_string()],
+            "fn main() {}",
+        );
+        let fn_sigs = HashMap::from([
+            (
+                "left.render.Worker::handle".to_string(),
+                FnSig {
+                    params: vec![Ty::I64],
+                    return_type: Ty::I64,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "right.render.Worker::handle".to_string(),
+                FnSig {
+                    params: vec![Ty::Bool],
+                    return_type: Ty::Bool,
+                    ..FnSig::default()
+                },
+            ),
+        ]);
+        let mut errors = Vec::new();
+
+        let descriptors = build_actor_protocol_descriptors(&program, &fn_sigs, &mut errors);
+
+        assert!(errors.is_empty(), "descriptor build: {errors:#?}");
+        let left = descriptors
+            .get("left.render.Worker")
+            .expect("left owner descriptor");
+        let right = descriptors
+            .get("right.render.Worker")
+            .expect("right owner descriptor");
+        assert_eq!(left.actor_name, "left.render.Worker");
+        assert_eq!(right.actor_name, "right.render.Worker");
+        assert_eq!(left.handlers[0].param_tys, [ResolvedTy::I64]);
+        assert_eq!(left.handlers[0].return_ty, ResolvedTy::I64);
+        assert_eq!(right.handlers[0].param_tys, [ResolvedTy::Bool]);
+        assert_eq!(right.handlers[0].return_ty, ResolvedTy::Bool);
+        assert_eq!(left.handlers[0].symbol, "left.render.Worker__handle");
+        assert_eq!(right.handlers[0].symbol, "right.render.Worker__handle");
+        assert_ne!(left.handlers[0].msg_id, right.handlers[0].msg_id);
+        assert!(!descriptors.contains_key("render.Worker"));
+    }
+
+    #[test]
     fn single_nested_module_actor_descriptor_is_published() {
         // Regression probe: an actor in a nested module (path ["a","b"]) must
-        // have its protocol descriptor published. The descriptor is keyed by
-        // the module-short form "b.Alpha" (matching `current_module_short()` =
-        // leaf segment used during fn_sigs registration). If collect_program_actors
-        // or build_actor_protocol_descriptors fails to resolve the fn_sigs key,
-        // the descriptor is silently absent.
+        // have its protocol descriptor published under its full owner identity.
         let parsed = hew_parser::parse("actor Alpha { receive fn increment() {} }");
         assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
         let root_id = ModuleId::root();
@@ -1268,14 +1346,10 @@ mod every_attribute {
             "single module actor must typecheck cleanly; got: {:#?}",
             output.errors
         );
-        // The actor_protocol_descriptors must contain the module-short key "b.Alpha".
-        // (Full-path identity "a.b.Alpha" is used only for the cross-actor collision
-        // check; the descriptor map stays keyed by the leaf-qualified form for
-        // downstream compatibility with HIR lowering and coercion checking.)
-        let descriptor = output.actor_protocol_descriptors.get("b.Alpha");
+        let descriptor = output.actor_protocol_descriptors.get("a.b.Alpha");
         assert!(
             descriptor.is_some(),
-            "actor in module [\"a\",\"b\"] must be published under identity \"b.Alpha\"; \
+            "actor in module [\"a\",\"b\"] must be published under identity \"a.b.Alpha\"; \
              known keys: {:?}",
             output.actor_protocol_descriptors.keys().collect::<Vec<_>>()
         );
@@ -1284,10 +1358,7 @@ mod every_attribute {
     #[test]
     fn two_module_actors_both_get_descriptors() {
         // When two separate modules each contain an actor, BOTH descriptors
-        // must be published. The descriptor map uses the module-short-qualified
-        // key (leaf segment) for downstream compatibility. This is a structural
-        // prerequisite for cross-actor collision detection — if either actor's
-        // descriptor is skipped, the collision is missed.
+        // must be published under their full owner identities.
         let output = check_two_module_actors(
             "actor Alpha { receive fn ping() {} }",
             vec!["a".to_string(), "b".to_string()],
@@ -1301,29 +1372,28 @@ mod every_attribute {
         );
         let all_keys: Vec<_> = output.actor_protocol_descriptors.keys().collect();
         assert!(
-            output.actor_protocol_descriptors.contains_key("b.Alpha"),
-            "b.Alpha descriptor must be present; known keys: {all_keys:?}"
+            output.actor_protocol_descriptors.contains_key("a.b.Alpha"),
+            "a.b.Alpha descriptor must be present; known keys: {all_keys:?}"
         );
         assert!(
-            output.actor_protocol_descriptors.contains_key("d.Beta"),
-            "d.Beta descriptor must be present; known keys: {all_keys:?}"
+            output.actor_protocol_descriptors.contains_key("c.d.Beta"),
+            "c.d.Beta descriptor must be present; known keys: {all_keys:?}"
         );
     }
 
     #[test]
-    fn nested_module_cross_actor_collision_is_caught() {
+    fn module_cross_actor_collision_is_caught() {
         // `b.Alpha::h804959` and `d.Beta::h3600` are a real SipHash-1-3 low-32-bit
-        // collision under the module-short-qualified identity form (module path
-        // `["a","b"]` → short `"b"`, path `["c","d"]` → short `"d"`).
+        // collision for actors owned by the single-segment modules `b` and `d`.
         // Pair is pinned in `actor_protocol::tests::module_qualified_cross_actor_handler_names_share_msg_id`.
         // The whole-program collision checker must detect this even though each
         // actor lives in a separate nested module — it must not silently skip
         // actors from the module graph.
         let output = check_two_module_actors(
             "actor Alpha { receive fn h804959() {} }",
-            vec!["a".to_string(), "b".to_string()],
+            vec!["b".to_string()],
             "actor Beta { receive fn h3600() {} }",
-            vec!["c".to_string(), "d".to_string()],
+            vec!["d".to_string()],
         );
 
         let collision = output.errors.iter().find(|e| {
@@ -1348,8 +1418,7 @@ mod every_attribute {
         } = &collision.unwrap().kind
         {
             let actors = [actor_a.as_str(), actor_b.as_str()];
-            // The identity in the diagnostic is the full-path form ("a.b.Alpha" /
-            // "c.d.Beta") because cross_actor_seen uses collision_identity.
+            // The identity in the diagnostic is the full owner form.
             assert!(
                 actors.iter().any(|a| a.ends_with("Alpha"))
                     && actors.iter().any(|a| a.ends_with("Beta")),
@@ -1459,6 +1528,16 @@ mod reserved_names {
             output.errors.is_empty(),
             "qualified LookupError::NotFound must still resolve; got errors: {:#?}",
             output.errors
+        );
+        assert!(
+            output.type_defs.contains_key("std.builtins.LookupError"),
+            "LookupError must retain its std/builtins.hew declaration owner"
+        );
+        assert!(
+            !output
+                .type_defs
+                .contains_key("std.lookup_error.LookupError"),
+            "the bare prelude binding must not mint a synthetic LookupError owner"
         );
     }
 

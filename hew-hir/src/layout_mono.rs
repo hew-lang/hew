@@ -60,7 +60,7 @@ use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::ItemId;
 use crate::lower::substitute_ty;
 use crate::monomorph::{
-    contains_recursive_polymorphic_self, mangle, EnumLayout, EnumMonoKey, EnumVariantLayout,
+    contains_recursive_polymorphic_self, EnumLayout, EnumMonoKey, EnumVariantLayout,
     MonomorphizedFn, RecordLayout, RecordMonoKey,
 };
 #[cfg(test)]
@@ -74,6 +74,7 @@ use crate::node::{
 struct RecordDecl {
     id: ItemId,
     type_params: Vec<String>,
+    symbol_class: crate::mono::SymbolClass,
     /// Source-declared field shapes (name, declared type) in order.
     fields: Vec<(String, ResolvedTy)>,
 }
@@ -177,16 +178,25 @@ pub fn run_layout_mono_pass(
         match item {
             HirItem::Record(r) => {
                 all_type_params.extend(r.type_params.iter().cloned());
+                let fields = if r.fields.is_empty() {
+                    r.positional_field_tys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| (index.to_string(), ty.clone()))
+                        .collect()
+                } else {
+                    r.fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect()
+                };
                 record_decls.insert(
-                    r.name.clone(),
+                    r.qualified_name(),
                     RecordDecl {
                         id: r.id,
                         type_params: r.type_params.clone(),
-                        fields: r
-                            .fields
-                            .iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
-                            .collect(),
+                        symbol_class: crate::mono::SymbolClass::Function,
+                        fields,
                     },
                 );
             }
@@ -197,10 +207,11 @@ pub fn run_layout_mono_pass(
                 // disjoint (a type decl has either `fields` or `variants`).
                 if td.variants.is_empty() {
                     record_decls.insert(
-                        td.name.clone(),
+                        td.qualified_name(),
                         RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
+                            symbol_class: crate::mono::SymbolClass::Function,
                             fields: td
                                 .fields
                                 .iter()
@@ -210,7 +221,7 @@ pub fn run_layout_mono_pass(
                     );
                 } else {
                     enum_decls.insert(
-                        td.name.clone(),
+                        td.qualified_name(),
                         EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -252,34 +263,45 @@ pub fn run_layout_mono_pass(
     // shapes lowered under the owning module's context; visibility governs
     // NAMING (unchanged — no new `HirItem` is emitted and the checker's
     // authority is untouched), while layout existence follows ABI reachability.
-    // Keyed bare, exactly like the emitted decls above (R1 preserves the
-    // existing bare keying; cross-module same-bare-name collision remains
-    // #2653's concern). `entry(..).or_insert_with` lets an emitted decl win, so
-    // the universe only fills genuine gaps — it never shadows an emitted decl.
+    // Keyed by the declaration's full nominal owner, exactly like emitted
+    // declarations. The type checker preserves that owner in `ResolvedTy`, so
+    // a discovery probe must not fall back to a same-leaf declaration from a
+    // different module. `entry(..).or_insert_with` lets an emitted decl win,
+    // so the universe only fills genuine gaps — it never shadows an emitted
+    // declaration with the same identity.
     for item in extra_decls {
         match item {
             HirItem::Record(r) => {
                 all_type_params.extend(r.type_params.iter().cloned());
                 record_decls
-                    .entry(r.name.clone())
+                    .entry(r.qualified_name())
                     .or_insert_with(|| RecordDecl {
                         id: r.id,
                         type_params: r.type_params.clone(),
-                        fields: r
-                            .fields
-                            .iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
-                            .collect(),
+                        symbol_class: crate::mono::SymbolClass::Function,
+                        fields: if r.fields.is_empty() {
+                            r.positional_field_tys
+                                .iter()
+                                .enumerate()
+                                .map(|(index, ty)| (index.to_string(), ty.clone()))
+                                .collect()
+                        } else {
+                            r.fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect()
+                        },
                     });
             }
             HirItem::TypeDecl(td) => {
                 all_type_params.extend(td.type_params.iter().cloned());
                 if td.variants.is_empty() {
                     record_decls
-                        .entry(td.name.clone())
+                        .entry(td.qualified_name())
                         .or_insert_with(|| RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
+                            symbol_class: crate::mono::SymbolClass::Function,
                             fields: td
                                 .fields
                                 .iter()
@@ -288,7 +310,7 @@ pub fn run_layout_mono_pass(
                         });
                 } else {
                     enum_decls
-                        .entry(td.name.clone())
+                        .entry(td.qualified_name())
                         .or_insert_with(|| EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -349,50 +371,39 @@ pub fn run_layout_mono_pass(
         }
     }
 
-    // Seed the synthetic `VecIter<T>` record (the `for x in vec` / `into_iter`
-    // desugar target) into `record_decls`, mirroring the Option/Result enum
-    // seeding above. `VecIter` is NOT a `HirItem::Record`/`TypeDecl` — the HIR
-    // for-in desugar (`lower::LowerCtx::make_vec_iter_init`) synthesises its
-    // `StructInit` and registers its layout directly — so the item-loop never
-    // adds it. Under a generic body the origin-site `register_vec_iter_layout`
-    // only registers the ABSTRACT `VecIter<T>`; the concrete element becomes
-    // observable only once the enclosing fn is substituted (`iterate$$i64`),
-    // exactly mirroring how a user `record Box<T>` constructed inside a generic
-    // fn body is discovered here. Seeding the decl lets `visit_ty` register the
-    // concrete `VecIter$$<elem>` layout per monomorphisation, so MIR's
-    // field-order lookup (StructInit + FieldAccess) resolves it. The field
-    // shape is sourced from the single `vec_iter_field_shape` authority the
-    // origin-site path also consumes, so the two registrations can never
-    // disagree. `or_insert_with` honours a user type that shadows the name.
-    let ty_t_vec_iter = ResolvedTy::named_user("T", vec![]);
-    record_decls
-        .entry("VecIter".to_string())
-        .or_insert_with(|| RecordDecl {
-            id: crate::lower::SYNTHETIC_VEC_ITER_ITEM,
-            type_params: vec!["T".to_string()],
-            fields: crate::lower::vec_iter_field_shape(&ty_t_vec_iter),
-        });
-    all_type_params.insert("T".to_string());
-
-    // Seed the synthetic `HashMapIter<K, V>` record (the `for (k, v) in m`
-    // desugar target), mirroring `VecIter` above: it is declared in
-    // `std/builtins.hew` but never emitted as a HIR item, so `visit_ty` needs
-    // the decl here to register each concrete `HashMapIter$$<K, V>` layout per
-    // monomorphisation (StructInit + FieldAccess field-order lookup). The field
-    // shape comes from the single `hashmap_iter_field_shape` authority the
-    // for-in desugar also constructs from. `or_insert_with` honours a user type
-    // that shadows the name.
-    let ty_k_hm_iter = ResolvedTy::named_user("K", vec![]);
-    let ty_v_hm_iter = ResolvedTy::named_user("V", vec![]);
-    record_decls
-        .entry("HashMapIter".to_string())
-        .or_insert_with(|| RecordDecl {
-            id: crate::lower::SYNTHETIC_HASHMAP_ITER_ITEM,
-            type_params: vec!["K".to_string(), "V".to_string()],
-            fields: crate::lower::hashmap_iter_field_shape(&ty_k_hm_iter, &ty_v_hm_iter),
-        });
-    all_type_params.insert("K".to_string());
-    all_type_params.insert("V".to_string());
+    // Synthetic cursors are not emitted as HIR declarations, so seed their
+    // abstract shapes for discovery after generic-function substitution. This
+    // consumes the same typed catalog as origin-site registration; adding a
+    // cursor family in one place automatically closes both paths.
+    for spec in crate::lower::SYNTHETIC_CURSOR_LAYOUT_SPECS {
+        let type_params: Vec<String> = spec
+            .type_params
+            .iter()
+            .map(|param| (*param).to_string())
+            .collect();
+        let type_args: Vec<ResolvedTy> = type_params
+            .iter()
+            .map(|param| ResolvedTy::named_user(param, vec![]))
+            .collect();
+        let Some((_, fields)) = crate::lower::synthetic_cursor_layout(spec.builtin, &type_args)
+        else {
+            debug_assert!(
+                false,
+                "synthetic cursor catalog arity must match its field-shape authority"
+            );
+            continue;
+        };
+        record_decls.insert(
+            format!("@synthetic.{}", spec.builtin.canonical_name()),
+            RecordDecl {
+                id: spec.origin,
+                type_params: type_params.clone(),
+                symbol_class: crate::mono::SymbolClass::SyntheticRecord,
+                fields,
+            },
+        );
+        all_type_params.extend(type_params);
+    }
 
     let mut disc = Discovery {
         record_decls: &record_decls,
@@ -553,7 +564,7 @@ fn walk_expr(
                 walk_expr(operand, subst, residual_domain, disc);
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr(callee, subst, residual_domain, disc);
             for a in args {
                 walk_expr(a, subst, residual_domain, disc);
@@ -756,7 +767,10 @@ fn walk_expr(
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             walk_expr(receiver, subst, residual_domain, disc);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -842,8 +856,19 @@ impl Discovery<'_> {
             // Enqueue nested args first so `Box<Pair<i64,bool>>` reaches
             // through both `Box<...>` and `Pair<i64,bool>`.
             collect_named_children(&t, &mut worklist);
-            let ResolvedTy::Named { name, args, .. } = &t else {
+            let ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } = &t
+            else {
                 continue;
+            };
+            let decl_key = match builtin {
+                Some(hew_types::BuiltinType::VecIter) => "@synthetic.VecIter",
+                Some(hew_types::BuiltinType::HashMapIter) => "@synthetic.HashMapIter",
+                _ => name,
             };
             if args.is_empty() {
                 // A bare name is either a monomorphic type or a residual abstract
@@ -857,7 +882,7 @@ impl Discovery<'_> {
                 // `Option<string>` instantiation is discovered. A name that is
                 // not a user record/enum decl (a type-param, `Vec`, …) is a
                 // no-op descent.
-                self.enqueue_decl_fields(name, &[], &mut worklist, &mut expanded);
+                self.enqueue_decl_fields(decl_key, &[], &mut worklist, &mut expanded);
                 continue;
             }
             // Classify the args once. An instantiation is registrable only
@@ -881,7 +906,7 @@ impl Discovery<'_> {
                     continue;
                 }
             }
-            if let Some(decl) = self.record_decls.get(name) {
+            if let Some(decl) = self.record_decls.get(decl_key) {
                 if decl.type_params.is_empty() {
                     // Monomorphic record referenced with stray args — checker
                     // defect upstream; skip rather than emit a malformed layout.
@@ -898,7 +923,7 @@ impl Discovery<'_> {
             // so a nested generic field reached only through structure — e.g.
             // `Slot<string>`'s `value: Option<string>` → `Option$$string` — is
             // discovered even when no live value of the inner type is lowered.
-            self.enqueue_decl_fields(name, args, &mut worklist, &mut expanded);
+            self.enqueue_decl_fields(decl_key, args, &mut worklist, &mut expanded);
         }
     }
 
@@ -922,7 +947,7 @@ impl Discovery<'_> {
         let dedup_key = if args.is_empty() {
             name.to_string()
         } else {
-            mangle(name, args)
+            crate::monomorph::mangle_layout_key(name, args)
         };
         if !expanded.insert(dedup_key) {
             return;
@@ -1023,24 +1048,18 @@ impl Discovery<'_> {
             return;
         }
         let RecordDecl {
-            id, type_params, ..
+            id,
+            type_params,
+            symbol_class,
+            ..
         } = decl;
         if args.len() != type_params.len() {
             return;
         }
-        // Normalise the type-arg spine to bare payload names BEFORE building the
-        // dedup key and the mangled name. The origin-site registries
-        // (`EnumLayoutRegistry::insert`, and the `RecordMonoKey` the
-        // `record_record_layout` path builds) plus every codegen layout-lookup /
-        // drop-seed / codec-seed mangle site all key on the bare spine via the
-        // shared `shorten_named_arg_qualifiers`. A generic record discovered
-        // here through an import-use site (`Holder<lmonobox.Box>`, with C1's
-        // authoritative qualified `Named.name`) would otherwise register under
-        // `Holder$$lmonobox.Box` while every lookup probes `Holder$$Box`, the
-        // miss falling through the codegen fail-closed gate. Routing through the
-        // canonical shortener keeps the registration key byte-identical to the
-        // lookup key and collapses the qualified/bare spellings of one payload
-        // type (reached via two import paths) to one layout entry.
+        // Retain the canonical type-argument spine before building the dedup
+        // key and mangled name. The compatibility helper preserves every
+        // declaration path, so same-leaf payload types from separate modules
+        // cannot collapse into one layout entry.
         let normalized_args: Vec<ResolvedTy> = args
             .iter()
             .cloned()
@@ -1050,6 +1069,7 @@ impl Discovery<'_> {
             origin: *id,
             origin_name: name.to_string(),
             type_args: normalized_args,
+            symbol_class: *symbol_class,
         };
         if !self.seen_records.insert(key.clone()) {
             return;
@@ -1099,7 +1119,12 @@ impl Discovery<'_> {
         }
         // Mangle from the SHORTENED spine (`key.type_args`), not the raw `args`,
         // so the registered name matches the codegen lookup key byte-for-byte.
-        let mangled_name = mangle(name, &key.type_args);
+        let mangled_name = if matches!(key.symbol_class, crate::mono::SymbolClass::SyntheticRecord)
+        {
+            crate::mono::mangle_instantiation(key.symbol_class, name, &key.type_args, &[])
+        } else {
+            crate::monomorph::mangle_layout_key(name, &key.type_args)
+        };
         self.new_records.push(RecordLayout {
             key,
             mangled_name,
@@ -1123,13 +1148,10 @@ impl Discovery<'_> {
         if args.len() != type_params.len() {
             return;
         }
-        // Normalise the type-arg spine to bare payload names BEFORE building the
-        // dedup key and the mangled name — identical discipline to
-        // `register_record` and `EnumLayoutRegistry::insert`. A generic enum
-        // discovered here through an import-use site (`Slot<lmonobox.Box>`)
-        // would otherwise register under `Slot$$lmonobox.Box` while every
-        // codegen lookup probes `Slot$$Box`, the miss falling through the
-        // codegen fail-closed gate.
+        // Retain the canonical type-argument spine before building the dedup
+        // key and mangled name, just as `register_record` and
+        // `EnumLayoutRegistry::insert` do. Same-leaf payload types from
+        // separate modules must remain separate monomorphs.
         let normalized_args: Vec<ResolvedTy> = args
             .iter()
             .cloned()
@@ -1172,7 +1194,7 @@ impl Discovery<'_> {
         }
         // Mangle from the SHORTENED spine (`key.type_args`) so the registered
         // name matches the codegen lookup key byte-for-byte.
-        let mangled_name = mangle(name, &key.type_args);
+        let mangled_name = crate::monomorph::mangle_layout_key(name, &key.type_args);
         self.new_enums.push(EnumLayout {
             key,
             mangled_name,
@@ -1336,19 +1358,17 @@ mod tests {
         }
     }
 
-    /// `register_record` must shorten a module-qualified payload spine before it
-    /// builds the dedup key and the mangled name. A generic record discovered
-    /// post-mono through an import-use site (`Holder<lmonobox.Box>`) must
-    /// register under the bare `Holder$$Box` — byte-identical to every codegen /
-    /// MIR layout lookup — never the qualified `Holder$$lmonobox.Box`.
+    /// `register_record` must preserve a module-qualified payload spine in both
+    /// its dedup key and mangled name. Same-leaf nominals are distinct.
     #[test]
-    fn register_record_shortens_qualified_payload_spine() {
+    fn register_record_preserves_qualified_payload_spine() {
         let mut record_decls = HashMap::new();
         record_decls.insert(
             "Holder".to_string(),
             RecordDecl {
                 id: ItemId(1),
                 type_params: vec!["T".to_string()],
+                symbol_class: crate::mono::SymbolClass::Function,
                 fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
             },
         );
@@ -1359,6 +1379,7 @@ mod tests {
         let decl = RecordDecl {
             id: ItemId(1),
             type_params: vec!["T".to_string()],
+            symbol_class: crate::mono::SymbolClass::Function,
             fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
         };
         let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
@@ -1367,16 +1388,15 @@ mod tests {
         assert_eq!(disc.new_records.len(), 1, "one layout registered");
         let layout = &disc.new_records[0];
         assert_eq!(
-            layout.mangled_name, "Holder$$Box",
-            "qualified payload must be shortened in the mangled name"
+            layout.mangled_name, "Holder$$lmonobox$mBox",
+            "qualified payload identity must remain in the mangled name"
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("Box", vec![])],
-            "the dedup key's type-arg spine must be shortened to bare names"
+            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            "the dedup key's type-arg spine must retain canonical names"
         );
-        // The field type keeps the substituted (qualified) payload — its own
-        // identity is resolved by ITS layout key, which the lookup also shortens.
+        // The field type keeps the substituted canonical payload too.
         assert_eq!(
             layout.fields,
             vec![(
@@ -1387,10 +1407,9 @@ mod tests {
     }
 
     /// `register_enum` mirrors `register_record`: a qualified payload spine is
-    /// shortened before the key and mangled name. `Slot<lmonobox.Box>` registers
-    /// under the bare `Slot$$Box`.
+    /// retained before the key and mangled name.
     #[test]
-    fn register_enum_shortens_qualified_payload_spine() {
+    fn register_enum_preserves_qualified_payload_spine() {
         let record_decls = HashMap::new();
         let mut enum_decls = HashMap::new();
         enum_decls.insert(
@@ -1433,16 +1452,15 @@ mod tests {
         assert_eq!(disc.new_enums.len(), 1, "one layout registered");
         let layout = &disc.new_enums[0];
         assert_eq!(
-            layout.mangled_name, "Slot$$Box",
-            "qualified payload must be shortened in the mangled name"
+            layout.mangled_name, "Slot$$lmonobox$mBox",
+            "qualified payload identity must remain in the mangled name"
         );
         assert_eq!(
             layout.key.type_args,
-            vec![ResolvedTy::named_user("Box", vec![])],
-            "the dedup key's type-arg spine must be shortened to bare names"
+            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            "the dedup key's type-arg spine must retain canonical names"
         );
-        // The substituted variant payload keeps the qualified spelling (resolved
-        // by the payload type's own shortened layout key downstream).
+        // The substituted variant payload keeps the qualified spelling too.
         assert_eq!(
             layout.variants[0].field_tys,
             vec![ResolvedTy::named_user("lmonobox.Box", vec![])],

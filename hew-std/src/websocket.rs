@@ -1,4 +1,4 @@
-// WASM-TODO(#1451): WebSocket transport not available on WASM (requires OS threads)
+// WASM-TODO(websocket): WebSocket transport is unavailable on WASM (requires OS threads).
 //! Hew runtime: `websocket` module.
 //!
 //! Provides synchronous WebSocket client functionality for compiled Hew programs.
@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use parking_lot::Mutex as PlMutex;
 use std::thread::JoinHandle;
@@ -34,6 +34,8 @@ use tungstenite::{Message, WebSocket};
 /// WHAT: A production alternative is an external allocator hook.
 #[cfg(test)]
 static OUTER_CONN_DROPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static ACTOR_RUNTIME_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// Opaque WebSocket connection handle.
 ///
@@ -169,6 +171,7 @@ impl Write for HewWsStream {
 struct ReaderControl {
     cancel: Arc<AtomicBool>,
     exited: Arc<AtomicBool>,
+    delivery: Arc<ActorDelivery>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -222,6 +225,7 @@ const ACTOR_REF_LOCAL: c_int = 0;
 const READER_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const READER_JOIN_WAIT: Duration = Duration::from_millis(500);
 const READER_WAIT_POLL: Duration = Duration::from_millis(10);
+const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const WEBSOCKET_MAX_MESSAGE_SIZE_ENV: &str = "HEW_WS_MAX_MESSAGE_SIZE";
 const WEBSOCKET_MAX_FRAME_SIZE_ENV: &str = "HEW_WS_MAX_FRAME_SIZE";
 /// Conservative inbound message cap for all Hew WebSocket handshakes.
@@ -299,18 +303,76 @@ struct HewActorRef {
     data: HewActorRefData,
 }
 
-// SAFETY: `HewActorRef` snapshots are copied by value and dereferenced only
-// through runtime FFI (`hew_actor_ref_is_alive`) that already requires the
-// pointed-to actor / transport to remain live for the duration of the call.
-//
-// The attached reader thread extends this required lifetime: it must stay
-// live until the reader observes `closed` and exits. `close_handle` enforces
-// this by waiting `READER_JOIN_WAIT` for `exited` before returning, after
-// which the reader is guaranteed not to touch the ref again. Callers that
-// free the actor MUST NOT do so before either (a) the attached `Conn` is
-// closed, or (b) the actor has been signalled quiescent; the runtime's
-// drain_actors primitive enforces (b) today.
+// SAFETY: the snapshot is never exposed directly to the reader. It is held
+// behind `ActorDelivery`'s mutex, and every runtime call that can dereference
+// the local actor pointer holds that mutex. Revocation takes the snapshot
+// while holding the same mutex, so once `revoke` returns no reader can begin
+// or remain inside an actor runtime call.
 unsafe impl Send for HewActorRef {}
+
+struct ActorDelivery {
+    actor_ref: Mutex<Option<HewActorRef>>,
+}
+
+impl std::fmt::Debug for ActorDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorDelivery")
+            .field(
+                "active",
+                &lock_or_recover(&self.actor_ref).as_ref().is_some(),
+            )
+            .finish()
+    }
+}
+
+impl ActorDelivery {
+    fn new_local(actor: *mut c_void) -> Self {
+        Self {
+            actor_ref: Mutex::new(Some(HewActorRef {
+                kind: ACTOR_REF_LOCAL,
+                data: HewActorRefData { local: actor },
+            })),
+        }
+    }
+
+    /// Revoke the reader's only authority to inspect or message the actor.
+    ///
+    /// Every actor runtime call holds this same mutex, so returning from this
+    /// method is the synchronization point after which the raw local actor
+    /// pointer is inaccessible to the reader even if socket teardown or thread
+    /// scheduling takes longer than expected.
+    fn revoke(&self) {
+        lock_or_recover(&self.actor_ref).take();
+    }
+
+    fn is_alive(&self) -> bool {
+        let actor_ref = lock_or_recover(&self.actor_ref);
+        actor_ref.as_ref().is_some_and(actor_ref_is_alive)
+    }
+
+    fn send(&self, msg_type: i32, data: *mut c_void, size: usize) -> Option<Result<(), i32>> {
+        let actor_ref = lock_or_recover(&self.actor_ref);
+        actor_ref
+            .as_ref()
+            .map(|actor_ref| actor_send(actor_ref, msg_type, data, size))
+    }
+
+    fn send_if_alive(
+        &self,
+        msg_type: i32,
+        data: *mut c_void,
+        size: usize,
+    ) -> Option<Result<(), i32>> {
+        let actor_ref = lock_or_recover(&self.actor_ref);
+        let actor_ref = actor_ref.as_ref()?;
+        actor_ref_is_alive(actor_ref).then(|| actor_send(actor_ref, msg_type, data, size))
+    }
+
+    #[cfg(test)]
+    fn is_revoked(&self) -> bool {
+        lock_or_recover(&self.actor_ref).is_none()
+    }
+}
 
 impl HewWsConn {
     fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
@@ -332,6 +394,9 @@ impl HewWsConn {
 
     fn close_handle(&self) {
         let first_close = !self.inner.closed.swap(true, Ordering::AcqRel);
+        // Revocation is the actor-lifetime boundary. It waits for any
+        // in-flight nonblocking runtime call and removes the reader's only raw
+        // actor capability before close can proceed to bounded I/O teardown.
         signal_reader_cancel(&self.inner);
         if first_close {
             send_close_frame(&self.inner);
@@ -573,6 +638,7 @@ fn send_close_frame(inner: &Arc<HewWsConnInner>) {
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
     if let Some(reader) = lock_or_recover(&inner.reader).as_ref() {
         reader.cancel.store(true, Ordering::Release);
+        reader.delivery.revoke();
     }
 }
 
@@ -633,7 +699,9 @@ fn drop_ws(inner: &Arc<HewWsConnInner>) {
 }
 
 fn actor_ref_is_alive(actor_ref: &HewActorRef) -> bool {
-    // SAFETY: `actor_ref` points to the owned copy captured by the reader thread.
+    #[cfg(test)]
+    ACTOR_RUNTIME_CALLS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: `actor_ref` is held by the delivery lock for this entire call.
     unsafe { hew_actor_ref_is_alive(actor_ref) != 0 }
 }
 
@@ -656,7 +724,9 @@ fn actor_send(
         eprintln!("[attach-reader] remote ActorRef is unsupported for websocket attach");
         return Err(-1);
     };
-    // SAFETY: `actor` is extracted from a valid local ActorRef snapshot.
+    #[cfg(test)]
+    ACTOR_RUNTIME_CALLS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: `actor` comes from the local variant held by the delivery lock.
     let rc = unsafe { hew_actor_try_send(actor, msg_type, data, size) };
     if rc == 0 {
         Ok(())
@@ -665,7 +735,7 @@ fn actor_send(
     }
 }
 
-fn reader_should_exit(inner: &Arc<HewWsConnInner>, actor_ref: &HewActorRef) -> bool {
+fn reader_should_exit(inner: &Arc<HewWsConnInner>, delivery: &ActorDelivery) -> bool {
     if inner.closed.load(Ordering::Acquire) {
         return true;
     }
@@ -675,17 +745,17 @@ fn reader_should_exit(inner: &Arc<HewWsConnInner>, actor_ref: &HewActorRef) -> b
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
         .is_some_and(|reader| reader.cancel.load(Ordering::Acquire));
-    cancelled || !actor_ref_is_alive(actor_ref)
+    cancelled || !delivery.is_alive()
 }
 
 fn reader_cleanup(
     inner: &Arc<HewWsConnInner>,
-    actor_ref: &HewActorRef,
+    delivery: &ActorDelivery,
     on_close_type: i32,
     notify_close: bool,
 ) {
-    if notify_close && actor_ref_is_alive(actor_ref) {
-        if let Err(rc) = actor_send(actor_ref, on_close_type, std::ptr::null_mut(), 0) {
+    if notify_close {
+        if let Some(Err(rc)) = delivery.send_if_alive(on_close_type, std::ptr::null_mut(), 0) {
             eprintln!("[attach-reader] close delivery failed: rc={rc}; exiting");
         }
     }
@@ -732,21 +802,19 @@ fn spawn_attach_reader(
     }
 
     // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
-    // pointer. Build the stable by-value actor-ref snapshot the reader owns.
-    let actor_ref = Box::new(HewActorRef {
-        kind: ACTOR_REF_LOCAL,
-        data: HewActorRefData { local: actor },
-    });
+    // pointer. The delivery authority is the only owner of that pointer and
+    // can be synchronously revoked even if the reader itself has not exited.
+    let delivery = Arc::new(ActorDelivery::new_local(actor));
     let cancel = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
     let inner = Arc::clone(&conn.inner);
     let reader_cancel = Arc::clone(&cancel);
     let reader_exited = Arc::clone(&exited);
+    let reader_delivery = Arc::clone(&delivery);
     let join = std::thread::spawn(move || {
-        let actor_ref = actor_ref;
         let mut notify_close = false;
         loop {
-            if reader_should_exit(&inner, &actor_ref) {
+            if reader_should_exit(&inner, &reader_delivery) {
                 break;
             }
 
@@ -760,7 +828,7 @@ fn spawn_attach_reader(
 
             match read_result {
                 Ok(tungstenite::Message::Text(text)) => {
-                    if reader_should_exit(&inner, &actor_ref) {
+                    if reader_should_exit(&inner, &reader_delivery) {
                         break;
                     }
                     let bytes = text.as_bytes();
@@ -772,16 +840,24 @@ fn spawn_attach_reader(
                     }
                     let mut arg_buf = [0u8; std::mem::size_of::<usize>()];
                     arg_buf.copy_from_slice(&(str_ptr as usize).to_ne_bytes());
-                    if let Err(rc) = actor_send(
-                        &actor_ref,
+                    let send_result = reader_delivery.send(
                         on_message_type,
                         arg_buf.as_mut_ptr().cast(),
                         arg_buf.len(),
-                    ) {
-                        eprintln!("[attach-reader] message delivery failed: rc={rc}; exiting");
-                        // SAFETY: send failed before the actor took ownership of the string.
-                        unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees reader str_ptr on send-fail)
-                        break;
+                    );
+                    match send_result {
+                        Some(Ok(())) => {}
+                        Some(Err(rc)) => {
+                            eprintln!("[attach-reader] message delivery failed: rc={rc}; exiting");
+                            // SAFETY: send failed before the actor took ownership of the string.
+                            unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees reader str_ptr on send-fail)
+                            break;
+                        }
+                        None => {
+                            // SAFETY: revocation happened before the actor took ownership.
+                            unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees reader str_ptr on revoke)
+                            break;
+                        }
                     }
                 }
                 Ok(tungstenite::Message::Ping(payload)) => {
@@ -811,7 +887,8 @@ fn spawn_attach_reader(
             }
         }
 
-        reader_cleanup(&inner, &actor_ref, on_close_type, notify_close);
+        reader_cleanup(&inner, &reader_delivery, on_close_type, notify_close);
+        reader_delivery.revoke();
         reader_cancel.store(true, Ordering::Release);
         reader_exited.store(true, Ordering::Release);
     });
@@ -819,6 +896,7 @@ fn spawn_attach_reader(
     *reader = Some(ReaderControl {
         cancel,
         exited,
+        delivery,
         join: Some(join),
     });
     Ok(())
@@ -1363,7 +1441,9 @@ pub unsafe extern "C" fn hew_ws_close(ws: *mut HewWsConn) {
     }
     // SAFETY: `ws` was allocated with `Box::into_raw` in `hew_ws_connect` or
     // `hew_ws_server_accept`. `Drop for HewWsConn` calls `close_handle`, which
-    // signals and joins the reader thread (if any) before freeing the WebSocket.
+    // synchronously revokes actor delivery, then signals and joins the reader
+    // when it exits within the bounded wait. A delayed reader retains only the
+    // Arc-owned transport state and cannot touch the actor.
     // This path is correct for both attached and unattached connections: the
     // previous code omitted `Box::from_raw` on the attached branch, leaking the
     // outer `HewWsConn` struct (~16 bytes) on every attached close. Fixes #1324.
@@ -1435,10 +1515,11 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
 
 // ── WebSocket Attach (Erlang-style active mode) ────────────────────
 //
-// `hew_ws_attach` transfers a WebSocket connection to a background OS
-// thread that reads frames and delivers them as actor messages. The
-// actor never calls recv() — it just has receive fns that the runtime
-// invokes. This is Erlang's "active mode" pattern.
+// `hew_ws_attach` transfers read authority to a background OS thread that
+// delivers frames as actor messages. The caller retains the outer connection
+// owner and its send/close authority. The actor never calls recv() — it just
+// has receive fns that the runtime invokes. This is Erlang's "active mode"
+// pattern.
 
 /// Attach a WebSocket connection to an actor. Spawns a reader thread
 /// that delivers frames as actor messages.
@@ -1534,7 +1615,66 @@ pub struct HewWsServer {
 struct HewWsServerInner {
     listener: TcpListener,
     cancel: AtomicBool,
-    active_accepts: AtomicUsize,
+    active_accepts: ActiveAcceptState,
+    active_handshakes: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
+struct ActiveAcceptState {
+    count: Mutex<usize>,
+    drained: Condvar,
+}
+
+#[derive(Debug)]
+struct ActiveAcceptGuard<'a> {
+    state: &'a ActiveAcceptState,
+}
+
+impl ActiveAcceptState {
+    fn begin<'a>(&'a self, cancel: &AtomicBool) -> Option<ActiveAcceptGuard<'a>> {
+        let mut count = lock_or_recover(&self.count);
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        *count += 1;
+        Some(ActiveAcceptGuard { state: self })
+    }
+
+    fn cancel_and_wait(&self, cancel: &AtomicBool) {
+        let mut count = lock_or_recover(&self.count);
+        cancel.store(true, Ordering::Release);
+        while *count != 0 {
+            count = self
+                .drained
+                .wait(count)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    #[cfg(test)]
+    fn count(&self) -> usize {
+        *lock_or_recover(&self.count)
+    }
+
+    fn publish_if_open<T>(&self, cancel: &AtomicBool, publish: impl FnOnce() -> T) -> Option<T> {
+        let _count = lock_or_recover(&self.count);
+        if cancel.load(Ordering::Acquire) {
+            None
+        } else {
+            Some(publish())
+        }
+    }
+}
+
+impl Drop for ActiveAcceptGuard<'_> {
+    fn drop(&mut self) {
+        let mut count = lock_or_recover(&self.state.count);
+        assert!(*count > 0, "active websocket accept count underflow");
+        *count -= 1;
+        if *count == 0 {
+            self.state.drained.notify_all();
+        }
+    }
 }
 
 impl HewWsServer {
@@ -1544,14 +1684,16 @@ impl HewWsServer {
             inner: Arc::new(HewWsServerInner {
                 listener,
                 cancel: AtomicBool::new(false),
-                active_accepts: AtomicUsize::new(0),
+                active_accepts: ActiveAcceptState::default(),
+                active_handshakes: AtomicUsize::new(0),
             }),
         })
     }
 
     fn close_handle(&self) {
-        self.inner.cancel.store(true, Ordering::Release);
-        let _ = wait_for_active_calls_to_drain(&self.inner.active_accepts, READER_JOIN_WAIT);
+        self.inner
+            .active_accepts
+            .cancel_and_wait(&self.inner.cancel);
     }
 }
 
@@ -1562,7 +1704,6 @@ impl Drop for HewWsServer {
 }
 
 fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
-    let _accept_guard = ActiveCallGuard::new(&inner.active_accepts);
     loop {
         if inner.cancel.load(Ordering::Acquire) {
             return HewWsAcceptResult::Cancelled;
@@ -1573,8 +1714,8 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                 if inner.cancel.load(Ordering::Acquire) {
                     return HewWsAcceptResult::Cancelled;
                 }
-                if let Err(err) = stream.set_nonblocking(false) {
-                    eprintln!("[accept] failed to restore blocking mode: {err}");
+                if let Err(err) = stream.set_nonblocking(true) {
+                    eprintln!("[accept] failed to prepare cancellable handshake: {err}");
                     return HewWsAcceptResult::Error;
                 }
                 let tls_stream = MaybeTlsStream::Plain(stream);
@@ -1585,8 +1726,16 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                         return HewWsAcceptResult::Error;
                     }
                 };
-                if let Ok(ws) = tungstenite::accept_with_config(tls_stream, Some(config)) {
-                    return HewWsAcceptResult::Accepted(Box::new(ws));
+                match accept_cancellable_handshake(inner, tls_stream, config) {
+                    HewWsAcceptResult::Accepted(ws) => {
+                        return HewWsAcceptResult::Accepted(ws);
+                    }
+                    HewWsAcceptResult::Cancelled => return HewWsAcceptResult::Cancelled,
+                    HewWsAcceptResult::Error => {
+                        // A malformed or expired handshake rejects only that
+                        // accepted socket; the server remains available for
+                        // the next peer.
+                    }
                 }
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -1601,6 +1750,87 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                 };
             }
         }
+    }
+}
+
+fn accept_cancellable_handshake(
+    inner: &Arc<HewWsServerInner>,
+    stream: MaybeTlsStream<TcpStream>,
+    config: WebSocketConfig,
+) -> HewWsAcceptResult {
+    use tungstenite::handshake::HandshakeError;
+
+    let _handshake_guard = ActiveCallGuard::new(&inner.active_handshakes);
+    let deadline = Instant::now() + SERVER_HANDSHAKE_TIMEOUT;
+    let mut handshake = match tungstenite::accept_with_config(stream, Some(config)) {
+        Ok(mut ws) => {
+            if inner.cancel.load(Ordering::Acquire) {
+                return HewWsAcceptResult::Cancelled;
+            }
+            if let Err(err) = set_server_websocket_blocking(&mut ws) {
+                eprintln!("[accept] failed to restore blocking mode: {err}");
+                return HewWsAcceptResult::Error;
+            }
+            return HewWsAcceptResult::Accepted(Box::new(ws));
+        }
+        Err(HandshakeError::Interrupted(handshake)) => handshake,
+        Err(HandshakeError::Failure(err)) => {
+            eprintln!("[accept] websocket handshake failed: {err}");
+            return HewWsAcceptResult::Error;
+        }
+    };
+
+    loop {
+        if inner.cancel.load(Ordering::Acquire) {
+            return HewWsAcceptResult::Cancelled;
+        }
+        if Instant::now() >= deadline {
+            eprintln!("[accept] websocket handshake exceeded {SERVER_HANDSHAKE_TIMEOUT:?}");
+            return HewWsAcceptResult::Error;
+        }
+        std::thread::sleep(READER_WAIT_POLL);
+        match handshake.handshake() {
+            Ok(mut ws) => {
+                if inner.cancel.load(Ordering::Acquire) {
+                    return HewWsAcceptResult::Cancelled;
+                }
+                if let Err(err) = set_server_websocket_blocking(&mut ws) {
+                    eprintln!("[accept] failed to restore blocking mode: {err}");
+                    return HewWsAcceptResult::Error;
+                }
+                if inner.cancel.load(Ordering::Acquire) {
+                    return HewWsAcceptResult::Cancelled;
+                }
+                return HewWsAcceptResult::Accepted(Box::new(ws));
+            }
+            Err(HandshakeError::Interrupted(next)) => handshake = next,
+            Err(HandshakeError::Failure(err)) => {
+                eprintln!("[accept] websocket handshake failed: {err}");
+                return HewWsAcceptResult::Error;
+            }
+        }
+    }
+}
+
+#[allow(
+    unexpected_cfgs,
+    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
+)]
+fn set_server_websocket_blocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> io::Result<()> {
+    match ws.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(false),
+        #[cfg(feature = "native-tls")]
+        MaybeTlsStream::NativeTls(stream) => stream.get_mut().set_nonblocking(false),
+        #[cfg(feature = "__rustls-tls")]
+        MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(false),
+        #[allow(
+            unreachable_patterns,
+            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
+        )]
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported websocket server stream kind",
+        )),
     }
 }
 
@@ -1686,10 +1916,16 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
     }
     // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
     let inner = Arc::clone(&unsafe { &*server }.inner);
+    let Some(_accept_guard) = inner.active_accepts.begin(&inner.cancel) else {
+        return std::ptr::null_mut();
+    };
     match accept_connection(&inner) {
-        HewWsAcceptResult::Accepted(ws) => {
-            Box::into_raw(Box::new(HewWsConn::new(*ws, Role::Server)))
-        }
+        HewWsAcceptResult::Accepted(ws) => inner
+            .active_accepts
+            .publish_if_open(&inner.cancel, || {
+                Box::into_raw(Box::new(HewWsConn::new(*ws, Role::Server)))
+            })
+            .unwrap_or(std::ptr::null_mut()),
         HewWsAcceptResult::Cancelled | HewWsAcceptResult::Error => std::ptr::null_mut(),
     }
 }
@@ -1730,7 +1966,6 @@ mod tests {
     const TEST_CLOSE_TYPE: i32 = 12;
     const TEST_STOP_TYPE: i32 = 101;
     const TEST_CRASH_TYPE: i32 = 102;
-    const TEST_SEND_TEXT_TYPE: i32 = 103;
 
     fn ws_last_error_text() -> String {
         let ptr = hew_ws_last_error();
@@ -1788,14 +2023,12 @@ mod tests {
     enum ActorEvent {
         Message(String),
         Closed,
-        SendResult(i32),
     }
 
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct TestActorState {
         test_id: u64,
-        conn: usize,
     }
 
     #[repr(C)]
@@ -1893,12 +2126,6 @@ mod tests {
             TEST_CLOSE_TYPE => send_actor_event(state.test_id, ActorEvent::Closed),
             TEST_STOP_TYPE => actor::hew_actor_self_stop(),
             TEST_CRASH_TYPE => panic!("intentional websocket test actor crash"),
-            TEST_SEND_TEXT_TYPE => {
-                let rc = unsafe {
-                    hew_ws_send_text(state.conn as *mut HewWsConn, c"actor-send".as_ptr())
-                };
-                send_actor_event(state.test_id, ActorEvent::SendResult(rc));
-            }
             _ => {}
         }
 
@@ -1981,11 +2208,9 @@ mod tests {
         }
     }
 
-    fn wait_for_reader_exit(conn: *mut HewWsConn, timeout: Duration) -> bool {
+    fn wait_for_reader_exit(inner: &Arc<HewWsConnInner>, timeout: Duration) -> bool {
         wait_for_condition(timeout, || {
-            // SAFETY: tests keep the attached connection handle alive while polling.
-            let conn = unsafe { &*conn };
-            conn.inner
+            inner
                 .reader
                 .lock()
                 .expect("reader mutex poisoned")
@@ -1994,16 +2219,24 @@ mod tests {
         })
     }
 
+    fn attached_delivery(inner: &Arc<HewWsConnInner>) -> Arc<ActorDelivery> {
+        Arc::clone(
+            &inner
+                .reader
+                .lock()
+                .expect("reader mutex poisoned")
+                .as_ref()
+                .expect("reader should be attached")
+                .delivery,
+        )
+    }
+
     fn wait_for_actor_dead(actor: *mut actor::HewActor, timeout: Duration) -> bool {
         // SAFETY: tests call this only for actors they spawned and still own.
         let actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
         wait_for_condition(timeout, || unsafe {
             transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0
         })
-    }
-
-    fn wait_for_thread_exit<T>(handle: &std::thread::JoinHandle<T>, timeout: Duration) -> bool {
-        wait_for_condition(timeout, || handle.is_finished())
     }
 
     fn recv_event(rx: &Receiver<ActorEvent>, timeout: Duration) -> ActorEvent {
@@ -2015,20 +2248,6 @@ mod tests {
         match rx.recv_timeout(timeout) {
             Err(RecvTimeoutError::Timeout) => {}
             other => panic!("expected no event within {timeout:?}, got {other:?}"),
-        }
-    }
-
-    fn recv_send_result(rx: &Receiver<ActorEvent>, timeout: Duration) -> i32 {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match recv_event(rx, remaining) {
-                ActorEvent::SendResult(rc) => return rc,
-                ActorEvent::Closed => {}
-                other @ ActorEvent::Message(_) => {
-                    panic!("expected send result event, got {other:?}");
-                }
-            }
         }
     }
 
@@ -2119,10 +2338,7 @@ mod tests {
         conn: *mut HewWsConn,
     ) -> (*mut actor::HewActor, u64, Receiver<ActorEvent>) {
         let (test_id, rx) = register_actor_events();
-        let state = TestActorState {
-            test_id,
-            conn: conn as usize,
-        };
+        let state = TestActorState { test_id };
         let actor = unsafe {
             actor::hew_actor_spawn(
                 (&raw const state).cast_mut().cast(),
@@ -2670,7 +2886,9 @@ mod tests {
                                 | tungstenite::Error::Protocol(_),
                             ) => {}
                             other => {
-                                panic!("expected connection close after oversized frame, got {other:?}")
+                                panic!(
+                                    "expected connection close after oversized frame, got {other:?}"
+                                )
                             }
                         },
                         Err(tungstenite::Error::Io(err))
@@ -2860,29 +3078,261 @@ mod tests {
 
         // SAFETY: `server` stays live until hew_ws_server_close below sets cancel.
         let inner = unsafe { &*server }.inner.clone();
-        let accept_inner = inner.clone();
-        let accept_thread = std::thread::spawn(move || accept_connection(&accept_inner));
+        let server_addr = server as usize;
+        let accept_thread = std::thread::spawn(move || unsafe {
+            hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+        });
 
         assert!(
             wait_for_condition(Duration::from_millis(200), || {
-                inner.active_accepts.load(Ordering::Acquire) == 1
+                inner.active_accepts.count() == 1
             }),
             "accept loop should become active before cancellation"
         );
 
         unsafe { hew_ws_server_close(server) };
 
+        // join() is the exact synchronization for the thread's exit; a stuck
+        // cancel fails the run via the harness's per-test timeout.
+        assert_eq!(
+            accept_thread.join().expect("accept thread should join"),
+            0,
+            "cancelled accept should return null through the FFI surface"
+        );
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn server_close_cancels_peer_that_never_handshakes() {
+        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        assert!(!server.is_null(), "server should bind successfully");
+        let port = unsafe { hew_ws_server_port(server) };
+        let inner = unsafe { &*server }.inner.clone();
+        let server_addr = server as usize;
+        let accept_thread = std::thread::spawn(move || unsafe {
+            hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+        });
+
+        let stalled_peer =
+            TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
         assert!(
-            wait_for_thread_exit(&accept_thread, Duration::from_millis(750)),
-            "accept thread should exit within the cancel deadline"
+            wait_for_condition(Duration::from_millis(500), || {
+                inner.active_handshakes.load(Ordering::Acquire) == 1
+            }),
+            "the accepted peer should enter the handshake"
+        );
+
+        let started = Instant::now();
+        unsafe { hew_ws_server_close(server) };
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "server close must cancel a stalled handshake promptly"
+        );
+        // close drained the accept authority before returning (count == 0 is
+        // deterministic); join() is the exact synchronization for the accept
+        // thread's exit — a stuck close fails via the harness's per-test timeout.
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+        assert_eq!(accept_thread.join().expect("accept thread should join"), 0);
+        drop(stalled_peer);
+    }
+
+    #[test]
+    fn stalled_handshake_expires_and_next_valid_peer_is_accepted() {
+        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        assert!(!server.is_null(), "server should bind successfully");
+        let port = unsafe { hew_ws_server_port(server) };
+        let inner = unsafe { &*server }.inner.clone();
+        let server_addr = server as usize;
+        let accept_thread = std::thread::spawn(move || unsafe {
+            hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+        });
+
+        let stalled_peer =
+            TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
+        assert!(
+            wait_for_condition(Duration::from_millis(500), || {
+                inner.active_handshakes.load(Ordering::Acquire) == 1
+            }),
+            "the accepted peer should enter the handshake"
         );
         assert!(
-            matches!(
-                accept_thread.join().expect("accept thread should join"),
-                HewWsAcceptResult::Cancelled
+            wait_for_condition(
+                SERVER_HANDSHAKE_TIMEOUT + Duration::from_millis(750),
+                || inner.active_handshakes.load(Ordering::Acquire) == 0
             ),
-            "accept helper should report cancellation distinctly"
+            "a peer that never handshakes must expire within the configured bound"
         );
+
+        let (mut valid_peer, _) = connect_with_config(
+            format!("ws://127.0.0.1:{port}"),
+            Some(websocket_config(
+                WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
+                WEBSOCKET_MAX_FRAME_SIZE_BYTES,
+            )),
+            3,
+        )
+        .expect("valid peer should connect after stalled handshake expires");
+        let conn = accept_thread.join().expect("accept thread should join") as *mut HewWsConn;
+        assert!(!conn.is_null(), "the next valid peer should be published");
+
+        valid_peer.close(None).expect("valid peer close");
+        unsafe { hew_ws_close(conn) };
+        unsafe { hew_ws_server_close(server) };
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+        drop(stalled_peer);
+    }
+
+    #[test]
+    fn partial_and_invalid_handshakes_do_not_poison_next_accept() {
+        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        assert!(!server.is_null(), "server should bind successfully");
+        let port = unsafe { hew_ws_server_port(server) };
+        let inner = unsafe { &*server }.inner.clone();
+        let server_addr = server as usize;
+        let accept_thread = std::thread::spawn(move || unsafe {
+            hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+        });
+
+        let mut partial =
+            TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
+        partial
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("write partial handshake");
+        assert!(
+            wait_for_condition(Duration::from_millis(500), || {
+                inner.active_handshakes.load(Ordering::Acquire) == 1
+            }),
+            "partial peer should enter the handshake"
+        );
+        drop(partial);
+        assert!(
+            wait_for_condition(Duration::from_millis(750), || {
+                inner.active_handshakes.load(Ordering::Acquire) == 0
+            }),
+            "disconnecting the partial peer should end its handshake"
+        );
+
+        let mut invalid =
+            TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
+        invalid
+            .write_all(b"definitely not a websocket handshake\r\n\r\n")
+            .expect("write invalid handshake");
+        drop(invalid);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let (mut valid_peer, _) = connect_with_config(
+            format!("ws://127.0.0.1:{port}"),
+            Some(websocket_config(
+                WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
+                WEBSOCKET_MAX_FRAME_SIZE_BYTES,
+            )),
+            3,
+        )
+        .expect("valid peer should connect after invalid peers");
+        let conn = accept_thread.join().expect("accept thread should join") as *mut HewWsConn;
+        assert!(
+            !conn.is_null(),
+            "valid handshake should produce a connection"
+        );
+
+        valid_peer.close(None).expect("valid peer close");
+        unsafe { hew_ws_close(conn) };
+        unsafe { hew_ws_server_close(server) };
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn server_close_racing_completed_handshake_has_no_late_result() {
+        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        assert!(!server.is_null(), "server should bind successfully");
+        let port = unsafe { hew_ws_server_port(server) };
+        let inner = unsafe { &*server }.inner.clone();
+        let server_addr = server as usize;
+        let accept_thread = std::thread::spawn(move || unsafe {
+            hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+        });
+
+        let mut peer =
+            TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
+        assert!(
+            wait_for_condition(Duration::from_millis(500), || {
+                inner.active_handshakes.load(Ordering::Acquire) == 1
+            }),
+            "peer should enter the handshake before the race"
+        );
+        let websocket_key = ["dGhlIHNh", "bXBsZSBu", "b25jZQ=="].concat();
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Upgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: {websocket_key}\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+        peer.write_all(request.as_bytes())
+            .expect("write valid websocket handshake");
+
+        unsafe { hew_ws_server_close(server) };
+        // The racing accept has published-or-cancelled before close returns —
+        // its guard is dropped only after publish_if_open runs, so count == 0
+        // the instant close returns proves the accept resolved. The thread that
+        // ran it unwinds a few instructions later, so poll for its exit with a
+        // bounded deadline rather than demanding zero scheduling lag.
+        assert_eq!(inner.active_accepts.count(), 0);
+        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+        // join() is the exact synchronization for the racing accept's exit; a
+        // close that never resolves it fails via the harness's per-test timeout.
+        let conn = accept_thread.join().expect("accept thread should join") as *mut HewWsConn;
+        if !conn.is_null() {
+            unsafe { hew_ws_close(conn) };
+        }
+        drop(peer);
+    }
+
+    #[test]
+    fn repeated_bind_accept_close_drains_all_accept_authority() {
+        for _ in 0..64 {
+            let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+            assert!(!server.is_null(), "server should bind successfully");
+            let inner = unsafe { &*server }.inner.clone();
+            let weak_inner = Arc::downgrade(&inner);
+            let server_addr = server as usize;
+            let accept_thread = std::thread::spawn(move || unsafe {
+                hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+            });
+            assert!(
+                wait_for_condition(Duration::from_millis(200), || {
+                    inner.active_accepts.count() == 1
+                }),
+                "accept authority should become active"
+            );
+
+            unsafe { hew_ws_server_close(server) };
+            // close is synchronous: cancel_and_wait only returns once every
+            // accept guard has dropped, so the accept authority is fully drained
+            // the instant close returns (count == 0 is the deterministic proof).
+            // The OS thread that ran the accept unwinds a few instructions later;
+            // join() is the exact event-driven synchronization for that exit —
+            // no poll, no scheduling-lag assumption. A thread that never exits
+            // fails the run via the harness's per-test timeout.
+            assert_eq!(inner.active_accepts.count(), 0);
+            assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+            assert_eq!(accept_thread.join().expect("accept thread should join"), 0);
+            drop(inner);
+            assert!(
+                weak_inner.upgrade().is_none(),
+                "server inner allocation must be reclaimed after each close"
+            );
+        }
+        // No wall-clock bound: every iteration already asserts the deterministic
+        // facts this test exists to prove — the accept authority is drained
+        // (count == 0) and the handshake count is zero the instant close
+        // returns, the accept thread joins, and the server allocation is
+        // reclaimed. A close that fails to make progress cannot pass those
+        // asserts, and a hang is caught by the harness per-test timeout, so a
+        // duration assert only added a contended-runner failure mode.
     }
 
     #[test]
@@ -2905,10 +3355,8 @@ mod tests {
 
         unsafe { hew_ws_close(conn) };
 
-        assert!(
-            wait_for_thread_exit(&recv_thread, Duration::from_millis(750)),
-            "recv thread should exit within the cancel deadline"
-        );
+        // join() is the exact synchronization for the recv thread's exit; a
+        // stuck cancel fails via the harness's per-test timeout.
         assert_eq!(
             recv_thread.join().expect("recv thread should join"),
             HewWsRecvResult::Cancelled,
@@ -2938,7 +3386,7 @@ mod tests {
 
                 assert!(
                     wait_for_condition(Duration::from_millis(200), || {
-                        inner.active_accepts.load(Ordering::Acquire) == 1
+                        inner.active_accepts.count() == 1
                     }),
                     "accept loop should become active before the owner stops"
                 );
@@ -2962,16 +3410,14 @@ mod tests {
                     wait_for_actor_dead(actor, Duration::from_secs(1)),
                     "owner actor should stop after closing the server"
                 );
-                assert!(
-                    wait_for_thread_exit(&accept_thread, Duration::from_millis(750)),
-                    "accept thread should exit within the cancel deadline"
-                );
+                // join() is the exact synchronization for the accept thread's
+                // exit; a stuck cancel fails via the harness's per-test timeout.
                 assert_eq!(
                     accept_thread.join().expect("accept thread should join"),
                     0,
                     "cancelled accept should return null through the FFI surface"
                 );
-                assert_eq!(inner.active_accepts.load(Ordering::Acquire), 0);
+                assert_eq!(inner.active_accepts.count(), 0);
 
                 assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
             },
@@ -3130,6 +3576,8 @@ mod tests {
                 let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
 
                 unsafe { actor::hew_actor_send(actor, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
 
@@ -3138,9 +3586,10 @@ mod tests {
                     "actor should transition to a non-live state"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_millis(750)),
+                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
                     "reader should exit within the bounded deadline after actor stop"
                 );
+                assert!(delivery.is_revoked());
 
                 drop(client);
                 teardown_attached_actor(actor, test_id, conn, server);
@@ -3157,6 +3606,8 @@ mod tests {
                 let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
 
                 unsafe { actor::hew_actor_send(actor, TEST_CRASH_TYPE, std::ptr::null_mut(), 0) };
 
@@ -3165,12 +3616,142 @@ mod tests {
                     "crashed actor should become non-live"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_millis(750)),
+                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
                     "reader should exit within the bounded deadline after actor crash"
                 );
+                assert!(delivery.is_revoked());
 
                 drop(client);
                 teardown_attached_actor(actor, test_id, conn, server);
+            },
+        );
+    }
+
+    #[test]
+    fn attach_reader_revokes_delivery_when_actor_is_forced_to_stop() {
+        run_in_isolated_test_process(
+            "attach_reader_revokes_delivery_when_actor_is_forced_to_stop",
+            "HEW_WS_ATTACH_FORCED_STOP_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                let (server, conn, client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
+
+                unsafe { actor::hew_actor_stop(actor) };
+                assert!(
+                    wait_for_actor_dead(actor, Duration::from_secs(1)),
+                    "forced actor stop should transition the actor to non-live"
+                );
+                assert!(
+                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
+                    "reader should exit after forced actor stop"
+                );
+                assert!(
+                    delivery.is_revoked(),
+                    "reader exit must discard the raw actor capability"
+                );
+
+                drop(client);
+                unsafe { hew_ws_close(conn) };
+                assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+                unregister_actor_events(test_id);
+                unsafe { hew_ws_server_close(server) };
+            },
+        );
+    }
+
+    #[test]
+    fn attached_close_race_revokes_delivery_before_return() {
+        run_in_isolated_test_process(
+            "attached_close_race_revokes_delivery_before_return",
+            "HEW_WS_ATTACH_CLOSE_RACE_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                OUTER_CONN_DROPS.store(0, Ordering::Relaxed);
+                ACTOR_RUNTIME_CALLS.store(0, Ordering::Relaxed);
+                let (server, conn, mut client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
+
+                for index in 0..32 {
+                    client
+                        .send(Message::text(format!("queued-{index}")))
+                        .expect("queue traffic before close");
+                }
+
+                let started = Instant::now();
+                unsafe { hew_ws_close(conn) };
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "attached close must stay bounded"
+                );
+                assert!(
+                    delivery.is_revoked(),
+                    "close must revoke the reader's actor capability before returning"
+                );
+                assert_eq!(
+                    OUTER_CONN_DROPS.load(Ordering::Relaxed),
+                    1,
+                    "the outer connection box must be reclaimed exactly once"
+                );
+
+                let runtime_calls_after_close = ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed);
+                let _ = client.send(Message::text("late"));
+                std::thread::sleep(READER_READ_TIMEOUT + Duration::from_millis(100));
+                assert_eq!(
+                    ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed),
+                    runtime_calls_after_close,
+                    "queued traffic must not trigger actor runtime calls after close returns"
+                );
+
+                drop(client);
+                unsafe { actor::hew_actor_stop(actor) };
+                assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+                unregister_actor_events(test_id);
+                unsafe { hew_ws_server_close(server) };
+            },
+        );
+    }
+
+    #[test]
+    fn repeated_attach_close_reclaims_every_connection_authority() {
+        run_in_isolated_test_process(
+            "repeated_attach_close_reclaims_every_connection_authority",
+            "HEW_WS_ATTACH_RECLAIM_STRESS_ISOLATED",
+            || {
+                const ITERATIONS: usize = 64;
+
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                OUTER_CONN_DROPS.store(0, Ordering::Relaxed);
+                for _ in 0..ITERATIONS {
+                    let (server, conn, client) = attach_test_conn();
+                    let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                    let inner = unsafe { &*conn }.inner.clone();
+                    let weak_inner = Arc::downgrade(&inner);
+                    let delivery = attached_delivery(&inner);
+
+                    unsafe { hew_ws_close(conn) };
+                    assert!(delivery.is_revoked());
+                    drop(delivery);
+                    drop(client);
+                    unsafe { actor::hew_actor_stop(actor) };
+                    assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+                    unregister_actor_events(test_id);
+                    unsafe { hew_ws_server_close(server) };
+                    drop(inner);
+                    assert!(
+                        weak_inner.upgrade().is_none(),
+                        "connection inner allocation must be reclaimed after close"
+                    );
+                }
+                assert_eq!(
+                    OUTER_CONN_DROPS.load(Ordering::Relaxed),
+                    ITERATIONS,
+                    "every attached outer connection must be reclaimed exactly once"
+                );
             },
         );
     }
@@ -3184,25 +3765,33 @@ mod tests {
                 let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
+                ACTOR_RUNTIME_CALLS.store(0, Ordering::Relaxed);
 
                 unsafe { hew_ws_close(conn) };
 
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_millis(750)),
+                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
                     "reader should exit promptly when the attached connection closes"
                 );
-
-                unsafe {
-                    actor::hew_actor_send(actor, TEST_SEND_TEXT_TYPE, std::ptr::null_mut(), 0);
-                };
+                assert!(
+                    delivery.is_revoked(),
+                    "close must synchronously revoke actor delivery"
+                );
+                let runtime_calls_after_close = ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed);
+                assert_no_event(&rx, READER_READ_TIMEOUT + Duration::from_millis(100));
                 assert_eq!(
-                    recv_send_result(&rx, Duration::from_secs(1)),
-                    -1,
-                    "actor-side send_text should fail cleanly after the connection closes"
+                    ACTOR_RUNTIME_CALLS.load(Ordering::Relaxed),
+                    runtime_calls_after_close,
+                    "the reader must not call actor runtime functions after close returns"
                 );
 
                 drop(client);
-                teardown_attached_actor(actor, test_id, conn, server);
+                unsafe { actor::hew_actor_stop(actor) };
+                assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+                unregister_actor_events(test_id);
+                unsafe { hew_ws_server_close(server) };
             },
         );
     }
@@ -3216,6 +3805,8 @@ mod tests {
                 let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
+                let inner = unsafe { &*conn }.inner.clone();
+                let delivery = attached_delivery(&inner);
 
                 client.close(None).expect("client close frame");
 
@@ -3225,9 +3816,10 @@ mod tests {
                     "remote close should notify the actor exactly once"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_millis(750)),
+                    wait_for_reader_exit(&inner, Duration::from_millis(750)),
                     "reader should exit after the remote close handshake"
                 );
+                assert!(delivery.is_revoked());
                 assert_no_event(&rx, Duration::from_millis(200));
 
                 teardown_attached_actor(actor, test_id, conn, server);
@@ -3246,6 +3838,8 @@ mod tests {
                 let (server2, conn2, mut client2) = attach_test_conn();
                 let (actor1, test_id1, _rx1) = spawn_attached_actor(conn1);
                 let (actor2, test_id2, rx2) = spawn_attached_actor(conn2);
+                let inner1 = unsafe { &*conn1 }.inner.clone();
+                let inner2 = unsafe { &*conn2 }.inner.clone();
 
                 unsafe { actor::hew_actor_send(actor1, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
                 assert!(
@@ -3253,11 +3847,11 @@ mod tests {
                     "first actor should stop"
                 );
                 assert!(
-                    wait_for_reader_exit(conn1, Duration::from_secs(1)),
+                    wait_for_reader_exit(&inner1, Duration::from_secs(1)),
                     "first reader should exit after its actor stops"
                 );
                 assert!(
-                    !wait_for_reader_exit(conn2, Duration::from_millis(300)),
+                    !wait_for_reader_exit(&inner2, Duration::from_millis(300)),
                     "second reader should stay live when the first actor stops"
                 );
 

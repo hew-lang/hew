@@ -1,0 +1,20 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+fn main() {
+    let x = spawn Echo(seen: 0);
+    let v: Vec<LocalPid<Echo>> = Vec::new();
+    v.push(x);
+    match v.get(0) {
+        Some(e) => {
+            match await e.take(1) { Ok(e_v) => println(f"echo {e_v}"), Err(_) => println("err"), }
+        },
+        None => println("missing"),
+    }
+}

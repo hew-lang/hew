@@ -142,13 +142,13 @@ fn qualified_spawn_lowers_dotted_actor_name_and_pid_type() {
     assert_eq!(spawns.len(), 1, "expected one spawn, got {spawns:?}");
     let (actor_name, ty) = &spawns[0];
     assert_eq!(
-        actor_name, "bank.Account",
-        "lowered spawn must carry the dotted actor identity"
+        actor_name, "hew.bank.Account",
+        "lowered spawn must carry the canonical dotted actor identity"
     );
     assert_eq!(
         local_pid_inner(ty),
-        Some("bank.Account"),
-        "spawn result type must be LocalPid<bank.Account>, got {ty:?}"
+        Some("hew.bank.Account"),
+        "spawn result type must be LocalPid<hew.bank.Account>, got {ty:?}"
     );
 }
 

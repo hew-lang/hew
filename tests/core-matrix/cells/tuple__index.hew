@@ -1,0 +1,10 @@
+fn main() {
+    let a: (i64, string) = (1, "x0");
+    let b: (i64, string) = (2, "x1");
+    let v: Vec<(i64, string)> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    let (e_a, e_b) = e;
+    println(f"{e_a} {e_b}");
+}

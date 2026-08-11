@@ -541,6 +541,29 @@ fn let_bound_literal_unifies_to_i32_width_when_compared_against_i32_fn() {
     }
 }
 
+#[test]
+fn literal_backed_binding_keeps_numeric_mismatch_diagnostic() {
+    let output = check_source(
+        r"
+        fn take_i32(value: i32) {}
+
+        fn main() {
+            let decimal = 1.5;
+            take_i32(decimal);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "a literal-backed float local must not bypass the i32 argument boundary: {:#?}",
+        output.errors
+    );
+}
+
 /// `var` bindings with an untyped integer literal remain inferable (not
 /// immediately materialised to I64) so that use-site context can narrow them.
 /// Regression: if `var passed = 0` materialises to I64 before `passed +
@@ -640,6 +663,124 @@ fn for_range_mixed_width_bounds_resolves_to_wider_type() {
     assert!(
         output.errors.is_empty(),
         "mixed-width range bounds should resolve to the wider type: {:#?}",
+        output.errors
+    );
+}
+
+/// `for i in 0 .. n` where BOTH bounds are unannotated literal-coercible
+/// (the start literal `0` and an unannotated `let n = 6;` local) — and the
+/// loop variable `i` is later forced to `i32` by a use-site constraint
+/// (`Vec<i32>::push(i)`). Regression: `check_binary_op`'s Range arm created a
+/// fresh `TypeVar` for the range's element type but never unified it with
+/// `n`'s own binding var. The loop-var constraint narrowed only the fresh
+/// var to `i32`; `n`'s independent var still defaulted to `i64`, producing a
+/// `Range<i32>` whose own end-bound expression resolved to `i64` — a
+/// self-inconsistent range MIR correctly fail-closed on (`E_MIR`, corpus class
+/// D). Unifying the fresh var with both bounds' own types at creation ties
+/// the identity together so the loop-var constraint propagates to `n` too.
+#[test]
+fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
+    let source = r"
+        fn main() {
+            let n = 6;
+            let xs: Vec<i32> = Vec::new();
+            for i in 0 .. n {
+                xs.push(i);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "for-range with an unannotated end-bound local narrowed by loop-var \
+         use must not error: {:#?}",
+        output.errors
+    );
+}
+
+/// Same shape as above but the range appears AFTER an unrelated for-range
+/// over a genuinely concrete `i64` bound (`Vec::len()`). Regression: the
+/// unification fix must not leak the narrowed width across sibling
+/// for-range statements — each range's fresh `TypeVar` is independent.
+#[test]
+fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() {
+    let source = r"
+        fn main() {
+            let n = 6;
+            let xs: Vec<i32> = Vec::new();
+            for i in 0 .. n {
+                xs.push(i);
+            }
+            let ys: Vec<i32> = Vec::new();
+            ys.push(1);
+            let len = ys.len();
+            for e in 0 .. len {
+                println(e);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "a sibling for-range over a concrete i64 `.len()` bound must stay \
+         i64 regardless of an unrelated i32-narrowed range earlier in the \
+         same function: {:#?}",
+        output.errors
+    );
+}
+
+/// Mixed signedness is not an implicit range conversion. Keeping this rejected
+/// is the counterfactual for MIR's signedness-aware widening: every accepted
+/// mixed-width range has one unambiguous extension mode.
+#[test]
+fn for_range_mixed_signedness_bounds_are_rejected() {
+    let source = r"
+        fn main() {
+            let start: i32 = -2;
+            let end: u64 = 6;
+            for value in start .. end {
+                println(value);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("range bounds require compatible integer types")),
+        "mixed-signedness range must be rejected before MIR: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn numeric_branch_joins_accept_checker_selected_common_types() {
+    let source = r"
+        fn main() {
+            let flag = true;
+            let narrow_signed: i32 = -2;
+            let wide_signed: i64 = 4;
+            let signed = if flag { narrow_signed } else { wide_signed };
+            let narrow_unsigned: u16 = 65534;
+            let wide_unsigned: u64 = 65537;
+            let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
+            let float = if flag { narrow_signed } else { 4.5 };
+            let present: Option<i64> = Some(1);
+            let signed_if_let = if let Some(_) = present {
+                narrow_signed
+            } else {
+                wide_signed
+            };
+            println(signed);
+            println(unsigned);
+            println(float);
+            println(signed_if_let);
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "checker-selected branch normalizations must remain explicit downstream, not be rejected by the ownership graph: {:#?}",
         output.errors
     );
 }

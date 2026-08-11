@@ -1,0 +1,51 @@
+// A captured fluent chain transfers one YAML mapping owner, while get_field
+// creates an independent deep owner that survives closing the root.
+import std::encoding::yaml;
+
+fn early_exit(flag: bool) {
+    let value = yaml.object();
+    value.with("n", yaml.from_int(11));
+    let child = value.get_field("n");
+    if flag {
+        return;
+    }
+    println(child.get_int());
+}
+
+fn _panic_exit() {
+    let value = yaml.object();
+    value.with("n", yaml.from_int(12));
+    let _child = value.get_field("n");
+    panic("yaml value panic probe");
+}
+
+fn cancel_exit() {
+    let value = yaml.object();
+    value.with("n", yaml.from_int(13));
+    let _child = value.get_field("n");
+    var i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+    }
+}
+
+actor YamlCancelDriver {
+    receive fn drive() {
+        scope {
+            cancel_exit();
+        };
+    }
+}
+
+fn main() {
+    let value = yaml.object().with("n", yaml.from_int(9)).with_null("none");
+    let child = value.get_field("n");
+    value.close();
+    println(child.get_int());
+
+    // An invalid parent still consumes the child transfer.
+    let invalid = yaml.parse("[");
+    invalid.with("child", yaml.from_int(1));
+    invalid.free();
+    early_exit(true);
+}

@@ -5,7 +5,7 @@ std::fmt	tests/hew/fmt_test.hew	make test-hew-ratchet	fmt.
 std::option	tests/hew/option_test.hew	make test-hew-ratchet	option.
 std::result	tests/hew/result_test.hew	make test-hew-ratchet	result.
 std::math	tests/hew/math_test.hew	make test-hew-ratchet	math.
-std::failure	tests/vertical-slice/accept/on_down_hook.hew	make test-vertical-slice	DownNotification
+std::failure	tests/vertical-slice/accept/on_exit_hook_delivery.hew	make test-vertical-slice	CrashNotification
 std::io	tests/vertical-slice/accept/std_io_import_run.hew	make test-vertical-slice	io.write
 std::io::closable	tests/vertical-slice/accept/std_io_closable_import_run.hew	make test-vertical-slice	Closable
 std::io::scanner	tests/hew/scanner_test.hew	make test-hew-ratchet	scanner.
@@ -14,6 +14,7 @@ std::path	tests/hew/path_test.hew	make test-hew-ratchet	path.
 std::os	tests/hew/os_test.hew	make test-hew-ratchet	os.
 std::process	tests/hew/process_test.hew	make test-hew-ratchet	process.
 std::vec	tests/hew/vec_test.hew	make test-hew-ratchet	vec.
+std::arena	tests/vertical-slice/accept/arena_insert_get_roundtrip.hew	make test-vertical-slice	arena.new
 std::deque	tests/hew/deque_test.hew	make test-hew-ratchet	deque.
 std::iter	tests/hew/iter_test.hew	make test-hew-ratchet	iter::
 std::sort	tests/hew/sort_test.hew	make test-hew-ratchet	sort.

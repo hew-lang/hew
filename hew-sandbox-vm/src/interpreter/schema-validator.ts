@@ -62,6 +62,7 @@ const INSTRUCTION_OPS = new Set([
   "vector.new",
   "vector.push",
   "vector.get",
+  "vector.index",
   "vector.set",
   "vector.len",
   "vector.contains",

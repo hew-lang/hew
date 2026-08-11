@@ -1,0 +1,22 @@
+machine Counter {
+    events { Inc; Reset; }
+    state Zero;
+    state NonZero { value: i64; }
+    on Inc: Zero => NonZero { NonZero { value: 1 } }
+    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
+    on Reset: NonZero => Zero { Zero }
+    default { state }
+}
+
+fn main() {
+    var x = Zero;
+    x.step(Inc);
+    var y = Zero;
+    y.step(Inc);
+    y.step(Inc);
+    let v: Vec<Counter> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

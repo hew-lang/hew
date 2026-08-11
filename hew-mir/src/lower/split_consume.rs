@@ -479,7 +479,11 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::EnumCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::ValueSnapshotClone { dest, src, .. } => vec![*dest, *src],
-        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
+        Instr::ValueSnapshotDrop { value, guard, .. } => {
+            let mut places = vec![*value];
+            places.extend(*guard);
+            places
+        }
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -693,6 +697,16 @@ pub(super) fn propagate_whole_value_alias_roots(
     blocks: &[BasicBlock],
     candidate_locals: impl IntoIterator<Item = u32>,
 ) -> HashMap<u32, u32> {
+    propagate_whole_value_alias_roots_excluding_moves(blocks, candidate_locals, &HashSet::new())
+}
+
+/// Propagate whole-value aliases while treating exact owner-minting moves as
+/// provenance barriers.
+pub(super) fn propagate_whole_value_alias_roots_excluding_moves(
+    blocks: &[BasicBlock],
+    candidate_locals: impl IntoIterator<Item = u32>,
+    excluded_moves: &HashSet<(u32, usize)>,
+) -> HashMap<u32, u32> {
     let mut alias_of: HashMap<u32, u32> = HashMap::new();
     for local in candidate_locals {
         alias_of.insert(local, local);
@@ -703,8 +717,11 @@ pub(super) fn propagate_whole_value_alias_roots(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
+                    if excluded_moves.contains(&(block.id, instr_index)) {
+                        continue;
+                    }
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
                         // Only whole-value Local→Local copies propagate the
                         // alias. An interior-projection src is a payload
@@ -1113,7 +1130,7 @@ pub(super) fn attribute_field_binder_provenance(
             if defining_write {
                 continue;
             }
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(wl) = base_local(w) {
                     if field_binders.contains(&wl) {
@@ -1297,6 +1314,7 @@ mod slice3_invariants {
         HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new("handler"),
             name: "handler".to_string(),
             type_params: vec![],
             is_generator: false,
@@ -1354,6 +1372,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,
@@ -1796,6 +1815,7 @@ mod slice3_invariants {
                     | DropKind::WeakRelease
                     | DropKind::LambdaActorRelease
                     | DropKind::CowHeap { .. }
+                    | DropKind::VecIterCursor { .. }
                     | DropKind::RecordInPlace
                     | DropKind::AggregateRecursive
                     | DropKind::EnumInPlace

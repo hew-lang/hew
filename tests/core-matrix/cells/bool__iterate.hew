@@ -1,0 +1,10 @@
+fn main() {
+    let a: bool = true;
+    let b: bool = false;
+    let v: Vec<bool> = Vec::new();
+    v.push(a);
+    v.push(b);
+    for e in v {
+        println(f"{e}");
+    }
+}

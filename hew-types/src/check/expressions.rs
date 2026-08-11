@@ -1,3 +1,4 @@
+use super::branch_join::BranchArmExit;
 use super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
 use super::types::GenericLambdaSig;
 #[allow(
@@ -5,6 +6,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::env::{PlaceConflict, PlacePath};
 use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
 use crate::BuiltinType;
 
@@ -117,7 +119,7 @@ impl Checker {
             self.synthesize_inner(expr, span)
         });
         self.tail_ok_armed = prev_tail_ok_armed;
-        result
+        self.publish_checked_expression(expr, span, result)
     }
 
     pub(super) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
@@ -161,6 +163,28 @@ impl Checker {
         if resolved.is_instant() {
             return;
         }
+        // These compiler carriers have a closed Display ABI selected by their
+        // builtin discriminator in HIR/codegen (`hew_*_display`), with the
+        // shipped `std.builtins` impl supplying the source-level contract.
+        // The carrier representation deliberately stays canonical rather than
+        // inheriting a `std.builtins.*` nominal name, so a generic nominal-impl
+        // lookup alone cannot prove the implementation.  This is the same
+        // typed identity boundary used by f-string lowering, not a leaf-name
+        // exception; a user `NodeId` remains `builtin: None` and reaches the
+        // ordinary trait lookup below.
+        if matches!(
+            resolved,
+            Ty::Named {
+                builtin: Some(
+                    crate::BuiltinType::NodeId
+                        | crate::BuiltinType::Location
+                        | crate::BuiltinType::RemotePid
+                ),
+                ..
+            }
+        ) {
+            return;
+        }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
         // Display trait at all — in which case f-string interpolation can
@@ -168,23 +192,26 @@ impl Checker {
         // above. Falling back to the literal name `"Display"` keeps
         // pre-lang-item check-time tests (no stdlib loaded) working with the
         // implicit naming convention.
-        let display_trait = self
-            .lang_items
-            .display_trait()
-            .map_or_else(|| "Display".to_string(), str::to_owned);
+        let (display_trait, display_trait_key) =
+            self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
+                || ("Display".to_string(), "Display".to_string()),
+                |binding| {
+                    (
+                        binding.trait_name.clone(),
+                        binding.trait_id.full_path().to_string(),
+                    )
+                },
+            );
         if let Some(canonical) = resolved.canonical_lowering_name() {
             if self
                 .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display_trait.clone()))
+                .contains_key(&(canonical.to_string(), display_trait_key.clone()))
             {
                 return;
             }
         }
         if let Ty::Named { name, args, .. } = &resolved {
-            if self
-                .trait_impls_set
-                .contains(&(name.clone(), display_trait.clone()))
-            {
+            if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
                 return;
             }
             // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
@@ -193,7 +220,7 @@ impl Checker {
             // satisfies the obligation abstractly. The concrete `Display`
             // impl is selected per monomorphisation by HIR's static
             // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
-            if args.is_empty() && self.type_param_carries_bound(name, &display_trait) {
+            if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
                 return;
             }
         }
@@ -318,11 +345,25 @@ impl Checker {
                 else_block,
             } => {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                };
                 if let Some(eb) = else_block {
+                    self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&eb.0, &eb.1);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&eb.0, &else_ty),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
                 } else {
+                    // No `else`: the implicit fall-through arm runs with the
+                    // state the condition left behind and never consumes.
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 }
             }
@@ -556,7 +597,7 @@ impl Checker {
                                 let err_ty = self.subst.resolve(&err_ty);
                                 if !matches!(ret_err, Ty::Error) && !matches!(err_ty, Ty::Error) {
                                     let snapshot = self.subst.snapshot();
-                                    if unify(&mut self.subst, &ret_err, &err_ty).is_err() {
+                                    if !self.try_unify_with_owner_identity(&ret_err, &err_ty) {
                                         self.subst.restore(snapshot);
                                         self.report_error(
                                             TypeErrorKind::InvalidOperation,
@@ -748,8 +789,10 @@ impl Checker {
         right_ty: &Ty,
     ) {
         if integer_type_info(common_ty, self.pointer_width()).is_some() {
-            self.expect_type(common_ty, left_ty, &left.1);
-            self.expect_type(common_ty, right_ty, &right.1);
+            // Concrete, compatible widths deliberately keep their operand
+            // types: HIR carries the common result type and MIR inserts the
+            // required NumericCast before checked arithmetic. Only literal or
+            // inference-variable operands need contextual unification here.
             self.record_concrete_integer_operand(common_ty, left, left_ty);
             self.record_concrete_integer_operand(common_ty, right, right_ty);
         }
@@ -784,6 +827,16 @@ impl Checker {
             return;
         }
         let actual = binding.ty.clone();
+        // Keep the binding variable intact for unification. `expect_type`
+        // normalizes first, which resolves this `Var` to `IntLiteral` and
+        // loses the root that `unify` must promote to the concrete contextual
+        // width. This is the use-site inference path for `let n = 7; f(n)`.
+        if self.subst.resolve(&actual).is_numeric_literal()
+            && expected.is_numeric()
+            && self.try_unify_inference_with_owner_identity(expected, &actual)
+        {
+            return;
+        }
         self.expect_type(expected, &actual, span);
     }
 
@@ -935,8 +988,18 @@ impl Checker {
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
-            let clonable = matches!(resolved_elem, Ty::String | Ty::Bytes)
-                || self.vec_owned_element_admissible(&elem_ty);
+            // `Receiver<T>` has only the descriptor MOVE-in lane. An array
+            // repeat would need clone-in for every slot, which is forbidden.
+            let receiver_drop_only = matches!(
+                resolved_elem,
+                Ty::Named {
+                    builtin: Some(BuiltinType::Receiver),
+                    ..
+                }
+            );
+            let clonable = !receiver_drop_only
+                && (matches!(resolved_elem, Ty::String | Ty::Bytes)
+                    || self.vec_owned_element_admissible(&elem_ty));
             if !clonable {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -1010,6 +1073,7 @@ impl Checker {
         if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
             return Ty::Error;
         }
+        let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
         // Record the pattern resolution so HIR lowering can consume
@@ -1017,11 +1081,22 @@ impl Checker {
         // `WhileLet` and `Match` lowering.
         self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
         let then_ty = self.check_block(body, None);
+        let then_exit = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join_block(body, &then_ty),
+        };
         self.env.pop_scope();
         if let Some(block) = else_body {
+            self.env.restore_ownership(&entry);
             let else_ty = self.check_block(block, None);
+            let else_exit = BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: Self::arm_skips_join_block(block, &else_ty),
+            };
+            self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
         } else {
+            self.join_fall_through(&entry, then_exit);
             Ty::Unit
         }
     }
@@ -1039,35 +1114,242 @@ impl Checker {
 
     pub(super) fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
         if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
-            if let Expr::Identifier(name) = expr {
-                self.env.mark_moved(name, span.clone());
-            }
+            self.mark_expr_moved(expr, span);
         }
     }
 
-    fn ty_contains_affine_actor_transfer(ty: &Ty) -> bool {
+    /// Mark an identifier binding moved, unconditionally.
+    ///
+    /// Callers that have already PROVEN the value transfers ownership use this
+    /// directly instead of [`Self::mark_expr_moved_if_non_copy`]. The `Copy`
+    /// gate is not merely redundant there, it is wrong: an owned handle whose
+    /// members are all scalars (`MonitorRef { ref_id: u64 }`) derives `Copy`
+    /// structurally under a spelling that carries no negative impl, and the
+    /// gate would then silently skip the move — leaving two owners of one
+    /// registration. Ownership is decided by the transfer predicate, not by
+    /// the representation of the bytes.
+    /// Mark the PLACE an expression denotes as moved, unconditionally.
+    ///
+    /// The place is the root binding plus the projection steps taken from it,
+    /// so a field transfer (`await a.take(h.sock)`) records that `h.sock`
+    /// specifically is gone while `h`'s siblings stay usable. Consuming a
+    /// projection used to no-op here, which is how a transferred field could be
+    /// detached a second time through the same projection.
+    ///
+    /// Deliberately reports nothing: every site that consumes an expression
+    /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
+    /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
+    /// Reporting here as well would double-diagnose one consuming use.
+    fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+        let Some((root, path)) = Self::expr_place(expr) else {
+            return;
+        };
+        if !path.is_empty() {
+            self.env.mark_place_moved(&root, path, span.clone());
+            return;
+        }
+        let released_at = self
+            .env
+            .lookup_ref(&root)
+            .and_then(|binding| binding.released_at.clone());
+        if let Some(released_at) = released_at {
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                span.clone(),
+                format!(
+                    "cannot consume released resource `{root}`; its close obligation was already discharged"
+                ),
+            )
+            .with_note(released_at, "resource was closed here");
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+        self.env.mark_moved(&root, span.clone());
+    }
+
+    /// Resolve an expression to a checker PLACE: the root binding name plus the
+    /// projection steps taken from it.
+    ///
+    /// Tuple element access (`t.0`) parses as a field access with a numeric
+    /// field name, so field steps cover both spellings.
+    ///
+    /// Returns `None` for anything that is not a projection chain rooted in a
+    /// binding — indexing, calls, `this`. Those roots have no binding-level
+    /// ownership slot to attach a fact to, so nothing is recorded for them
+    /// rather than a guess being recorded; element-of-collection places are the
+    /// known remaining hole and belong to the MIR half of this family.
+    pub(super) fn expr_place(expr: &Expr) -> Option<(String, PlacePath)> {
+        match expr {
+            Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
+            Expr::FieldAccess { object, field } => {
+                let (root, mut path) = Self::expr_place(&object.0)?;
+                path.push(field.clone());
+                Some((root, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
+    fn render_place(root: &str, path: &[String]) -> String {
+        std::iter::once(root)
+            .chain(path.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// Report a use of `root`'s place at `path` that collides with a place
+    /// already consumed on this path, if it does.
+    pub(super) fn report_place_use_after_move(&mut self, root: &str, path: &[String], span: &Span) {
+        let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
+        else {
+            return;
+        };
+        // A place read only to project further into it is not a whole-value
+        // use of itself, at any depth: `o.inner` inside `o.inner.ticket` names
+        // an address, not the aggregate. Without this the partially-moved-root
+        // rule would fire on every ancestor of a moved place and stack one
+        // diagnostic per projection step on top of the real one.
+        if conflict == PlaceConflict::WholeOfPartial && self.place_base_depth > 0 {
+            return;
+        }
+        let place = Self::render_place(root, path);
+        let moved_place = Self::render_place(root, &moved_path);
+        let (message, suggestion) = match conflict {
+            PlaceConflict::Exact => (
+                format!("use of moved place `{place}`"),
+                format!(
+                    "`{place}` transferred its value away; re-initialise it \
+                     (`{place} = ...`) before using it again"
+                ),
+            ),
+            PlaceConflict::UnderMoved => (
+                format!("use of `{place}`, which lives inside moved place `{moved_place}`"),
+                format!(
+                    "`{moved_place}` transferred its value away, taking `{place}` with it; \
+                     read it before the transfer, or re-initialise `{moved_place}`"
+                ),
+            ),
+            PlaceConflict::WholeOfPartial => (
+                format!("use of `{place}` after its field `{moved_place}` was moved out"),
+                format!(
+                    "`{place}` is only partially owned here; use the fields that are still \
+                     owned, or re-initialise `{moved_place}` before using `{place}` whole"
+                ),
+            ),
+        };
+        let mut error = TypeError::new(TypeErrorKind::UseAfterMove, span.clone(), message)
+            .with_note(moved_at, "value was consumed here")
+            .with_suggestion(suggestion);
+        if let Some(source_module) = &self.current_module {
+            error = error.with_source_module(source_module.clone());
+        }
+        self.errors.push(error);
+    }
+
+    /// Whether `ty` carries a value whose SOLE ownership crosses an actor
+    /// message boundary — a substrate handle, or a user `#[resource]` /
+    /// `#[linear]` declaration.
+    ///
+    /// The builtin half delegates to
+    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], the single
+    /// authority HIR's intent stamping also reads. The nominal half is this
+    /// checker's own: `#[resource]` and `#[linear]` types have exactly one
+    /// ownership path, and MIR physically MOVES every message argument out of
+    /// the caller frame (`lower_value_for_move`), so a later use of the caller
+    /// binding is a genuine use-after-move. Without the nominal arm the caller
+    /// kept its binding live and both frames consumed the one value.
+    ///
+    /// Copy-on-write values (`string`, `Vec`, plain records, tuples of them)
+    /// are deliberately NOT here: the boundary copies them and both frames own
+    /// their own copy, which is the language's default value semantics. A
+    /// record that CONTAINS a resource is a different matter — see below.
+    ///
+    /// The walk is structural and total. It descends generic arguments, tuple
+    /// elements, array/slice elements, AND registered record/enum member types,
+    /// because containment is what decides ownership: `type Holder { socket:
+    /// Socket }` transfers the socket just as surely as `(Socket, i64)` does,
+    /// and sending one `Holder` twice gives the socket two drop paths. Skipping
+    /// the named-member edge left exactly that hole open while the tuple edge
+    /// was closed.
+    fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
+        let mut visiting = std::collections::HashSet::new();
+        self.ty_contains_affine_actor_transfer_guarded(ty, &mut visiting)
+    }
+
+    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
+    ///
+    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
+    /// some positions — notably a declared actor state-field type — spelled by
+    /// its qualified path with no `builtin` tag attached, so the tag test alone
+    /// misses it and the handle silently stayed shareable.
+    ///
+    /// The qualification requirement is load-bearing: `lookup_builtin_type`
+    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
+    /// is a clone-total record that must keep ordinary value semantics. Only
+    /// the dotted spelling is the stdlib declaration.
+    fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
+        name.contains('.')
+            && crate::lookup_builtin_type(name)
+                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+    }
+
+    /// Recursion body for [`Self::ty_contains_affine_actor_transfer`].
+    ///
+    /// `visiting` makes the walk total over recursive type graphs
+    /// (`type Node { next: Vec<Node> }`). Re-entering a name already on the
+    /// stack contributes no NEW ownership edge, so it answers `false` — the
+    /// neutral element of the `any(...)` disjunction — and the result is
+    /// decided by the non-recursive members. This mirrors the recursion guard
+    /// marker derivation already uses (`implements_marker_guarded`).
+    fn ty_contains_affine_actor_transfer_guarded(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> bool {
         match ty {
             Ty::CancellationToken => true,
-            Ty::Named { args, builtin, .. } => {
-                matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::Sender
-                            | BuiltinType::Receiver
-                            | BuiltinType::Stream
-                            | BuiltinType::Sink
-                            | BuiltinType::Duplex
-                            | BuiltinType::SendHalf
-                            | BuiltinType::RecvHalf
-                            | BuiltinType::Generator
-                            | BuiltinType::AsyncGenerator
-                            | BuiltinType::CancellationToken
-                    )
-                ) || args.iter().any(Self::ty_contains_affine_actor_transfer)
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+                    || Self::qualified_name_resolves_to_transferring_builtin(name)
+                    || self.registry.is_resource(name)
+                    || self.registry.is_linear(name)
+                {
+                    return true;
+                }
+                if args
+                    .iter()
+                    .any(|arg| self.ty_contains_affine_actor_transfer_guarded(arg, visiting))
+                {
+                    return true;
+                }
+                // A builtin carries no user member set to descend into, and its
+                // ownership verdict is already decided above.
+                if builtin.is_some() || !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let members: Vec<Ty> = self
+                    .registry
+                    .member_types(name)
+                    .map(<[Ty]>::to_vec)
+                    .unwrap_or_default();
+                let carries = members
+                    .iter()
+                    .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
+                visiting.remove(name);
+                carries
             }
-            Ty::Tuple(elements) => elements.iter().any(Self::ty_contains_affine_actor_transfer),
+            Ty::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.ty_contains_affine_actor_transfer_guarded(element, visiting)),
             Ty::Array(element, _) | Ty::Slice(element) => {
-                Self::ty_contains_affine_actor_transfer(element)
+                self.ty_contains_affine_actor_transfer_guarded(element, visiting)
             }
             _ => false,
         }
@@ -1084,8 +1366,8 @@ impl Checker {
         if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
             self.report_invalid_actor_send(&ty, error_span);
         }
-        if Self::ty_contains_affine_actor_transfer(&ty) {
-            self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
+        if self.ty_contains_affine_actor_transfer(&ty) {
+            self.mark_expr_moved(expr, move_span);
         }
     }
 
@@ -1146,6 +1428,21 @@ impl Checker {
             );
             return Ty::Error;
         }
+        let Ok(canonical_lifecycle_name) =
+            self.canonicalize_source_lifecycle_value_path(name, span)
+        else {
+            return Ty::Error;
+        };
+        // The lifecycle authority MINTS the canonical identity here; the
+        // lexical spelling stays available for the surfaces that must split a
+        // `module.Type::Variant` path into its parts. Splitting the minted
+        // identity instead would read `std` as a module binding — a rendered
+        // identity is never parsed back into one (rc1-F1 stage D).
+        let surface_name = name;
+        let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
+        if self.report_bare_const_import_ambiguity(name, span) {
+            return Ty::Error;
+        }
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
         // call-args or brace-body follow.  Dispatch to the fail-closed
@@ -1159,9 +1456,9 @@ impl Checker {
         //    (registered module-qualified types like "lifecycle.Lifecycle"
         //    are correctly resolved by resolve_identifier_variant via the
         //    type_defs flat-key path — don't short-circuit that path)
-        if let Some(dot_pos) = name.find('.') {
-            let candidate_module = &name[..dot_pos];
-            let rest = &name[dot_pos + 1..];
+        if let Some(dot_pos) = surface_name.find('.') {
+            let candidate_module = &surface_name[..dot_pos];
+            let rest = &surface_name[dot_pos + 1..];
             if let Some(colon_pos) = rest.find("::") {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];
@@ -1185,11 +1482,27 @@ impl Checker {
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding.def_span.clone();
-            if is_moved {
+            // The outermost place of an assignment target is written, not read:
+            // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
+            // that plugs the hole, not a use of the value that left.
+            let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if is_moved && !is_write_target {
+                let is_linear = matches!(
+                    &ty,
+                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                );
                 let mut err = TypeError::new(
-                    TypeErrorKind::UseAfterMove,
+                    if is_linear {
+                        TypeErrorKind::UseAfterConsume
+                    } else {
+                        TypeErrorKind::UseAfterMove
+                    },
                     span.clone(),
-                    format!("use of moved value `{name}`"),
+                    if is_linear {
+                        format!("UseAfterConsume: use of consumed linear value `{name}`")
+                    } else {
+                        format!("use of moved value `{name}`")
+                    },
                 );
                 if let Some(ref source_module) = self.current_module {
                     err = err.with_source_module(source_module.clone());
@@ -1208,6 +1521,12 @@ impl Checker {
                          use a single consuming call per binding",
                         ty.user_facing()
                     ));
+                } else if is_linear {
+                    err = err.with_suggestion(
+                        "a `#[linear]` binding has exactly one ownership path; invoke its \
+                         consuming method only once"
+                            .to_string(),
+                    );
                 } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
                     // The value's type has a clone path, so the canonical fix is
                     // to duplicate it before the consuming use and pass the copy.
@@ -1217,6 +1536,14 @@ impl Checker {
                     ));
                 }
                 self.errors.push(err);
+            }
+            // A whole-value use of a partially-moved aggregate would hand a
+            // second owner the storage that already moved out. Projection bases
+            // are exempt (handled inside the reporter, which is the one
+            // authority on that rule) and so are assignment targets, which
+            // write rather than read.
+            if !is_moved && !is_write_target {
+                self.report_place_use_after_move(name, &[], span);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
@@ -1236,15 +1563,33 @@ impl Checker {
                 }
             }
             ty
-        } else if self.fn_sigs.contains_key(name) {
+        } else if let Some(fn_sig_key) = self
+            // rc1-F1 stage A: canonical-first — a root fn used as a value
+            // resolves under its canonical `{root_module}.{name}` fn_sigs
+            // key; bare registrations (builtins, externs) resolve unchanged.
+            .root_canonical_fn_sig_key(name)
+            .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
+        {
             // Function name used as a value (e.g., variant constructor)
+            if let Some(source_identity) = self
+                .import_fn_name_aliases
+                .get(&(self.current_module.clone(), name.to_string()))
+                .cloned()
+            {
+                self.reject_wasm_native_only_function_identity(&source_identity, span);
+                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
+                    self.mark_module_owner_bindings_used(source_owner);
+                }
+            }
             if let Some(caller) = &self.current_function {
+                // The callee edge records the RESOLVED key so dead-code
+                // reachability stays aligned with canonical `fn_def_spans`.
                 self.call_graph
                     .entry(caller.clone())
                     .or_default()
-                    .insert(name.to_string());
+                    .insert(fn_sig_key.clone());
             }
-            let sig = self.fn_sigs[name].clone();
+            let sig = self.fn_sigs[&fn_sig_key].clone();
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the
             // same name (e.g. user `enum AppError { NotFound(string); }` shadows
@@ -1267,6 +1612,47 @@ impl Checker {
         }
     }
 
+    /// Reject a bare constant binding published by multiple imported owners.
+    /// The value environment retains one compatibility slot, so selecting it
+    /// before this check would silently choose the last registration.
+    fn report_bare_const_import_ambiguity(&mut self, name: &str, span: &Span) -> bool {
+        if name.contains('.') || name.contains("::") {
+            return false;
+        }
+        // A local/parameter in an inner body scope shadows imports normally.
+        // Only an outer import-scope binding can be ambiguous here.
+        if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
+            return false;
+        }
+        if self.current_module.is_none() && self.root_value_bindings.contains(name) {
+            return false;
+        }
+        let Some(owners) = self
+            .published_bare_const_owners
+            .get(&(self.current_module.clone(), name.to_string()))
+        else {
+            return false;
+        };
+        if owners.len() < 2 {
+            return false;
+        }
+        let candidates: Vec<String> = owners.iter().cloned().collect();
+        self.mark_ambiguous_import_owners_used(&candidates);
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousType,
+            span,
+            format!(
+                "ambiguous constant `{name}`: published by {} imported modules",
+                candidates.len()
+            ),
+            candidates
+                .iter()
+                .map(|candidate| format!("qualify the reference, e.g. `{candidate}`"))
+                .collect(),
+        );
+        true
+    }
+
     /// Look up whether any user-declared enum type (in `local_type_defs` or
     /// `source_type_defs`) has a variant named `variant_name`.  Returns the
     /// resolved `Ty` for that variant if found (unit variant → the enum type;
@@ -1277,6 +1663,28 @@ impl Checker {
     /// when `fn_sigs[variant_name].is_builtin_variant` is `true`, the builtin
     /// won the bare-name slot but a user-declared variant with the same name
     /// should take priority within this compilation unit.
+    /// Construct an enum nominal from the declaration authority already chosen
+    /// by the checker. An exact generated-enum owner retains the catalog's
+    /// builtin discriminator; every other source declaration wins over builtin
+    /// normalization even when its leaf spelling is `Option` or `Result`.
+    /// Non-source entries retain normal builtin canonicalization (including
+    /// imported aliases).
+    pub(super) fn variant_nominal_ty(&self, type_name: String, type_args: Vec<Ty>) -> Ty {
+        if self
+            .source_authorized_generated_enum_builtin(&type_name)
+            .is_some()
+        {
+            return Ty::normalize_named(type_name, type_args);
+        }
+        if self.local_type_defs.contains(type_name.as_str())
+            || self.source_type_defs.contains(type_name.as_str())
+        {
+            Ty::named(type_name, type_args)
+        } else {
+            Ty::normalize_named(type_name, type_args)
+        }
+    }
+
     fn find_user_variant_shadow_ty(&self, variant_name: &str) -> Option<Ty> {
         // Iterate over local types (user-declared in root or imported source modules).
         // Two-set iteration: local first, then source.  In practice most programs
@@ -1302,7 +1710,7 @@ impl Checker {
                 .iter()
                 .map(|_| Ty::Var(TypeVar::fresh()))
                 .collect();
-            let return_type = Ty::normalize_named(type_name.clone(), type_args.clone());
+            let return_type = self.variant_nominal_ty(type_name.clone(), type_args.clone());
             return Some(match variant {
                 VariantDef::Tuple(payload_tys) => {
                     // Substitute generic type params with their corresponding
@@ -1338,6 +1746,15 @@ impl Checker {
         reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
     )]
     pub(super) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
+        // `Machine::State` / `Enum::Variant` is a value expression, so it
+        // bypasses the ordinary TypeExpr resolver. Apply the same published
+        // bare-type ambiguity gate before a last-writer `type_defs` entry can
+        // select one machine/enum owner.
+        if let Some((type_prefix, _)) = name.rsplit_once("::") {
+            if !type_prefix.contains('.') && self.report_bare_type_scope_error(type_prefix, span) {
+                return Ty::Error;
+            }
+        }
         // Two-pass scan: user-declared (local/source) types win over builtin/
         // imported types when both declare a unit variant with the same bare name
         // (local-shadows-global rule).  Pass 1 considers only types recorded in
@@ -1352,7 +1769,7 @@ impl Checker {
             }
             if let Some(variant) = td.variants.get(name) {
                 if matches!(variant, VariantDef::Unit) {
-                    let ty = Ty::normalize_named(type_name.clone(), vec![]);
+                    let ty = self.instantiated_unit_variant_ty(type_name, td);
                     found = Some(ty);
                     break;
                 }
@@ -1368,7 +1785,7 @@ impl Checker {
                 }
                 if let Some(variant) = td.variants.get(name) {
                     if matches!(variant, VariantDef::Unit) {
-                        let ty = Ty::normalize_named(type_name.clone(), vec![]);
+                        let ty = self.instantiated_unit_variant_ty(type_name, td);
                         found = Some(ty);
                         break;
                     }
@@ -1380,7 +1797,20 @@ impl Checker {
             if let Some(pos) = name.rfind("::") {
                 let type_prefix = &name[..pos];
                 let variant_name = &name[pos + 2..];
-                if let Some(td) = self.type_defs.get(type_prefix) {
+                // A bare prelude/import binding may name a source-owned enum
+                // whose declaration identity is qualified.  Preserve the
+                // exact published owner before constructing the variant result
+                // so `LookupError::NotFound` agrees with a `LookupError`
+                // annotation that already resolved to `std.lookup_error`.
+                let canonical_type_prefix = if !self.local_type_defs.contains(type_prefix)
+                    && !self.source_type_defs.contains(type_prefix)
+                {
+                    self.published_bare_type_qualified(type_prefix)
+                        .unwrap_or_else(|| type_prefix.to_string())
+                } else {
+                    type_prefix.to_string()
+                };
+                if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
                             // Instantiate type params with fresh inference variables
@@ -1393,26 +1823,7 @@ impl Checker {
                             // declaring `None`) would collide in fn_sigs because the key is the
                             // bare variant name; without the guard, `A::None` could return
                             // `Named { B, [?] }`.
-                            let ty = if let Some(sig) = self.fn_sigs.get(variant_name).cloned() {
-                                let sig_names_correct_enum = sig
-                                    .return_type
-                                    .type_name()
-                                    .is_some_and(|n| Ty::names_match_qualified(n, type_prefix));
-                                if sig_names_correct_enum {
-                                    let mut ret = sig.return_type.clone();
-                                    for tp in &sig.type_params {
-                                        ret = ret
-                                            .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
-                                    }
-                                    ret
-                                } else {
-                                    // fn_sig belongs to a different enum; bare name is correct.
-                                    Ty::normalize_named(type_prefix.to_string(), vec![])
-                                }
-                            } else {
-                                // No fn_sig (monomorphic or machine variant) — bare name is correct.
-                                Ty::normalize_named(type_prefix.to_string(), vec![])
-                            };
+                            let ty = self.instantiated_unit_variant_ty(&canonical_type_prefix, td);
                             found = Some(ty);
                         }
                     }
@@ -1442,28 +1853,7 @@ impl Checker {
                         if let Some(td) = self.type_defs.get(canonical.as_str()) {
                             if let Some(variant) = td.variants.get(variant_name) {
                                 if matches!(variant, VariantDef::Unit) {
-                                    let ty = if let Some(sig) =
-                                        self.fn_sigs.get(variant_name).cloned()
-                                    {
-                                        let sig_names_correct_enum =
-                                            sig.return_type.type_name().is_some_and(|n| {
-                                                Ty::names_match_qualified(n, &canonical)
-                                            });
-                                        if sig_names_correct_enum {
-                                            let mut ret = sig.return_type.clone();
-                                            for tp in &sig.type_params {
-                                                ret = ret.substitute_named_param(
-                                                    tp,
-                                                    &Ty::Var(TypeVar::fresh()),
-                                                );
-                                            }
-                                            ret
-                                        } else {
-                                            Ty::normalize_named(canonical.clone(), vec![])
-                                        }
-                                    } else {
-                                        Ty::normalize_named(canonical.clone(), vec![])
-                                    };
+                                    let ty = self.instantiated_unit_variant_ty(&canonical, td);
                                     found = Some(ty);
                                 }
                             }
@@ -1525,6 +1915,21 @@ impl Checker {
             }
             Ty::Error
         }
+    }
+
+    /// Materialize a unit enum or machine-state constructor from the owning
+    /// declaration, not the globally shared variant-name signature.  A
+    /// generic `Lifecycle::Created` has no payload from which to infer `T`, so
+    /// it must introduce fresh variables that its expected type can unify;
+    /// consulting a bare `Created` signature lets an unrelated owner erase
+    /// that generic identity.
+    fn instantiated_unit_variant_ty(&self, type_name: &str, td: &TypeDef) -> Ty {
+        let args = td
+            .type_params
+            .iter()
+            .map(|_| Ty::Var(TypeVar::fresh()))
+            .collect();
+        self.variant_nominal_ty(type_name.to_string(), args)
     }
 
     #[allow(
@@ -1816,9 +2221,24 @@ impl Checker {
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
         let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+        let target = self
+            .trait_method_call_target_ids(trait_name, "at")
+            .map_or_else(
+                || crate::check::dispatch::CallTarget::Unsupported {
+                    reason: format!(
+                        "dynamic trait method `{trait_name}::at` has no registered declaration identity"
+                    ),
+                },
+                |(declaring_trait, method)| crate::check::dispatch::CallTarget::DynamicVtable {
+                    declaring_trait,
+                    method,
+                    slot,
+                },
+            );
         self.dyn_trait_method_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),
             crate::check::types::DynMethodCall {
+                target,
                 trait_name: trait_name.to_string(),
                 method_name: "at".to_string(),
                 slot,
@@ -2132,7 +2552,7 @@ impl Checker {
                         if !matches!(resolved_body, Ty::Error | Ty::Var(_)) {
                             let snapshot = self.subst.snapshot();
                             let mismatch =
-                                unify(&mut self.subst, &resolved_body, &resolved).is_err();
+                                !self.try_unify_with_owner_identity(&resolved_body, &resolved);
                             self.subst.restore(snapshot);
                             if mismatch {
                                 self.report_error(
@@ -2191,6 +2611,16 @@ impl Checker {
                 self.task_scope_depth -= 1;
                 Ty::Unit
             }
+            Expr::ScopeDeadline { duration, body } => {
+                // A deadline clause is unit-valued, but both of its children are
+                // still ordinary checked source. In particular, direct calls in
+                // the body must publish their canonical targets for HIR lowering;
+                // treating this node as the concurrency fallback's default Unit
+                // silently skipped the entire body.
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+                self.check_block(body, None);
+                Ty::Unit
+            }
             Expr::UnsafeBlock(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
@@ -2200,33 +2630,62 @@ impl Checker {
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
+                // Only the BODIES of a select are alternatives. Every arm's
+                // source is prepared before dispatch chooses a winner — all the
+                // asks are issued, all the receivers polled — so the sources run
+                // on one execution, in order, and handing the same affine value
+                // to two of them is a real double transfer. They thread
+                // sequentially; the same goes for the timeout duration, which
+                // arms the deadline before any arm fires.
+                let mut source_tys = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    let source_ty = self.synthesize_actor_concurrency_source(
+                    source_tys.push(self.synthesize_actor_concurrency_source(
                         &arm.source.0,
                         &arm.source.1,
                         "select arm source",
-                    );
-                    self.bind_pattern(&arm.binding.0, &source_ty, false, &arm.binding.1);
+                    ));
+                    self.env.pop_scope();
+                }
+                if let Some(tc) = timeout {
+                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+                }
+
+                // Dispatch happens here: from this state exactly one body runs.
+                let entry = self.env.ownership_snapshot();
+                let mut arm_exits = Vec::with_capacity(arms.len() + 1);
+                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                    self.env.push_scope();
+                    self.env.restore_ownership(&entry);
+                    self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)
                     } else {
                         self.synthesize(&arm.body.0, &arm.body.1)
                     };
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&arm.body.0, &body_ty),
+                    });
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
                     }
                     self.env.pop_scope();
                 }
                 if let Some(tc) = timeout {
-                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+                    self.env.restore_ownership(&entry);
                     let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
+                    arm_exits.push(BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&tc.body.0, &timeout_ty),
+                    });
                     if let Some(expected) = &result_ty {
                         self.expect_type(expected, &timeout_ty, &tc.body.1);
                     } else {
                         result_ty = Some(timeout_ty);
                     }
                 }
+                self.join_branch_ownership(&entry, &arm_exits);
                 result_ty.unwrap_or(Ty::Unit)
             }
             Expr::Join(exprs) => {
@@ -2268,7 +2727,7 @@ impl Checker {
                         Ty::result(
                             ok_ty,
                             Ty::Named {
-                                name: "NetError".to_string(),
+                                name: crate::stdlib::STD_NET_ERROR.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -2279,7 +2738,7 @@ impl Checker {
                         Ty::result(
                             inner_ty,
                             Ty::Named {
-                                name: "NetError".to_string(),
+                                name: crate::stdlib::STD_NET_ERROR.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -2403,7 +2862,7 @@ impl Checker {
         match expr {
             Expr::Block(block) => {
                 let actual = self.check_block(block, Some(expected));
-                if matches!(actual, Ty::Never | Ty::Error) {
+                let result = if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
                     let n = self.errors.len();
@@ -2413,18 +2872,24 @@ impl Checker {
                     } else {
                         actual
                     }
-                }
+                };
+                self.publish_checked_expression(expr, span, result)
             }
             _ => self.check_against(expr, span, expected),
         }
     }
 
     /// Check: verify expression against expected type (top-down).
+    pub(super) fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+        let result = self.check_against_inner(expr, span, expected);
+        self.publish_checked_expression(expr, span, result)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "literal coercion requires many match arms with range checks"
     )]
-    pub(super) fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+    fn check_against_inner(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
         // Resolve type variables so that Ty::Var(v) unified with e.g. Ty::I32
         // is seen as Ty::I32 by the coercion arms below.
         let resolved = self.subst.resolve(expected);
@@ -2479,11 +2944,22 @@ impl Checker {
                 // so they inherit this expression's armed state; the condition
                 // (checked above against `Bool`) does not.
                 self.tail_ok_armed = tail_ok_armed;
+                let entry = self.env.ownership_snapshot();
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
+                let then_exit = BranchArmExit {
+                    ownership: self.env.ownership_snapshot(),
+                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                };
                 let actual = if let Some(else_block) = else_block {
                     self.tail_ok_armed = tail_ok_armed;
+                    self.env.restore_ownership(&entry);
                     let else_ty =
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
+                    let else_exit = BranchArmExit {
+                        ownership: self.env.ownership_snapshot(),
+                        diverges: Self::arm_skips_join_expr(&else_block.0, &else_ty),
+                    };
+                    self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
                         Ty::Error
                     } else if matches!(then_ty, Ty::Never) && matches!(else_ty, Ty::Never) {
@@ -2492,6 +2968,7 @@ impl Checker {
                         self.subst.resolve(expected)
                     }
                 } else {
+                    self.join_fall_through(&entry, then_exit);
                     Ty::Unit
                 };
                 if matches!(actual, Ty::Never | Ty::Error) {
@@ -3151,6 +3628,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
+                    builtin: expected_builtin,
                     ..
                 },
             ) => {
@@ -3169,13 +3647,16 @@ impl Checker {
                     );
                 }
                 let short = name.rsplit("::").next().unwrap_or(name.as_str());
-                // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
-                // when expected is MyEnum).
-                let prefix_ok = !name.contains("::")
-                    || Ty::names_match_qualified(
-                        name.split("::").next().unwrap_or(""),
-                        expected_enum_name,
-                    );
+                // Reject a mismatched qualified owner (e.g.
+                // `right.Status::Ready` when the expected nominal is
+                // `left.Status`). Alias and current-module lexical spellings
+                // are projected by the shared exact variant-owner authority.
+                let expected_nominal = Ty::Named {
+                    name: expected_enum_name.clone(),
+                    args: expected_args.clone(),
+                    builtin: *expected_builtin,
+                };
+                let prefix_ok = self.variant_surface_owner_matches(name, &expected_nominal);
 
                 let mut handled = false;
                 if prefix_ok {
@@ -3353,10 +3834,31 @@ impl Checker {
                     ..
                 },
             ) => {
+                // Qualified unit-variant identifier (`SplitMode::SplitWords`)
+                // under a known expected nominal: the expected type's resolved
+                // identity is the resolution authority for its own source-leaf
+                // qualifier, exactly as pattern position already resolves a
+                // qualified variant against its scrutinee's nominal
+                // (`variant_surface_owner_matches`). This is identity-based:
+                // the prefix must canonicalize to the expected declaration's
+                // exact nominal — a local/source declaration claims the bare
+                // spelling first and a foreign owner never folds in — so two
+                // same-leaf enums cannot merge here; a mismatched owner falls
+                // through to synthesize-and-diagnose.
+                let variant_after_owner = name
+                    .rsplit_once("::")
+                    .filter(|(prefix, _)| !prefix.contains('.'))
+                    .filter(|_| self.variant_surface_owner_matches(name, expected))
+                    .map(|(_, variant)| variant.to_string());
                 let is_unit_variant = self
                     .lookup_type_def(expected_type_name)
-                    .and_then(|td| td.variants.get(name.as_str()).cloned())
-                    .is_some_and(|v| matches!(v, VariantDef::Unit));
+                    .and_then(|td| {
+                        td.variants
+                            .get(variant_after_owner.as_deref().unwrap_or(name.as_str()))
+                            .cloned()
+                    })
+                    .is_some_and(|v| matches!(v, VariantDef::Unit))
+                    && (variant_after_owner.is_some() || !name.contains("::"));
                 if is_unit_variant {
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,
@@ -3556,7 +4058,7 @@ impl Checker {
         // re-unifies). Roll the probe back so it commits nothing.
         let snapshot = self.subst.snapshot();
         let full_result = Ty::result(ok_ty.clone(), err_ty.clone());
-        let unifies_full = unify(&mut self.subst, &full_result, actual).is_ok();
+        let unifies_full = self.try_unify_with_owner_identity(&full_result, actual);
         self.subst.restore(snapshot);
         if unifies_full {
             return None;
@@ -3567,7 +4069,7 @@ impl Checker {
         // expression's recorded type and any inference variables settle against
         // the `Ok` payload.
         let snapshot = self.subst.snapshot();
-        if unify(&mut self.subst, &ok_ty, actual).is_ok() {
+        if self.try_unify_with_owner_identity(&ok_ty, actual) {
             self.tail_ok_coercions
                 .insert(SpanKey::in_module(span, self.current_module_idx));
             // Return the full `Result` as this expression's check-against
@@ -3924,6 +4426,27 @@ impl Checker {
                         // and defaults to the literal type (i64).
                         if left_is_coercible && right_is_coercible {
                             let var_tv = TypeVar::fresh();
+                            // When a bound is a bare identifier referring to an
+                            // unannotated `let`-bound literal (`let n = 6; ...
+                            // 0 .. n`), that identifier's OWN inference var
+                            // (from `infer_integer_literal_binding_type`) is
+                            // already bound to `IntLiteral` by the time this
+                            // range is checked — it is a SEPARATE unknown from
+                            // the range's fresh `var_tv`. A later use-site
+                            // constraint on the loop variable (e.g.
+                            // `vec.push(i)` forcing `i32`) narrows only
+                            // `var_tv`; the bound identifier's own var still
+                            // defaults to `i64` independently, producing a
+                            // `Range<i32>` whose own end-bound expression
+                            // resolves to `i64` — a self-inconsistent range
+                            // MIR correctly rejects as a narrowing. Record each
+                            // identifier bound's own binding var alongside the
+                            // deferred span so `apply_deferred_range_bound_types`
+                            // can promote it too once `var_tv` resolves.
+                            let left_binding_var =
+                                Self::coercible_identifier_binding_var(&self.env, &left.0);
+                            let right_binding_var =
+                                Self::coercible_identifier_binding_var(&self.env, &right.0);
                             // Stash the bound spans + literal values for the
                             // post-inference pass that re-records them with
                             // the concrete resolved element type.
@@ -3975,6 +4498,7 @@ impl Checker {
                                 extract_integer_literal_value(&left.0),
                                 left_inner_span,
                                 self.current_module_idx,
+                                left_binding_var,
                             ));
                             self.deferred_range_bounds.push((
                                 right.1.clone(),
@@ -3982,6 +4506,7 @@ impl Checker {
                                 extract_integer_literal_value(&right.0),
                                 right_inner_span,
                                 self.current_module_idx,
+                                right_binding_var,
                             ));
                             Ty::range(Ty::Var(var_tv))
                         } else {
@@ -4004,6 +4529,26 @@ impl Checker {
                     Ty::range(left_ty)
                 }
             }
+        }
+    }
+
+    /// If `expr` is a bare identifier bound (via an unannotated `let`) to a
+    /// still-open literal-defaulting `TypeVar`, return that var.
+    ///
+    /// Only `infer_integer_literal_binding_type` creates this shape — it
+    /// gives an unannotated `let n = 6;` its own `Ty::Var` (immediately
+    /// unified with `IntLiteral`, but re-promotable later, same as any other
+    /// literal-defaulting var) rather than the plain `Ty::IntLiteral` tag a
+    /// bare literal expression carries. A range-bound identifier of this
+    /// shape needs its OWN var promoted alongside the range's fresh element
+    /// var — see the call site in `check_binary_op`'s Range arm.
+    fn coercible_identifier_binding_var(env: &crate::env::TypeEnv, expr: &Expr) -> Option<TypeVar> {
+        let Expr::Identifier(name) = expr else {
+            return None;
+        };
+        match env.lookup_ref(name)?.ty {
+            Ty::Var(v) => Some(v),
+            _ => None,
         }
     }
 
@@ -4220,16 +4765,14 @@ impl Checker {
                     )
                 }
             }
-            UnsupportedComparison::PayloadEnum { type_name, reason } => {
-                (
-                    format!(
-                        "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
-                        Self::structural_eq_ineligibility_reason(reason)
-                    ),
-                    "match on the enum and compare eligible payload fields in the relevant arms"
-                        .to_string(),
-                )
-            }
+            UnsupportedComparison::PayloadEnum { type_name, reason } => (
+                format!(
+                    "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
+                    Self::structural_eq_ineligibility_reason(reason)
+                ),
+                "match on the enum and compare eligible payload fields in the relevant arms"
+                    .to_string(),
+            ),
             UnsupportedComparison::EnumOrdering(type_name) => (
                 format!("`{op}` is not supported for enum `{type_name}`"),
                 "match on the enum and compare an explicit value in each arm".to_string(),
@@ -4318,9 +4861,15 @@ impl Checker {
     }
 
     pub(super) fn require_unsafe(&mut self, name: &str, span: &Span) {
-        let scoped_unsafe = scoped_module_item_name(self.current_module.as_deref(), name)
-            .is_some_and(|qualified| self.unsafe_functions.contains(&qualified));
-        if !self.in_unsafe && (scoped_unsafe || self.unsafe_functions.contains(name)) {
+        // rc1-F1 stage B: `unsafe` gating is derived from the extern table's
+        // declaration index — a call requires `unsafe` exactly when its
+        // resolved declaration key names a registered extern declaration.
+        // The canonical-owner probe covers root extern declarations, which
+        // key `{root_module}.{name}` inside the checker while root call
+        // sites spell the bare leaf.
+        let scoped_unsafe = scoped_module_item_name(self.canonical_fn_owner(), name)
+            .is_some_and(|qualified| self.extern_table.requires_unsafe(&qualified));
+        if !self.in_unsafe && (scoped_unsafe || self.extern_table.requires_unsafe(name)) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -4398,6 +4947,7 @@ impl Checker {
                 span.clone(),
                 "by-value function parameters are borrowed; the caller retains ownership"
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec![format!(
                 "use `{name}.clone()` to materialize an owned replacement"
@@ -4630,7 +5180,7 @@ impl Checker {
             kind: TypeErrorKind::BorrowedParamReturn,
             span: span.clone(),
             message,
-            notes: vec![(span.clone(), note)],
+            notes: vec![(span.clone(), note, self.current_module.clone())],
             suggestions: vec![suggestion],
             source_module: self.current_module.clone(),
         });
@@ -5259,6 +5809,7 @@ impl Checker {
                 "handle-bearing structs are dropped field-by-field; returning the raw handle \
                  bypasses that ownership proof"
                     .to_string(),
+                self.current_module.clone(),
             )],
             suggestions: vec![
                 "use a dedicated consume/release API instead of returning the raw handle field"
@@ -5344,6 +5895,26 @@ impl Checker {
         if let Expr::Identifier(name) = &object.0 {
             if name == "self" {
                 if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
+                    let self_ty = self.current_machine_transition.as_ref().map_or(
+                        Ty::Error,
+                        |(machine_name, _, _)| Ty::Named {
+                            builtin: None,
+                            name: machine_name.clone(),
+                            args: self
+                                .lookup_type_def(machine_name)
+                                .map_or_else(Vec::new, |def| {
+                                    def.type_params
+                                        .iter()
+                                        .map(|param| Ty::Named {
+                                            builtin: None,
+                                            name: param.clone(),
+                                            args: vec![],
+                                        })
+                                        .collect()
+                                }),
+                        },
+                    );
+                    self.publish_checked_expression(&object.0, &object.1, self_ty);
                     return ty;
                 }
             }
@@ -5389,16 +5960,18 @@ impl Checker {
         //   - object is a bare `Expr::Identifier`
         //   - field does NOT contain `::` (plain const name, not a variant)
         //   - receiver is not a value binding or known type
-        //   - `"{name}.{field}"` IS registered in env (i.e. exported from the module)
-        // The env lookup is the authoritative guard: `register_user_module` inserts
-        // `module_short.CONST_NAME` into env for every `pub const` in the imported
-        // module, so any key found there is a valid exported constant.
+        //   - the lexical module binding resolves to an exact owner-qualified
+        //     constant key registered in env
         if let Expr::Identifier(name) = &object.0 {
             if !field.contains("::") {
                 let receiver_is_binding = self.env.lookup_ref(name).is_some();
                 let receiver_is_known_type = self.type_defs.contains_key(name);
                 if !receiver_is_binding && !receiver_is_known_type {
-                    let qualified_key = format!("{name}.{field}");
+                    let lexical_key = format!("{name}.{field}");
+                    let qualified_key = self
+                        .module_import_bindings
+                        .get(&(self.current_module.clone(), name.clone()))
+                        .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
                         if self.modules.contains(name) {
@@ -5435,27 +6008,22 @@ impl Checker {
                                 // native-only stdlib function is itself a
                                 // `PlatformLimitation` rejection on wasm32, mirroring
                                 // the call-form guard in methods.rs.
-                                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source
-                                // of truth; both guards iterate the same slice.
-                                if self.wasm_target && !self.user_modules.contains(name.as_str()) {
-                                    for &(module, feature) in
-                                        Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS
-                                    {
-                                        if name.as_str() == module {
-                                            self.reject_wasm_feature(span, feature);
-                                        }
-                                    }
-                                    // crypto.random_bytes and its fallible twin depend on a
-                                    // native-only secure entropy source absent from the wasm32
-                                    // link set.
-                                    if name.as_str() == "crypto"
-                                        && matches!(field, "random_bytes" | "try_random_bytes")
-                                    {
-                                        self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::CryptoRandom,
-                                        );
-                                    }
+                                // The manifest-generated rejection slice is the
+                                // single source; both guards iterate it.
+                                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                                    self.reject_wasm_feature(span, feature);
+                                }
+                                self.reject_wasm_native_only_module_function(name, field, span);
+                                // crypto.random_bytes and its fallible twin depend on a
+                                // native-only secure entropy source absent from the wasm32
+                                // link set.
+                                if self.is_shipped_crypto_module(name)
+                                    && matches!(field, "random_bytes" | "try_random_bytes")
+                                {
+                                    self.reject_wasm_feature(
+                                        span,
+                                        WasmUnsupportedFeature::CryptoRandom,
+                                    );
                                 }
                                 return ty;
                             }
@@ -5498,7 +6066,20 @@ impl Checker {
             }
         }
 
+        // The object is the BASE of this projection, not a whole-value use of
+        // itself: `h.other` stays legal after `h.sock` moved out.
+        self.place_base_depth += 1;
         let obj_ty = self.synthesize(&object.0, &object.1);
+        self.place_base_depth -= 1;
+        // Reading this projection after it (or storage under it) was consumed
+        // is a use-after-move. Assignment targets are exempt: the outermost
+        // target place is written, not read.
+        if self.place_write_depth == 0 || self.place_base_depth > 0 {
+            if let Some((root, mut path)) = Self::expr_place(&object.0) {
+                path.push(field.to_string());
+                self.report_place_use_after_move(&root, &path, span);
+            }
+        }
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args, .. } => {
@@ -5574,9 +6155,15 @@ impl Checker {
                             // rather than re-litigating bound checking at a
                             // sibling site.
                             self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
+                            // The child type is stored as the raw user-spelled
+                            // string (`bank.Account`); canonicalize its module
+                            // prefix to the registered actor identity so the
+                            // synthesised `LocalPid` carries the same dotted
+                            // identity a spawn handle does and method dispatch
+                            // keys `fn_sigs` correctly.
                             let child_ty = Ty::Named {
                                 builtin: None,
-                                name: child_type,
+                                name: self.canonical_supervisor_child_type(&child_type),
                                 args: vec![],
                             };
                             if slot_kind == crate::check::types::ChildKind::Pool {
@@ -5812,14 +6399,43 @@ impl Checker {
         // the per-arm guard check and pattern binding are not tail positions, so
         // re-arm immediately before each arm body.
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        // Exactly one arm BODY runs, so each body starts from the ownership
+        // state at the match's entry rather than from whatever the previous arm
+        // left behind, and the state after the match is the union over the arms
+        // that actually reach the join.
+        //
+        // Guards are not bodies. A guard runs whenever its pattern matched and
+        // every earlier arm did not, so guard N and body N+1 both execute on one
+        // path. Guards therefore thread through a running fall-through state —
+        // the same treatment an `else if` chain's conditions get — and each body
+        // starts from the fall-through its own guard produced.
+        //
+        // A guard that DIVERGES is the exception, and it cuts both ways. A later
+        // arm is reached only when this arm's pattern failed, and then the guard
+        // never ran at all — so a diverging guard contributes nothing to the
+        // fall-through. Its own body is unreachable for the same reason, so the
+        // body's exit must stay out of the join no matter what the body does.
+        let ownership_entry = self.env.ownership_snapshot();
+        let mut fall_through = ownership_entry.clone();
+        let mut arm_exits = Vec::with_capacity(arms.len());
         for arm in arms {
             self.env.push_scope();
+            self.env.restore_ownership(&fall_through);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
-            // Check guard if present
+            let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
-                self.check_against(guard, gs, &Ty::Bool);
+                let guard_ty = self.check_against(guard, gs, &Ty::Bool);
+                if Self::arm_skips_join_expr(guard, &guard_ty) {
+                    guard_diverges = true;
+                    // Rewind the guard's consumes: neither the unreachable body
+                    // below nor any later arm ever observes them.
+                    self.env.restore_ownership(&fall_through);
+                } else {
+                    // The guard ran and returned false; later arms see its state.
+                    fall_through = self.env.ownership_snapshot();
+                }
             }
 
             self.tail_ok_armed = tail_ok_armed;
@@ -5828,6 +6444,10 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            arm_exits.push(BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
+            });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
             if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
@@ -5836,6 +6456,7 @@ impl Checker {
 
             self.env.pop_scope();
         }
+        self.join_branch_ownership(&ownership_entry, &arm_exits);
         // Leave the flag disarmed: the arm loop set it per-arm, and the
         // exhaustiveness check below is not a tail position.
         self.tail_ok_armed = false;
@@ -6172,6 +6793,12 @@ impl Checker {
         variant_name: &str,
         span: &Span,
     ) -> Ty {
+        let lifecycle_surface = format!("{module_short}.{type_name}::{variant_name}");
+        let Ok(canonical_lifecycle) =
+            self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
+        else {
+            return Ty::Error;
+        };
         if !self.modules.contains(module_short) {
             let similar =
                 crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
@@ -6189,8 +6816,7 @@ impl Checker {
         ));
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
-                .module_type_exports
-                .get(module_short)
+                .module_type_exports_for_binding(module_short)
                 .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
                 .unwrap_or_default();
             self.report_error_with_suggestions(
@@ -6214,7 +6840,15 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let qualified_type = format!("{module_short}.{type_name}");
+        let qualified_type = canonical_lifecycle
+            .as_deref()
+            .and_then(|path| path.split_once("::").map(|(ty, _)| ty.to_string()))
+            .unwrap_or_else(|| {
+                format!(
+                    "{}.{type_name}",
+                    self.canonical_module_import_owner(module_short)
+                )
+            });
         match variant {
             VariantDef::Unit => {
                 // Instantiate type params with fresh inference vars so generic
@@ -6274,8 +6908,67 @@ impl Checker {
     }
 
     #[expect(
+        clippy::type_complexity,
+        reason = "exact variant-owner lookup carries the owner, fields, and type parameters together"
+    )]
+    fn lookup_struct_variant_init(
+        &self,
+        surface_name: &str,
+    ) -> Option<(String, Vec<(String, Ty)>, Vec<String>)> {
+        let variant_name = surface_name.rsplit("::").next().unwrap_or(surface_name);
+        let mut candidates: Vec<(String, Vec<(String, Ty)>, Vec<String>)> = self
+            .type_defs
+            .iter()
+            .filter_map(|(type_name, td)| {
+                let canonical_type_name = self
+                    .canonical_nominal_name(type_name)
+                    .unwrap_or_else(|| type_name.clone());
+                let expected = Ty::Named {
+                    name: canonical_type_name.clone(),
+                    args: vec![],
+                    builtin: None,
+                };
+                if !self.variant_surface_owner_matches(surface_name, &expected) {
+                    return None;
+                }
+                match td
+                    .variants
+                    .get(variant_name)
+                    .or_else(|| td.variants.get(surface_name))
+                {
+                    Some(VariantDef::Struct(fields)) => {
+                        Some((canonical_type_name, fields.clone(), td.type_params.clone()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        candidates.dedup_by(|a, b| a.0 == b.0);
+
+        if !surface_name.contains("::") {
+            let mut local = candidates
+                .iter()
+                .filter(|(type_name, _, _)| {
+                    self.local_type_defs.contains(type_name)
+                        || self.source_type_defs.contains(type_name)
+                })
+                .cloned();
+            let first = local.next();
+            if first.is_some() && local.next().is_none() {
+                return first;
+            }
+        }
+
+        match candidates.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    #[expect(
         clippy::too_many_lines,
-        reason = "trait impl checking requires many cases"
+        reason = "struct and enum-variant initialization share one exact-owner diagnostic path"
     )]
     pub(super) fn check_struct_init(
         &mut self,
@@ -6285,6 +6978,13 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        let Ok(canonical_lifecycle_name) =
+            self.canonicalize_source_lifecycle_value_path(name, span)
+        else {
+            return Ty::Error;
+        };
+        let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
+
         // Module-qualified diagnostic pre-pass: when `name` has the shape
         // `module.Type::Variant` and `module` is a known module alias, route
         // the failure modes (no exported type / no such variant) through the
@@ -6295,6 +6995,7 @@ impl Checker {
         // qualified-name layout into the diagnostic and gives the user no
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
+        let mut resolved_module_variant_name = None;
         if let Some(dot) = name.find('.') {
             let module_short = &name[..dot];
             if self.modules.contains(module_short) {
@@ -6308,8 +7009,7 @@ impl Checker {
                     ));
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
-                            .module_type_exports
-                            .get(module_short)
+                            .module_type_exports_for_binding(module_short)
                             .map(|set| {
                                 crate::error::find_similar(
                                     type_name,
@@ -6340,10 +7040,18 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    // Both type and variant exist — fall through.
+                    // Both type and variant exist. Carry the exact declaration
+                    // owner into the shared struct-variant path; retaining the
+                    // lexical module alias here would leave both its surface
+                    // alias and the full declaration as candidates.
+                    resolved_module_variant_name = Some(format!(
+                        "{}.{type_name}::{variant_name}",
+                        self.canonical_module_import_owner(module_short)
+                    ));
                 }
             }
         }
+        let name = resolved_module_variant_name.as_deref().unwrap_or(name);
         // Fail closed under qualified-by-default before binding a bare record
         // constructor: a bare name published by more than one module is
         // ambiguous, and one exported but published by none is not in scope.
@@ -6388,13 +7096,21 @@ impl Checker {
         //
         // `name` at this point may be qualified (`module.Handle`) after
         // `published_bare_type_qualified` resolves a bare import reference.
-        // `user_opaque_type_names` stores only unqualified names (from `td.name`),
-        // so we must also check the unqualified component of the qualified name.
+        // `user_opaque_type_names` stores exact declaration identities. A
+        // same-leaf type from another module must not acquire opacity.
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
-        let is_declaring_module = self.local_type_defs.contains(unqualified);
+        let canonical_owner_is_current_source = name
+            .rsplit_once('.')
+            .is_some_and(|(owner, _)| self.checking_canonical_stdlib_source(owner));
+        let is_declaring_module = self.local_type_defs.contains(unqualified)
+            // A bundled stdlib package can contain several source files that
+            // are registered into one source-owner frame.  Let that proven
+            // source owner build its opaque wrapper stubs, but never extend
+            // the exemption to an importer or to a user module with a
+            // std-looking spelling.
+            || canonical_owner_is_current_source;
         let is_opaque_handle = !is_declaring_module
             && (self.user_opaque_type_names.contains(name)
-                || self.user_opaque_type_names.contains(unqualified)
                 || self.canonical_owned_handle_type_name(name).is_some());
         if is_opaque_handle {
             self.report_error(
@@ -6410,12 +7126,18 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let td = if is_bare_constructor {
-            self.module_local_type_def(unqualified)
+        let module_local_name = if is_bare_constructor {
+            self.current_module_identity().and_then(|owner| {
+                let qualified = format!("{owner}.{unqualified}");
+                self.type_defs.contains_key(&qualified).then_some(qualified)
+            })
         } else {
             None
-        }
-        .or_else(|| self.lookup_type_def(name));
+        };
+        let td = module_local_name
+            .as_deref()
+            .and_then(|qualified| self.lookup_type_def(qualified))
+            .or_else(|| self.lookup_type_def(name));
         if let Some(td) = td {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
@@ -6572,29 +7294,15 @@ impl Checker {
             // The helper short-circuits cleanly for bound-free names and
             // enforces the TypeDef-owned bound map for every generic nominal
             // whose arguments were inferred from the fields above.
-            self.enforce_type_def_instantiation_bounds(name, &type_args, span);
+            let result_name = module_local_name.as_deref().unwrap_or(name);
+            self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
             Ty::Named {
                 builtin: None,
-                name: name.to_string(),
+                name: result_name.to_string(),
                 args: type_args,
             }
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
-            self.type_defs.iter().find_map(|(type_name, td)| {
-                let short = name.rsplit("::").next().unwrap_or(name);
-                // For qualified names (e.g., Keeper::Holding), verify prefix
-                if name.contains("::") {
-                    let prefix = name.split("::").next().unwrap_or("");
-                    if prefix != type_name {
-                        return None;
-                    }
-                }
-                match td.variants.get(name).or_else(|| td.variants.get(short)) {
-                    Some(VariantDef::Struct(fields)) => {
-                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
-                    }
-                    _ => None,
-                }
-            })
+            self.lookup_struct_variant_init(name)
         {
             // Infer generic type args from field values, mirroring the plain-struct path.
             let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
@@ -6893,13 +7601,13 @@ impl Checker {
                         // entry (which is copied from the module's own decl, so it
                         // is not clobbered by a same-named root/other-module type).
                         // Fail closed before HIR/MIR rather than misroute.
-                        let is_actor_export = self
+                        let actor_identity = self
                             .resolve_module_type(module, field)
-                            .is_some_and(|td| td.kind == TypeDefKind::Actor);
-                        if !is_actor_export {
+                            .filter(|td| td.kind == TypeDefKind::Actor)
+                            .map(|td| td.name);
+                        let Some(actor_identity) = actor_identity else {
                             let similar = self
-                                .module_type_exports
-                                .get(module)
+                                .module_type_exports_for_binding(module)
                                 .map(|set| {
                                     crate::error::find_similar(
                                         field,
@@ -6919,18 +7627,14 @@ impl Checker {
                             // calls on a `Ty::Error` receiver short-circuit),
                             // keeping a single clear diagnostic.
                             return Err(());
-                        }
+                        };
                         self.used_modules
                             .borrow_mut()
                             .insert(ImportKey::new(self.current_module.clone(), module.clone()));
-                        // Keep the module qualifier: the dotted
-                        // `{module}.{field}` key IS the actor's identity in
-                        // `type_defs`/`fn_sigs`, and the spawn result type
-                        // (`LocalPid<bank.Account>`) is what every ask site
-                        // and the MIR layout lookup key on. Stripping it to
-                        // the bare name made two same-named module actors
-                        // indistinguishable below the checker.
-                        Some(format!("{module}.{field}"))
+                        // Keep the exact source identity recovered through the
+                        // lexical module binding. The surface spelling may be
+                        // an alias or share its leaf with another module.
+                        Some(actor_identity)
                     } else {
                         None
                     }
@@ -7064,6 +7768,11 @@ impl Checker {
         candidate_modules: &[String],
         span: &Span,
     ) {
+        let candidate_identities: Vec<String> = candidate_modules
+            .iter()
+            .map(|module| format!("{module}.{name}"))
+            .collect();
+        self.mark_ambiguous_import_owners_used(&candidate_identities);
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))
@@ -7091,6 +7800,501 @@ impl Checker {
         );
     }
 
+    fn produced_fact_at(&self, span: &Span) -> Option<ProducedValueFact> {
+        self.produced_value_ownership
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+            .cloned()
+    }
+
+    fn join_produced_facts(&self, spans: impl IntoIterator<Item = Span>) -> ProducedValueFact {
+        let mut facts = spans
+            .into_iter()
+            .filter_map(|span| self.produced_fact_at(&span));
+        let Some(first) = facts.next() else {
+            return ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown);
+        };
+        if facts.all(|fact| {
+            fact.ownership == first.ownership && fact.receiver_span == first.receiver_span
+        }) {
+            ProducedValueFact {
+                arguments: Vec::new(),
+                ..first
+            }
+        } else {
+            ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown)
+        }
+    }
+
+    fn non_empty_produced_join(
+        children: impl IntoIterator<Item = SpanKey>,
+    ) -> Option<ProducedValueDependency> {
+        let children: Vec<_> = children.into_iter().collect();
+        (!children.is_empty()).then_some(ProducedValueDependency::Join(children))
+    }
+
+    fn argument_is_proven_non_owning(&self, span: &Span) -> bool {
+        let Some(ty) = self
+            .expr_types
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+            .map(|ty| self.subst.resolve(ty))
+        else {
+            return false;
+        };
+        ty.is_copy() || self.registry.implements_marker(&ty, MarkerTrait::Copy)
+    }
+
+    fn provisional_argument_boundaries(
+        &self,
+        args: &[CallArg],
+    ) -> Vec<crate::runtime_call::ProducedArgumentBoundary> {
+        use crate::runtime_call::ProducedArgumentBoundary as Boundary;
+
+        args.iter()
+            .map(|arg| {
+                if self.argument_is_proven_non_owning(&arg.expr().1) {
+                    Boundary::Borrow
+                } else {
+                    Boundary::Unknown
+                }
+            })
+            .collect()
+    }
+
+    /// Complete one public expression-checking entry point.
+    ///
+    /// Some checking paths record a more precise source-expression type before
+    /// returning their contextual result. In particular, tail-`Ok` coercion
+    /// returns the surrounding `Result` while the source span must retain its
+    /// payload type for lowering. Therefore completion fills an absent type but
+    /// never overwrites an existing one, and derives ownership from that
+    /// authoritative recorded type. A nested `synthesize` reached from
+    /// `check_against` may complete the same source occurrence first, so the
+    /// ownership/dependency publication is likewise deliberately single-shot.
+    fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.expr_type_source_modules
+            .entry(key.clone())
+            .or_insert_with(|| self.current_module.clone());
+        let published_ty = self
+            .expr_types
+            .entry(key.clone())
+            .or_insert_with(|| result.clone())
+            .clone();
+        let first_publication = self.published_value_occurrences.insert(key);
+        // The parser currently gives a lambda actor and its synthetic body
+        // block the same source span. Body checking therefore publishes first,
+        // but the enclosing expression is the materialized `LambdaPid` value
+        // and must replace that provisional ownership node.
+        if first_publication || matches!(expr, Expr::SpawnLambdaActor { .. }) {
+            self.record_produced_value_fact(expr, span, &published_ty);
+        }
+        result
+    }
+
+    /// Publish the single checker-side ownership/result-boundary fact.
+    ///
+    /// This runs after expression checking has completed, so all structured
+    /// dispatch side tables and child facts are available. It is the last
+    /// phase allowed to consult source call spellings or generated FFI rows.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ownership publication exhaustively classifies every expression form"
+    )]
+    fn record_produced_value_fact(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        use crate::runtime_call::{
+            ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+        };
+
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let resolved = self.subst.resolve(ty);
+        let no_owner = resolved.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Copy);
+        let mut fact = match expr {
+            Expr::Identifier(_) | Expr::This => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::Borrowed
+            }),
+            Expr::FieldAccess { object, .. } => {
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else {
+                    let ownership =
+                        self.produced_fact_at(&object.1)
+                            .map_or(Ownership::Unknown, |base| match base.ownership {
+                                Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
+                                Ownership::Borrowed | Ownership::ReceiverIdentity => {
+                                    Ownership::Borrowed
+                                }
+                                Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
+                            });
+                    ProducedValueFact::result(ownership)
+                }
+            }
+            Expr::Index { object, .. } => {
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if self
+                    .expr_types
+                    .get(&SpanKey::in_module(&object.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Named {
+                                builtin: Some(BuiltinType::Vec),
+                                ..
+                            }
+                        )
+                    })
+                {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Clone))
+                } else {
+                    ProducedValueFact::result(Ownership::Unknown)
+                }
+            }
+            Expr::Literal(Literal::String(_)) => ProducedValueFact::result(Ownership::Borrowed),
+            Expr::Binary {
+                op: BinaryOp::Add, ..
+            } if matches!(resolved, Ty::String) => {
+                ProducedValueFact::result(Ownership::owned(Acquisition::Fresh))
+            }
+            Expr::Literal(_)
+            | Expr::Unary { .. }
+            | Expr::Cast { .. }
+            | Expr::Range { .. }
+            | Expr::Is { .. }
+            | Expr::MachineEmit { .. }
+            | Expr::Return(_)
+            | Expr::Binary { .. }
+            | Expr::AwaitRestart(_)
+            | Expr::Tuple(_)
+            | Expr::StructInit { .. } => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::Unknown
+            }),
+            Expr::Clone(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Clone)
+            }),
+            Expr::Array(_)
+            | Expr::ArrayRepeat { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::Lambda { .. }
+            | Expr::Spawn { .. }
+            | Expr::SpawnLambdaActor { .. }
+            | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::GenBlock { .. }
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_)
+            | Expr::InterpolatedString(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Fresh)
+            }),
+            Expr::Block(block) => block
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::UnsafeBlock(block) => block
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let mut tails = vec![then_block.1.clone()];
+                if let Some(else_block) = else_block {
+                    tails.push(else_block.1.clone());
+                }
+                self.join_produced_facts(tails)
+            }
+            Expr::IfLet {
+                body, else_body, ..
+            } => {
+                let mut tails = Vec::new();
+                if let Some(tail) = body.trailing_expr.as_deref() {
+                    tails.push(tail.1.clone());
+                }
+                if let Some(tail) = else_body
+                    .as_ref()
+                    .and_then(|block| block.trailing_expr.as_deref())
+                {
+                    tails.push(tail.1.clone());
+                }
+                self.join_produced_facts(tails)
+            }
+            Expr::Match { arms, .. } => {
+                self.join_produced_facts(arms.iter().map(|arm| arm.body.1.clone()))
+            }
+            Expr::PostfixTry(inner) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                self.produced_fact_at(&inner.1)
+                    .map_or(Ownership::Unknown, |fact| match fact.ownership {
+                        Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
+                        Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
+                        Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
+                    })
+            }),
+            Expr::Await(inner) => {
+                let inner_ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty));
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if inner_ty.as_ref().is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Ty::Named {
+                            builtin: Some(BuiltinType::Task),
+                            ..
+                        }
+                    )
+                }) {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                } else if inner_ty.as_ref() != Some(&resolved) {
+                    // A specialised await may wrap its source (for example an
+                    // actor reply `R` in `Result<R, AskError>`).  That wrapper
+                    // is a new typed publication boundary, not an identity
+                    // alias of differently-shaped storage.
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                } else {
+                    self.join_produced_facts([inner.1.clone()])
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                let mut bodies: Vec<Span> = arms.iter().map(|arm| arm.body.1.clone()).collect();
+                if let Some(timeout) = timeout {
+                    bodies.push(timeout.body.1.clone());
+                }
+                self.join_produced_facts(bodies)
+            }
+            Expr::Join(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Delivery)
+            }),
+            Expr::Timeout { expr, .. } => {
+                let inner_ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&expr.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty));
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if inner_ty.as_ref() == Some(&resolved) {
+                    self.join_produced_facts([expr.1.clone()])
+                } else {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                }
+            }
+            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => body
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::Yield(_) => ProducedValueFact::result(Ownership::NoOwner),
+            Expr::Call { args, .. } => self.resolved_direct_call_ownership.get(&key).map_or_else(
+                || ProducedValueFact {
+                    ownership: if no_owner {
+                        Ownership::NoOwner
+                    } else {
+                        Ownership::Unknown
+                    },
+                    receiver_span: None,
+                    receiver_boundary: None,
+                    arguments: self.provisional_argument_boundaries(args),
+                },
+                |pending| pending.fact.clone(),
+            ),
+            Expr::MethodCall { receiver, args, .. } => {
+                self.resolved_method_call_ownership.get(&key).map_or_else(
+                    || {
+                        let ownership = if no_owner {
+                            Ownership::NoOwner
+                        } else {
+                            Ownership::Unknown
+                        };
+                        ProducedValueFact {
+                            ownership,
+                            receiver_span: matches!(ownership, Ownership::ReceiverIdentity)
+                                .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
+                            receiver_boundary: Some(
+                                crate::runtime_call::ProducedArgumentBoundary::Unknown,
+                            ),
+                            arguments: self.provisional_argument_boundaries(args),
+                        }
+                    },
+                    |pending| pending.fact.clone(),
+                )
+            }
+        };
+        if !no_owner && self.dyn_trait_coercions.contains_key(&key) {
+            fact.ownership = Ownership::owned(Acquisition::Fresh);
+            fact.receiver_span = None;
+            self.produced_value_dependencies.remove(&key);
+        } else if no_owner {
+            fact.ownership = Ownership::NoOwner;
+            fact.receiver_span = None;
+        }
+        let dependency = match expr {
+            Expr::FieldAccess { object, .. } => {
+                let child = SpanKey::in_module(&object.1, self.current_module_idx);
+                self.expr_types
+                    .contains_key(&child)
+                    .then_some(ProducedValueDependency::Projection(child))
+            }
+            Expr::PostfixTry(inner) => Some(ProducedValueDependency::MoveOut(SpanKey::in_module(
+                &inner.1,
+                self.current_module_idx,
+            ))),
+            Expr::Block(block) => block.trailing_expr.as_deref().map(|tail| {
+                ProducedValueDependency::Identity(SpanKey::in_module(
+                    &tail.1,
+                    self.current_module_idx,
+                ))
+            }),
+            Expr::UnsafeBlock(block) => block.trailing_expr.as_deref().map(|tail| {
+                ProducedValueDependency::Identity(SpanKey::in_module(
+                    &tail.1,
+                    self.current_module_idx,
+                ))
+            }),
+            Expr::If {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => Self::non_empty_produced_join([
+                SpanKey::in_module(&then_block.1, self.current_module_idx),
+                SpanKey::in_module(&else_block.1, self.current_module_idx),
+            ]),
+            Expr::IfLet {
+                body,
+                else_body: Some(else_body),
+                ..
+            } => {
+                let children: Vec<_> = body
+                    .trailing_expr
+                    .iter()
+                    .chain(else_body.trailing_expr.iter())
+                    .map(|child| SpanKey::in_module(&child.1, self.current_module_idx))
+                    .collect();
+                Self::non_empty_produced_join(children)
+            }
+            Expr::Match { arms, .. } => Self::non_empty_produced_join(
+                arms.iter()
+                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
+                    .collect::<Vec<_>>(),
+            ),
+            Expr::Await(inner)
+                if !self
+                    .expr_types
+                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Named {
+                                builtin: Some(BuiltinType::Task),
+                                ..
+                            }
+                        )
+                    }) =>
+            {
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
+                    &inner.1,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::Timeout { expr: inner, .. } => Some(ProducedValueDependency::Subsumes(
+                SpanKey::in_module(&inner.1, self.current_module_idx),
+            )),
+            Expr::Clone(inner)
+                if matches!(
+                    self.method_call_rewrites.get(&key),
+                    Some(MethodCallRewrite::CopyCloneNoop)
+                ) =>
+            {
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
+                    &inner.1,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::MethodCall { receiver, .. }
+                if matches!(
+                    self.method_call_rewrites.get(&key),
+                    Some(MethodCallRewrite::CopyCloneNoop)
+                ) =>
+            {
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
+                    &receiver.1,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::Select { arms, timeout } => {
+                let mut children: Vec<SpanKey> = arms
+                    .iter()
+                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
+                    .collect();
+                if let Some(timeout) = timeout {
+                    children.push(SpanKey::in_module(&timeout.body.1, self.current_module_idx));
+                }
+                Self::non_empty_produced_join(children)
+            }
+            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => {
+                body.trailing_expr.as_deref().map(|tail| {
+                    ProducedValueDependency::Identity(SpanKey::in_module(
+                        &tail.1,
+                        self.current_module_idx,
+                    ))
+                })
+            }
+            _ => None,
+        };
+        // Divergent (`Never`) branches never materialize the join destination;
+        // exclude them from the ownership convergence set rather than
+        // pretending they are a differently-typed value generation.
+        let dependency = dependency.and_then(|dependency| match dependency {
+            ProducedValueDependency::Join(mut children) => {
+                children.retain(|child| {
+                    !self
+                        .expr_types
+                        .get(child)
+                        .map(|ty| self.subst.resolve(ty))
+                        .is_some_and(|ty| matches!(ty, Ty::Never))
+                });
+                Self::non_empty_produced_join(children)
+            }
+            other => Some(other),
+        });
+        if !self.dyn_trait_coercions.contains_key(&key) {
+            if let Some(dependency) = dependency {
+                self.produced_value_dependencies
+                    .insert(key.clone(), dependency);
+            } else {
+                // A leaf publication is authoritative too. This also retires a
+                // provisional edge when two synthetic AST occurrences share a
+                // source span (notably lambda actors and their body block).
+                self.produced_value_dependencies.remove(&key);
+            }
+        }
+        self.produced_value_ownership.insert(key, fact);
+    }
+
     /// Record a generic actor spawn instantiation.
     ///
     /// Inserts `(actor_name, type_args)` into the `actor_spawn_type_args`
@@ -7115,7 +8319,14 @@ impl Checker {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
-        self.expr_types.insert(key, ty.clone());
+        self.expr_types.insert(key.clone(), ty.clone());
+        self.produced_value_ownership.entry(key).or_insert_with(|| {
+            ProducedValueFact::result(if ty.is_copy() {
+                crate::runtime_call::ProducedValueOwnership::NoOwner
+            } else {
+                crate::runtime_call::ProducedValueOwnership::Unknown
+            })
+        });
     }
 
     pub(super) fn record_integer_literal_type(&mut self, expr: &Expr, span: &Span, ty: &Ty) {

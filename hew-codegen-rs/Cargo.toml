@@ -38,15 +38,29 @@ hew-cabi = { path = "../hew-cabi" }
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
 # empirically against Homebrew llvm@22, and the release/tooling surface keeps
 # LLVM 22 as the shared major across the codebase.
-inkwell = { version = "0.9", default-features = false, features = [
+inkwell = { version = "=0.9.0", default-features = false, features = [
   "llvm22-1",
   "target-x86",
   "target-aarch64",
   "target-webassembly",
 ] }
+# Direct llvm-sys dependency so its `links = "llvm-22"` metadata reaches this
+# crate's build script as DEP_LLVM_22_CONFIG_PATH: the debug-info C++ shim must
+# compile against the SAME LLVM install llvm-sys links, or two LLVM 22 builds
+# differing in ABI-affecting options would corrupt DIBuilder memory.
+llvm-sys = "221"
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
+# The worker-free actor teardown seam is test-only. Keeping its feature on the
+# dev dependency prevents Cargo feature unification from putting the seam in
+# the compiler or the shipped `libhew.a`.
+hew-runtime = { path = "../hew-runtime", default-features = false, features = [
+  "composition-test",
+] }
 # libc::SIGABRT for the release-truth-table structural tests, which assert the
 # exact signal a double-release aborts with.
 libc.workspace = true

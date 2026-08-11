@@ -1,0 +1,15 @@
+// A free slot reused for a transitively heap-owning element must move/drop the
+// old payload exactly once. This is the sharp Vec<Slot<Vec<i64>>> path.
+import std::arena::{ Arena };
+
+fn main() {
+    let store: Arena<Vec<i64>> = arena.new();
+    let first = store.insert([1, 2]);
+    let removed = store.remove(first).unwrap();
+    let second = store.insert([3, 4, 5]);
+
+    println(removed[0] + removed[1]);
+    println(first.index == second.index);
+    println(store.get(first).is_none());
+    println(store.get(second).unwrap().len());
+}

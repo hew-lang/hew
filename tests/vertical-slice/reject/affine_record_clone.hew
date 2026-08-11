@@ -1,0 +1,36 @@
+// Structural record clone is a non-consuming read that creates a second owner.
+// Affine resource and linear records have no such semantic clone, regardless of
+// whether the method or prefix spelling is used.
+#[resource]
+type ResourceToken {
+    id: i64
+}
+
+impl ResourceToken {
+    fn close(self) {}
+}
+
+#[linear]
+type LinearTicket {
+    id: i64
+}
+
+impl LinearTicket {
+    fn redeem(consuming self) -> i64 {
+        self.id
+    }
+}
+
+fn main() {
+    let r1 = ResourceToken { id: 1 };
+    let _r1_copy = r1.clone();
+    let r2 = ResourceToken { id: 2 };
+    let _r2_copy = clone r2;
+
+    let l1 = LinearTicket { id: 3 };
+    let _l1_copy = l1.clone();
+    let _ = l1.redeem();
+    let l2 = LinearTicket { id: 4 };
+    let _l2_copy = clone l2;
+    let _ = l2.redeem();
+}

@@ -1,0 +1,8 @@
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    let a = v[0];
+    let b = v[1];
+    println(f"{a} {b}");
+}

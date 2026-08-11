@@ -4,7 +4,7 @@ use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
     HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirModule, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, TypeClassTable, ValueClass,
 };
 use hew_mir::{
     lower_hir_module, ActorHandlerKind, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement,
@@ -15,10 +15,14 @@ use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, Resolved
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // This handcrafted fixture bypasses HIR checking, so it has no typed
+        // producer ownership facts to carry into MIR lowering.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),
@@ -229,6 +233,7 @@ fn actor_cycle_capable_threads_to_layout_and_spawn_instr() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -291,6 +296,7 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -657,6 +663,58 @@ fn actor_receive_handlers_emit_actor_handler_functions_and_layout() {
     }
 }
 
+#[test]
+fn value_position_actor_self_preserves_concrete_local_pid_type() {
+    let mut ids = IdGen::default();
+    let pid_ty = local_pid_of("Echo");
+    let self_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: pid_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::ActorSelf,
+        span: 0..0,
+    };
+    let self_pid = receive(
+        "self_pid",
+        false,
+        vec![],
+        pid_ty.clone(),
+        block(&mut ids, vec![], Some(self_expr), pid_ty.clone()),
+    );
+    let echo = actor(&mut ids, "Echo", vec![self_pid]);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(echo)]));
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "value-position actor self should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Echo__recv__self_pid")
+        .expect("self_pid handler MIR");
+    let self_dest = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_actor_self" => call.dest(),
+            _ => None,
+        })
+        .expect("value-position `this` must call hew_actor_self with a destination");
+    let hew_mir::Place::Local(self_local) = self_dest else {
+        panic!("hew_actor_self destination must be a local, got {self_dest:?}");
+    };
+    assert_eq!(
+        handler.locals[self_local as usize], pid_ty,
+        "MIR must preserve the checker/HIR-provided LocalPid<Echo> tag; \
+         LocalPid<Unit> prevents conn.attach(this) from resolving Echo's protocol"
+    );
+}
+
 /// `#[every]` carry: the HIR `every_ns` nanosecond annotation must surface on
 /// the MIR `ActorHandlerLayout` as a millisecond interval, alongside the
 /// descriptor-derived `msg_type`, so spawn-site codegen can arm the periodic
@@ -801,6 +859,7 @@ fn standalone_ticks_gen_fn(ids: &mut IdGen) -> HirFn {
     HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("stream_twin"),
         name: "stream_twin".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1489,6 +1548,7 @@ fn main_calling_gen_stream(ids: &mut IdGen, actor_name: &str, method: &str) -> H
     HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1800,6 +1860,7 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
     let top_level = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("Counter__recv__ping"),
         name: "Counter__recv__ping".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1875,6 +1936,150 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
         "on(crash) lowering must not emit diagnostics; got: {:?}",
         pipeline.diagnostics
     );
+}
+
+#[test]
+fn exit_hook_with_uncanonicalized_payload_fails_closed_before_raw_mir() {
+    let mut ids = IdGen::default();
+    let exit_return = return_none_stmt(&mut ids);
+    let note = binding(
+        &mut ids,
+        "note",
+        ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+    );
+    let mut watcher = actor(&mut ids, "Watcher", vec![]);
+    watcher.lifecycle_hooks = vec![HirLifecycleHook {
+        kind: HirLifecycleHookKind::Exit,
+        name: "on_exit".to_string(),
+        params: vec![note],
+        return_ty: ResolvedTy::Unit,
+        body: block(&mut ids, vec![exit_return], None, ResolvedTy::Unit),
+        span: 0..0,
+    }];
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(watcher)]));
+    assert!(
+        !pipeline
+            .raw_mir
+            .iter()
+            .any(|function| function.name == "Watcher__on_exit"),
+        "MIR must not emit a handler with an aggregate parameter where the runtime calls (u64, i32)"
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::UnsupportedNode { reason }
+                    if reason.contains("without exactly one canonical")
+            )
+        }),
+        "the checker/HIR ABI mismatch must produce a fail-closed MIR diagnostic: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
+    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+    let mut parsed = hew_parser::parse(
+        r#"
+        import std::failure as f;
+
+        actor Watcher {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                panic("stop")
+            }
+
+            #[on(exit)]
+            fn on_exit(note: f.CrashNotification) {}
+        }
+
+        fn main() {}
+        "#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let failure = hew_parser::parse(include_str!("../../../std/failure.hew"));
+    assert!(
+        failure.errors.is_empty(),
+        "failure module parse errors: {:#?}",
+        failure.errors
+    );
+    let failure_items = failure.program.items;
+    let import = parsed
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import must exist");
+    import.resolved_items = Some(failure_items.clone());
+    let failure_source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-mir has a workspace parent")
+        .join("std/failure.hew");
+    import.resolved_source_paths = vec![failure_source.clone()];
+    let root_id = ModuleId::root();
+    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: failure_id.clone(),
+            items: failure_items,
+            imports: Vec::new(),
+            source_paths: vec![failure_source],
+            doc: None,
+        })
+        .expect("failure module id must be unique");
+    graph.topo_order = vec![failure_id, root_id];
+    parsed.program.module_graph = Some(graph);
+
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let crash = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Watcher__on_crash")
+        .expect("qualified crash hook must produce MIR");
+    assert_eq!(crash.params, vec![ResolvedTy::I64, ResolvedTy::String]);
+
+    let exit = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Watcher__on_exit")
+        .expect("qualified exit hook must produce MIR");
+    assert_eq!(exit.params, vec![ResolvedTy::U64, ResolvedTy::I32]);
 }
 
 /// A `for await` cursor over a `Stream<T>` must close INLINE at its enclosing

@@ -27,7 +27,7 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             expr_contains_remote_actor_ask(callee)
                 || args.iter().any(expr_contains_remote_actor_ask)
         }
@@ -256,5 +256,28 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         has_result_ask_error_layout,
         "RemotePid.ask should register Result<i64, AskError> layout: {:#?}",
         lower.module.enum_layouts
+    );
+}
+
+#[test]
+fn remote_pid_lookup_annotation_keeps_builtin_discriminator() {
+    let source = r#"
+        actor Echo { receive fn handle(request: i64) -> i64 { request } }
+        impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
+        actor Client {
+            receive fn go(unused: i64) {
+                let found: Result<RemotePid<Echo>, LookupError> = Node::lookup("echo");
+                match found {
+                    Ok(peer) => { let reply = peer.ask(7, 1000); },
+                    Err(_) => {},
+                }
+            }
+        }
+    "#;
+    let (_tc, lower) = lower_with_types(source);
+    assert!(
+        lower.diagnostics.is_empty(),
+        "RemotePid lookup annotation must lower cleanly: {:#?}",
+        lower.diagnostics
     );
 }

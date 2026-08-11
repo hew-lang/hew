@@ -16,7 +16,9 @@ pub struct AuthoritySource<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedBuiltinEnum {
+    pub owner: String,
     pub name: &'static str,
+    pub canonical_name: String,
     pub variants: Vec<String>,
     pub suppress_from_sandbox_emit: bool,
 }
@@ -31,56 +33,56 @@ struct BuiltinEnumAbi {
 
 const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
-        module: "builtins",
+        module: "std.builtins",
         name: "LookupError",
         variant_count: 8,
         order_fingerprint: 0x7ab9_6324_a0dd_7d1f,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
-        module: "builtins",
+        module: "std.builtins",
         name: "SendError",
         variant_count: 10,
         order_fingerprint: 0xc506_1bd0_75d7_e256,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {
-        module: "builtins",
+        module: "std.builtins",
         name: "AskError",
         variant_count: 22,
         order_fingerprint: 0xb130_e184_57d4_ff62,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {
-        module: "builtins",
+        module: "std.builtins",
         name: "TimeoutError",
         variant_count: 1,
         order_fingerprint: 0xe9ae_0b1c_348b_0715,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
-        module: "builtins",
+        module: "std.builtins",
         name: "LinkError",
         variant_count: 10,
         order_fingerprint: 0x3a85_b1f1_0849_9938,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
-        module: "link_monitor",
+        module: "std.link_monitor",
         name: "MonitorError",
         variant_count: 11,
         order_fingerprint: 0xba69_94e8_654d_0ac6,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
-        module: "failure",
+        module: "std.failure",
         name: "CrashAction",
         variant_count: 3,
         order_fingerprint: 0x61cb_3d18_fe7b_947f,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
-        module: "failure",
+        module: "std.failure",
         name: "CrashKind",
         variant_count: 3,
         order_fingerprint: 0xe445_0b1a_10e5_0b27,
@@ -131,7 +133,10 @@ pub fn derive_builtin_enums(
                 }
                 variants.push(variant.name);
             }
-            declarations.insert((source.module.to_string(), decl.name), variants);
+            declarations.insert(
+                (source.module.to_string(), decl.name),
+                (source.module.to_string(), variants),
+            );
         }
     }
 
@@ -139,7 +144,7 @@ pub fn derive_builtin_enums(
         .iter()
         .map(|abi| {
             let key = (abi.module.to_string(), abi.name.to_string());
-            let variants = declarations.get(&key).ok_or_else(|| {
+            let (owner, variants) = declarations.get(&key).ok_or_else(|| {
                 format!(
                     "missing ABI-bearing enum {}::{} in stdlib authority sources",
                     abi.module, abi.name
@@ -161,7 +166,9 @@ pub fn derive_builtin_enums(
                 ));
             }
             Ok(DerivedBuiltinEnum {
+                owner: owner.clone(),
                 name: abi.name,
+                canonical_name: format!("{owner}.{}", abi.name),
                 variants: variants.clone(),
                 suppress_from_sandbox_emit: abi.suppress_from_sandbox_emit,
             })
@@ -187,11 +194,13 @@ pub fn derive_monitor_ref_projection(
         }
         for (item, span) in parsed.program.items {
             let projected = match item {
-                Item::TypeDecl(decl) if source.module == "builtins" && decl.name == "LinkError" => {
+                Item::TypeDecl(decl)
+                    if source.module == "std.builtins" && decl.name == "LinkError" =>
+                {
                     Some(Item::TypeDecl(decl))
                 }
                 Item::TypeDecl(decl)
-                    if source.module == "link_monitor"
+                    if source.module == "std.link_monitor"
                         && matches!(
                             decl.name.as_str(),
                             "MonitorError"
@@ -206,14 +215,14 @@ pub fn derive_monitor_ref_projection(
                     Some(Item::TypeDecl(decl))
                 }
                 Item::Impl(mut decl)
-                    if source.module == "link_monitor"
+                    if source.module == "std.link_monitor"
                         && impl_target_name(&decl) == Some("MonitorRef") =>
                 {
                     decl.methods
                         .retain(|method| method.name == "close" || method.name == "id");
                     (!decl.methods.is_empty()).then_some(Item::Impl(decl))
                 }
-                Item::ExternBlock(mut block) if source.module == "link_monitor" => {
+                Item::ExternBlock(mut block) if source.module == "std.link_monitor" => {
                     block
                         .functions
                         .retain(|function| function.name == "hew_actor_demonitor");
@@ -314,17 +323,17 @@ mod tests {
         );
         let sources = [
             AuthoritySource {
-                module: "builtins",
+                module: "std.builtins",
                 path: "std/builtins.hew",
                 source: include_str!("../../../std/builtins.hew"),
             },
             AuthoritySource {
-                module: "failure",
+                module: "std.failure",
                 path: "scratch/failure.hew",
                 source: &reordered_failure,
             },
             AuthoritySource {
-                module: "link_monitor",
+                module: "std.link_monitor",
                 path: "std/link_monitor.hew",
                 source: include_str!("../../../std/link_monitor.hew"),
             },
@@ -333,8 +342,51 @@ mod tests {
         let error = derive_builtin_enums(&sources)
             .expect_err("reordering a .hew enum must fail the discriminant ABI derivation");
         assert!(
-            error.contains("discriminant ABI drift for failure::CrashAction"),
+            error.contains("discriminant ABI drift for std.failure::CrashAction"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn derived_enums_retain_exact_source_owner_identity() {
+        let sources = [
+            AuthoritySource {
+                module: "std.builtins",
+                path: "std/builtins.hew",
+                source: include_str!("../../../std/builtins.hew"),
+            },
+            AuthoritySource {
+                module: "std.failure",
+                path: "std/failure.hew",
+                source: include_str!("../../../std/failure.hew"),
+            },
+            AuthoritySource {
+                module: "std.link_monitor",
+                path: "std/link_monitor.hew",
+                source: include_str!("../../../std/link_monitor.hew"),
+            },
+        ];
+
+        let enums = derive_builtin_enums(&sources).expect("derive builtin enum facts");
+        let identities: Vec<_> = enums
+            .iter()
+            .map(|fact| (fact.owner.as_str(), fact.name, fact.canonical_name.as_str()))
+            .collect();
+        for expected in [
+            ("std.builtins", "LookupError", "std.builtins.LookupError"),
+            ("std.builtins", "LinkError", "std.builtins.LinkError"),
+            (
+                "std.link_monitor",
+                "MonitorError",
+                "std.link_monitor.MonitorError",
+            ),
+            ("std.failure", "CrashAction", "std.failure.CrashAction"),
+            ("std.failure", "CrashKind", "std.failure.CrashKind"),
+        ] {
+            assert!(
+                identities.contains(&expected),
+                "missing exact fact {expected:?}"
+            );
+        }
     }
 }

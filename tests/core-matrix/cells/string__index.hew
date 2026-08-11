@@ -1,0 +1,5 @@
+fn main() {
+    let s: string = "abc";
+    let t = s.slice(0, 1);
+    println(t);
+}

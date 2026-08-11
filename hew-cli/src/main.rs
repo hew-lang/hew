@@ -6,6 +6,8 @@
 //! hew run file.hew [-- args...]    # Compile through v0.5 native codegen and execute
 //! hew debug file.hew [-- args...]  # Compile through v0.5 native codegen and launch a debugger
 //! hew check file.hew               # Parse + typecheck only
+//! hew check                        # Validate the project manifest (hew.toml)
+//! hew build                        # Build the package's [native] FFI library
 //! hew watch file_or_dir [options]  # Watch for changes and re-check
 //! hew eval                         # Interactive eval through the v0.5 native path
 //! hew eval "<expression>"          # Evaluate through the v0.5 native path
@@ -15,7 +17,8 @@
 //! hew fmt file.hew                 # Format source file in-place
 //! hew fmt --stdin < file.hew       # Format source from stdin to stdout
 //! hew fmt --check file.hew         # Check formatting (CI mode)
-//! hew init [name]                  # Scaffold main.hew + README.md only (no hew.toml)
+//! hew init [name] [--lib|--actor]  # Scaffold a manifest-first project (hew.toml + source)
+//! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
 //! hew playground verify            # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
@@ -841,13 +844,13 @@ pub(crate) fn compile_native_from_program(
 /// `foo.exe` even on a Unix host.
 fn resolve_build_output_path(
     a: &args::BuildArgs,
+    input: &Path,
     target: &target::TargetSpec,
 ) -> std::path::PathBuf {
     if let Some(output) = &a.output {
         return output.clone();
     }
-    let stem = a
-        .input
+    let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("a.out");
@@ -1024,6 +1027,44 @@ fn cmd_build(a: &args::BuildArgs) {
 /// Body of `hew build`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
 fn cmd_build_run(a: &args::BuildArgs) -> i32 {
+    // No input: inside a hew.toml project this is the package native-build
+    // (build + stage the [native] FFI staticlib); anywhere else it is a
+    // usage error. File-oriented flags are rejected loudly rather than
+    // silently ignored (fail-closed).
+    let Some(input) = a.input.as_deref() else {
+        if a.output.is_some()
+            || a.target.is_some()
+            || a.emit_obj
+            || a.debug
+            || a.opt_level != "0"
+            || !a.link_libs.is_empty()
+            || a.common.any_set()
+        {
+            eprintln!(
+                "Error: build options require an input .hew file; \
+                 `hew build` with no input builds the package's [native] library"
+            );
+            return 2;
+        }
+        // `--format json` has no meaningful package-mode output: the native
+        // build reports staged-artifact paths, not compiler diagnostics, so
+        // there is nothing for the JSON diagnostic array to describe.
+        if a.format == args::DiagnosticFormat::Json {
+            eprintln!(
+                "Error: --format json is not supported for `hew build` with no input \
+                 (package-mode native build has no diagnostic output to format)"
+            );
+            return 2;
+        }
+        if !Path::new("hew.toml").is_file() {
+            eprintln!("Error: no input file and no hew.toml in the current directory");
+            eprintln!("Pass a .hew file to compile, or run `hew init` to create a project.");
+            return 2;
+        }
+        hew_pkg::cli::run_native_build();
+        return 0;
+    };
+
     // A target parse error is a usage error before any compilation — exit 2.
     let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
         Ok(target) => target,
@@ -1058,7 +1099,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     };
 
     if a.emit_obj {
-        return match emit_obj_only(&a.input, &target, a.debug, opt_level, &options) {
+        return match emit_obj_only(input, &target, a.debug, opt_level, &options) {
             Ok(()) => 0,
             Err(()) => 1,
         };
@@ -1071,9 +1112,9 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
         return 1;
     }
 
-    let output_path = resolve_build_output_path(a, &target);
+    let output_path = resolve_build_output_path(a, input, &target);
     match compile_build_binary(
-        &a.input,
+        input,
         &output_path,
         &target,
         a.debug,
@@ -1596,7 +1637,38 @@ fn cmd_check(a: &args::CheckArgs) {
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 
-    let input = a.input.display().to_string();
+    // No input: inside a hew.toml project this validates the manifest;
+    // anywhere else it is a usage error. File-oriented flags are rejected
+    // loudly rather than silently ignored (fail-closed).
+    let Some(input_path) = a.input.as_deref() else {
+        if a.explain_cow || a.show_stack_hints || a.target.is_some() || a.common.any_set() {
+            eprintln!(
+                "Error: check options require an input .hew file; \
+                 `hew check` with no input validates the project manifest"
+            );
+            return 2;
+        }
+        // `--format json` has no meaningful package-mode output: manifest
+        // validation reports free-form issue strings, not structured
+        // compiler diagnostics, so there is nothing for the JSON array to
+        // describe.
+        if json {
+            eprintln!(
+                "Error: --format json is not supported for `hew check` with no input \
+                 (package-mode manifest validation has no diagnostic output to format)"
+            );
+            return 2;
+        }
+        if !Path::new("hew.toml").is_file() {
+            eprintln!("Error: no input file and no hew.toml in the current directory");
+            eprintln!("Pass a .hew file to check, or run `hew init` to create a project.");
+            return 2;
+        }
+        hew_pkg::cli::run_manifest_check();
+        return 0;
+    };
+
+    let input = input_path.display().to_string();
     let options = a.to_compile_options();
     let target = match target::TargetSpec::from_requested(options.target.as_deref()) {
         Ok(target) => target,
@@ -1849,123 +1921,37 @@ fn format_for_display(input_name: &str, source: &str) -> Option<String> {
     Some(hew_parser::fmt::format_source(source, &result.program))
 }
 
+/// `hew init` — the single, manifest-first project scaffold.
+///
+/// Creates `hew.toml`, the template source file, and a merged `.gitignore` in
+/// the target directory (created when a NAME is given). Never destructive by
+/// construction: an existing `hew.toml` is a hard error, existing source files
+/// are skipped, and `.gitignore` entries are merged — there is no overwrite
+/// mode at all.
 fn cmd_init(a: &args::InitArgs) {
-    let (project_name, project_dir) = if let Some(ref name) = a.name {
+    let project_dir = if let Some(ref name) = a.name {
         let dir = std::path::PathBuf::from(name);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("Error: cannot create directory '{}': {e}", dir.display());
             std::process::exit(1);
         }
-        // Derive the name from the canonicalized directory so `hew init .`
-        // and `hew init` (no arg) agree — `.` alone has no file_name(), and
-        // canonicalize needs the directory to exist, which create_dir_all
-        // above guarantees.
-        let pname = dir
-            .canonicalize()
-            .ok()
-            .as_deref()
-            .and_then(std::path::Path::file_name)
-            .or_else(|| dir.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("hew-project")
-            .to_string();
-        (pname, dir)
+        dir
     } else {
-        // No name given — use current directory name as project name.
-        let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        std::env::current_dir().unwrap_or_else(|e| {
             eprintln!("Error: cannot determine current directory: {e}");
             std::process::exit(1);
-        });
-        let pname = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("hew-project")
-            .to_string();
-        (pname, cwd)
+        })
     };
 
-    let main_hew = project_dir.join("main.hew");
-    let readme = project_dir.join("README.md");
+    let template = if a.lib {
+        hew_pkg::manifest::ManifestTemplate::Lib
+    } else if a.actor {
+        hew_pkg::manifest::ManifestTemplate::Actor
+    } else {
+        hew_pkg::manifest::ManifestTemplate::Bin
+    };
 
-    // Guard against overwriting existing files unless --force is given.
-    // Name every conflicting file in one message rather than stopping at the
-    // first, so the user sees the full blast radius before deciding.
-    if !a.force {
-        let conflicts: Vec<String> = [&main_hew, &readme]
-            .into_iter()
-            .filter(|p| p.exists())
-            .map(|p| format!("'{}'", p.display()))
-            .collect();
-        if !conflicts.is_empty() {
-            // Agree the verb with the number of conflicts so a multi-file list
-            // does not read as if it were a single file.
-            let verb = if conflicts.len() == 1 {
-                "already exists"
-            } else {
-                "already exist"
-            };
-            eprintln!(
-                "Error: {} {verb} (use --force to overwrite)",
-                conflicts.join(", ")
-            );
-            eprintln!(
-                "Overwrite with --force, or run `hew init` in a directory without these files."
-            );
-            std::process::exit(1);
-        }
-    }
-
-    let main_content = "\
-fn main() {
-    println(\"Hello, world!\");
-}
-";
-
-    let readme_content = format!(
-        "\
-# {project_name}
-
-A source-only [Hew](https://hew.sh) scaffold.
-
-`hew init` created `main.hew` and this README. It does not create `hew.toml`;
-use `adze init` for the manifest-first bootstrap flow.
-
-## Next steps
-
-```sh
-hew check main.hew
-hew run main.hew
-```
-"
-    );
-
-    // Record which files pre-existed before --force overwrites them, so the
-    // forced path can report what it replaced.
-    let main_hew_replaced = a.force && main_hew.exists();
-    let readme_replaced = a.force && readme.exists();
-
-    if let Err(e) = std::fs::write(&main_hew, main_content) {
-        eprintln!("Error: cannot write {}: {e}", main_hew.display());
-        std::process::exit(1);
-    }
-    if let Err(e) = std::fs::write(&readme, &readme_content) {
-        eprintln!("Error: cannot write {}: {e}", readme.display());
-        std::process::exit(1);
-    }
-
-    println!("Created source-only project \"{project_name}\" with main.hew and README.md");
-    println!("No hew.toml was created; use `adze init` for manifest-first bootstrap.");
-
-    let replaced: Vec<&str> = [
-        main_hew_replaced.then_some("main.hew"),
-        readme_replaced.then_some("README.md"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if !replaced.is_empty() {
-        println!("--force replaced existing: {}", replaced.join(", "));
-    }
+    hew_pkg::cli::run_init(&project_dir, template);
 }
 
 fn cmd_completions(a: &args::CompletionsArgs) {
@@ -2041,18 +2027,6 @@ fn cmd_observe(a: &args::ObserveArgs) {
 /// first, then falls back to PATH resolution.
 fn cmd_lsp(a: &args::LspArgs) {
     exec_sibling_binary("hew-lsp", &a.args);
-}
-
-/// Run the bundled package manager (`adze`) in-process as `hew package …`.
-///
-/// `hew` ships a single binary: the package-manager command surface lives in
-/// the `adze-cli` library and is invoked directly here (no sibling `adze`
-/// process). The leading argument is the display name used in usage/help text.
-fn cmd_package(a: &args::PackageArgs) {
-    let mut argv: Vec<String> = Vec::with_capacity(a.args.len() + 1);
-    argv.push("hew package".to_string());
-    argv.extend(a.args.iter().cloned());
-    adze_cli::cli::run_from_args(argv);
 }
 
 /// Replace the current process with `binary_name [extra_args]`.

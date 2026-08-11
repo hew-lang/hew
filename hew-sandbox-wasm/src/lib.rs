@@ -177,6 +177,8 @@ pub struct DiagnosticNote {
     pub start_offset: usize,
     pub end_offset: usize,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,13 +468,14 @@ fn type_error_to_diagnostic(err: &hew_types::error::TypeError) -> Diagnostic {
         notes: err
             .notes
             .iter()
-            .map(|(span, message)| {
+            .map(|(span, message, source_module)| {
                 let note_span = DiagnosticSpan::from_span(span);
                 DiagnosticNote {
                     span: note_span.clone(),
                     start_offset: note_span.start,
                     end_offset: note_span.end,
                     message: message.clone(),
+                    source_module: source_module.clone(),
                 }
             })
             .collect(),
@@ -816,6 +819,78 @@ fn main() {
     }
 
     #[test]
+    fn vector_index_expression_emits_bounds_trapping_index_opcode() {
+        let source = r"
+fn main() {
+    let values: Vec<i64> = Vec::new();
+    values.push(7);
+    println(values[0]);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        assert!(ops.contains(&"vector.index"));
+        assert!(!ops.contains(&"vector.get"));
+
+        let index_instruction = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .find(|instruction| instruction.op == "vector.index")
+            .expect("direct vector indexing must emit a vector.index instruction");
+        assert_eq!(index_instruction.args.len(), 2);
+        assert!(
+            index_instruction.args.iter().all(|operand| operand.kind == "local"),
+            "vector.index must receive the evaluated vector and index locals: {index_instruction:#?}"
+        );
+
+        assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+            index_instruction,
+        );
+    }
+
+    fn assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+        instruction: &Instruction,
+    ) {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../hew-sandbox-vm/bytecode/sandbox-bytecode-v0.schema.json"
+        ))
+        .expect("published sandbox bytecode schema must be valid JSON");
+        let published_ops = schema
+            .pointer("/$defs/instruction_op/enum")
+            .and_then(serde_json::Value::as_array)
+            .expect("published schema must declare its instruction opcode enum")
+            .iter()
+            .map(|opcode| {
+                opcode
+                    .as_str()
+                    .expect("published instruction opcode entries must be strings")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(
+            published_ops.contains(instruction.op.as_str()),
+            "published bytecode schema must admit compiler-emitted opcode {:?}",
+            instruction.op
+        );
+
+        let mut unknown_opcode = instruction.clone();
+        unknown_opcode.op = "vector.not_real".to_string();
+        assert!(
+            !published_ops.contains(unknown_opcode.op.as_str()),
+            "published bytecode schema must reject a mutated unknown opcode"
+        );
+    }
+
+    #[test]
     fn string_methods_emit_len_and_slice() {
         set_test_hewpath();
         let source = r#"
@@ -852,10 +927,168 @@ fn main() {
         let ops = all_instruction_ops(&bytecode);
         assert!(ops.contains(&"regex.compile"));
         assert!(ops.contains(&"regex.find"));
+        assert!(ops.contains(&"regex.free"));
         assert!(bytecode
             .capabilities
             .iter()
             .any(|cap| cap.id == "std.text.regex.compile" && cap.disposition == "reserved"));
+    }
+
+    #[test]
+    fn user_pattern_cannot_mint_regex_profile_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Pattern {
+    value: string;
+}
+
+impl Pattern {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Pattern { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Pattern must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Pattern must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn user_regex_name_remains_a_record_layout() {
+        set_test_hewpath();
+        let source = r"
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    println(value.value);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let layout = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex type layout");
+        assert_eq!(
+            layout.kind, "record",
+            "a user type whose presentation name resembles the internal regex shim must not mint regex layout authority"
+        );
+    }
+
+    #[test]
+    fn user_regex_record_and_std_regex_handle_keep_distinct_layout_identities() {
+        set_test_hewpath();
+        let source = r#"
+import std::text::regex;
+
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    let pattern = regex.new("[0-9]+");
+    println(pattern.find("abc123"));
+    println(value.value);
+    pattern.close();
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let user = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex record layout");
+        assert_eq!(user.kind, "record");
+        assert_eq!(user.id, "type:Regex");
+
+        let builtin = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "std.text.regex.Pattern")
+            .expect("canonical stdlib regex handle layout");
+        assert_eq!(builtin.kind, "regex");
+        assert_eq!(builtin.id, "type:std.text.regex.Pattern");
+        assert_ne!(user.id, builtin.id);
+    }
+
+    #[test]
+    fn user_regex_name_cannot_mint_regex_method_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Regex {
+    value: string;
+}
+
+impl Regex {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Regex { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Regex must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Regex must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
     }
 
     #[test]
@@ -1158,6 +1391,7 @@ fn main() {
             "sign",
             "http_client",
             "smtp",
+            "websocket",
         ];
         assert_eq!(
             expected.len(),
@@ -1176,6 +1410,7 @@ fn main() {
             ("net", "std::net::net", "connect"),
             ("tls", "std::net::tls", "connect"),
             ("dns", "std::net::dns", "resolve"),
+            ("websocket", "std::net::websocket", "connect"),
         ];
         for (module, import_path, func) in sample {
             let source = format!("import {import_path};\nfn main() {{ let f = {module}.{func}; }}");

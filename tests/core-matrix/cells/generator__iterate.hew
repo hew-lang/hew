@@ -1,0 +1,9 @@
+fn main() {
+    let g = gen {
+        yield 1;
+        yield 2;
+    };
+    for y in g {
+        println(y);
+    }
+}

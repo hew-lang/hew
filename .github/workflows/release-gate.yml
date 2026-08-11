@@ -9,7 +9,7 @@
 #   - Manual dispatch (workflow_dispatch)
 #
 # Coverage vs. ci.yml:
-#   - Builds ALL release artifacts (hew-cli, adze-cli, hew-lsp, hew-observe, hew-lib)
+#   - Builds ALL release artifacts (hew-cli, hew-lsp, hew-observe, hew-lib)
 #   - Runs full Rust workspace tests (matching ci.yml scope)
 #   - Smoke-tests the compile+run pipeline with a trivial .hew program
 #
@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 env:
   LLVM_VERSION: "22"
@@ -37,7 +38,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Sanitizers — ASan hard gate + commit-pinned TSan/Miri waivers
+  # Sanitizers — executed ASan hard gate + bounded TSan/Miri limitation ledger
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     name: Release Gate — Sanitizers
@@ -45,10 +46,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          # The sanitizer gate validates waiver rows that may pin the release
-          # commit's FIRST PARENT; depth 1 has no parent for git rev-parse.
-          fetch-depth: 2
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
@@ -94,7 +91,8 @@ jobs:
           else
             printf 'asan=fail\n' > .sanitizer-asan-result
           fi
-          scripts/check-sanitizer-gate.sh "${GITHUB_SHA}" .sanitizer-asan-result
+          RELEASE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" .sanitizer-asan-result
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
@@ -102,7 +100,11 @@ jobs:
   gate-linux:
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The passed surrounding work measured 2,053 s (~34 min), while the final
+    # gate was cancelled after more than 3,338 s (~56 min): over 89 min total.
+    # 120 min adds ~30 min for cold-runner completion and variance, while
+    # retaining a finite ceiling that still distinguishes a hung suite.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -128,7 +130,10 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq \
+            libssl-dev pkg-config zlib1g-dev libzstd-dev mosquitto-clients gdb
+          command -v mosquitto_pub
+          command -v mosquitto_sub
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -137,7 +142,7 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --profile release-lib
 
       - name: Build WASM runtime
@@ -148,11 +153,9 @@ jobs:
       - name: Verify release binaries
         run: |
           target/release/hew --version
-          target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          make test-release-lib-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -188,6 +191,30 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
+      # The lifecycle matrices below shell out to the pinned ast-grep to derive
+      # their fact set. Provision it here alongside
+      # LLVM and wasmtime, so the cost is one cached job-level toolchain step
+      # instead of a cargo install nested inside a test target.
+      - name: Provision pinned ast-grep toolchain
+        uses: ./.github/actions/setup-ast-grep
+
+      - name: Run foundational compiled-Hew and lifecycle gates
+        run: |
+          make check-gate-reachability
+          make test-release-workflow-contract
+          make test-compiler-lifecycle
+          make test-opaque-resource-lifecycle-matrix-external
+          make test-vertical-slice
+          make test-hew-ratchet
+          make test-stdlib-ratchet
+          make test-stdlib-execution-proofs
+
+      - name: Run MQTT broker end-to-end oracle
+        # The Linux release lane has explicit mosquitto_pub/sub provisioning
+        # above, so this exercises a real external client against the shipped
+        # compiler's broker example before a release candidate is tagged.
+        run: make mqtt-broker-e2e
+
       # Browser-analysis WASM gate — Linux x86_64 only.
       # Installs wasm-pack + wasm32-unknown-unknown and runs the full playground
       # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
@@ -209,6 +236,13 @@ jobs:
 
       - name: Browser-analysis playground gate
         run: make playground-check
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Release Gate Test Results (Linux x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux aarch64 — full Rust build + workspace tests + WASM
@@ -242,7 +276,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev gdb
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -251,7 +285,7 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --profile release-lib
 
       - name: Build WASM runtime
@@ -262,11 +296,11 @@ jobs:
       - name: Verify release binaries
         run: |
           target/release/hew --version
-          target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          scripts/test-release-lib-link.sh \
+            --hew target/release/hew \
+            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -301,13 +335,31 @@ jobs:
         # classification — excluded here, tracked for investigation.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)'
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Release Gate Test Results (Linux aarch64)
+
   # ─────────────────────────────────────────────────────────────────────────
   # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
-    name: Release Gate — macOS arm64
-    runs-on: macos-14
-    timeout-minutes: 60
+    name: Release Gate — macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    # Three x86_64 runs reached 60m, 60m, and 90m with workspace tests still
+    # unfinished. Keep a finite 180-minute ceiling to obtain a completed
+    # duration from this slower runner before choosing a tighter budget.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -336,17 +388,17 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+          cargo build -p hew-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --profile release-lib
 
       - name: Verify release binaries
         run: |
           target/release/hew --version
-          target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          scripts/test-release-lib-link.sh \
+            --hew target/release/hew \
+            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -376,12 +428,21 @@ jobs:
         # their memory coverage is the Linux ASan job; exclude them here.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast -E 'not binary(~oracle)'
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
+
   # ─────────────────────────────────────────────────────────────────────────
   # Windows x86_64 — Rust workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
+    # This job-level value is the Windows leg's sole timeout. Its measured
+    # 39m35s pass leaves 20m25s of headroom under the finite 60-minute cap.
     timeout-minutes: 60
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
@@ -390,6 +451,11 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Setup MSVC environment
+        # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
+        # the LLVM prefix is configured in the following setup-llvm step.
+        uses: ./.github/actions/setup-msvc
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -403,14 +469,43 @@ jobs:
 
       - name: Build release crates
         run: |
-          cargo build -p adze-cli -p hew-lsp -p hew-observe -p hew-cli --release
+          cargo build -p hew-lsp -p hew-observe -p hew-cli --release
+          cargo build -p hew-lib --profile release-lib
+
+      - name: Prove release library consumer linking
+        shell: pwsh
+        run: |
+          ./scripts/test-release-lib-link.ps1 `
+            -Hew target/release/hew.exe `
+            -Archive target/release-lib/hew.lib
 
       - name: Verify binaries
         shell: bash
         run: |
-          target/release/adze.exe --version && echo "adze runs"
           target/release/hew-lsp.exe --version && echo "hew-lsp runs"
           target/release/hew-observe.exe --version && echo "hew-observe runs"
+
+      # The eval_wasm_* / wasi_run_e2e modules shell out to wasmtime; without
+      # it they fail at bootstrap ("wasmtime not found"). Every other release
+      # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
+      # — this lane did not, so its WASI coverage never actually ran.
+      - name: Install WASI prerequisites
+        shell: pwsh
+        run: |
+          # Unpack the published archive rather than using the convenience
+          # installer: the installer insists on editing a shell profile and
+          # fails the step even after extracting successfully. PATH for the
+          # later steps comes from GITHUB_PATH.
+          $version = "v47.0.3"
+          $dest = Join-Path $env:RUNNER_TEMP "wasmtime"
+          $zip = Join-Path $env:RUNNER_TEMP "wasmtime.zip"
+          $url = "https://github.com/bytecodealliance/wasmtime/releases/download/$version/wasmtime-$version-x86_64-windows.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $bin = (Get-ChildItem -Path $dest -Filter wasmtime.exe -Recurse | Select-Object -First 1).DirectoryName
+          if (-not $bin) { throw "wasmtime.exe not found under $dest" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
         run: >-
@@ -424,13 +519,24 @@ jobs:
         # Standalone because the workspace run above must exclude hew-cabi.
         run: make test-cabi
 
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml"
+          check_name: Release Gate Test Results (Windows x86_64)
+
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD x86_64 — full build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
+    # release builds and workspace tests. A 109-minute run passed, while a
+    # 120.8-minute run was cancelled at the old ceiling; 180 minutes adds
+    # finite variance headroom without making the release gate unbounded.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -449,33 +555,60 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rustup-init python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
             set -eux
+            id
+            test "$(id -u)" = 0
+
+            # The VM action connects as root. Finish privileged setup before
+            # handing the complete build and test workload to a normal user.
+            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
+            chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
+            su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
+            set -eux
+            export HOME=/home/hew-ci
+            id
+            test "$(id -u)" -ne 0
+            command -v bash && bash --version
 
             git config --global --add safe.directory "$(pwd)"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            # Install the repository-pinned toolchain and WASI standard
+            # library through rustup, matching the other full-suite hosts.
+            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+              --default-toolchain 1.96.0 --target wasm32-wasip1
+            # The debug libhew bootstrap starts the Python freshness helper,
+            # which then starts Cargo. Give both child-process levels absolute
+            # executables instead of depending on the SSH login environment.
+            export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+            export CARGO="$HOME/.cargo/bin/cargo"
+            export PYTHON=/usr/local/bin/python3
+            test -x "$CARGO"
+            test -x "$PYTHON"
+            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
+            rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
             /usr/local/llvm22/bin/llvm-config --version
 
             # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
             # own bin dir, which is not on PATH. Expose it like the macOS gate's
-            # lld@22 so the linker probe finds it instead of failing to spawn
-            # rust-lld (not shipped by the pkg rust toolchain).
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
+            # lld@22 so the linker probe and WASI builds use the same explicit
+            # linker as the other full-suite hosts.
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
             target/release/hew --version
-            target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            bash scripts/test-release-lib-link.sh \
+              --hew target/release/hew \
+              --archive target/release-lib/libhew.a
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew
@@ -489,37 +622,72 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked
 
-            # Scope out only the eval/WASI E2E tests that build the WASI runner
-            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
-            # rustup-managed and cannot add that target. The wasm backend is
-            # host-independent and already gated on the four rustup platforms;
-            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
-            # deliberately narrow so the gate still covers what FreeBSD can run:
-            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
-            # and the wasi_run_e2e native_* codegen-parity tests (which run
-            # natively).
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
-              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
             # hew-cabi is excluded from the workspace run above because its
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi
+            cargo nextest run --profile ci-cabi -p hew-cabi
+
+            gmake test-vertical-slice
+            gmake test-hew-ratchet
+            HEW_FREEBSD_CI
+
+      - name: Upload test reports
+        # vmactions/freebsd-vm syncs the working directory back to this host
+        # runner after the guest `run:` script exits (proven by release.yml's
+        # build-freebsd-aarch64 job, which packages a tarball entirely inside
+        # the VM's run block and then reads it from a host-side
+        # actions/upload-artifact step) — so the reports written by the
+        # guest's nextest and hew-suite-ratchet runs are present here.
+        if: always()
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
+        with:
+          report_paths: "target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml"
+          check_name: Release Gate Test Results (FreeBSD x86_64)
 
   # ─────────────────────────────────────────────────────────────────────────
-  # FreeBSD aarch64 — full build + workspace tests
-  # Runs inside a FreeBSD 15.0 aarch64 VM under QEMU emulation on a standard
-  # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
-  # but needs no new host infra. This job cannot be reproduced locally; CI is
-  # the proving gate for the FreeBSD aarch64 toolchain.
+  # FreeBSD aarch64 — release binary build + smoke test only.
+  # Runs inside a FreeBSD 15.0 aarch64 VM under full-system QEMU emulation on
+  # a standard x86_64 runner (vmactions/freebsd-vm with arch: aarch64). This
+  # job cannot be reproduced locally; CI is the proving gate for the FreeBSD
+  # aarch64 toolchain.
+  #
+  # Scope is intentionally narrower than every other release-gate leg,
+  # including gate-freebsd-x86_64 (same OS, no emulation). Evidence from the
+  # prior full-scope job (matching gate-freebsd-x86_64's workload) across six
+  # observed runs: the job never completed inside its 180-minute timeout —
+  # every run hit the ceiling at exactly ~3h00m00s and was reported
+  # "cancelled" (GitHub's conclusion for a timed-out job, not a real
+  # failure). Log inspection of one such run showed `cargo build -p hew-cli
+  # -p hew-lsp -p hew-observe --release` alone (337 crates) took 2h40m under
+  # emulation before the job was killed — before the release-lib profile
+  # rebuild, before installing cargo-nextest, before a single test ran.
+  # There is no OOM/swap evidence in any log; the bottleneck is CPU-bound
+  # compile time under QEMU binary translation, not memory.
+  #
+  # This leg now proves the one thing no other leg proves — that the
+  # compiler builds and a compiled program runs correctly on FreeBSD
+  # aarch64 — via a release build of hew-cli and a compile+run smoke test.
+  # It does not build hew-lsp/hew-observe/hew-lib or run the Rust test
+  # suite, hew-suite-ratchet, or vertical-slice: those already have
+  # dedicated coverage on this OS (gate-freebsd-x86_64) and on this
+  # architecture (gate-linux-aarch64, gate-macos arm64), so the marginal
+  # risk unique to the FreeBSD+aarch64 combination is the build/run path,
+  # not full-suite regression coverage. `cpu: 4` matches the runner's actual
+  # core count (vmactions defaults the guest to fewer) to use the CPU
+  # budget available rather than leaving it idle during the emulated build.
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-aarch64:
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # This is an emulated QEMU leg; 300 minutes matches release.yml's
+    # build-freebsd-aarch64 budget for the same target and reflects guest
+    # throughput, not growth in the release-gate suite.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -529,6 +697,7 @@ jobs:
           release: "15.0"
           arch: aarch64
           mem: 8192
+          cpu: 4
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
@@ -539,14 +708,22 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python3 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
+            command -v bash && bash --version
 
             git config --global --add safe.directory "$(pwd)"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            # Match the x86_64 guest's explicit child-build environment so a
+            # future scope expansion cannot regress to SSH profile discovery.
+            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+            export CARGO=/usr/local/bin/cargo
+            export PYTHON=/usr/local/bin/python3
+            test -x "$CARGO"
+            test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
             # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
@@ -557,15 +734,19 @@ jobs:
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
+            # Only the CLI release binary, not hew-lsp/hew-observe or the
+            # release-lib profile: this leg proves the compiler builds and
+            # runs on FreeBSD aarch64. The debug libhew archive below is the
+            # native-link input required by the smoke test.
+            cargo build -p hew-cli --release
+
+            # `hew build` resolves its in-tree native library from the debug
+            # target directory. Build the canonical consolidated archive and
+            # prove its content-addressed freshness before the smoke link.
+            gmake stdlib
+            gmake check-libhew-fresh
 
             target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            ar t target/release-lib/libhew.a | grep -q '^std-'
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew
@@ -575,26 +756,3 @@ jobs:
             echo "$OUTPUT"
             echo "$OUTPUT" | grep -q "smoke-ok"
             rm -f _smoke.hew _smoke_bin
-
-            # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
-            cargo install cargo-nextest --locked
-
-            # Scope out only the eval/WASI E2E tests that build the WASI runner
-            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
-            # rustup-managed and cannot add that target. The wasm backend is
-            # host-independent and already gated on the four rustup platforms;
-            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
-            # deliberately narrow so the gate still covers what FreeBSD can run:
-            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
-            # and the wasi_run_e2e native_* codegen-parity tests (which run
-            # natively).
-            cargo nextest run --workspace \
-              --exclude hew-wasm --exclude hew-cabi \
-              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
-              --profile ci --no-fail-fast
-
-            # hew-cabi is excluded from the workspace run above because its
-            # cfg(test) runtime stubs collide with hew-runtime's real symbols
-            # at link time. Run it on its own so the C-ABI ownership contract
-            # is actually proven on this platform rather than merely skipped.
-            cargo nextest run --profile ci -p hew-cabi

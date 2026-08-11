@@ -48,11 +48,91 @@
 //! and clippy-gated.
 
 use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
 // =============================================================================
 // Ownership verdict
 // =============================================================================
+
+/// Why a successfully-published expression result carries one caller-owned
+/// release obligation.
+///
+/// This is deliberately independent of the physical drop function.  The
+/// checker/HIR authority says whether one owner exists; MIR derives the
+/// concrete release ritual from the resolved result type and the ordinary
+/// resource/drop tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedValueAcquisition {
+    /// Newly allocated storage or a freshly-created affine handle.
+    Fresh,
+    /// An independently retained reference to existing storage.
+    Retained,
+    /// Ownership delivered by an actor/task/channel/stream suspension.
+    Delivery,
+    /// A deep/retaining clone operation.
+    Clone,
+    /// Ownership moved out of a container or aggregate slot.
+    MoveOut,
+}
+
+/// Typed ownership fact for one expression result.
+///
+/// The variants answer only whether the result denotes a release obligation.
+/// They never name a callee or release symbol: call identity remains a
+/// checker/HIR fact and the release remains type-directed.  `Unknown` is the
+/// fail-closed state; an ownership-demanding sink must diagnose rather than
+/// manufacture a drop from a display name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedValueOwnership {
+    /// Scalar, unit, static literal, or another value with no caller-side
+    /// release obligation (including an opaque foreign result whose lifecycle
+    /// was not transferred to Hew).
+    NoOwner,
+    /// Alias of storage whose owner remains elsewhere.
+    Borrowed,
+    /// One independent caller owner was published.
+    Owned {
+        acquisition: ProducedValueAcquisition,
+    },
+    /// A consuming fluent call returned the receiver's existing owner.
+    ///
+    /// MIR must transfer the receiver owner to the result; it may not mint a
+    /// second owner.
+    ReceiverIdentity,
+    /// The typed producer contract is absent or incomplete.
+    Unknown,
+}
+
+/// Checker-authored ownership disposition for one call argument.
+///
+/// This is deliberately smaller than MIR's parameter-boundary model: it
+/// answers only whether the result owner's obligation crosses this call edge.
+/// Representation loans and crash-cleanup details remain MIR facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedArgumentBoundary {
+    /// The callee observes the value but the caller keeps its owner.
+    Borrow,
+    /// The callee receives the existing owner.
+    Transfer,
+    /// The checker could not prove either disposition.
+    Unknown,
+}
+
+impl ProducedValueOwnership {
+    #[must_use]
+    pub const fn owned(acquisition: ProducedValueAcquisition) -> Self {
+        Self::Owned { acquisition }
+    }
+
+    #[must_use]
+    pub const fn acquisition(self) -> Option<ProducedValueAcquisition> {
+        match self {
+            Self::Owned { acquisition } => Some(acquisition),
+            Self::NoOwner | Self::Borrowed | Self::ReceiverIdentity | Self::Unknown => None,
+        }
+    }
+}
 
 /// Three-valued consume/borrow verdict for one call argument.
 ///
@@ -89,6 +169,20 @@ pub enum ConsumeVerdict {
     ConservativeConsume,
 }
 
+/// Ownership of a runtime call's returned value when it carries a scalar
+/// result whose representation alone cannot express the acquisition fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeResultOwnership {
+    /// No owned-result admission is required for this family.
+    Untracked,
+    /// The ABI returns a freshly allocated string that the caller owns.
+    FreshOwnedString,
+    /// The ABI returns a fresh vector handle that the caller owns.
+    FreshOwnedVec,
+    /// The ABI returns a fresh bytes allocation that the caller owns.
+    FreshOwnedBytes,
+}
+
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
     /// the projection back onto the historical `bool` (both consume flavours
@@ -113,7 +207,7 @@ impl ConsumeVerdict {
 /// elements. The pending Vec genericisation work will collapse most of
 /// these onto a single `Generic` variant that reads the descriptor's
 /// `elem` field — out of scope here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecGetElem {
     #[default]
     Bool,
@@ -123,6 +217,12 @@ pub enum VecGetElem {
     I16,
     I32,
     I64,
+    /// Descriptor-backed deep clone into a caller-provided output slot.
+    ///
+    /// Unlike the scalar getters, this family rides the intercepted
+    /// `Terminator::Call` path because its concrete element layout determines
+    /// the hidden output-pointer ABI.
+    Clone,
     Layout,
     Owned,
     Ptr,
@@ -131,11 +231,51 @@ pub enum VecGetElem {
     U16,
 }
 
+/// Scalar element ABI discriminator shared by the direct Vec operation
+/// matrix. `bool`, layout-managed, owned, and closure-pair paths remain
+/// distinct families because their ABI/ownership contracts differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+pub enum VecScalarElem {
+    #[default]
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Ptr,
+    Str,
+    U8,
+    U16,
+}
+
+/// The scalar Vec operations that share the same element discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+pub enum VecScalarOp {
+    #[default]
+    Push,
+    Pop,
+    Set,
+    RemoveAt,
+}
+
+/// Element discriminators for the scalar `Vec::contains` ABI entries that
+/// exist in the runtime. Other element representations use their dedicated
+/// layout/owned families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+pub enum VecContainsScalarElem {
+    F64,
+    #[default]
+    I32,
+    I64,
+    Str,
+}
+
 /// Element-type discriminator for `Vec<T>::slice_range` runtime entries
 /// (`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice
 /// does not have a bool path today; descriptor-backed record/tuple elements
 /// route through the `Layout`/`Owned` substrate variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecSliceElem {
     #[default]
     Bytesize,
@@ -153,7 +293,7 @@ pub enum VecSliceElem {
 /// recv retired their per-element symbols in favour of the
 /// element-layout-witness `*_layout` entries, which bypass
 /// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum StreamElementKind {
     #[default]
     Bytes,
@@ -164,7 +304,7 @@ pub enum StreamElementKind {
 /// identifiers (`"sqrt"`, `"sin"`, …) onto
 /// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
 /// call so codegen never re-derives the intrinsic from the callee string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum MathIntrinsic {
     #[default]
     Sqrt,
@@ -203,7 +343,7 @@ pub enum MathIntrinsic {
 /// `match-fail-closed`). A future contributor cannot silently extend it
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
@@ -597,11 +737,17 @@ pub enum RuntimeCallFamily {
     TaskSpawnThread,
 
     // --- Vec<T> ------------------------------------------------------------
+    VecAppend,
+    VecClear,
+    VecClone,
     VecCloneLayout,
     VecCloneOwned,
     VecContainsLayout,
     VecContainsOwned,
+    VecContainsScalar(VecContainsScalarElem),
     VecGet(VecGetElem),
+    VecIsEmpty,
+    VecJoinStr,
     VecLen,
     VecNew,
     VecPopBool,
@@ -611,11 +757,15 @@ pub enum RuntimeCallFamily {
     VecPushLayout,
     VecPushOwned,
     VecPushOwnedMove,
+    /// Closed scalar Vec ABI matrix (`hew_vec_{push,pop,set,remove_at}_$elem`).
+    VecScalar {
+        op: VecScalarOp,
+        elem: VecScalarElem,
+    },
     VecRemoveAtBool,
     VecRemoveAtLayout,
     VecRemoveAtOwned,
     VecSetBool,
-    VecSetI32,
     VecSetLayout,
     VecSetOwned,
     VecSetOwnedMove,
@@ -631,6 +781,254 @@ pub enum RuntimeCapability {
     BlockingOffload,
     Metrics,
     Node,
+}
+
+/// Checker-owned surface type shapes for canonical stdlib extern methods.
+///
+/// This is intentionally narrower than the runtime's physical C ABI.  It
+/// describes the checked Hew declaration that may mint a typed
+/// [`RuntimeCallFamily`], so a linker spelling plus matching arity is never
+/// enough to select a special lowering path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalExternTy {
+    Bytes,
+    Char,
+    U8,
+    I64,
+    Bool,
+    String,
+    Unit,
+    OptionU8,
+    OptionI64,
+    OptionChar,
+}
+
+impl CanonicalExternTy {
+    const fn matches(self, ty: &crate::Ty) -> bool {
+        match self {
+            Self::Bytes => matches!(ty, crate::Ty::Bytes),
+            Self::Char => matches!(ty, crate::Ty::Char),
+            Self::U8 => matches!(ty, crate::Ty::U8),
+            Self::I64 => matches!(ty, crate::Ty::I64),
+            Self::Bool => matches!(ty, crate::Ty::Bool),
+            Self::String => matches!(ty, crate::Ty::String),
+            Self::Unit => matches!(ty, crate::Ty::Unit),
+            Self::OptionU8 => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Option),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [crate::Ty::U8])
+            ),
+            Self::OptionI64 => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Option),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [crate::Ty::I64])
+            ),
+            Self::OptionChar => matches!(
+                ty,
+                crate::Ty::Named {
+                    builtin: Some(crate::BuiltinType::Option),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [crate::Ty::Char])
+            ),
+        }
+    }
+}
+
+/// One exact stdlib extern declaration that is eligible for a typed runtime
+/// carrier. `family: None` records a real canonical source method whose
+/// dedicated codegen path remains an open-set extern call; it prevents that
+/// row from being silently treated as an omitted declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalStdlibExternSignature {
+    pub module: &'static str,
+    pub signature_key: &'static str,
+    pub symbol: &'static str,
+    pub family: Option<RuntimeCallFamily>,
+    pub params: &'static [CanonicalExternTy],
+    pub result: CanonicalExternTy,
+}
+
+// `FnSig` omits an inherent method's receiver; `signature_key` provides that
+// exact `bytes` receiver identity, so these are the remaining source args.
+const EMPTY: &[CanonicalExternTy] = &[];
+const U8: &[CanonicalExternTy] = &[CanonicalExternTy::U8];
+const I64: &[CanonicalExternTy] = &[CanonicalExternTy::I64];
+const I64_U8: &[CanonicalExternTy] = &[CanonicalExternTy::I64, CanonicalExternTy::U8];
+const BYTES: &[CanonicalExternTy] = &[CanonicalExternTy::Bytes];
+const STRING: &[CanonicalExternTy] = &[CanonicalExternTy::String];
+
+/// Complete source-declaration authority for compiler-lowered stdlib extern
+/// bridges. A new method fails closed until it is added here with an exact Hew
+/// signature, trusted source module, and admitted runtime family.
+const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::append",
+        symbol: "hew_bytes_append",
+        family: Some(RuntimeCallFamily::BytesAppend),
+        params: BYTES,
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::clear",
+        symbol: "hew_bytes_clear",
+        family: Some(RuntimeCallFamily::BytesClear),
+        params: EMPTY,
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::contains",
+        symbol: "hew_bytes_contains",
+        family: Some(RuntimeCallFamily::BytesContains),
+        params: U8,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::get",
+        symbol: "hew_bytes_get",
+        family: Some(RuntimeCallFamily::BytesGet),
+        params: I64,
+        result: CanonicalExternTy::OptionU8,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::is_empty",
+        symbol: "hew_bytes_is_empty",
+        family: Some(RuntimeCallFamily::BytesIsEmpty),
+        params: EMPTY,
+        result: CanonicalExternTy::Bool,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::len",
+        symbol: "hew_vec_len",
+        family: Some(RuntimeCallFamily::VecLen),
+        params: EMPTY,
+        result: CanonicalExternTy::I64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::pop",
+        symbol: "hew_bytes_pop",
+        family: Some(RuntimeCallFamily::BytesPop),
+        params: EMPTY,
+        result: CanonicalExternTy::U8,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::push",
+        symbol: "hew_bytes_push",
+        family: Some(RuntimeCallFamily::BytesPush),
+        params: U8,
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::set",
+        symbol: "hew_bytes_set",
+        family: Some(RuntimeCallFamily::BytesSet),
+        params: I64_U8,
+        result: CanonicalExternTy::Unit,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.io",
+        signature_key: "bytes::to_string",
+        symbol: "hew_bytes_to_string",
+        family: None,
+        params: EMPTY,
+        result: CanonicalExternTy::String,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::find",
+        symbol: "hew_string_find",
+        family: Some(RuntimeCallFamily::StringFind),
+        params: STRING,
+        result: CanonicalExternTy::OptionI64,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::char_at",
+        symbol: "hew_string_char_at",
+        family: Some(RuntimeCallFamily::StringCharAt),
+        params: I64,
+        result: CanonicalExternTy::OptionChar,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::get",
+        symbol: "hew_string_get",
+        family: Some(RuntimeCallFamily::StringGet),
+        params: I64,
+        result: CanonicalExternTy::OptionChar,
+    },
+    CanonicalStdlibExternSignature {
+        module: "std.string",
+        signature_key: "string::codepoint_at_utf8",
+        symbol: "hew_string_char_at_utf8",
+        family: Some(RuntimeCallFamily::StringCharAtUtf8),
+        params: I64,
+        result: CanonicalExternTy::OptionI64,
+    },
+];
+
+/// Return a canonical stdlib extern declaration when its source identity,
+/// endpoint, parameter sequence, and result type all agree.
+#[must_use]
+pub fn canonical_std_io_extern_signature(
+    signature_key: &str,
+    symbol: &str,
+    params: &[crate::Ty],
+    result: &crate::Ty,
+) -> Option<&'static CanonicalStdlibExternSignature> {
+    CANONICAL_STD_IO_EXTERN_SIGNATURES.iter().find(|entry| {
+        let params_match = entry.params.len() == params.len()
+            && entry
+                .params
+                .iter()
+                .zip(params)
+                .all(|(expected, actual)| expected.matches(actual));
+        // Most method signatures have their receiver removed during
+        // registration. Directly checked shipped stdlib roots retain the
+        // explicit first receiver parameter in a few registration paths; the
+        // declaration remains exact after accounting for that source form.
+        let explicit_receiver = entry
+            .signature_key
+            .split_once("::")
+            .and_then(|(receiver, _)| match receiver {
+                "bytes" => Some(CanonicalExternTy::Bytes),
+                "string" => Some(CanonicalExternTy::String),
+                _ => None,
+            });
+        let params_with_receiver_match = explicit_receiver.is_some_and(|receiver| {
+            params.len() == entry.params.len() + 1
+                && receiver.matches(&params[0])
+                && entry
+                    .params
+                    .iter()
+                    .zip(&params[1..])
+                    .all(|(expected, actual)| expected.matches(actual))
+        });
+        entry.signature_key == signature_key
+            && entry.symbol == symbol
+            && (params_match || params_with_receiver_match)
+            && entry.result.matches(result)
+    })
+}
+
+#[must_use]
+pub const fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibExternSignature] {
+    CANONICAL_STD_IO_EXTERN_SIGNATURES
 }
 
 impl RuntimeCallFamily {
@@ -895,10 +1293,17 @@ impl RuntimeCallFamily {
             Self::TaskSetResult => "hew_task_set_result",
             Self::TaskSpawnThread => "hew_task_spawn_thread",
             // Vec
+            Self::VecAppend => "hew_vec_append",
+            Self::VecClear => "hew_vec_clear",
+            Self::VecClone => "hew_vec_clone",
             Self::VecCloneLayout => "hew_vec_clone_layout",
             Self::VecCloneOwned => "hew_vec_clone_owned",
             Self::VecContainsLayout => "hew_vec_contains_thunk",
             Self::VecContainsOwned => "hew_vec_contains_owned",
+            Self::VecContainsScalar(VecContainsScalarElem::F64) => "hew_vec_contains_f64",
+            Self::VecContainsScalar(VecContainsScalarElem::I32) => "hew_vec_contains_i32",
+            Self::VecContainsScalar(VecContainsScalarElem::I64) => "hew_vec_contains_i64",
+            Self::VecContainsScalar(VecContainsScalarElem::Str) => "hew_vec_contains_str",
             Self::VecGet(VecGetElem::Bool) => "hew_vec_get_bool",
             Self::VecGet(VecGetElem::F32) => "hew_vec_get_f32",
             Self::VecGet(VecGetElem::F64) => "hew_vec_get_f64",
@@ -906,12 +1311,15 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::I16) => "hew_vec_get_i16",
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
+            Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
             Self::VecGet(VecGetElem::Str) => "hew_vec_get_str",
             Self::VecGet(VecGetElem::U8) => "hew_vec_get_u8",
             Self::VecGet(VecGetElem::U16) => "hew_vec_get_u16",
+            Self::VecIsEmpty => "hew_vec_is_empty",
+            Self::VecJoinStr => "hew_vec_join_str",
             Self::VecLen => "hew_vec_len",
             Self::VecNew => "Vec::new",
             Self::VecPopBool => "hew_vec_pop_bool",
@@ -921,11 +1329,11 @@ impl RuntimeCallFamily {
             Self::VecPushLayout => "hew_vec_push_layout",
             Self::VecPushOwned => "hew_vec_push_owned",
             Self::VecPushOwnedMove => "hew_vec_push_owned_move",
+            Self::VecScalar { op, elem } => vec_scalar_c_symbol(op, elem),
             Self::VecRemoveAtBool => "hew_vec_remove_at_bool",
             Self::VecRemoveAtLayout => "hew_vec_remove_at_layout",
             Self::VecRemoveAtOwned => "hew_vec_remove_at_owned",
             Self::VecSetBool => "hew_vec_set_bool",
-            Self::VecSetI32 => "hew_vec_set_i32",
             Self::VecSetLayout => "hew_vec_set_layout",
             Self::VecSetOwned => "hew_vec_set_owned",
             Self::VecSetOwnedMove => "hew_vec_set_owned_move",
@@ -958,6 +1366,9 @@ impl RuntimeCallFamily {
         reason = "inverse of the c_symbol enumeration; one arm per symbol"
     )]
     pub fn from_c_symbol(sym: &str) -> Option<Self> {
+        if let Some(family) = vec_scalar_from_c_symbol(sym) {
+            return Some(family);
+        }
         let family = match sym {
             // Actor
             "hew_actor_ask" => Self::ActorAsk,
@@ -1202,10 +1613,17 @@ impl RuntimeCallFamily {
             "hew_task_set_result" => Self::TaskSetResult,
             "hew_task_spawn_thread" => Self::TaskSpawnThread,
             // Vec
+            "hew_vec_append" => Self::VecAppend,
+            "hew_vec_clear" => Self::VecClear,
+            "hew_vec_clone" => Self::VecClone,
             "hew_vec_clone_layout" => Self::VecCloneLayout,
             "hew_vec_clone_owned" => Self::VecCloneOwned,
             "hew_vec_contains_thunk" => Self::VecContainsLayout,
             "hew_vec_contains_owned" => Self::VecContainsOwned,
+            "hew_vec_contains_f64" => Self::VecContainsScalar(VecContainsScalarElem::F64),
+            "hew_vec_contains_i32" => Self::VecContainsScalar(VecContainsScalarElem::I32),
+            "hew_vec_contains_i64" => Self::VecContainsScalar(VecContainsScalarElem::I64),
+            "hew_vec_contains_str" => Self::VecContainsScalar(VecContainsScalarElem::Str),
             "hew_vec_get_bool" => Self::VecGet(VecGetElem::Bool),
             "hew_vec_get_f32" => Self::VecGet(VecGetElem::F32),
             "hew_vec_get_f64" => Self::VecGet(VecGetElem::F64),
@@ -1213,12 +1631,15 @@ impl RuntimeCallFamily {
             "hew_vec_get_i16" => Self::VecGet(VecGetElem::I16),
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
+            "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
             "hew_vec_get_str" => Self::VecGet(VecGetElem::Str),
             "hew_vec_get_u8" => Self::VecGet(VecGetElem::U8),
             "hew_vec_get_u16" => Self::VecGet(VecGetElem::U16),
+            "hew_vec_is_empty" => Self::VecIsEmpty,
+            "hew_vec_join_str" => Self::VecJoinStr,
             "hew_vec_len" => Self::VecLen,
             "Vec::new" => Self::VecNew,
             "hew_vec_pop_bool" => Self::VecPopBool,
@@ -1232,7 +1653,6 @@ impl RuntimeCallFamily {
             "hew_vec_remove_at_layout" => Self::VecRemoveAtLayout,
             "hew_vec_remove_at_owned" => Self::VecRemoveAtOwned,
             "hew_vec_set_bool" => Self::VecSetBool,
-            "hew_vec_set_i32" => Self::VecSetI32,
             "hew_vec_set_layout" => Self::VecSetLayout,
             "hew_vec_set_owned" => Self::VecSetOwned,
             "hew_vec_set_owned_move" => Self::VecSetOwnedMove,
@@ -1266,6 +1686,9 @@ impl RuntimeCallFamily {
         matches!(
             self,
             Self::BytesNew
+                | Self::VecAppend
+                | Self::VecClear
+                | Self::VecClone
                 | Self::HashMapClearLayout
                 | Self::HashMapCloneLayout
                 | Self::HashSetClearLayout
@@ -1275,6 +1698,7 @@ impl RuntimeCallFamily {
                 | Self::VecCloneOwned
                 | Self::VecContainsLayout
                 | Self::VecContainsOwned
+                | Self::VecContainsScalar(_)
                 | Self::VecNew
                 | Self::VecPopBool
                 | Self::VecPopLayout
@@ -1283,14 +1707,16 @@ impl RuntimeCallFamily {
                 | Self::VecPushLayout
                 | Self::VecPushOwned
                 | Self::VecPushOwnedMove
+                | Self::VecScalar { .. }
                 | Self::VecRemoveAtBool
                 | Self::VecRemoveAtLayout
                 | Self::VecRemoveAtOwned
                 | Self::VecSetBool
-                | Self::VecSetI32
                 | Self::VecSetLayout
                 | Self::VecSetOwned
                 | Self::VecSetOwnedMove
+                | Self::VecIsEmpty
+                | Self::VecJoinStr
         )
     }
 
@@ -1299,11 +1725,17 @@ impl RuntimeCallFamily {
     pub const fn is_vec_op(self) -> bool {
         matches!(
             self,
-            Self::VecCloneLayout
+            Self::VecAppend
+                | Self::VecClear
+                | Self::VecClone
+                | Self::VecCloneLayout
                 | Self::VecCloneOwned
                 | Self::VecContainsLayout
                 | Self::VecContainsOwned
+                | Self::VecContainsScalar(_)
                 | Self::VecGet(_)
+                | Self::VecIsEmpty
+                | Self::VecJoinStr
                 | Self::VecLen
                 | Self::VecNew
                 | Self::VecPopBool
@@ -1313,11 +1745,11 @@ impl RuntimeCallFamily {
                 | Self::VecPushLayout
                 | Self::VecPushOwned
                 | Self::VecPushOwnedMove
+                | Self::VecScalar { .. }
                 | Self::VecRemoveAtBool
                 | Self::VecRemoveAtLayout
                 | Self::VecRemoveAtOwned
                 | Self::VecSetBool
-                | Self::VecSetI32
                 | Self::VecSetLayout
                 | Self::VecSetOwned
                 | Self::VecSetOwnedMove
@@ -1460,7 +1892,12 @@ impl RuntimeCallFamily {
             | Self::VecSetBool
             | Self::VecPopBool
             | Self::VecRemoveAtBool => RuntimeCallAbiShape::VecBool,
-            Self::VecGet(VecGetElem::I32) | Self::VecSetI32 => RuntimeCallAbiShape::VecI32GetSet,
+            Self::VecGet(VecGetElem::I32)
+            | Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::I32,
+            } => RuntimeCallAbiShape::VecI32GetSet,
+            Self::VecScalar { .. } => RuntimeCallAbiShape::VecScalarDirect,
             Self::VecNew => RuntimeCallAbiShape::VecConstructor,
             Self::VecPushLayout
             | Self::VecGet(VecGetElem::Layout)
@@ -1512,7 +1949,10 @@ impl RuntimeCallFamily {
     /// in `hew-types/src/builtin_names.rs` for the 7-symbol set:
     /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
     /// `hew_channel_receiver_close`, `hew_duplex_close`,
-    /// `hew_duplex_close_half`, `hew_lambda_actor_release`.
+    /// `hew_duplex_close_half`, `hew_lambda_actor_release`, plus the TCP
+    /// active-mode handoff. The latter is not a close call: its consume fact
+    /// comes from the generated FFI contract for `hew_tcp_attach_local`,
+    /// because the reactor becomes the connection's sole close authority.
     ///
     /// LESSONS P0 `boundary-fail-closed`: a missed consume-mark leaks
     /// the handle (drop fires once on a still-live handle) — it never
@@ -1521,6 +1961,14 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
+        if self == Self::TcpAttachLocal {
+            // The TCP handoff carries a scalar connection token at ABI level,
+            // so this must not be a spelling-only ownership inference. An
+            // absent/wrong/short row is deliberately non-consuming; the
+            // generated contract is the sole positive authority.
+            return crate::ffi_contracts::extern_param_ownership(self.c_symbol(), 0)
+                == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        }
         matches!(
             self,
             Self::StreamClose
@@ -1559,7 +2007,10 @@ impl RuntimeCallFamily {
     ///   `runtime_contract_perarg_drift` pin asserts this axis and
     ///   `consumes_receiver` cannot diverge (L211 dual-carrier).
     /// * **Non-receiver (`index >= 1`)** —
-    ///   [`ConservativeConsume`](ConsumeVerdict::ConservativeConsume). SHIM:
+    ///   [`ConservativeConsume`](ConsumeVerdict::ConservativeConsume) unless
+    ///   a closed family-specific ABI table proves a borrow. The scalar and
+    ///   plain Vec matrix below is exact: its index/value/secondary-vector and
+    ///   separator inputs are borrowed.
     ///   WHY — the family carries no per-argument type/ownership detail, so an
     ///   individually-proven verdict is not derivable here;
     ///   `ConservativeConsume` is the fail-closed default (callee assumed to
@@ -1576,13 +2027,46 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn arg_consume_verdict(self, index: usize) -> ConsumeVerdict {
         if index == 0 {
-            if self.consumes_receiver() {
+            return if self.consumes_receiver() {
                 ConsumeVerdict::ProvenConsume
             } else {
                 ConsumeVerdict::ProvenBorrow
+            };
+        }
+        match self {
+            // Scalar values have no ownership transfer. For `Str`, the
+            // runtime reads the input string during push/set and never adopts
+            // it. Pop/remove ownership is a result fact, not an argument fact.
+            Self::VecScalar { .. }
+            // Scalar contains arguments are borrowed, including C-string
+            // comparison for `Vec<string>::contains`.
+            | Self::VecContainsScalar(_)
+            // `append` borrows the source vector, and `join` borrows its
+            // separator string. The remaining plain Vec entries carry no
+            // payload beyond their borrowed receiver, so any accidental extra
+            // argument is still fail-closed as borrowed only within this
+            // closed, audited ABI family.
+            | Self::VecAppend
+            | Self::VecClear
+            | Self::VecClone
+            | Self::VecIsEmpty
+            | Self::VecJoinStr => ConsumeVerdict::ProvenBorrow,
+            _ => ConsumeVerdict::ConservativeConsume,
+        }
+    }
+
+    /// Return-value ownership for the closed scalar Vec ABI surface.
+    #[must_use]
+    pub const fn result_ownership(self) -> RuntimeResultOwnership {
+        match self {
+            Self::VecScalar {
+                op: VecScalarOp::Pop | VecScalarOp::RemoveAt,
+                elem: VecScalarElem::Str,
             }
-        } else {
-            ConsumeVerdict::ConservativeConsume
+            | Self::VecJoinStr => RuntimeResultOwnership::FreshOwnedString,
+            Self::VecClone | Self::VecNew => RuntimeResultOwnership::FreshOwnedVec,
+            Self::BytesNew => RuntimeResultOwnership::FreshOwnedBytes,
+            _ => RuntimeResultOwnership::Untracked,
         }
     }
 
@@ -1818,9 +2302,15 @@ impl RuntimeCallFamily {
             | F::TaskSpawnThread
             | F::VecCloneLayout
             | F::VecCloneOwned
+            | F::VecAppend
+            | F::VecClear
+            | F::VecClone
             | F::VecContainsLayout
             | F::VecContainsOwned
+            | F::VecContainsScalar(_)
             | F::VecGet(_)
+            | F::VecIsEmpty
+            | F::VecJoinStr
             | F::VecLen
             | F::VecNew
             | F::VecPopBool
@@ -1830,11 +2320,11 @@ impl RuntimeCallFamily {
             | F::VecPushLayout
             | F::VecPushOwned
             | F::VecPushOwnedMove
+            | F::VecScalar { .. }
             | F::VecRemoveAtBool
             | F::VecRemoveAtLayout
             | F::VecRemoveAtOwned
             | F::VecSetBool
-            | F::VecSetI32
             | F::VecSetLayout
             | F::VecSetOwned
             | F::VecSetOwnedMove
@@ -1877,6 +2367,9 @@ impl RuntimeCallFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallAbiShape {
     VecBool,
+    /// An ordinary scalar Vec entry that uses the typed function declaration
+    /// path rather than bespoke ABI marshalling.
+    VecScalarDirect,
     VecI32GetSet,
     VecConstructor,
     VecLayout,
@@ -2153,6 +2646,111 @@ impl RuntimeDropDescriptor {
     }
 }
 
+/// Closed spelling table for the scalar Vec operation matrix.
+///
+/// Scalar Vec calls deliberately remain generic codegen calls once their
+/// checked collection operation has authorized this family.  The spelling is
+/// centralized here so the producer, inverse lookup, and coverage tests
+/// cannot drift one operation or scalar element at a time.
+const fn vec_scalar_c_symbol(op: VecScalarOp, elem: VecScalarElem) -> &'static str {
+    use VecScalarElem as E;
+    use VecScalarOp as O;
+
+    match (op, elem) {
+        (O::Push, E::F32) => "hew_vec_push_f32",
+        (O::Push, E::F64) => "hew_vec_push_f64",
+        (O::Push, E::I8) => "hew_vec_push_i8",
+        (O::Push, E::I16) => "hew_vec_push_i16",
+        (O::Push, E::I32) => "hew_vec_push_i32",
+        (O::Push, E::I64) => "hew_vec_push_i64",
+        (O::Push, E::Ptr) => "hew_vec_push_ptr",
+        (O::Push, E::Str) => "hew_vec_push_str",
+        (O::Push, E::U8) => "hew_vec_push_u8",
+        (O::Push, E::U16) => "hew_vec_push_u16",
+        (O::Pop, E::F32) => "hew_vec_pop_f32",
+        (O::Pop, E::F64) => "hew_vec_pop_f64",
+        (O::Pop, E::I8) => "hew_vec_pop_i8",
+        (O::Pop, E::I16) => "hew_vec_pop_i16",
+        (O::Pop, E::I32) => "hew_vec_pop_i32",
+        (O::Pop, E::I64) => "hew_vec_pop_i64",
+        (O::Pop, E::Ptr) => "hew_vec_pop_ptr",
+        (O::Pop, E::Str) => "hew_vec_pop_str",
+        (O::Pop, E::U8) => "hew_vec_pop_u8",
+        (O::Pop, E::U16) => "hew_vec_pop_u16",
+        (O::Set, E::F32) => "hew_vec_set_f32",
+        (O::Set, E::F64) => "hew_vec_set_f64",
+        (O::Set, E::I8) => "hew_vec_set_i8",
+        (O::Set, E::I16) => "hew_vec_set_i16",
+        (O::Set, E::I32) => "hew_vec_set_i32",
+        (O::Set, E::I64) => "hew_vec_set_i64",
+        (O::Set, E::Ptr) => "hew_vec_set_ptr",
+        (O::Set, E::Str) => "hew_vec_set_str",
+        (O::Set, E::U8) => "hew_vec_set_u8",
+        (O::Set, E::U16) => "hew_vec_set_u16",
+        (O::RemoveAt, E::F32) => "hew_vec_remove_at_f32",
+        (O::RemoveAt, E::F64) => "hew_vec_remove_at_f64",
+        (O::RemoveAt, E::I8) => "hew_vec_remove_at_i8",
+        (O::RemoveAt, E::I16) => "hew_vec_remove_at_i16",
+        (O::RemoveAt, E::I32) => "hew_vec_remove_at_i32",
+        (O::RemoveAt, E::I64) => "hew_vec_remove_at_i64",
+        (O::RemoveAt, E::Ptr) => "hew_vec_remove_at_ptr",
+        (O::RemoveAt, E::Str) => "hew_vec_remove_at_str",
+        (O::RemoveAt, E::U8) => "hew_vec_remove_at_u8",
+        (O::RemoveAt, E::U16) => "hew_vec_remove_at_u16",
+    }
+}
+
+fn vec_scalar_from_c_symbol(sym: &str) -> Option<RuntimeCallFamily> {
+    use RuntimeCallFamily::VecScalar;
+    use VecScalarElem as E;
+    use VecScalarOp as O;
+
+    let (op, elem) = match sym {
+        "hew_vec_push_f32" => (O::Push, E::F32),
+        "hew_vec_push_f64" => (O::Push, E::F64),
+        "hew_vec_push_i8" => (O::Push, E::I8),
+        "hew_vec_push_i16" => (O::Push, E::I16),
+        "hew_vec_push_i32" => (O::Push, E::I32),
+        "hew_vec_push_i64" => (O::Push, E::I64),
+        "hew_vec_push_ptr" => (O::Push, E::Ptr),
+        "hew_vec_push_str" => (O::Push, E::Str),
+        "hew_vec_push_u8" => (O::Push, E::U8),
+        "hew_vec_push_u16" => (O::Push, E::U16),
+        "hew_vec_pop_f32" => (O::Pop, E::F32),
+        "hew_vec_pop_f64" => (O::Pop, E::F64),
+        "hew_vec_pop_i8" => (O::Pop, E::I8),
+        "hew_vec_pop_i16" => (O::Pop, E::I16),
+        "hew_vec_pop_i32" => (O::Pop, E::I32),
+        "hew_vec_pop_i64" => (O::Pop, E::I64),
+        "hew_vec_pop_ptr" => (O::Pop, E::Ptr),
+        "hew_vec_pop_str" => (O::Pop, E::Str),
+        "hew_vec_pop_u8" => (O::Pop, E::U8),
+        "hew_vec_pop_u16" => (O::Pop, E::U16),
+        "hew_vec_set_f32" => (O::Set, E::F32),
+        "hew_vec_set_f64" => (O::Set, E::F64),
+        "hew_vec_set_i8" => (O::Set, E::I8),
+        "hew_vec_set_i16" => (O::Set, E::I16),
+        "hew_vec_set_i32" => (O::Set, E::I32),
+        "hew_vec_set_i64" => (O::Set, E::I64),
+        "hew_vec_set_ptr" => (O::Set, E::Ptr),
+        "hew_vec_set_str" => (O::Set, E::Str),
+        "hew_vec_set_u8" => (O::Set, E::U8),
+        "hew_vec_set_u16" => (O::Set, E::U16),
+        "hew_vec_remove_at_f32" => (O::RemoveAt, E::F32),
+        "hew_vec_remove_at_f64" => (O::RemoveAt, E::F64),
+        "hew_vec_remove_at_i8" => (O::RemoveAt, E::I8),
+        "hew_vec_remove_at_i16" => (O::RemoveAt, E::I16),
+        "hew_vec_remove_at_i32" => (O::RemoveAt, E::I32),
+        "hew_vec_remove_at_i64" => (O::RemoveAt, E::I64),
+        "hew_vec_remove_at_ptr" => (O::RemoveAt, E::Ptr),
+        "hew_vec_remove_at_str" => (O::RemoveAt, E::Str),
+        "hew_vec_remove_at_u8" => (O::RemoveAt, E::U8),
+        "hew_vec_remove_at_u16" => (O::RemoveAt, E::U16),
+        _ => return None,
+    };
+    Some(VecScalar { op, elem })
+}
+
 // =============================================================================
 // Test-only enumeration helpers
 // =============================================================================
@@ -2186,7 +2784,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
             F::MathIntrinsic(_) => out.extend(MathIntrinsic::iter().map(F::MathIntrinsic)),
             F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
             F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
+            F::VecContainsScalar(_) => out.extend(all_vec_contains_scalar_families()),
             F::VecGet(_) => out.extend(VecGetElem::iter().map(F::VecGet)),
+            F::VecScalar { .. } => out.extend(all_vec_scalar_families()),
             F::VecSliceRange(_) => out.extend(VecSliceElem::iter().map(F::VecSliceRange)),
             // Nullary variants carry no payload: emit `EnumIter`'s single
             // representative as-is.
@@ -2194,6 +2794,28 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         }
     }
     out
+}
+
+/// Enumerate the complete closed scalar Vec operation matrix.
+///
+/// This is exported for producer tests in downstream compiler crates: those
+/// tests must derive their cases from the catalog instead of duplicating an
+/// element list that can drift when the matrix grows.
+#[must_use]
+pub fn all_vec_scalar_families() -> Vec<RuntimeCallFamily> {
+    VecScalarOp::iter()
+        .flat_map(|op| {
+            VecScalarElem::iter().map(move |elem| RuntimeCallFamily::VecScalar { op, elem })
+        })
+        .collect()
+}
+
+/// Enumerate the closed scalar `Vec::contains` entries.
+#[must_use]
+pub fn all_vec_contains_scalar_families() -> Vec<RuntimeCallFamily> {
+    VecContainsScalarElem::iter()
+        .map(RuntimeCallFamily::VecContainsScalar)
+        .collect()
 }
 
 /// Enumerate every legal [`RuntimeDropDescriptor`] variant.
@@ -2274,8 +2896,13 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::WebSocketAttachLocal
             | F::VecCloneLayout
             | F::VecCloneOwned
+            | F::VecAppend
+            | F::VecClear
+            | F::VecClone
             | F::VecContainsLayout
             | F::VecContainsOwned
+            | F::VecContainsScalar(_)
+            | F::VecGet(VecGetElem::Clone)
             | F::VecNew
             | F::VecPopBool
             | F::VecPopLayout
@@ -2284,14 +2911,16 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecPushLayout
             | F::VecPushOwned
             | F::VecPushOwnedMove
+            | F::VecScalar { .. }
             | F::VecRemoveAtBool
             | F::VecRemoveAtLayout
             | F::VecRemoveAtOwned
             | F::VecSetBool
-            | F::VecSetI32
             | F::VecSetLayout
             | F::VecSetOwned
             | F::VecSetOwnedMove
+            | F::VecIsEmpty
+            | F::VecJoinStr
     )
 }
 
@@ -2341,15 +2970,66 @@ mod tests {
             );
             // Every consuming verdict projects to the historical `true`.
             assert_eq!(receiver.is_consume(), family.consumes_receiver());
-            // Non-receiver args are fail-closed consume, never borrow.
+            // The closed Vec ABI families carry exact borrowed payload facts;
+            // all other non-receiver arguments retain the fail-closed default.
             for index in 1..=3 {
+                let expected = if matches!(
+                    family,
+                    RuntimeCallFamily::VecScalar { .. }
+                        | RuntimeCallFamily::VecContainsScalar(_)
+                        | RuntimeCallFamily::VecAppend
+                        | RuntimeCallFamily::VecClear
+                        | RuntimeCallFamily::VecClone
+                        | RuntimeCallFamily::VecIsEmpty
+                        | RuntimeCallFamily::VecJoinStr
+                ) {
+                    ConsumeVerdict::ProvenBorrow
+                } else {
+                    ConsumeVerdict::ConservativeConsume
+                };
                 assert_eq!(
                     family.arg_consume_verdict(index),
-                    ConsumeVerdict::ConservativeConsume,
-                    "non-receiver arg {index} of {family:?} must fail closed",
+                    expected,
+                    "non-receiver arg {index} of {family:?} drifted from its closed ABI contract",
                 );
             }
         }
+    }
+
+    #[test]
+    fn scalar_vec_result_ownership_is_family_keyed_and_total() {
+        for family in all_vec_scalar_families() {
+            let RuntimeCallFamily::VecScalar { op, elem } = family else {
+                unreachable!("the scalar Vec matrix only yields VecScalar families");
+            };
+            let expected = if matches!(op, VecScalarOp::Pop | VecScalarOp::RemoveAt)
+                && elem == VecScalarElem::Str
+            {
+                RuntimeResultOwnership::FreshOwnedString
+            } else {
+                RuntimeResultOwnership::Untracked
+            };
+            assert_eq!(family.result_ownership(), expected, "{family:?}");
+        }
+        for family in all_vec_contains_scalar_families() {
+            assert_eq!(family.result_ownership(), RuntimeResultOwnership::Untracked);
+        }
+        assert_eq!(
+            RuntimeCallFamily::VecClone.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedVec
+        );
+        assert_eq!(
+            RuntimeCallFamily::VecNew.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedVec
+        );
+        assert_eq!(
+            RuntimeCallFamily::VecJoinStr.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedString
+        );
+        assert_eq!(
+            RuntimeCallFamily::BytesNew.result_ownership(),
+            RuntimeResultOwnership::FreshOwnedBytes
+        );
     }
 
     #[test]
@@ -2363,6 +3043,37 @@ mod tests {
                      produce {sym:?} — the bijection requires every variant \
                      to map to a unique symbol"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_stdlib_extern_descriptor_covers_the_typed_surface() {
+        let signatures = canonical_std_io_extern_signatures();
+        let names: Vec<_> = signatures.iter().map(|entry| entry.signature_key).collect();
+        assert_eq!(
+            names,
+            vec![
+                "bytes::append",
+                "bytes::clear",
+                "bytes::contains",
+                "bytes::get",
+                "bytes::is_empty",
+                "bytes::len",
+                "bytes::pop",
+                "bytes::push",
+                "bytes::set",
+                "bytes::to_string",
+                "string::find",
+                "string::char_at",
+                "string::get",
+                "string::codepoint_at_utf8",
+            ],
+            "a compiler-lowered stdlib extern must be described here before it can lift into a runtime family",
+        );
+        for entry in signatures {
+            if let Some(family) = entry.family {
+                assert_eq!(family.c_symbol(), entry.symbol, "{entry:?}");
             }
         }
     }
@@ -2421,13 +3132,16 @@ mod tests {
     fn codegen_partition_only_set_pins_mir_carrier_boundary() {
         use RuntimeCallFamily as F;
 
-        let expected: HashSet<RuntimeCallFamily> = [
+        let mut expected: HashSet<RuntimeCallFamily> = [
             F::BytesNew,
             F::HashMapClearLayout,
             F::HashMapCloneLayout,
             F::HashSetClearLayout,
             F::HashSetCloneLayout,
             F::HashSetToVecLayout,
+            F::VecAppend,
+            F::VecClear,
+            F::VecClone,
             F::VecCloneLayout,
             F::VecCloneOwned,
             F::VecContainsLayout,
@@ -2444,14 +3158,20 @@ mod tests {
             F::VecRemoveAtLayout,
             F::VecRemoveAtOwned,
             F::VecSetBool,
-            F::VecSetI32,
             F::VecSetLayout,
             F::VecSetOwned,
             F::VecSetOwnedMove,
+            F::VecIsEmpty,
+            F::VecJoinStr,
         ]
         .into_iter()
         .collect();
-        assert_eq!(expected.len(), 26);
+        expected.extend(
+            VecScalarOp::iter()
+                .flat_map(|op| VecScalarElem::iter().map(move |elem| F::VecScalar { op, elem })),
+        );
+        expected.extend(VecContainsScalarElem::iter().map(F::VecContainsScalar));
+        assert_eq!(expected.len(), 74);
 
         let actual: HashSet<RuntimeCallFamily> = all_runtime_call_families()
             .into_iter()
@@ -2491,9 +3211,12 @@ mod tests {
     /// now delegates to this catalog, so asserting against that function
     /// would be circular — the literal set below is the sole external
     /// anchor: a consuming family losing its consume mark (leak) or a
-    /// non-consuming family gaining one (double-free) fails here. The set
-    /// covers the close family plus the two half-extract methods, which
-    /// move the unified `Duplex` handle out (leaving only the half live).
+    /// non-consuming family gaining one (double-free) fails here. The literal
+    /// set covers the close family plus the two half-extract methods, which
+    /// move the unified `Duplex` handle out (leaving only the half live). TCP
+    /// attach is intentionally separate: its consume fact is anchored in the
+    /// generated FFI table, and this test pins that table projection rather
+    /// than duplicating a second literal authority.
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
@@ -2516,7 +3239,10 @@ mod tests {
         for family in all_runtime_call_families() {
             let sym = family.c_symbol();
             let consumes = family.consumes_receiver();
-            let expected_consumes = expected.contains(sym);
+            let expected_consumes = expected.contains(sym)
+                || (sym == "hew_tcp_attach_local"
+                    && crate::ffi_contracts::extern_param_ownership(sym, 0)
+                        == Some(crate::ffi_contracts::ExternParamOwnership::Consume));
             assert_eq!(
                 consumes, expected_consumes,
                 "consumes_receiver mismatch for {family:?} → {sym}: \

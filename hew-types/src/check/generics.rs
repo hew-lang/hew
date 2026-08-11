@@ -17,36 +17,11 @@ impl Checker {
         sig: &mut FnSig,
         bound: &crate::ty::TraitObjectBound,
     ) {
-        // Keyed on the BARE `bound.trait_name`, deliberately. This is part of the
-        // `dyn`-trait subsystem, which is internally consistent on the bare trait
-        // name across BOTH its write side (`record_trait_impl` /
-        // `record_primitive_trait_impl_method` key `trait_impls_set` /
-        // `primitive_trait_impls` on the bare `tb.name`) and its read side
-        // (`validate_dyn_trait_bound`, the slot lookup in `methods.rs`,
-        // `actor_satisfies_handler_trait`). Re-keying THIS lookup on the
-        // owner-qualified identity in isolation would desync it from the caller
-        // in `validate_dyn_trait_bound`, which fetched `trait_info` and built the
-        // method table from the bare entry — under a same-name arity collision
-        // the substitution would then use a different trait's type-params than
-        // the vtable was built from. Routing the `dyn` family to owner-qualified
-        // identity requires moving its WRITE keys together (the owner-qualified
-        // write+read key reshape across `record_trait_impl` /
-        // `primitive_trait_impls` / the `coerce.rs` vtable build), which is out of
-        // scope for this change.
-        //
-        // FAIL-CLOSED, with a KNOWN LIMITATION (deferred to v0.5.3). No invalid
-        // program is accepted: a wrong-owner `dyn` coercion with no structural
-        // match IS rejected. But because this family keys on the bare trait name,
-        // a same-name collision (an importer brings in a `Widget` whose method set
-        // differs from the impl's owner `Widget`) is not caught HERE in the
-        // checker — it is carried far enough to build a vtable and only then
-        // rejected by codegen-front's `E_CODEGEN_FRONT` invalid-vtable
-        // fail-closed (a vtable slot referencing an impl fn the module never
-        // declared). The full fix is the dyn-family owner-qualified write+read key
-        // reshape so the bad coercion is rejected at the type boundary with a
-        // checker diagnostic, tracked as a v0.5.3 follow-up. Until then the
-        // wrong-owner case is rejected at a later layer, never accepted.
-        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+        // A trait object's source spelling is a lookup surface. The signature's
+        // associated-type carriers are declaration-owned, so resolve the bound
+        // once and use its canonical trait key for both metadata and projection.
+        let trait_key = self.trait_ref_lookup_key(&bound.trait_name);
+        if let Some(trait_info) = self.trait_defs.get(&trait_key) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
                 // Build the substitution map once and apply in parallel so
@@ -65,10 +40,10 @@ impl Checker {
             }
         }
         for param_ty in &mut sig.params {
-            *param_ty = substitute_trait_object_assoc_bindings(param_ty, &bound.trait_name, bound);
+            *param_ty = substitute_trait_object_assoc_bindings(param_ty, &trait_key, bound);
         }
         sig.return_type =
-            substitute_trait_object_assoc_bindings(&sig.return_type, &bound.trait_name, bound);
+            substitute_trait_object_assoc_bindings(&sig.return_type, &trait_key, bound);
     }
 
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
@@ -622,8 +597,9 @@ impl Checker {
                 );
                 continue;
             }
+            let bound_display = crate::short_name(bound);
             let msg = format!(
-                "type `{}` does not implement trait `{bound}` required by `{param_name}`",
+                "type `{}` does not implement trait `{bound_display}` required by `{param_name}`",
                 resolved_arg.user_facing()
             );
             let suggestions = self.diagnose_bound_failure_suggestions(resolved_arg, bound);
@@ -900,7 +876,7 @@ impl Checker {
             if actual.has_inference_var() {
                 continue;
             }
-            let _ = unify(&mut self.subst, &expected, &actual);
+            let _ = self.try_unify_with_owner_identity(&expected, &actual);
         }
     }
 
@@ -981,11 +957,12 @@ impl Checker {
         let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
             return vec![];
         };
+        let trait_display = crate::short_name(&trait_name);
 
         // E1 guard: associated types require an explicit impl alias scope.
         if !trait_info.associated_types.is_empty() {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (it declares associated types)"
             )];
         }
@@ -996,7 +973,7 @@ impl Checker {
             .any(|m| m.type_params.as_ref().is_some_and(|tp| !tp.is_empty()))
         {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (it has generic methods)"
             )];
         }
@@ -1005,7 +982,7 @@ impl Checker {
         let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())
         else {
             return vec![format!(
-                "trait `{trait_name}` requires an explicit `impl` declaration \
+                "trait `{trait_display}` requires an explicit `impl` declaration \
                  (a super-trait declares associated types or generic methods)"
             )];
         };
@@ -1013,8 +990,8 @@ impl Checker {
         // A trait with no required methods (all defaults or empty) still needs an explicit impl.
         if required.is_empty() {
             return vec![format!(
-                "trait `{trait_name}` has no required methods — add an explicit \
-                 `impl {trait_name} for {type_name}` declaration"
+                "trait `{trait_display}` has no required methods — add an explicit \
+                 `impl {trait_display} for {type_name}` declaration"
             )];
         }
 
@@ -1041,7 +1018,7 @@ impl Checker {
             if trait_sig.params.len() != type_sig.params.len() {
                 return vec![format!(
                     "`{type_name}::{method_name}` has {} parameter(s) but trait \
-                     `{trait_name}` requires {} — arity mismatch",
+                     `{trait_display}` requires {} — arity mismatch",
                     type_sig.params.len(),
                     trait_sig.params.len(),
                 )];
@@ -1053,7 +1030,7 @@ impl Checker {
                 .substitute_named_param("Self", &concrete_ty);
             if expected_ret != type_sig.return_type {
                 return vec![format!(
-                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_name}` \
+                    "`{type_name}::{method_name}` returns `{}` but trait `{trait_display}` \
                      requires `{}` — return-type mismatch",
                     type_sig.return_type.user_facing(),
                     expected_ret.user_facing(),
@@ -1071,7 +1048,7 @@ impl Checker {
                 if expected != *type_param {
                     return vec![format!(
                         "`{type_name}::{method_name}` parameter {} has type `{}` but \
-                         trait `{trait_name}` requires `{}` — type mismatch",
+                         trait `{trait_display}` requires `{}` — type mismatch",
                         i + 1,
                         type_param.user_facing(),
                         expected.user_facing(),
@@ -1083,7 +1060,7 @@ impl Checker {
         if !missing.is_empty() {
             let list = missing.join(", ");
             return vec![format!(
-                "`{type_name}` is missing method(s) required by trait `{trait_name}`: {list}"
+                "`{type_name}` is missing method(s) required by trait `{trait_display}`: {list}"
             )];
         }
 
@@ -1113,7 +1090,7 @@ impl Checker {
                 .is_some_and(|marker| self.registry.implements_marker(ty, marker)),
             Ty::Named { name, .. } => {
                 let name = name.clone();
-                if self.type_implements_trait(&name, trait_name)
+                if self.type_implements_trait_for_ty(ty, trait_name)
                     || self.type_structurally_satisfies(&name, trait_name)
                 {
                     return true;
@@ -1176,7 +1153,7 @@ impl Checker {
         for frame in self.current_type_param_bounds.iter().rev() {
             if let Some(bounds) = frame.bounds.get(param_name) {
                 if bounds.iter().any(|b| {
-                    Self::bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name)
+                    self.bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name)
                 }) {
                     return true;
                 }
@@ -1196,67 +1173,63 @@ impl Checker {
         };
         bounds
             .iter()
-            .any(|b| Self::bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name))
+            .any(|b| self.bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name))
     }
 
-    fn bound_implies_trait(bound: &str, trait_name: &str) -> bool {
-        bound == trait_name || (bound == "Ord" && trait_name == "PartialOrd")
+    fn bound_implies_trait(&self, bound: &str, trait_name: &str) -> bool {
+        let canonical_bound = self.trait_defs_key_for_bound(bound);
+        let canonical_trait = self.trait_defs_key_for_bound(trait_name);
+        let (bound_owner, bound_leaf) = canonical_bound
+            .rsplit_once('.')
+            .unwrap_or(("", canonical_bound.as_str()));
+        let (trait_owner, trait_leaf) = canonical_trait
+            .rsplit_once('.')
+            .unwrap_or(("", canonical_trait.as_str()));
+        canonical_bound == canonical_trait
+            || (bound_leaf == "Ord" && trait_leaf == "PartialOrd" && bound_owner == trait_owner)
     }
 
-    /// Check if a concrete type implements a trait (directly or via super-trait chain).
-    pub(super) fn type_implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
-        // Direct impl
+    /// Check an already-selected type identity against an already-selected trait
+    /// identity, including the exact super-trait chain. No leaf-name retry is
+    /// permitted here: conformance facts are executable dispatch authority.
+    fn type_identity_implements_trait(&self, type_identity: &str, trait_name: &str) -> bool {
+        let canonical_trait = self.trait_defs_key_for_bound(trait_name);
         if self
             .trait_impls_set
-            .contains(&(type_name.to_string(), trait_name.to_string()))
+            .contains(&(type_identity.to_string(), canonical_trait.clone()))
         {
             return true;
         }
-        // Strip known module prefix: "json.Value" → "Value"
-        let unqualified_type = type_name.find('.').and_then(|dot| {
-            let prefix = &type_name[..dot];
-            if self.modules.contains(prefix) {
-                Some(&type_name[dot + 1..])
-            } else {
-                None
-            }
-        });
-        if let Some(uq) = unqualified_type {
-            if self
-                .trait_impls_set
-                .contains(&(uq.to_string(), trait_name.to_string()))
-            {
-                return true;
-            }
-        }
-        // Also try unqualified trait name
-        let unqualified_trait = trait_name.find('.').and_then(|dot| {
-            let prefix = &trait_name[..dot];
-            if self.modules.contains(prefix) {
-                Some(&trait_name[dot + 1..])
-            } else {
-                None
-            }
-        });
-        if let Some(uq_trait) = unqualified_trait {
-            let tn = unqualified_type.unwrap_or(type_name);
-            if self
-                .trait_impls_set
-                .contains(&(tn.to_string(), uq_trait.to_string()))
-            {
-                return true;
-            }
-        }
-        // Check if type implements a sub-trait that extends this trait
-        let effective_type = unqualified_type.unwrap_or(type_name);
         for (tn, tn_trait) in &self.trait_impls_set {
-            if (tn == type_name || tn.as_str() == effective_type)
-                && self.trait_extends(tn_trait, trait_name)
-            {
+            if tn == type_identity && self.trait_extends(tn_trait, &canonical_trait) {
                 return true;
             }
         }
         false
+    }
+
+    /// Check a nominal source spelling after resolving it to the unique owner
+    /// selected by the checker. Qualified spellings remain exact identities.
+    pub(super) fn type_implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
+        let type_identity = self
+            .canonical_nominal_name(type_name)
+            .unwrap_or_else(|| type_name.to_string());
+        self.type_identity_implements_trait(&type_identity, trait_name)
+    }
+
+    /// Check a resolved type while preserving compiler-known builtin
+    /// discriminants. Synthetic cursor types deliberately have the same source
+    /// leaf available to users, so converting them back to a string before
+    /// selecting the conformance fact would lose the authority boundary.
+    pub(super) fn type_implements_trait_for_ty(&self, ty: &Ty, trait_name: &str) -> bool {
+        let identity = Self::canonical_primitive_or_builtin_key(ty).or_else(|| match ty {
+            Ty::Named { name, .. } => Some(
+                self.canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone()),
+            ),
+            _ => None,
+        });
+        identity.is_some_and(|identity| self.type_identity_implements_trait(&identity, trait_name))
     }
 
     /// Check if `child_trait` transitively extends `parent_trait`.
@@ -1572,6 +1545,7 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some(FnSig {
                 type_params,
                 type_param_bounds,
@@ -1579,6 +1553,8 @@ impl Checker {
                 params,
                 return_type,
                 requires_mutable_receiver,
+                consumes_receiver: m.consumes_self,
+                returns_receiver_identity,
                 ..FnSig::default()
             });
         }
@@ -1704,6 +1680,7 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some((
                 trait_name.to_string(),
                 FnSig {
@@ -1713,6 +1690,8 @@ impl Checker {
                     params,
                     return_type,
                     requires_mutable_receiver,
+                    consumes_receiver: m.consumes_self,
+                    returns_receiver_identity,
                     ..FnSig::default()
                 },
             ));

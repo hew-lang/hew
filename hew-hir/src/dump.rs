@@ -525,7 +525,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             .expect("write to string");
             dump_expr(out, value, indent + 4);
         }
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);
             for arg in args {
@@ -559,6 +559,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             args,
             reply_ty,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -789,6 +790,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             binding_name,
             binding_id,
             output_ty,
+            ..
         } => {
             writeln!(
                 out,
@@ -805,6 +807,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             conn,
             to_string,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -823,6 +826,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::ChannelRecvAwait {
             receiver,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -833,6 +837,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::StreamRecvAwait {
             stream,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -1015,6 +1020,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             args,
             ret_ty,
             signature: _,
+            ..
         } => {
             writeln!(
                 out,
@@ -1050,13 +1056,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::VarSelfMethodCall {
             receiver,
+            call_target,
             target,
             args,
             ret_ty,
             receiver_ty,
+            ..
         } => {
             let target_label = match target {
-                crate::node::HirVarSelfMethodTarget::Direct { callee } => callee.clone(),
+                crate::node::HirVarSelfMethodTarget::Direct => match call_target {
+                    hew_types::CallTarget::ImplMethod(declaration) => {
+                        declaration.full_path().to_string()
+                    }
+                    other => format!("invalid-direct-target:{other:?}"),
+                },
                 crate::node::HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
                     declaring_trait,
@@ -1087,6 +1100,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             type_args,
             args,
             ret_ty,
+            ..
         } => {
             writeln!(
                 out,
@@ -1155,6 +1169,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 .expect("write to string");
             dump_expr(out, src, indent + 4);
         }
+        HirExprKind::SubsumedValue { source, producer } => {
+            writeln!(out, "{pad}  subsumed-value {producer:?}").expect("write to string");
+            dump_expr(out, source, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {
@@ -1213,6 +1231,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             state_idx,
             field_idx,
             field_name,
+            ..
         } => {
             writeln!(
                 out,
@@ -1225,6 +1244,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             event_idx,
             field_idx,
             field_name,
+            ..
         } => {
             writeln!(
                 out,
@@ -1290,7 +1310,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         format!("re{pattern:?}")
                     }
                 };
-                writeln!(out, "{pad}    arm {label}").expect("write to string");
+                writeln!(
+                    out,
+                    "{pad}    arm {label} scope={:?}",
+                    arm.scope.map(|scope| scope.0)
+                )
+                .expect("write to string");
                 for pred in &arm.payload_predicates {
                     writeln!(
                         out,

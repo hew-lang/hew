@@ -10,7 +10,7 @@
 //! producers (see `runtime_symbols.rs` WHY/WHEN-OBSOLETE).
 
 use hew_mir::runtime_symbols::{is_known_runtime_symbol, known_runtime_symbols};
-use hew_mir::{Instr, Place};
+use hew_mir::{CallAuthority, Instr, Place};
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
@@ -368,7 +368,7 @@ fn module_capabilities_collect_typed_metric_and_node_calls() {
                 )],
                 terminator: Terminator::Call {
                     callee: "Node::start".to_string(),
-                    builtin: Some(RuntimeCallFamily::NodeStart),
+                    authority: CallAuthority::Runtime(RuntimeCallFamily::NodeStart),
                     args: vec![],
                     dest: None,
                     next: 1,
@@ -421,7 +421,7 @@ fn module_capabilities_set_and_clear_blocking_offload_from_tagged_extern_calls()
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: callee.to_string(),
-                    builtin: None,
+                    authority: CallAuthority::default(),
                     args: vec![],
                     dest: None,
                     next: 1,

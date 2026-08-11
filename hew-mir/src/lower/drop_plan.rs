@@ -3,251 +3,41 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, blocks_reachable_from, check_duplex_split_state,
+    close_obligated_borrow_alias_violations, collection_borrow_getter_alias_locals,
     compute_collection_interior_alias_taint, compute_projection_alias_taint, dataflow,
+    derive_borrowed_builtin_handle_projection_alias_bindings, derive_bytes_actor_transfer_blocks,
     derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
     derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
     derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    instr_source_places, mangle_layout_key, place_is_interior_projection, place_refs_local,
+    derive_owned_tuple_handle_projection_bindings, derive_returned_aggregate_member_bindings,
+    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
+    derive_tuple_composite_drop_allowed, instr_source_places, outbound_record_layouts,
+    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
-    terminator_is_suspend_carrier, terminator_source_places, user_record_layout_key,
-    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
-    BuiltinType, CheckedMirFunction, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock,
-    ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr,
-    IntentKind, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator,
+    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
+    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
+    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
+    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, ScopeId, SuspendKind, Terminator,
     TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
+#[cfg(test)]
+use hew_hir::ResourceMarker;
 
-/// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
-/// rejection surface. `CheckedMirFunction::checks` is the single
-/// source of truth for move/borrow/init legality; this function
-/// adapts those findings to the older `MirDiagnostic` channel the
-/// driver already consumes. Variants whose construction surface
-/// isn't yet wired (`Aliasing`, `GeneratorBorrowAcrossYield`,
-/// `ActorSendEscape`) cannot appear today; they yield `None` defensively.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive MirCheck -> MirDiagnostic projection; each arm is a \
-              single distinct mapping and splitting scatters the projection table"
-)]
-pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
-    match check {
-        MirCheck::UseAfterConsume {
-            binding,
-            name,
-            consumed_at,
-            used_at,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::UseAfterConsume {
-                binding: *binding,
-                name: name.clone(),
-                consumed_at: *consumed_at,
-                used_at: *used_at,
-            },
-            note: "binding is used after an owned value move in checked MIR".to_string(),
-        }),
-        MirCheck::InitialisedBeforeUse {
-            binding,
-            name,
-            use_site,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::InitialisedBeforeUse {
-                binding: *binding,
-                name: name.clone(),
-                use_site: *use_site,
-            },
-            note: "binding is read before any initialising `let` for it appears".to_string(),
-        }),
-        MirCheck::DecisionMapTotal { offending_sites } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::DecisionMapTotal {
-                offending_sites: offending_sites.clone(),
-            },
-            note: "DecisionFact carries Strategy::UnknownBlocked at MIR boundary; \
-                   the emitter must never receive an undecided value-class site"
-                .to_string(),
-        }),
-        MirCheck::OutboundModeUnresolved { block } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::OutboundModeUnresolved { block: *block },
-            note: "every non-unit send/ask payload must carry resolved per-argument modes before checked MIR"
-                .to_string(),
-        }),
-        MirCheck::MustConsume {
-            binding,
-            name,
-            bind_site,
-            exit_site,
-            ty,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::MustConsume {
-                binding: *binding,
-                name: name.clone(),
-                bind_site: *bind_site,
-                exit_site: *exit_site,
-                ty: ty.clone(),
-            },
-            note: "@linear binding reached an exit without being consumed; \
-                   declare a consuming method (e.g. `commit(consuming self)`) \
-                   and ensure every reachable exit path invokes one"
-                .to_string(),
-        }),
-        MirCheck::DropPlanUndetermined { block, reason } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::DropPlanUndetermined {
-                block: *block,
-                reason: reason.clone(),
-            },
-            note: "drop-elaboration could not determine the per-exit live-set \
-                   for an M2 substrate handle (Duplex / lambda-actor / \
-                   half-handle); the elaborator aborts rather than emit a \
-                   partial drop plan (LESSONS cleanup-all-exits)"
-                .to_string(),
-        }),
-        MirCheck::ObligationUnderReleased {
-            function,
-            block,
-            name,
-            reason,
-            ..
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::ObligationUnderReleased {
-                function: function.clone(),
-                block: *block,
-                name: name.clone(),
-                reason: reason.clone(),
-            },
-            note: "every heap-owning owned value must be released exactly once \
-                   on every reachable exit path; this exit path never \
-                   discharges the mint (leak). This is an advisory warning, not \
-                   a build error — fix the drop plan (release on every exit) to \
-                   silence it"
-                .to_string(),
-        }),
-        MirCheck::ObligationOverReleased {
-            function,
-            block,
-            name,
-            reason,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::ObligationOverReleased {
-                function: function.clone(),
-                block: *block,
-                name: name.clone(),
-                reason: reason.clone(),
-            },
-            note: "every heap-owning owned value must be released exactly once \
-                   on every reachable exit path; this path releases it two or \
-                   more times (double-free). Over-release is memory-unsafe and \
-                   carries no allowlist escape"
-                .to_string(),
-        }),
-        MirCheck::ObligationBalanceUnverified { function, reason } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::ObligationBalanceUnverified {
-                function: function.clone(),
-                reason: reason.clone(),
-            },
-            note: "the obligation-balance fixpoint could not reach a verdict for \
-                   this function; the gate fails closed rather than certify an \
-                   unverified body as leak- and double-free-free. This is a \
-                   modelling invariant, not a user error"
-                .to_string(),
-        }),
-        MirCheck::ContextBoundaryViolation {
-            function,
-            block,
-            kind,
-            reason,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::ContextBoundaryViolation {
-                function: function.clone(),
-                block: *block,
-                kind,
-                reason: reason.clone(),
-            },
-            note: "actor-handler execution context markers are structurally invalid".to_string(),
-        }),
-        MirCheck::ContextBindingEscapes { place, block } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::ContextBindingEscapes {
-                place: *place,
-                block: *block,
-            },
-            note: "context-derived MIR place escapes past ExitContext".to_string(),
-        }),
-        MirCheck::DischargeAuthorityMissing {
-            function,
-            block,
-            authority,
-            reason,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::DischargeAuthorityMissing {
-                function: function.clone(),
-                block: *block,
-                authority: *authority,
-                reason: reason.clone(),
-            },
-            note: "a payload-slot neutralize whose discharge authority takes \
-                   ownership into a destination reached elaboration with no \
-                   transferee recorded; the discharge fact is defective. This is \
-                   a lowering invariant (close-by-construction), not a user error"
-                .to_string(),
-        }),
-        MirCheck::DischargeAuthorityDrift {
-            function,
-            block,
-            name,
-            reason,
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::DischargeAuthorityDrift {
-                function: function.clone(),
-                block: *block,
-                name: name.clone(),
-                reason: reason.clone(),
-            },
-            note: "a carried discharge authority disagrees with the \
-                   independently re-derived discharge set (dual-carrier drift); \
-                   the two carriers of one ownership-transfer fact must agree. \
-                   This is a lowering invariant, not a user error"
-                .to_string(),
-        }),
-        MirCheck::OwnedHandleAggregateDoubleFree {
-            name,
-            handle_ty,
-            overwrite,
-            owner,
-            ..
-        } => Some(MirDiagnostic {
-            kind: MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
-                name: name.clone(),
-                handle_ty: handle_ty.clone(),
-                overwrite: *overwrite,
-                owner: *owner,
-            },
-            note: "the drop analysis could not prove this owned handle is freed \
-                   exactly once after aggregate extraction; the compiler refuses \
-                   rather than emit a double-free (LESSONS boundary-fail-closed, \
-                   raii-null-after-move) — full aggregate-extraction support is \
-                   tracked for v0.5.1"
-                .to_string(),
-        }),
-        // No construction surface in the v0.5 integer spine. The
-        // corresponding `MirDiagnosticKind` projections will land
-        // alongside the construction surface for borrows, generators,
-        // and actor sends.
-        //
-        // `WitnessOperandUnresolved` joins this group for a different
-        // reason (W5.007a): witness instructions are produced only into
-        // the gated polymorphic-MIR bucket, whose diagnostics are
-        // discarded, so the finding never reaches a `CheckedMirFunction`
-        // and has no user-visible projection in this slice. Its
-        // fail-closed authority lives at the construction boundary
-        // (`WitnessOperand::resolve`) and the MIR verifier.
-        MirCheck::Aliasing { .. }
-        | MirCheck::GeneratorBorrowAcrossYield { .. }
-        | MirCheck::ActorSendEscape { .. }
-        | MirCheck::ActorAskEscape { .. }
-        | MirCheck::WitnessOperandUnresolved { .. } => None,
-    }
-}
+mod diagnostic_projection;
+mod returned_member_release;
+mod vec_iter_yield_abandonment;
+
+pub(super) use diagnostic_projection::check_to_diagnostic;
+use returned_member_release::{
+    existing_releases_replaced_by_candidate, normal_goto_precedes_abandonment,
+    returned_member_alias_read_blocks, returned_member_re_admission_path,
+    select_returned_member_re_admissions, ReturnedMemberReAdmission, ReturnedMemberReAdmissionPath,
+};
+pub(super) use vec_iter_yield_abandonment::vec_iter_yield_abandonment_diagnostics;
+use vec_iter_yield_abandonment::vec_iter_yield_body_region;
+
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
 /// Produces an `ElaboratedMirFunction` whose `blocks` + `drop_plans`
@@ -303,7 +93,8 @@ pub(super) fn elaborate(
     dataflow_result: &dataflow::DataflowResult,
     precomputed_cow_drop_allowed: Option<&HashSet<BindingId>>,
     precomputed_local_bytes_drop_allowed: Option<&HashSet<BindingId>>,
-) -> ElaboratedMirFunction {
+) -> (ElaboratedMirFunction, Vec<MirDiagnostic>) {
+    let mut elaboration_diagnostics = Vec::new();
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
     // gets a checker-stream `Drop` entry in reverse-declaration order;
@@ -351,15 +142,17 @@ pub(super) fn elaborate(
     // treats `MaybeConsumed` as Live (the move-checker rejects that only for
     // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
     // drop on a branch where the buffer was already moved out.
-    let cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
+    let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
+        let fresh_owner_dest_locals = builder.fresh_owner_dest_locals();
         let mut derived = derive_cow_sole_owner(
             &checked.blocks,
             &builder.suspend_kinds,
             &owned_locals_snapshot,
             &builder.binding_locals,
             &builder.match_project_consumed_binder_locals,
+            &fresh_owner_dest_locals,
             &builder.locals,
             &builder.borrowed_string_param_locals,
             &builder.parameter_locals,
@@ -367,6 +160,9 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
@@ -378,12 +174,17 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         ));
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
                 ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
                 {
                     derived.remove(binding);
@@ -399,20 +200,69 @@ pub(super) fn elaborate(
     // proven not to escape; everything else leaks (as before W5.020) rather
     // than double-free. Empty when the builder carries no enum layouts (some
     // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
-    let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
+    let outbound_records = outbound_record_layouts(builder);
+    let mut enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.transient_local_scopes,
+        &builder.scope_info,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        &builder.type_classes,
+        &outbound_records,
+        &builder.opaque_handle_names,
+        &builder.lifecycle_registry,
         &builder.proven_borrow_call_args,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
+    );
+    // A mutable enum consumed on one path and reassigned on another carries a
+    // runtime ownership flag. Re-admit its fresh post-store generation: the
+    // guarded scope-exit drop fires only where the reassignment reset the flag
+    // to zero and is skipped where the prior value moved out.
+    enum_composite_drop_allowed.extend(builder.overwrite_guard_flags.keys().copied());
+    // A call scrutinee held across a `while let` iteration has an explicit,
+    // per-edge consume recorded by the loop lowerer.  Its short lifetime can
+    // make the whole-function sole-owner scan conservatively decline the
+    // normal scope-exit class, but that must not erase the typed drop template
+    // the already-recorded back-edge, mismatch, panic, and early-exit plans
+    // need.  These bindings come only from `record_iteration_owner_drop`,
+    // which is reached after the call-result admission proof; re-admitting
+    // them here gives those exact consume edges the same EnumInPlace drop they
+    // had before the scan without granting an arbitrary local a release.
+    enum_composite_drop_allowed.extend(
+        builder
+            .iteration_owner_drop_blocks
+            .values()
+            .flatten()
+            .copied(),
+    );
+
+    // Machine-typed owned locals. A machine value is `ValueClass::Unknown`, so
+    // before this derivation its binding fell through every drop class and the
+    // resource held in its LAST state leaked with no diagnostic. Machines are
+    // enums at the value-classification layer, so an admitted binding rides the
+    // same tag-aware `DropKind::EnumInPlace` helper family; the derivation is
+    // separate because the step round-trip (`m = step(m, e)`) reads as an
+    // escape to the generic enum prover. Fail-closed: anything the machine
+    // prover cannot clear keeps the pre-existing leak posture.
+    let machine_composite_drop_allowed = super::machine_own::derive_machine_composite_drop_allowed(
+        &checked.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.machine_layout_names,
+        &builder.enum_layouts,
+        &builder.record_field_orders,
+        &builder.type_classes,
+        &outbound_records,
+        &builder.opaque_handle_names,
+        &builder.lifecycle_registry,
     );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
@@ -488,7 +338,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
                 && !vec_iter_borrowed_owned_sources.contains(binding)
             {
@@ -567,7 +419,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 local_collection_drop_allowed.remove(binding);
@@ -599,12 +453,24 @@ pub(super) fn elaborate(
             &builder.borrowed_bytes_param_locals,
         )
         .allowed;
+        derived.extend(
+            owned_locals_snapshot
+                .iter()
+                .filter(|(binding, _, ty)| {
+                    matches!(ty, ResolvedTy::Bytes)
+                        && builder.actor_message_cow_drop_flags.contains_key(binding)
+                })
+                .map(|(binding, _, _)| *binding),
+        );
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
                 if matches!(
                     state,
-                    dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-                ) {
+                    dataflow::BindingState::Discharged(_)
+                        | dataflow::BindingState::Consumed(_)
+                        | dataflow::BindingState::MaybeConsumed(_)
+                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+                {
                     derived.remove(binding);
                 }
             }
@@ -631,7 +497,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_vec_drop_allowed.remove(binding);
             }
@@ -676,7 +544,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) && !builder.collection_drop_flags.contains_key(binding)
             {
                 plain_vec_drop_allowed.remove(binding);
@@ -720,6 +590,9 @@ pub(super) fn elaborate(
     // string record is a subset of the owned-aggregate records covered here).
     let alias_field_binders = builder.alias_owner_field_binders();
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let record_field_store_preserves_owner = |record, field_offset| {
+        builder.record_field_store_preserves_record_owner(record, field_offset)
+    };
     let mut owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
@@ -727,8 +600,10 @@ pub(super) fn elaborate(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -738,6 +613,17 @@ pub(super) fn elaborate(
     // authority and consume hook installed the flag. The guarded drop fires
     // only where that sink did not execute.
     owned_record_drop_allowed.extend(builder.conditional_record_drop_flags.keys().copied());
+    // An active mixed-return payload is not an alias of a dropped enum shell:
+    // its per-variant transfer proof deliberately withheld the shell owner and
+    // assigned this binder the sole recursive record teardown. The usual record
+    // projection prover cannot infer that from a raw `MachineVariant` move, so
+    // thread the proof recorded at the match site directly.
+    owned_record_drop_allowed.extend(owned_locals_snapshot.iter().filter_map(
+        |(binding, _name, ty)| {
+            (builder.fresh_variant_payload_bindings.contains(binding) && is_owned_record(ty))
+                .then_some(*binding)
+        },
+    ));
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
     // bindings (the tuple/record-of-owned-handles drop spine). A by-value owned
@@ -757,6 +643,7 @@ pub(super) fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
@@ -777,7 +664,7 @@ pub(super) fn elaborate(
     // OR consume-retracted owners) so BOTH shapes are covered; this locates where
     // each candidate enters the return flow so the elaborator can restore its
     // scope-exit drop on exactly the `Return` exits that transfer cannot reach.
-    let returned_member_candidates = builder.owned_locals_returned_candidates();
+    let returned_member_candidates = builder.owned_locals_exit_candidates();
     let returned_member_transfer_blocks = derive_returned_member_transfer_blocks(
         &checked.blocks,
         &returned_member_candidates,
@@ -796,8 +683,8 @@ pub(super) fn elaborate(
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
+        builder.type_classes.lifecycle_registry(),
     );
-
     // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
     // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
     // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
@@ -831,7 +718,9 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 closure_pair_drop_allowed.remove(binding);
             }
@@ -873,20 +762,105 @@ pub(super) fn elaborate(
         for (binding, state) in states {
             if matches!(
                 state,
-                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+                dataflow::BindingState::Discharged(_)
+                    | dataflow::BindingState::Consumed(_)
+                    | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 indirect_enum_drop_allowed.remove(binding);
             }
         }
     }
 
-    let projection_alias_tainted = compute_projection_alias_taint(
+    // A parent overwrite or borrow-spine call forwarding can transfer a direct
+    // string payload's release authority to its still-live binder. Re-admit
+    // exactly those delayed owners into the leaf drop class and remove their
+    // projection-alias suppression; their per-binder flag remains one on every
+    // path where no transfer occurred, so the resulting scope-exit drop is
+    // skipped there and cannot compete with the parent's recursive release.
+    cow_drop_allowed.extend(builder.projected_payload_delayed_releases.iter().copied());
+    let mut projection_alias_tainted = compute_projection_alias_taint(
         &checked.blocks,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
-    let lifo_drops = build_lifo_drops(
+    projection_alias_tainted.retain(|local| {
+        !builder
+            .projected_payload_delayed_releases
+            .iter()
+            .any(|binding| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    == Some(*local)
+            })
+    });
+    let mut borrowed_builtin_handle_projection_aliases =
+        derive_borrowed_builtin_handle_projection_alias_bindings(
+            &builder.binding_locals,
+            &builder.locals,
+            &projection_alias_tainted,
+        );
+    let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
+        &checked.blocks,
         &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &tuple_composite_drop_allowed,
+    );
+    borrowed_builtin_handle_projection_aliases
+        .retain(|binding| !owned_tuple_handle_projections.contains(binding));
+    // A `ConsumedAt` disposition proves the value is absent only AFTER its
+    // consuming instruction.  It can still be live at an earlier Return or a
+    // coroutine-abandon edge, so the LIFO template must retain it and let the
+    // CFG state filter select the exact owning exits.  `BodyEndReleased`,
+    // `ScopeReleased`, and interior aliases stay excluded by this view.
+    let owned_locals_exit_candidates = builder.owned_locals_exit_candidates();
+    // Borrowed-element aliases of a live collection, SCOPED to close-obligated
+    // element types: their LIFO drop is suppressed (the collection is the sole
+    // discharge authority), which is sound only under the use validation
+    // below. Nested-collection handle borrows keep their pre-existing
+    // exclusion machinery and are deliberately NOT in this set.
+    let mut borrow_getter_aliases = collection_borrow_getter_alias_locals(&checked.blocks);
+    borrow_getter_aliases.retain(|local| {
+        builder.locals.get(*local as usize).is_some_and(|ty| {
+            crate::model::ty_drop_obligation(
+                ty,
+                &crate::model::MirHeapLayouts {
+                    record_field_orders: &builder.record_field_orders,
+                    enum_layouts: &builder.enum_layouts,
+                },
+                builder.type_classes.lifecycle_registry(),
+            )
+            .needs_close
+        })
+    });
+    // Fail-closed floor for the suppression: every use of a close-obligated
+    // borrow must be a proven-safe read. An escape (return/store), a consume
+    // (`e.close()`, `w.push(e)`, any call argument), or a reassignment refuses
+    // the function -- suppression without this proof converted a silent
+    // double-close into a use-after-close (the alias outliving the
+    // collection's release) and stays structurally unreachable only by
+    // rejecting the unprovable shapes.
+    for violation in close_obligated_borrow_alias_violations(
+        &checked.blocks,
+        &borrow_getter_aliases,
+        &tracked_obligation_locals(builder),
+    ) {
+        elaboration_diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::DropPlanUndetermined {
+                block: ENTRY_BLOCK_ID,
+                reason: violation,
+            },
+            note: "a borrowed collection element has exactly one release authority (the \
+ collection); read fields through it, or restructure so the element is \
+ owned outside the collection"
+                .to_string(),
+        });
+    }
+    let lifo_drops = build_lifo_drops(
+        &owned_locals_exit_candidates,
         &builder.binding_locals,
         &builder.type_classes,
         &builder.dyn_trait_storage,
@@ -895,6 +869,7 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &enum_composite_drop_allowed,
+        &machine_composite_drop_allowed,
         &owned_vec_drop_allowed,
         &local_collection_drop_allowed,
         &local_bytes_drop_allowed,
@@ -907,10 +882,14 @@ pub(super) fn elaborate(
         &plain_vec_drop_allowed,
         &indirect_enum_drop_allowed,
         &builder.affine_release_flags,
+        &builder.overwrite_guard_flags,
         &builder.collection_drop_flags,
         &builder.actor_message_cow_drop_flags,
         &builder.conditional_record_drop_flags,
+        &builder.projected_payload_overwrite_flags,
         &projection_alias_tainted,
+        &borrowed_builtin_handle_projection_aliases,
+        &borrow_getter_aliases,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
         .iter()
@@ -938,11 +917,142 @@ pub(super) fn elaborate(
         &projection_alias_tainted,
     );
 
-    for (exit, plan) in &mut drop_plans {
-        let ExitPath::Goto { block, .. } = exit else {
+    // A first-class VecIter cursor is an inline record whose field-0 Vec
+    // snapshot is released on ordinary lexical/explicit exits by a
+    // flag-gated RecordFieldDrop. Cancellation, panic, yield-destroy, and
+    // suspend-destroy can abandon the frame without traversing that inline
+    // cleanup. Re-admit the same typed field release on those alternate
+    // terminal edges only while dataflow says the cursor binding has been
+    // initialised and may still be live. The existing ownership sidecar is
+    // carried as ElabDrop::guard, so a conditional move, a borrowing cursor,
+    // or an earlier lexical release skips the drop at runtime.
+    //
+    // Function-entry cancellation observes the block ENTRY state because its
+    // check runs before entry-block instructions. Every other abandonment
+    // point observes EXIT state, matching enumerate_exits and codegen's
+    // cooperate/suspend placement.
+    for (binding, cursor_ty) in builder.vec_iter_scope_owner_ledger.iter().rev() {
+        let Some(&place) = builder.binding_locals.get(binding) else {
             continue;
         };
-        let Some(bindings) = builder.iteration_owner_drop_blocks.get(block) else {
+        let Some(&guard) = builder.vec_iter_drop_flags.get(binding) else {
+            continue;
+        };
+        let Some(release) = builder.vec_iter_cursor_release_protocol(cursor_ty) else {
+            continue;
+        };
+        for (exit, plan) in &mut drop_plans {
+            let block = match exit {
+                ExitPath::Cancel { block }
+                | ExitPath::Panic { block }
+                | ExitPath::Yield { block, .. }
+                | ExitPath::Suspend { block, .. } => *block,
+                ExitPath::Return { .. }
+                | ExitPath::Goto { .. }
+                | ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. } => continue,
+            };
+            let is_entry_cancel =
+                matches!(exit, ExitPath::Cancel { .. }) && block == ENTRY_BLOCK_ID;
+            let state_maps = if is_entry_cancel {
+                &dataflow_result.entry_states
+            } else {
+                &dataflow_result.exit_states
+            };
+            let binding_may_own = matches!(
+                state_maps
+                    .get(&block)
+                    .and_then(|states| states.get(binding))
+                    .copied(),
+                Some(
+                    dataflow::BindingState::Live
+                        | dataflow::BindingState::MaybeConsumed(_)
+                        | dataflow::BindingState::AliasedIntoAggregate(_)
+                )
+            );
+            if !binding_may_own
+                || plan.drops.iter().any(|drop| {
+                    drop.place == place && matches!(drop.kind, DropKind::VecIterCursor { .. })
+                })
+            {
+                continue;
+            }
+            plan.drops.push(ElabDrop {
+                place,
+                ty: cursor_ty.clone(),
+                drop_fn: None,
+                kind: DropKind::VecIterCursor { release },
+                guard: Some(guard),
+            });
+        }
+    }
+
+    // A VecIter `Some(x)` binder is a fresh per-iteration owner. Normal body
+    // completion and explicit break/continue/return edges release it inline,
+    // but cancellation/panic/suspend abandonment can leave from the middle of
+    // the body without traversing those instructions. Re-admit its typed drop
+    // only on exits in the body-owned region. In particular, never put it in
+    // the function-wide LIFO: that would also add stale scope-close/back-edge
+    // drops after the inline release and would resurrect releases on the
+    // corrected Option CFG's unreachable all-Uninit block.
+    for exit_drop in &builder.vec_iter_yield_exit_drops {
+        let region = vec_iter_yield_body_region(&checked.blocks, exit_drop);
+
+        for (exit, plan) in &mut drop_plans {
+            let block = match exit {
+                ExitPath::Cancel { block }
+                | ExitPath::Panic { block }
+                | ExitPath::Yield { block, .. }
+                | ExitPath::Suspend { block, .. } => *block,
+                ExitPath::Return { .. }
+                | ExitPath::Goto { .. }
+                | ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. } => continue,
+            };
+            if !region.contains(&block) {
+                continue;
+            }
+            let binding_live = dataflow_result
+                .exit_states
+                .get(&block)
+                .and_then(|states| states.get(&exit_drop.binding))
+                .copied()
+                == Some(dataflow::BindingState::Live);
+            if !binding_live || plan.drops.iter().any(|drop| drop.place == exit_drop.place) {
+                continue;
+            }
+            plan.drops.push(ElabDrop {
+                place: exit_drop.place,
+                ty: exit_drop.ty.clone(),
+                drop_fn: None,
+                kind: exit_drop.kind,
+                guard: None,
+            });
+        }
+    }
+
+    super::for_await_drop_plan::admit_terminal_handoff_drops(
+        checked,
+        builder,
+        dataflow_result,
+        &returned_member_candidates,
+        &mut drop_plans,
+    );
+
+    for (exit, plan) in &mut drop_plans {
+        let block = match exit {
+            ExitPath::Goto { block, .. } | ExitPath::Return { block } => *block,
+            _ => continue,
+        };
+        let Some(bindings) = builder.iteration_owner_drop_blocks.get(&block) else {
             continue;
         };
         for binding in bindings {
@@ -964,22 +1074,38 @@ pub(super) fn elaborate(
     // arm) because on the return path the caller owns it. But a guard
     // early-return that exits BEFORE the aggregate is constructed still owns the
     // member locally and must release it — the `semver::try_parse` guard-return
-    // and `base64::decode` reject-path leaks. Restore the scope-exit drop on
-    // exactly the `Return` exits the member's transfer site provably cannot
-    // reach (the value is not yet handed off), and only where the dataflow
-    // proves it definitely `Live` (owned) at that exit. This is purely additive:
-    // it never removes an existing drop, and it emits one only where the value
-    // is provably the still-live sole owner, so it can leak-fix without any
-    // double-free. Scoped to leaf CoW values (`string` / `bytes`) whose release
-    // is the unconditional `drop_kind_for` kind with no descriptor or
-    // path-flag; a member of any other type stays under the path-insensitive
-    // removal (leak, never a re-admitted double-free — fail-closed).
+    // and `base64::decode` reject-path leaks. The same fact holds on an arm's
+    // `Goto` to the match/if join: when a sibling member is handed to the
+    // caller on the OTHER arm, the whole-function exclusion must not strand the
+    // still-live sibling on this arm. Restore the scope-exit drop on exactly the
+    // `Return` and arm-to-join `Goto` exits whose member transfer site provably
+    // cannot occur on this execution, and only where the dataflow proves it
+    // definitely `Live` (owned) at the source exit. This is purely additive: it
+    // never removes an existing drop, and it emits one only where the value is
+    // provably the still-live sole owner, so it can leak-fix without any
+    // double-free. Scoped to leaf CoW values (`string` / `bytes`) and scalar
+    // affine resources. The latter reconstruct the SAME typed close descriptor
+    // and consume guard as `build_lifo_drops`: a divergent return such as
+    // `if c { (s1, r1) } else { (s2, r2) }` transfers only one arm's
+    // Sink/Stream pair, while the other pair remains locally owned and must be
+    // closed on that arm-to-join edge. Field-bearing resource records stay
+    // excluded here because their release is the recursive `RecordInPlace`
+    // ritual rather than the scalar resource close; imprecision therefore
+    // remains leak-safe instead of selecting an incomplete teardown.
     // LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed,
     // drop-allowset-from-value-flow.
     if !returned_member_transfer_blocks.is_empty() {
         let owned_ty_by_binding: HashMap<BindingId, &ResolvedTy> = returned_member_candidates
             .iter()
             .map(|(binding, _name, ty)| (*binding, ty))
+            .collect();
+        // Cache transitive CFG reachability once. Besides the transfer/read
+        // proofs below, this is the authority that prevents two re-admitted
+        // plans for the same owner from firing in sequence.
+        let block_reach: HashMap<u32, HashSet<u32>> = checked
+            .blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&checked.blocks, block.id)))
             .collect();
         // Blocks each member's hand-off can reach (inclusive of the transfer
         // block itself). A `Return` exit inside this set is at or downstream of
@@ -992,61 +1118,625 @@ pub(super) fn elaborate(
             let mut reach: HashSet<u32> = HashSet::new();
             for &transfer_block in transfer_blocks {
                 reach.insert(transfer_block);
-                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+                if let Some(from_transfer) = block_reach.get(&transfer_block) {
+                    reach.extend(from_transfer);
+                }
             }
             member_transfer_reach.insert(*binding, reach);
         }
-        for (exit, plan) in &mut drop_plans {
-            let ExitPath::Return { block } = exit else {
+        // The forward set above answers "has this member already been handed
+        // off?". A Goto needs the complementary question too: "can this edge
+        // still reach a hand-off later?". Build it by walking the CFG backwards
+        // from each transfer. An unresolved/ambiguous route stays in this set
+        // and therefore suppresses the re-admission (leak, never early free).
+        let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for successor in block.successors() {
+                reverse_cfg.entry(successor).or_default().push(block.id);
+            }
+        }
+        let mut member_transfer_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &returned_member_transfer_blocks {
+            let mut predecessors = transfer_blocks.clone();
+            let mut worklist: Vec<u32> = transfer_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            member_transfer_predecessors.insert(*binding, predecessors);
+        }
+        // A Goto is not itself terminal. Even after ruling out a later return
+        // transfer, retain the blanket exclusion if the join can still READ the
+        // member. This makes the arm cleanup a last-use release rather than an
+        // eager free: a new lowering shape that keeps using a sibling after the
+        // join fails closed by leaking it instead of freeing it early.
+        let candidate_locals: HashMap<u32, BindingId> = returned_member_candidates
+            .iter()
+            .filter_map(|(binding, _name, _ty)| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    .map(|local| (local, *binding))
+            })
+            .collect();
+        let member_read_blocks = returned_member_alias_read_blocks(
+            &checked.blocks,
+            &builder.suspend_kinds,
+            &candidate_locals,
+        );
+        let mut member_read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, read_blocks) in &member_read_blocks {
+            let mut predecessors = read_blocks.clone();
+            let mut worklist: Vec<u32> = read_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            member_read_predecessors.insert(*binding, predecessors);
+        }
+        for (binding, reach) in &member_transfer_reach {
+            let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
                 continue;
             };
-            let Some(state_map) = dataflow_result.exit_states.get(block) else {
+            // A borrowed builtin-handle projection never owns an independent
+            // close, including on an early exit before a later return handoff.
+            // Its parent aggregate remains the sole release authority.
+            if borrowed_builtin_handle_projection_aliases.contains(binding) {
+                continue;
+            }
+            let Some(&place) = builder.binding_locals.get(binding) else {
                 continue;
             };
-            for (binding, reach) in &member_transfer_reach {
-                // This exit is at or after the hand-off: caller owns the value.
-                if reach.contains(block) {
+            let re_admission_drop = if matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: None,
+                    kind: drop_kind_for(place, ty, None),
+                    guard: None,
+                }
+            } else if matches!(
+                ValueClass::of_ty(ty, &builder.type_classes),
+                ValueClass::AffineResource
+            ) && !builder.is_owned_aggregate_record_ty(ty)
+                && !(matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                        ..
+                    }
+                ) && base_local(place)
+                    .is_some_and(|local| projection_alias_tainted.contains(&local)))
+            {
+                ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: place_aware_drop_fn(
+                        place,
+                        resource_drop_fn(ty, &builder.type_classes),
+                    ),
+                    kind: drop_kind_for(place, ty, None),
+                    guard: builder.affine_release_flags.get(binding).copied(),
+                }
+            } else {
+                continue;
+            };
+
+            // First collect every locally-valid re-admission without mutating
+            // the plans. Deciding one plan at a time is order-dependent: two
+            // consecutive Gotos can both look locally valid and schedule the
+            // same unconditional release, as in static_server::resolve_path.
+            let mut candidates = Vec::new();
+            for (plan_index, (exit, plan)) in drop_plans.iter().enumerate() {
+                let (block, goto_target) = match exit {
+                    ExitPath::Return { block }
+                    | ExitPath::Panic { block }
+                    | ExitPath::Cancel { block } => (*block, None),
+                    ExitPath::Yield { block, .. } | ExitPath::Suspend { block, .. } => {
+                        (*block, None)
+                    }
+                    ExitPath::Goto { block, target } => (*block, Some(*target)),
+                    _ => continue,
+                };
+                // Abandonment exits run their plan after the block's own
+                // instructions, except the function-entry cancellation branch
+                // which leaves before that block executes. A normal exit at or
+                // after the hand-off belongs to the caller; the entry cancel
+                // has not reached a later transfer even when block 0 contains it.
+                let is_entry_cancel =
+                    matches!(exit, ExitPath::Cancel { .. }) && block == ENTRY_BLOCK_ID;
+                if !is_entry_cancel && reach.contains(&block) {
                     continue;
+                }
+                if let Some(target) = goto_target {
+                    // A normal continuation can still perform this member's
+                    // transfer: retain the blanket exclusion until then.
+                    if member_transfer_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&block))
+                    {
+                        continue;
+                    }
+                    if member_read_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&target))
+                    {
+                        continue;
+                    }
+                    // A release attached to a loop edge can fire more than
+                    // once for one mint. Without a per-iteration owner flag,
+                    // re-admission on such an edge is not exactly-once.
+                    if target == block
+                        || block_reach
+                            .get(&target)
+                            .is_some_and(|reachable| reachable.contains(&block))
+                    {
+                        continue;
+                    }
                 }
                 // Only re-admit where the value is definitely still owned. A
                 // `MaybeConsumed`/`Uninit`/`Consumed` state at this exit is
                 // ambiguous or already discharged — skip (fail-closed).
+                let state_maps = if is_entry_cancel {
+                    &dataflow_result.entry_states
+                } else {
+                    &dataflow_result.exit_states
+                };
+                let Some(state_map) = state_maps.get(&block) else {
+                    continue;
+                };
                 if !matches!(
                     state_map.get(binding).copied(),
                     Some(dataflow::BindingState::Live)
                 ) {
                     continue;
                 }
-                let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
+                if plan.drops.iter().any(|drop| drop.place == place) {
+                    continue;
+                }
+                candidates.push(ReturnedMemberReAdmission {
+                    plan_index,
+                    block,
+                    path: returned_member_re_admission_path(exit),
+                });
+            }
+
+            // Existing plans participate in the same dominance/post-dominance
+            // proof as new candidates. A plain reachability veto is too coarse:
+            // in a diamond, a release on one arm reaches a common candidate,
+            // but deleting the common candidate leaks the sibling arm. The
+            // common candidate may replace that arm-local release exactly when
+            // it postdominates the release's continuation. Removals stay
+            // contingent on the replacement candidate surviving the
+            // candidate-vs-candidate selection below.
+            let existing_releases: Vec<ReturnedMemberReAdmission> = drop_plans
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (exit, plan))| {
+                    if plan.drops.iter().any(|drop| drop.place == place) {
+                        Some(ReturnedMemberReAdmission {
+                            plan_index: index,
+                            block: exit_block_id(exit),
+                            path: returned_member_re_admission_path(exit),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut replacements: HashMap<usize, HashSet<usize>> = HashMap::new();
+            let mut ambiguity = None;
+            candidates.retain(|candidate| {
+                let replaced = match existing_releases_replaced_by_candidate(
+                    &checked.blocks,
+                    &block_reach,
+                    *candidate,
+                    &existing_releases,
+                ) {
+                    Ok(Some(replaced)) => replaced,
+                    Ok(None) => return false,
+                    Err(found) => {
+                        ambiguity = Some(found);
+                        return false;
+                    }
+                };
+                replacements.insert(candidate.plan_index, replaced);
+                true
+            });
+            if let Some(ambiguity) = ambiguity {
+                elaboration_diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::DropPlanUndetermined {
+                        block: ambiguity.first.block,
+                        reason: format!(
+                            "returned-member cleanup candidates at bb{} and bb{} partially overlap",
+                            ambiguity.first.block, ambiguity.second.block
+                        ),
+                    },
+                    note: "returned-member cleanup has no single exactly-once owner on every \
+                           normal path; refusing to emit a partial release plan"
+                        .to_string(),
+                });
+                continue;
+            }
+
+            let mut selected = match select_returned_member_re_admissions(
+                &checked.blocks,
+                &block_reach,
+                &candidates,
+            ) {
+                Ok(selected) => selected,
+                Err(ambiguity) => {
+                    elaboration_diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::DropPlanUndetermined {
+                            block: ambiguity.first.block,
+                            reason: format!(
+                                "returned-member cleanup candidates at bb{} and bb{} partially overlap",
+                                ambiguity.first.block, ambiguity.second.block
+                            ),
+                        },
+                        note: "returned-member cleanup has no single exactly-once owner on every \
+                               normal path; refusing to emit a partial release plan"
+                            .to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            let mut replaced_existing: HashSet<usize> = selected
+                .iter()
+                .flat_map(|candidate| {
+                    replacements
+                        .get(&candidate.plan_index)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                })
+                .collect();
+            // Existing release plans are not candidates, so arbitration with
+            // abandonment exits occurs only after their normal replacements are
+            // known. A still-surviving normal Goto suppresses its later
+            // abandonment plan; a selected normal Goto replaces only the later
+            // existing abandonment it must execute before.
+            selected.retain(|candidate| {
+                !matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment)
+                    || !existing_releases.iter().any(|release| {
+                        !replaced_existing.contains(&release.plan_index)
+                            && normal_goto_precedes_abandonment(
+                                &checked.blocks,
+                                &block_reach,
+                                *release,
+                                *candidate,
+                            )
+                    })
+            });
+            for candidate in &selected {
+                if !matches!(candidate.path, ReturnedMemberReAdmissionPath::Normal) {
+                    continue;
+                }
+                for release in &existing_releases {
+                    if normal_goto_precedes_abandonment(
+                        &checked.blocks,
+                        &block_reach,
+                        *candidate,
+                        *release,
+                    ) {
+                        replaced_existing.insert(release.plan_index);
+                    }
+                }
+            }
+            for plan_index in replaced_existing {
+                drop_plans[plan_index]
+                    .1
+                    .drops
+                    .retain(|drop| drop.place != place);
+            }
+            for candidate in selected {
+                let plan = &mut drop_plans[candidate.plan_index].1;
+                plan.drops.push(re_admission_drop.clone());
+            }
+        }
+    }
+
+    // W60.114 — path-sensitive re-admission of a handler-owned `bytes` local
+    // excluded from `local_bytes_drop_allowed` by a forwarding actor `Send` /
+    // `Ask` / `RemoteAsk`. `derive_local_bytes_drop_allowed`'s escape scan
+    // treats any such read as an unconditional, WHOLE-FUNCTION exclusion (its
+    // own doc: "excluded twice over") — sound for every exit the transfer can
+    // reach, but wrong for one it cannot: a `CooperateKind::FunctionEntry`
+    // cancellation branch fires in the prologue, strictly before the rest of
+    // the handler body runs, so a receive handler that cooperates and THEN
+    // forwards its `bytes` parameter leaked it on cancellation-before-transfer
+    // (the exclusion suppressed the drop on every exit, including the one
+    // reached before the mailbox hand-off ever executed).
+    //
+    // Mirrors the returned-aggregate-member re-admission immediately above,
+    // but only at a REAL release boundary. `emit_elab_drops` fires a
+    // `Call`/`Branch`/ordinary `Goto` plan while normal execution continues;
+    // `BindingState::Live` means definitely initialised, NOT "past last use".
+    // Re-admitting at such a checkpoint can therefore free `data` before a
+    // later `data.len()` on a non-forwarding branch. The safe boundary set is:
+    //
+    // * terminal Return/Panic;
+    // * alternate Cancel/Yield/Suspend abandon edges (never the resume edge);
+    // * a forward Goto crossing the exact CFG frontier from outside the
+    //   transfer's downstream region into it. This includes the F-04 not-live
+    //   recover edge and a conditional non-transfer arm's final join edge,
+    //   while excluding nested Gotos and loop back-edges before that frontier.
+    //   Because transfer reach is forward-closed, one execution can cross the
+    //   frontier at most once.
+    //
+    // A `Cancel` exit at the function-entry block reads the block's ENTRY
+    // state (the cancel branch precedes that block's own `Bind` statements —
+    // see `drops_for_entry_cancel`); every other exit reads its EXIT state.
+    // Both are the SAME dataflow `enumerate_exits` already threads through, so
+    // this pass adds no new liveness authority — only a wider reach over
+    // where the existing one is consulted.
+    let bytes_mailbox_transfer_blocks = derive_bytes_actor_transfer_blocks(
+        &checked.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+    );
+    if !bytes_mailbox_transfer_blocks.is_empty() {
+        let mut transfer_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &bytes_mailbox_transfer_blocks {
+            let mut reach: HashSet<u32> = HashSet::new();
+            for &transfer_block in transfer_blocks {
+                reach.insert(transfer_block);
+                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+            }
+            transfer_reach.insert(*binding, reach);
+        }
+        // Reverse CFG once, then walk backwards from each binding's transfer
+        // sites. This is the exact "can normally reach the transfer itself"
+        // set (not its downstream reach) in O(B+E) per binding.
+        let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for successor in block.successors() {
+                reverse_cfg.entry(successor).or_default().push(block.id);
+            }
+        }
+        let bytes_predecessor_of_transfer = |transfer_blocks: &HashSet<u32>| -> HashSet<u32> {
+            let mut predecessors = transfer_blocks.clone();
+            let mut worklist: Vec<u32> = transfer_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            predecessors
+        };
+        let mut transfer_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &bytes_mailbox_transfer_blocks {
+            transfer_predecessors.insert(*binding, bytes_predecessor_of_transfer(transfer_blocks));
+        }
+
+        // Blocks that can reach a later READ of each candidate (through any
+        // whole-value alias). A non-terminal Goto may release only when its
+        // target is outside this set: that is the exact last-use condition
+        // missing from a mere `BindingState::Live` check.
+        let candidate_roots: HashMap<u32, BindingId> = owned_locals_snapshot
+            .iter()
+            .filter(|(_, _, ty)| matches!(ty, ResolvedTy::Bytes))
+            .filter_map(|(binding, _, _)| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    .map(|local| (local, *binding))
+            })
+            .collect();
+        let alias_roots =
+            propagate_whole_value_alias_roots(&checked.blocks, candidate_roots.keys().copied());
+        let mut read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        let mut aggregate_owner_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for instr in &block.instructions {
+                let owning_sources: Vec<Place> = match instr {
+                    Instr::RecordInit { fields, .. } => {
+                        fields.iter().map(|(_, source)| *source).collect()
+                    }
+                    Instr::TupleConstruct { elements, .. } => elements.clone(),
+                    Instr::ClosureEnvInit { fields, .. } => fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                        .map(|field| field.src)
+                        .collect(),
+                    Instr::Move {
+                        dest: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+                        src,
+                    } => vec![*src],
+                    _ => Vec::new(),
+                };
+                for source in owning_sources {
+                    let Some(local) = base_local(source) else {
+                        continue;
+                    };
+                    let Some(root) = alias_roots.get(&local) else {
+                        continue;
+                    };
+                    let Some(binding) = candidate_roots.get(root) else {
+                        continue;
+                    };
+                    aggregate_owner_blocks
+                        .entry(*binding)
+                        .or_default()
+                        .insert(block.id);
+                }
+            }
+            let sources = block
+                .instructions
+                .iter()
+                .flat_map(instr_source_places)
+                .chain(terminator_source_places(
+                    &block.terminator,
+                    builder.suspend_kinds.get(&block.id),
+                ));
+            for source in sources {
+                let Some(local) = base_local(source) else {
                     continue;
                 };
-                if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                let Some(root) = alias_roots.get(&local) else {
+                    continue;
+                };
+                let Some(binding) = candidate_roots.get(root) else {
+                    continue;
+                };
+                read_blocks.entry(*binding).or_default().insert(block.id);
+            }
+        }
+        let mut read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, blocks) in &read_blocks {
+            read_predecessors.insert(*binding, bytes_predecessor_of_transfer(blocks));
+        }
+        // A local aggregate construction is another owner sink. Once reached,
+        // its Record/Tuple/Closure drop owns the member release; the mailbox
+        // transfer is not the sole reason the source binding was excluded.
+        // Track its forward reach separately so pre-construction cancellation
+        // and disjoint non-aggregate paths can still recover their own release.
+        let mut aggregate_owner_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, owner_blocks) in &aggregate_owner_blocks {
+            let mut reach = owner_blocks.clone();
+            for owner_block in owner_blocks {
+                reach.extend(blocks_reachable_from(&checked.blocks, *owner_block));
+            }
+            aggregate_owner_reach.insert(*binding, reach);
+        }
+
+        for (exit, plan) in &mut drop_plans {
+            let block = exit_block_id(exit);
+            let is_cancel = matches!(exit, ExitPath::Cancel { .. });
+            let is_entry_cancel = block == ENTRY_BLOCK_ID && is_cancel;
+            let is_release_boundary = match exit {
+                ExitPath::Return { .. }
+                | ExitPath::Panic { .. }
+                | ExitPath::Cancel { .. }
+                | ExitPath::Yield { .. }
+                | ExitPath::Suspend { .. }
+                // A Goto's per-binding last-use decision is completed below.
+                | ExitPath::Goto { .. } => true,
+                ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. } => false,
+            };
+            if !is_release_boundary {
+                continue;
+            }
+            let state_map = if is_entry_cancel {
+                dataflow_result.entry_states.get(&block)
+            } else {
+                dataflow_result.exit_states.get(&block)
+            };
+            let Some(state_map) = state_map else {
+                continue;
+            };
+            for (binding, reach) in &transfer_reach {
+                // A guarded actor-message Bytes binding already remains in the
+                // LIFO template across a `MaybeConsumed` join. Its shared exit
+                // drop is the sole release on the live path; adding the legacy
+                // frontier re-admission as well would release once at the
+                // non-transfer Goto and again at the shared exit while the
+                // flag is still zero. The only exception is function-entry
+                // cancellation, which precedes flag initialisation and is
+                // converted to an unconditional drop below.
+                if builder.actor_message_cow_drop_flags.contains_key(binding) && !is_entry_cancel {
+                    continue;
+                }
+                // This exit is at or downstream of the transfer: the
+                // receiving actor owns the buffer there — no re-admission.
+                if reach.contains(&block) {
+                    continue;
+                }
+                // An owning local aggregate already carries the same reference
+                // on this path and releases it through its in-place drop. The
+                // function-entry cancel branch runs before entry instructions,
+                // so a construction later in block 0 cannot suppress that
+                // pre-construction release.
+                if !is_entry_cancel
+                    && aggregate_owner_reach
+                        .get(binding)
+                        .is_some_and(|owner_reach| owner_reach.contains(&block))
+                {
+                    continue;
+                }
+                // A Goto releases only on the single frontier where a
+                // non-transfer path joins the transfer's downstream region.
+                // Nested scope Gotos and loop back-edges remain outside the
+                // forward-closed region and therefore cannot accumulate drops.
+                if let ExitPath::Goto { target, .. } = exit {
+                    if !reach.contains(target) {
+                        continue;
+                    }
+                    if read_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(target))
+                    {
+                        continue;
+                    }
+                }
+                // Every non-`Cancel` exit kind is a sequential checkpoint,
+                // not an alternate outcome: if its own block can still
+                // normally reach the transfer, this execution goes on to
+                // transfer ownership later — never drop here first. A
+                // `Cancel` branch diverts BEFORE its block's own terminator
+                // runs, so this predecessor fact does not apply to it.
+                if !is_cancel
+                    && transfer_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&block))
+                {
+                    continue;
+                }
+                if !matches!(
+                    state_map.get(binding).copied(),
+                    Some(dataflow::BindingState::Live)
+                ) {
                     continue;
                 }
                 let Some(&place) = builder.binding_locals.get(binding) else {
                     continue;
                 };
-                if plan.drops.iter().any(|drop| drop.place == place) {
+                if let Some(existing) = plan.drops.iter_mut().find(|drop| drop.place == place) {
+                    if is_entry_cancel {
+                        // The function-entry cancellation branch precedes the
+                        // entry block's flag zero-initialisation. Dataflow
+                        // proves the mailbox parameter itself Live there, so
+                        // this is an unconditional release; reading the
+                        // not-yet-initialised runtime flag would be undefined.
+                        existing.guard = None;
+                    }
                     continue;
                 }
                 plan.drops.push(ElabDrop {
                     place,
-                    ty: ty.clone(),
+                    ty: ResolvedTy::Bytes,
                     drop_fn: None,
-                    kind: drop_kind_for(place, ty, None),
+                    kind: drop_kind_for(place, &ResolvedTy::Bytes, None),
                     guard: None,
                 });
             }
         }
     }
 
-    // #2395 decision 2 — append each suspend's escape-poisoned abandon-edge drops
-    // (today: the `SuspendKind::StreamSend` in-flight value) to its
-    // `ExitPath::Suspend` plan. `drops_for_exit`'s `BindingState` filter cannot
-    // see an escape-poisoned value, so it is stashed at the pump lowering site
-    // (keyed by the suspend block id) and folded in here. Appended AFTER the
-    // generic drops so it releases in the same LIFO order codegen walks; codegen
-    // fires the whole plan on the case-1 destroy edge only.
+    // Append each suspend's escape-poisoned abandon-edge drops (an in-flight
+    // `StreamSend` value or fresh string arguments to a suspending
+    // `CallClosure`) to its `ExitPath::Suspend` plan. `drops_for_exit`'s
+    // `BindingState` filter cannot see these values, so lowering records them by
+    // suspend block id and folds them in here. Appended AFTER the generic drops
+    // so they release in the same LIFO order codegen walks; codegen fires the
+    // whole plan on the case-1 destroy edge only.
     for (exit, plan) in &mut drop_plans {
         if let ExitPath::Suspend { block, .. } = exit {
             if let Some(extra) = builder.suspend_abandon_extra_drops.get(block) {
@@ -1055,29 +1745,32 @@ pub(super) fn elaborate(
         }
     }
 
-    ElaboratedMirFunction {
-        name: checked.name.clone(),
-        return_ty: checked.return_ty.clone(),
-        statements: elaborated_statements,
-        decisions: builder.decisions.clone(),
-        blocks: elab_blocks,
-        drop_plans,
-        coroutine: None,
-        // Lambda-actor capture set, populated by the MIR producer at
-        // each `HirExprKind::SpawnLambdaActor` site (see
-        // `Builder::lower_spawn_lambda_actor`). The HIR resolver
-        // forward-binds the lambda's own let-name before lowering the
-        // body, so a body-internal reference to that name resolves to
-        // a `BindingRef { resolved: Binding(let_id) }`; the resolver
-        // classifies that capture as `HirCaptureKind::Weak` and every
-        // other free-variable reference as `Strong`. The MIR producer
-        // copies the list through with the source binding's MIR
-        // `Place` attached. The structural fail-closed checker
-        // `validate_lambda_captures` enforces the invariants (Weak
-        // attaches to LambdaActorHandle; at most one Weak per actor
-        // handle) on the emitted ledger.
-        lambda_captures: builder.lambda_captures.clone(),
-    }
+    (
+        ElaboratedMirFunction {
+            name: checked.name.clone(),
+            return_ty: checked.return_ty.clone(),
+            statements: elaborated_statements,
+            decisions: builder.decisions.clone(),
+            blocks: elab_blocks,
+            drop_plans,
+            coroutine: None,
+            // Lambda-actor capture set, populated by the MIR producer at
+            // each `HirExprKind::SpawnLambdaActor` site (see
+            // `Builder::lower_spawn_lambda_actor`). The HIR resolver
+            // forward-binds the lambda's own let-name before lowering the
+            // body, so a body-internal reference to that name resolves to
+            // a `BindingRef { resolved: Binding(let_id) }`; the resolver
+            // classifies that capture as `HirCaptureKind::Weak` and every
+            // other free-variable reference as `Strong`. The MIR producer
+            // copies the list through with the source binding's MIR
+            // `Place` attached. The structural fail-closed checker
+            // `validate_lambda_captures` enforces the invariants (Weak
+            // attaches to LambdaActorHandle; at most one Weak per actor
+            // handle) on the emitted ledger.
+            lambda_captures: builder.lambda_captures.clone(),
+        },
+        elaboration_diagnostics,
+    )
 }
 /// Owning-block id for an `ExitPath`. Every variant carries a `block`
 /// field — surfacing it as a single function keeps `validate_drop_plan`
@@ -1099,6 +1792,7 @@ pub(super) fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Suspend { block, .. } => block,
     }
 }
+
 /// Human-readable label for an `ExitPath` discriminator — surfaced in
 /// `DropPlanUndetermined` diagnostics so the rejected exit is named.
 #[must_use]
@@ -1212,9 +1906,10 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // `validate_obligation_balance` is the SIBLING pass to `validate_drop_plan`:
 // that pass owns KIND coherence (place ↔ DropKind), this pass owns BALANCE —
 // for every heap-owning owned local (the MINT set, read off the type-directed
-// registration ledger), every reachable `Return` exit path must carry exactly
-// one DISCHARGE. Discharge count 0 on a path = under-release (leak); 2+ on a
-// path = over-release (double-free).
+// registration ledger), every reachable `Return` exit path must carry one
+// DISCHARGE per owner MINT. Ordinary definitions mint one owner; explicit
+// retain instructions mint an additional co-owner. Fewer discharges than
+// mints = under-release (leak); more = over-release (double-free).
 //
 // INDEPENDENCE INVARIANT: the discharge set is re-derived from the primitive
 // `Instr` stream + the raw CFG + the per-exit `DropPlan`s (the elaborator's
@@ -1227,9 +1922,12 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // EXCLUSION only.
 //
 // MODEL (whole-local granularity, interval dataflow):
-//   - state per tracked local = a discharge-count interval `[lo, hi]`
-//     (saturating at 2) + a payload-neutralization flag, per CFG point;
+//   - state per tracked local = owner-mint and discharge-count intervals
+//     (both saturating at 2) + a payload-neutralization flag, per CFG point;
 //     a local absent from the state map is UNMINTED on every reaching path.
+//   - explicit `BytesRetain` / `StringRetain` instructions increment the
+//     source mint count. An adjacent retain + whole-local move instead gives
+//     the destination an independent mint while preserving the source owner.
 //   - DEFINITE discharges (`lo` and `hi`): a terminal/inline drop of the
 //     local, a return-transfer (`Move`/`WitnessMove` into `ReturnSlot`), a
 //     payload-slot neutralization after move-out, a `ValueSnapshotDrop`, a
@@ -1244,7 +1942,9 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 //     definite verdict in either direction — a finding is reported only when
 //     EVERY modelling of the path is unbalanced.
 //   - verdict per `(Return exit, local)` after folding in the exit plan's
-//     drops: `hi == 0` → under-release; `lo >= 2` → over-release.
+//     drops: `hi < mint_lo`, or an explicit-retain `mint_hi > hi`, →
+//     under-release;
+//     `max_definite > mint_hi` → over-release.
 //
 // WHAT THIS PASS DOES NOT DO (A278 / S1875): it counts DISCHARGES, not USES.
 // A balanced value used after a transfer is the move-checker's concern; this
@@ -1252,10 +1952,10 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // `forward_param` shape passes — by-value params are caller-retained CoW
 // borrows and are excluded from the mint set entirely).
 //
-// SCOPE EXCLUSION: functions whose CFG carries a suspend terminator
-// (coroutine ramps) are excluded — across a suspend point ownership moves
-// through the coro frame and the single teardown outline, which the lite
-// whole-local model does not carry. The S2/OWN-V1 stages own that extension.
+// SUSPEND EXITS: `ExitPath::Suspend` is folded into the verdict alongside
+// `Return` (see `validate_obligation_balance`'s "suspend-abandon" edge) —
+// ownership moved through the coro frame at a suspend point is accounted for,
+// not excluded from this pass.
 //
 // LESSONS: lifecycle-symmetry (the invariant IS the row), checker-authority
 // (with the independence twist above), boundary-fail-closed (findings reject
@@ -1293,51 +1993,96 @@ impl PayloadNeutralized {
 /// balance-relevant magnitudes.
 const OBLIGATION_COUNT_SATURATION: u8 = 2;
 
-/// Discharge-count interval for one tracked local over the CFG paths
-/// reaching a program point. `lo` = minimum possible discharges along any
-/// reaching path, `hi` = maximum; `max_definite` = the maximum number of
-/// DEFINITE (unambiguous) discharges on any single reaching path. All three
+/// Owner-mint and discharge-count intervals for one tracked local over the CFG
+/// paths reaching a program point. `mint_lo` / `mint_hi` bound the owners;
+/// `lo` / `hi` bound possible discharges; `max_definite` is the maximum number
+/// of DEFINITE (unambiguous) discharges on any single reaching path. Counts
 /// saturate at [`OBLIGATION_COUNT_SATURATION`].
 ///
 /// The two release verdicts read different components so each fails in the
 /// safe direction:
-///   - UNDER-release (leak) requires EVERY path to under-discharge, so it
-///     reads `hi == 0` (no discharge — definite or ambiguous — on any path);
+///   - UNDER-release (leak) reads `hi < mint_lo` when every reaching path is
+///     short a release. For explicit retains it also reads `mint_hi > hi`,
+///     which proves that even the largest discharge count cannot pay the path
+///     carrying the largest retain-backed owner count;
 ///   - OVER-release (double-free) is memory-unsafe on ANY path, so it reads
-///     `max_definite >= SATURATION` (some single path definitely discharges
-///     twice). Reading `lo` (the per-path MINIMUM) here would path-dilute a
-///     branch-conditional double-free away: a double-free on one arm but not
-///     another leaves `lo == 1` and silently certifies. Ambiguous discharges
+///     `max_definite > mint_hi` (some single path definitely discharges more
+///     owners than can exist). Reading `lo` (the per-path MINIMUM) here would
+///     path-dilute a branch-conditional double-free away: a double-free on one
+///     arm but not another leaves `lo == 1` and silently certifies. Ambiguous discharges
 ///     never raise `max_definite`, so widen-only events (mirrored plan drops,
 ///     aggregation operands, single-owner-resolved-elsewhere transfers)
 ///     cannot manufacture a false over-release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObligationState {
+    /// Minimum/maximum owner mints present on reaching paths.  Ordinary
+    /// defining writes reset this to one; explicit retain instructions add a
+    /// second owner unless the retain is paired with a local move, in which
+    /// case the destination receives its own independent state.
+    mint_lo: u8,
+    mint_hi: u8,
     lo: u8,
     hi: u8,
     /// Per-path maximum of DEFINITE discharges. `meet` takes the max across
     /// joining paths; only [`ObligationState::definite_discharge`] raises it.
     max_definite: u8,
+    /// Whether every/any reaching mint generation was created by an explicit
+    /// retain. A definitely leaked retained generation is a compiler invariant
+    /// failure, not a legacy advisory ownership hole.
+    explicit_retain_lo: bool,
+    explicit_retain_hi: bool,
     neutralized: PayloadNeutralized,
 }
 
 impl ObligationState {
     fn minted() -> Self {
         Self {
+            mint_lo: 1,
+            mint_hi: 1,
             lo: 0,
             hi: 0,
             max_definite: 0,
+            explicit_retain_lo: false,
+            explicit_retain_hi: false,
             neutralized: PayloadNeutralized::No,
+        }
+    }
+
+    fn minted_by_retain() -> Self {
+        Self {
+            explicit_retain_lo: true,
+            explicit_retain_hi: true,
+            ..Self::minted()
         }
     }
 
     fn meet(self, other: Self) -> Self {
         Self {
+            mint_lo: self.mint_lo.min(other.mint_lo),
+            mint_hi: self.mint_hi.max(other.mint_hi),
             lo: self.lo.min(other.lo),
             hi: self.hi.max(other.hi),
             max_definite: self.max_definite.max(other.max_definite),
+            explicit_retain_lo: self.explicit_retain_lo && other.explicit_retain_lo,
+            explicit_retain_hi: self.explicit_retain_hi || other.explicit_retain_hi,
             neutralized: self.neutralized.meet(other.neutralized),
         }
+    }
+
+    /// Mint one additional co-owner over this live value. The release count is
+    /// intentionally unchanged: a later owning sink and the original local's
+    /// terminal drop must independently discharge the two references.
+    fn retain_mint(&mut self) {
+        self.mint_lo = self
+            .mint_lo
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
+        self.mint_hi = self
+            .mint_hi
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
+        self.explicit_retain_lo = true;
+        self.explicit_retain_hi = true;
     }
 
     /// A discharge that fires on every modelling of the current path.
@@ -1348,6 +2093,19 @@ impl ObligationState {
             .max_definite
             .saturating_add(1)
             .min(OBLIGATION_COUNT_SATURATION);
+    }
+
+    /// Confirm that the current generation has transferred exactly once.
+    /// The string aggregate/capture lowering writes an empty static string
+    /// into the moved-from slot after publishing its bytes into the successor
+    /// owner. Aggregation is initially modelled as an ambiguous discharge;
+    /// this commit marker turns that same event into a definite one instead of
+    /// counting a second discharge. If no ambiguous event preceded it, the
+    /// marker still establishes the one transfer it commits.
+    fn confirm_transfer_discharge(&mut self) {
+        self.lo = self.lo.max(1);
+        self.hi = self.hi.max(1);
+        self.max_definite = self.max_definite.max(1);
     }
 
     /// A discharge whose single-owner resolution belongs to another
@@ -1455,6 +2213,13 @@ struct ObligationCtx<'a> {
     /// borrows. A whole-local rebind FROM a parameter is a borrow alias, so
     /// the rebound dest mints with the hi-credit.
     parameter_locals: &'a HashSet<u32>,
+    /// Exact `retain(source); move(destination, source)` instruction pairs.
+    /// These are shares, not transfers: the source keeps its obligation and
+    /// the defining move mints an independently retained destination owner.
+    retained_move_sites: &'a HashSet<(u32, usize)>,
+    /// Empty COW literals inserted immediately after an aggregate ownership
+    /// handoff to clear the moved-from publication slot.
+    cow_handoff_commit_sites: &'a HashSet<(u32, usize)>,
 }
 
 impl ObligationCtx<'_> {
@@ -1588,6 +2353,71 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
     alias_to
 }
 
+/// Re-derive the explicit whole-local retain/share protocol from primitive
+/// MIR. The pair is deliberately structural: codegen executes the retain on
+/// every dynamic visit even when a destination slot is reused or the block is
+/// cyclic, so the obligation model must count it on those paths rather than
+/// inherit the stricter sole-owner-prover admission policy.
+fn collect_retained_move_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
+    let mut sites = HashSet::new();
+    for block in blocks {
+        for move_index in 1..block.instructions.len() {
+            let retain_source = match &block.instructions[move_index - 1] {
+                Instr::BytesRetain { value }
+                | Instr::StringRetain {
+                    value,
+                    condition: crate::model::StringRetainCondition::Always,
+                } => Some(*value),
+                _ => None,
+            };
+            let Some(retain_source) = retain_source else {
+                continue;
+            };
+            let (dest, move_source) = match &block.instructions[move_index] {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => (*dest, *src),
+                _ => continue,
+            };
+            if retain_source == move_source
+                && whole_owner_local(dest).is_some()
+                && whole_owner_local(move_source).is_some()
+                && whole_owner_local(dest) != whole_owner_local(move_source)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
+
+fn collect_cow_handoff_commit_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
+    let mut sites = HashSet::new();
+    for block in blocks {
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let value = match instruction {
+                Instr::StringLit { bytes, dest } | Instr::BytesLit { bytes, dest }
+                    if bytes.is_empty() =>
+                {
+                    *dest
+                }
+                _ => continue,
+            };
+            let handoff = block.instructions[..index].iter().rev().find(|candidate| {
+                !matches!(
+                    candidate,
+                    Instr::StringLit { bytes, .. } | Instr::BytesLit { bytes, .. }
+                        if bytes.is_empty()
+                )
+            });
+            if handoff.is_some_and(|handoff| {
+                super::temp_drop::string_share_sink_places(handoff).contains(&value)
+            }) {
+                sites.insert((block.id, index));
+            }
+        }
+    }
+    sites
+}
+
 /// Forward transfer of one instruction: discharge events first, then mint
 /// (whole-slot write) resets.
 #[allow(
@@ -1602,7 +2432,14 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
               distinct transfer classes (aggregation vs capture vs dispatch); \
               merging them would erase the per-class rationale comments"
 )]
-fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &ObligationCtx<'_>) {
+fn apply_balance_instr(
+    state: &mut ObligationMap,
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    cx: &ObligationCtx<'_>,
+) {
+    let retained_share_move = cx.retained_move_sites.contains(&(block, instr_index));
     // Derived mints take an hi-credit of 1 ("another owner's release may be
     // mine"), applied after the generic mint below:
     //   - a whole-local rebind FROM a tracked local (`let m2 = m;` — which
@@ -1622,6 +2459,7 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
     let rebind_credit_dest = match instr {
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => whole_owner_local(*src)
             .filter(|s| cx.parameter_locals.contains(s) || cx.tracked.contains_key(&cx.root_of(*s)))
+            .filter(|_| !retained_share_move)
             .and_then(|_| credit_dest(dest)),
         Instr::RecordFieldLoad { dest, .. }
         | Instr::TupleFieldLoad { dest, .. }
@@ -1642,9 +2480,46 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 obligation_entry(state, root).drop_discharge();
             }
         }
+        Instr::StringLit { bytes, dest } if bytes.is_empty() => {
+            // `apply_string_retain_sites` uses an empty static string write as
+            // the moved-from commit marker after an owned string enters a
+            // record, tuple, or capture environment. A static string carries
+            // no heap owner of its own, so confirm the preceding transfer and
+            // do not let the generic write pass remint this slot below.
+            if let Some(root) = cx.tracked_root(*dest) {
+                if let Some(entry) = state.get_mut(&root) {
+                    entry.confirm_transfer_discharge();
+                    // The moved-from slot now holds an empty static string with
+                    // no heap owner, so a later terminal drop of it (a loop
+                    // back-edge, cancel, or panic scope-exit drop) walks a
+                    // nulled slot and is a no-op, NOT a second discharge of the
+                    // transferred buffer. Mark it neutralized (as
+                    // `NeutralizePayloadSlot` does) so those drops cannot
+                    // manufacture a phantom over-release; a later real defining
+                    // write resets the obligation to a fresh `minted()`, so a
+                    // genuine double-free on the next generation is still caught.
+                    entry.neutralized = PayloadNeutralized::Yes;
+                }
+            }
+        }
+        Instr::BytesLit { bytes, dest }
+            if bytes.is_empty() && cx.cow_handoff_commit_sites.contains(&(block, instr_index)) =>
+        {
+            if let Some(root) = cx.tracked_root(*dest) {
+                if let Some(entry) = state.get_mut(&root) {
+                    entry.confirm_transfer_discharge();
+                    entry.neutralized = PayloadNeutralized::Yes;
+                }
+            }
+        }
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
             if let Some(root) = cx.tracked_root(*src) {
-                if matches!(dest, Place::ReturnSlot) {
+                if retained_share_move {
+                    // The immediately preceding retain minted a distinct
+                    // destination reference. The source remains owned here;
+                    // the generic defining-write pass below creates the new
+                    // destination obligation without a rebind credit.
+                } else if matches!(dest, Place::ReturnSlot) {
                     // Return-transfer: the caller receives the one owner.
                     obligation_entry(state, root).definite_discharge();
                 } else {
@@ -1657,6 +2532,28 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
             // A move OUT of a variant projection is either alias-folded (no
             // neutralize anywhere — see `collect_payload_alias_map`) or paid
             // by the `NeutralizePayloadSlot` that follows it; no event here.
+        }
+        Instr::BytesRetain { value }
+        | Instr::StringRetain {
+            value,
+            condition: crate::model::StringRetainCondition::Always,
+        } => {
+            // An exact retain+move pair mints the destination generation; do
+            // not also charge the source with a second anonymous owner. Every
+            // other whole-value retain creates a co-owner that an owning sink
+            // must consume independently of the original local's terminal
+            // drop. Conditional string retains are leaf-layout operations:
+            // they retain only nested strings before a borrowed aggregate or
+            // actor-state field copy, so they do not mint another owner of a
+            // tracked non-string root (for example a Generator).
+            let paired_move = cx
+                .retained_move_sites
+                .contains(&(block, instr_index.saturating_add(1)));
+            if !paired_move {
+                if let Some(root) = cx.tracked_root(*value) {
+                    obligation_entry(state, root).retain_mint();
+                }
+            }
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
             if let Some(root) = cx.tracked_carrier(*place) {
@@ -1697,6 +2594,20 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 if let Some(root) = cx.tracked_root(*arg) {
                     obligation_entry(state, root).ambiguous_discharge();
                 }
+            }
+        }
+        Instr::RcIntrinsic {
+            op: hew_types::RcIntrinsicOp::New | hew_types::RcIntrinsicOp::Set,
+            value: Some(value),
+            ..
+        } => {
+            // `Rc::new(value)` and `Rc::set(value)` take the payload by
+            // ownership.  The resulting/newly-installed Rc payload is the
+            // sole successor authority, so the source mint is discharged
+            // exactly here rather than left as an anonymous producer at the
+            // function exit.
+            if let Some(root) = cx.tracked_root(*value) {
+                obligation_entry(state, root).definite_discharge();
             }
         }
         Instr::CallRuntimeAbi(call) => {
@@ -1820,8 +2731,18 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
         // assumed-discharged suppress.
         _ => {}
     }
-    let (_, writes) = dataflow::instr_reads_writes(instr);
+    let (_, writes, _) = dataflow::instr_reads_writes(instr);
     for write in writes {
+        // A string literal points into read-only module storage; its drop is a
+        // guarded no-op and therefore it never mints a heap obligation. Empty
+        // literal writes over an already-minted slot are handled above as the
+        // aggregate/capture transfer commit marker.
+        if matches!(instr, Instr::StringLit { dest, .. } if *dest == write)
+            || (cx.cow_handoff_commit_sites.contains(&(block, instr_index))
+                && matches!(instr, Instr::BytesLit { dest, .. } if *dest == write))
+        {
+            continue;
+        }
         if let Some(local) = mint_target_local(write) {
             // The defining write of a payload-alias binder is the transfer
             // moment of its carrier's payload, not a fresh mint.
@@ -1829,7 +2750,12 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 continue;
             }
             if cx.tracked.contains_key(&local) {
-                state.insert(local, ObligationState::minted());
+                let minted = if retained_share_move {
+                    ObligationState::minted_by_retain()
+                } else {
+                    ObligationState::minted()
+                };
+                state.insert(local, minted);
             }
         }
     }
@@ -1865,9 +2791,120 @@ fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
             arms.iter().filter_map(|arm| arm.binding).collect()
         }
         Terminator::Join { result, .. } => vec![*result],
-        // No write slots (suspending carriers park state in the coro frame;
-        // functions containing them are excluded from this pass wholesale).
+        // No write slots. A bare Suspend's result writes occur only when the
+        // continuation resumes, so `suspend_resume_mint_places` applies them
+        // on that edge rather than to the pre-suspend frame state.
         _ => Vec::new(),
+    }
+}
+
+/// Normal (non-abandon) successors for ownership balance.
+///
+/// `BasicBlock::successors` includes a suspend carrier's cleanup target because
+/// other CFG passes need to see the physical coroutine switch. Ownership
+/// balance instead models `coro.destroy` as a terminal edge whose frame drops
+/// are carried by `ExitPath::Suspend`; propagating the parked frame state into
+/// `cleanup` would mix abandon-only execution into the resumed body.
+fn obligation_successors(block: &BasicBlock) -> Vec<u32> {
+    match &block.terminator {
+        Terminator::Suspend { resume, .. } => vec![*resume],
+        Terminator::SuspendingScopeDeadline {
+            timeout_body_block,
+            resume,
+            ..
+        } => vec![*timeout_body_block, *resume],
+        Terminator::SuspendingSelect { arms, resume, .. } => {
+            let mut successors: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+            successors.push(*resume);
+            successors
+        }
+        _ => block.successors(),
+    }
+}
+
+/// Destinations written by the suspend ramp only after case-0 resume.
+///
+/// These cannot be minted in the suspend block's common state: the destroy
+/// edge never initializes them, and charging them there would manufacture
+/// frame obligations on abandon.
+fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
+    match kind {
+        SuspendKind::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        SuspendKind::Read {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::Accept {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::StreamNext {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::ChannelRecv {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        } => std::iter::once(*result_dest)
+            .chain(deadline_result_dest.iter().copied())
+            .chain(error_dest.iter().copied())
+            .collect(),
+        SuspendKind::CallClosure { result_dest, .. }
+        | SuspendKind::TaskAwait { result_dest, .. } => result_dest.iter().copied().collect(),
+        SuspendKind::RestartWait {
+            result_dest,
+            deadline_result_dest,
+            ..
+        } => std::iter::once(*result_dest)
+            .chain(deadline_result_dest.iter().copied())
+            .collect(),
+        SuspendKind::StreamSend { .. }
+        | SuspendKind::Sleep { .. }
+        | SuspendKind::SleepUntil { .. } => Vec::new(),
+    }
+}
+
+fn apply_suspend_resume_mints(
+    state: &mut ObligationMap,
+    predecessor: &BasicBlock,
+    successor: u32,
+    kind: Option<&SuspendKind>,
+    cx: &ObligationCtx<'_>,
+) {
+    let Terminator::Suspend { resume, .. } = &predecessor.terminator else {
+        return;
+    };
+    if *resume != successor {
+        return;
+    }
+    let Some(kind) = kind else {
+        return;
+    };
+    for write in suspend_resume_mint_places(kind) {
+        if let Some(local) = mint_target_local(write) {
+            if !cx.alias_to.contains_key(&local) && cx.tracked.contains_key(&local) {
+                state.insert(local, ObligationState::minted());
+            }
+        }
     }
 }
 
@@ -2086,16 +3123,10 @@ fn validate_obligation_balance_capped(
     if blocks.is_empty() || tracked_in.is_empty() {
         return findings;
     }
-    // Coroutine ramps park ownership in the coro frame across suspend
-    // points; the lite whole-local model excludes them (S2/OWN-V1 scope).
-    if blocks
-        .iter()
-        .any(|b| terminator_is_suspend_carrier(&b.terminator))
-    {
-        return findings;
-    }
 
     let alias_to = collect_payload_alias_map(blocks);
+    let retained_move_sites = collect_retained_move_sites(blocks);
+    let cow_handoff_commit_sites = collect_cow_handoff_commit_sites(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder
     // is not an independent obligation.
     let mut tracked = tracked_in.clone();
@@ -2183,18 +3214,25 @@ fn validate_obligation_balance_capped(
         tracked: &tracked,
         alias_to: &alias_to,
         parameter_locals,
+        retained_move_sites: &retained_move_sites,
+        cow_handoff_commit_sites: &cow_handoff_commit_sites,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a
     // `goto[bbN->bbM]` edge closing an inner scope carries real drops), so
     // those plans participate in the dataflow at their owning block.
-    // Exception edges (`Panic` / `Cancel`) fire only on unwind and `Return`
-    // plans are folded at the verdict — neither applies here.
+    // Exception edges (`Panic` / `Cancel`) fire only on unwind. `Return`
+    // and `Suspend` plans are folded at their terminal verdicts: a suspend
+    // plan belongs solely to the coro.destroy abandon edge and must never
+    // discharge the still-live frame state flowing into resume.
     let mut edge_drops: HashMap<u32, Vec<&ElabDrop>> = HashMap::new();
     for (exit, plan) in &elab.drop_plans {
         if matches!(
             exit,
-            ExitPath::Return { .. } | ExitPath::Panic { .. } | ExitPath::Cancel { .. }
+            ExitPath::Return { .. }
+                | ExitPath::Panic { .. }
+                | ExitPath::Cancel { .. }
+                | ExitPath::Suspend { .. }
         ) {
             continue;
         }
@@ -2214,12 +3252,34 @@ fn validate_obligation_balance_capped(
         }
     }
 
-    // Forward interval fixpoint over the raw CFG. Monotone: `lo` only
-    // decreases, `hi` only increases, `neutralized` only coarsens — all
-    // bounded, so the worklist terminates (loops included).
+    // Forward interval fixpoint over the normal/resume CFG. Suspend cleanup
+    // targets are excluded from predecessor and reachability construction:
+    // the abandon edge is terminal and checked against its plan below.
+    // Monotone: `lo` only decreases, `hi` only increases, `neutralized` only
+    // coarsens — all bounded, so the worklist terminates (loops included).
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
-    let preds = dataflow::build_preds(blocks);
-    let reachable = dataflow::reachable_from_entry(blocks);
+    let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in obligation_successors(block) {
+            preds.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut reachable: HashSet<u32> = HashSet::new();
+    let mut reach_stack = Vec::new();
+    if by_id.contains_key(&ENTRY_BLOCK_ID) {
+        reachable.insert(ENTRY_BLOCK_ID);
+        reach_stack.push(ENTRY_BLOCK_ID);
+    }
+    while let Some(block_id) = reach_stack.pop() {
+        let Some(block) = by_id.get(&block_id) else {
+            continue;
+        };
+        for successor in obligation_successors(block) {
+            if reachable.insert(successor) {
+                reach_stack.push(successor);
+            }
+        }
+    }
     let mut exit_states: HashMap<u32, ObligationMap> = HashMap::new();
     let mut worklist: VecDeque<u32> = dataflow::compute_rpo(blocks).into();
     let mut iterations: usize = 0;
@@ -2252,15 +3312,26 @@ fn validate_obligation_balance_capped(
             .unwrap_or(&empty)
             .iter()
             .filter(|p| reachable.contains(p))
-            .filter_map(|p| exit_states.get(p))
+            .filter_map(|p| {
+                let predecessor = by_id.get(p)?;
+                let mut state = exit_states.get(p)?.clone();
+                apply_suspend_resume_mints(
+                    &mut state,
+                    predecessor,
+                    bb_id,
+                    suspend_kinds.get(p),
+                    &cx,
+                );
+                Some(state)
+            })
             .fold(None::<ObligationMap>, |acc, m| match acc {
-                None => Some(m.clone()),
-                Some(cur) => Some(meet_obligation_maps(&cur, m)),
+                None => Some(m),
+                Some(cur) => Some(meet_obligation_maps(&cur, &m)),
             })
             .unwrap_or_default();
         let mut state = entry;
-        for instr in &block.instructions {
-            apply_balance_instr(&mut state, instr, &cx);
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            apply_balance_instr(&mut state, instr, bb_id, instr_index, &cx);
         }
         apply_balance_terminator(&mut state, block, suspend_kinds.get(&bb_id), &cx);
         if let Some(drops) = edge_drops.get(&bb_id) {
@@ -2271,22 +3342,25 @@ fn validate_obligation_balance_capped(
         let changed = exit_states.get(&bb_id) != Some(&state);
         exit_states.insert(bb_id, state);
         if changed {
-            for succ in block.successors() {
+            for succ in obligation_successors(block) {
                 worklist.push_back(succ);
             }
         }
     }
 
-    // Verdict per (Return exit, tracked local): fold the exit plan's drops
-    // into the exit block's post-terminator state, then check the interval.
+    // Verdict per terminal ownership edge: Return folds the ordinary function
+    // exit plan; Suspend folds the abandon-only frame plan. The default park
+    // edge is not terminal ownership transfer — the owner remains in frame.
     for (exit, plan) in &elab.drop_plans {
-        let ExitPath::Return { block } = exit else {
-            continue;
+        let (block, exit_label) = match exit {
+            ExitPath::Return { block } => (*block, "return"),
+            ExitPath::Suspend { block, .. } => (*block, "suspend-abandon"),
+            _ => continue,
         };
-        if !reachable.contains(block) {
+        if !reachable.contains(&block) {
             continue;
         }
-        let Some(block_state) = exit_states.get(block) else {
+        let Some(block_state) = exit_states.get(&block) else {
             continue;
         };
         let mut state = block_state.clone();
@@ -2298,30 +3372,46 @@ fn validate_obligation_balance_capped(
                 .get(root)
                 .cloned()
                 .unwrap_or_else(|| format!("local_{root}"));
-            if ob.hi == 0 {
+            // Two independently safe proofs feed the leak verdict:
+            //   * `hi < mint_lo`: every reaching path is short a release;
+            //   * `mint_hi > hi`: the path carrying the largest explicit
+            //     retain count cannot be paid even by the largest possible
+            //     discharge count on any reaching path.
+            // The second form preserves a branch-local retain debt instead of
+            // diluting it against an unretained sibling at the CFG join.
+            let retained_path_under_released = ob.explicit_retain_hi && ob.mint_hi > ob.hi;
+            if ob.hi < ob.mint_lo || retained_path_under_released {
+                let reported_mints = if retained_path_under_released {
+                    ob.mint_hi
+                } else {
+                    ob.mint_lo
+                };
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: elab.name.clone(),
-                    block: *block,
+                    block,
                     name: name.clone(),
                     local_ty: local_types.get(root).cloned().unwrap_or_default(),
+                    hard: retained_path_under_released || ob.explicit_retain_lo,
                     reason: format!(
-                        "owned local `{name}` reaches return[bb{block}] with zero \
-                         discharges on every path modelling: no terminal drop in \
-                         this exit's plan and no ownership transfer before the \
-                         exit (mint without discharge = leak)"
+                        "owned local `{name}` reaches {exit_label}[bb{block}] with at least \
+                         {mint_lo} owner mint(s), but at most {discharge_hi} discharge(s) on \
+                         every path modelling: one or more owners have no terminal drop or \
+                         ownership transfer before the exit (mint without discharge = leak)",
+                        mint_lo = reported_mints,
+                        discharge_hi = ob.hi,
                     ),
                 });
-            } else if ob.max_definite >= OBLIGATION_COUNT_SATURATION {
+            } else if ob.max_definite > ob.mint_hi {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
-                    block: *block,
+                    block,
                     name: name.clone(),
                     reason: format!(
-                        "owned local `{name}` accumulates {max_def}+ definite \
-                         discharges on a single path reaching return[bb{block}] \
-                         (discharge interval [{lo}, {hi}], per-path definite max \
-                         {max_def}): double release",
+                        "owned local `{name}` accumulates {max_def} definite discharges for at \
+                         most {mint_hi} owner mint(s) on a single path reaching \
+                         {exit_label}[bb{block}] (discharge interval [{lo}, {hi}]): double release",
                         max_def = ob.max_definite,
+                        mint_hi = ob.mint_hi,
                         lo = ob.lo,
                         hi = ob.hi,
                     ),
@@ -2407,18 +3497,29 @@ fn validate_discharge_authority_corroboration_over(
     function: &str,
     blocks: &[BasicBlock],
 ) -> Vec<MirCheck> {
-    // Carrier 2 (independent): every local the primitive stream writes as a
-    // Move/WitnessMove destination — a real ownership-receiving slot. Derived
-    // WITHOUT reading any NeutralizePayloadSlot authority.
+    // Carrier 2 (independent): every local the primitive stream writes through
+    // Move/WitnessMove, plus each exact source/destination pair written by a
+    // tuple or record constructor. Derived WITHOUT reading any
+    // NeutralizePayloadSlot authority.
     let mut move_destinations: HashSet<u32> = HashSet::new();
+    let mut aggregate_member_destinations: HashSet<(Place, Place)> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
-            let dest = match instr {
-                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => *dest,
-                _ => continue,
-            };
-            if let Some(local) = whole_owner_local(dest) {
-                move_destinations.insert(local);
+            match instr {
+                Instr::Move { dest, .. } | Instr::WitnessMove { dest, .. } => {
+                    if let Some(local) = whole_owner_local(*dest) {
+                        move_destinations.insert(local);
+                    }
+                }
+                Instr::TupleConstruct { elements, dest } => {
+                    aggregate_member_destinations
+                        .extend(elements.iter().map(|source| (*source, *dest)));
+                }
+                Instr::RecordInit { fields, dest, .. } => {
+                    aggregate_member_destinations
+                        .extend(fields.iter().map(|(_offset, source)| (*source, *dest)));
+                }
+                _ => {}
             }
         }
     }
@@ -2427,9 +3528,9 @@ fn validate_discharge_authority_corroboration_over(
         for instr in &block.instructions {
             // Carrier 1: the carried transferee fact.
             let Instr::NeutralizePayloadSlot {
+                place,
                 transferee: Some(transferee),
                 authority,
-                ..
             } = instr
             else {
                 continue;
@@ -2437,15 +3538,36 @@ fn validate_discharge_authority_corroboration_over(
             let Some(dest_local) = whole_owner_local(*transferee) else {
                 continue;
             };
-            if !move_destinations.contains(&dest_local) {
+            let corroborated = if matches!(
+                authority,
+                crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+            ) {
+                aggregate_member_destinations.contains(&(*place, *transferee))
+            } else {
+                move_destinations.contains(&dest_local)
+            };
+            if !corroborated {
+                let primitive = if matches!(
+                    authority,
+                    crate::model::NeutralizeAuthority::ReturnedAggregateMemberConsume
+                ) {
+                    format!(
+                        "the primitive instruction stream never constructs {transferee:?} from \
+                         source {place:?}"
+                    )
+                } else {
+                    format!(
+                        "the primitive instruction stream never moves any value into \
+                         local_{dest_local}"
+                    )
+                };
                 findings.push(MirCheck::DischargeAuthorityDrift {
                     function: function.to_string(),
                     block: block.id,
                     name: format!("local_{dest_local}"),
                     reason: format!(
                         "NeutralizePayloadSlot ({authority:?}) names transferee local_{dest_local} \
-                         as the new owner of the neutralized slot, but the primitive instruction \
-                         stream never moves any value into local_{dest_local}: the carried \
+                         as the new owner of the neutralized slot, but {primitive}: the carried \
                          transfer fact and the actual routing disagree (dual-carrier drift)"
                     ),
                 });
@@ -2528,6 +3650,23 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
             release: crate::ownership::CowHeapRelease::VecPlain,
         },
+        // First-class VecIter abandonment drops address field 0 of a local
+        // cursor record. The release refinement is carried explicitly and
+        // codegen re-derives it against the concrete element/layout before
+        // emitting the field release.
+        DropKind::VecIterCursor { release }
+            if matches!(drop.place, Place::Local(_))
+                && matches!(
+                    &drop.ty,
+                    ResolvedTy::Named {
+                        args,
+                        builtin: Some(hew_types::BuiltinType::VecIter),
+                        ..
+                    } if args.len() == 1
+                ) =>
+        {
+            DropKind::VecIterCursor { release }
+        }
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
         // in-place helper), while the place is an ordinary stack `Local`
@@ -2537,6 +3676,20 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         DropKind::TupleInPlace => {
             if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Tuple(_)) {
                 DropKind::TupleInPlace
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // Per-yield structural tuple/array payloads use the recursive inline
+        // walker rather than a registered tuple thunk. Their place is still a
+        // stack `Local`, so accept the dedicated kind on exactly those
+        // structural aggregate types; every other pairing falls back to the
+        // Place-driven dispatcher and fails closed on disagreement.
+        DropKind::AggregateRecursive => {
+            if matches!(drop.place, Place::Local(_))
+                && matches!(&drop.ty, ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _))
+            {
+                DropKind::AggregateRecursive
             } else {
                 drop_kind_for(drop.place, &drop.ty, None)
             }
@@ -2816,23 +3969,39 @@ pub(super) fn is_borrowing_call_abi(
 /// one item from the stream and decode it into the consumer's `Option<T>`
 /// slot; the stream handle itself is borrowed for the call and continues to
 /// live in the caller's slot afterwards (the caller's source drop is still
-/// the SOLE free of the stream's runtime context). Their suspending siblings
+/// the SOLE free of the stream's runtime context). The channel layout entries
+/// use the same endpoint-borrow contract: receive / try-receive move only the
+/// decoded payload into the caller's out slot, while send deep-copies only its
+/// payload into the queue. Sender/receiver close remains owned by the caller.
+/// Their suspending siblings
 /// ([`Terminator::SuspendingStreamNext`]) are already exempt because they are
 /// not [`Terminator::Call`]s; listing the blocking / non-suspending entries
 /// here keeps the same borrow-not-consume semantics for the
 /// `let (sink, input) = stream.pipe(N); input.try_recv()` shape that goes
 /// through [`Terminator::Call`].
 ///
-/// Kept narrow: each entry's Rust impl takes `*mut HewStream` and ONLY reads
-/// one queued item without mutating the handle's ownership; adding a callee
-/// that actually consumes the handle here would silently disable the
-/// double-free gate for its caller.
+/// Kept narrow: each entry's Rust impl takes a live endpoint pointer and
+/// leaves the endpoint's ownership in the caller's slot; adding a callee that
+/// actually consumes the handle here would silently disable the double-free
+/// gate for its caller.
 pub(super) fn is_handle_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
     use hew_types::runtime_call::RuntimeCallFamily as F;
-    matches!(builtin, Some(F::StreamNextLayout | F::StreamTryNextLayout))
+    matches!(
+        builtin,
+        Some(
+            F::StreamNextLayout
+                | F::StreamTryNextLayout
+                | F::ChannelRecvLayout
+                | F::ChannelTryRecvLayout
+                | F::ChannelSendLayout
+        )
+    )
 }
+
+#[cfg(test)]
+mod handle_borrowing_call_abi_tests;
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
 /// (`Pid`/`LocalPid`/`RemotePid`, `handle_family() == ActorPid`) with NO
 /// `close`/release ABI (`close_method().is_none()`). Its drop frees nothing —
@@ -2908,6 +4077,24 @@ pub(super) fn ty_is_owned_handle_leaf(ty: &ResolvedTy) -> bool {
 /// builtin / named identity for the handle kinds the gate covers.
 pub(super) fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
     match ty {
+        ResolvedTy::Named {
+            args,
+            builtin:
+                Some(builtin @ (hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)),
+            ..
+        } => {
+            let family = match builtin {
+                hew_types::BuiltinType::Sender => "channel.Sender",
+                hew_types::BuiltinType::Receiver => "channel.Receiver",
+                _ => unreachable!("pattern admits only channel endpoint builtins"),
+            };
+            if args.is_empty() {
+                family.to_string()
+            } else {
+                let rendered: Vec<String> = args.iter().map(render_owned_handle_ty).collect();
+                format!("{family}<{}>", rendered.join(", "))
+            }
+        }
         ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
         ResolvedTy::Named { name, args, .. } => {
             let rendered: Vec<String> = args.iter().map(render_owned_handle_ty).collect();
@@ -2934,28 +4121,96 @@ pub(super) fn ty_is_heap_owning_tuple(
     ty: &ResolvedTy,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> bool {
     matches!(ty, ResolvedTy::Tuple(_))
-        && crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
+        && crate::model::ty_carries_drop_obligation_mir(
+            ty,
+            record_field_orders,
+            enum_layouts,
+            lifecycle_registry,
+        )
+}
+/// A payload binder's attribution to the composite candidate it was
+/// projected from. `Root` names the single candidate proven so far;
+/// `Conflict` marks a binder that TWO DIFFERENT composite roots fed the same
+/// local — deliberately not a missing map entry, so `note_payload_escape`'s
+/// fail-closed "unknown root" branch still fires and excludes every
+/// candidate instead of silently keeping whichever root arrived first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PayloadBinderRoot {
+    Root(u32),
+    Conflict,
+}
+/// Attribute `binder` to `root`, or mark it `Conflict` when it is already
+/// attributed to a DIFFERENT root. First-root-wins silently excluded only
+/// the first root on escape when a raw-MIR shape fed one heap payload local
+/// from two composite roots; `Conflict` instead falls back to the coarse
+/// exclude-every-root posture for that binder. Once `Conflict`, the
+/// attribution never reverts to a single root.
+pub(super) fn attribute_payload_binder_root(
+    payload_binder_candidate_root: &mut HashMap<u32, PayloadBinderRoot>,
+    binder: u32,
+    root: u32,
+) {
+    match payload_binder_candidate_root.get(&binder) {
+        None => {
+            payload_binder_candidate_root.insert(binder, PayloadBinderRoot::Root(root));
+        }
+        Some(PayloadBinderRoot::Root(existing)) if *existing != root => {
+            payload_binder_candidate_root.insert(binder, PayloadBinderRoot::Conflict);
+        }
+        _ => {}
+    }
+}
+/// Propagate `src_binder`'s attribution onward to `dest_binder` on a benign
+/// hand-off Move. `Root` carries forward through [`attribute_payload_binder_root`]
+/// (so a second, differing root already at `dest_binder` still resolves to
+/// `Conflict`); `Conflict` propagates as `Conflict` rather than reverting to
+/// no attribution; no attribution at `src_binder` leaves `dest_binder`
+/// untouched.
+pub(super) fn propagate_payload_binder_root(
+    payload_binder_candidate_root: &mut HashMap<u32, PayloadBinderRoot>,
+    src_binder: u32,
+    dest_binder: u32,
+) {
+    match payload_binder_candidate_root.get(&src_binder).copied() {
+        Some(PayloadBinderRoot::Root(root)) => {
+            attribute_payload_binder_root(payload_binder_candidate_root, dest_binder, root);
+        }
+        Some(PayloadBinderRoot::Conflict) => {
+            payload_binder_candidate_root.insert(dest_binder, PayloadBinderRoot::Conflict);
+        }
+        None => {}
+    }
 }
 /// A payload binder read into an owning sink means the active payload escaped
-/// the composite. We cannot cheaply attribute a binder to a single composite
-/// root (a binder may be reachable from several composites through onward
-/// copies), so — fail-closed — exclude EVERY heap-owning enum composite root
-/// in the function when any payload binder escapes. Over-exclusion leaks; it
-/// never double-frees. The vast majority of real handlers have at most one
-/// matched heap-owning composite per scope, so this coarsening is rarely
-/// observable, and the precise per-root attribution is a follow-on slice if a
-/// fixture ever needs it.
+/// its composite. Exclude only the root THAT binder was projected from, via the
+/// per-candidate `payload_binder_candidate_root` attribution the borrow
+/// exemption already trusts — so a legitimately-escaping non-synthesizable
+/// sibling (a `Result<GlobResult, _>` resource binder consumed by
+/// `matches.close()`) no longer strips a separately-admissible
+/// `Result<bytes, string>` / `Result<CommandOutput, _>` of its `EnumInPlace`
+/// drop. A binder with no known root, OR a `Conflict` attribution (two
+/// composite roots fed the same binder), fails closed to the coarse
+/// every-root posture. Over-exclusion leaks, never double-frees; this mirrors
+/// the already per-root `note_alias_escape` whole-composite escape.
 pub(super) fn note_payload_escape(
-    _payload_binders: &HashMap<u32, Option<ScopeId>>,
-    _escaping_binder: u32,
+    payload_binder_candidate_root: &HashMap<u32, PayloadBinderRoot>,
+    escaping_binder: u32,
     alias_of: &HashMap<u32, u32>,
     _blocks: &[BasicBlock],
     excluded_roots: &mut HashSet<u32>,
 ) {
-    for &root in alias_of.values() {
-        excluded_roots.insert(root);
+    match payload_binder_candidate_root.get(&escaping_binder) {
+        Some(PayloadBinderRoot::Root(root)) => {
+            excluded_roots.insert(*root);
+        }
+        Some(PayloadBinderRoot::Conflict) | None => {
+            for &root in alias_of.values() {
+                excluded_roots.insert(root);
+            }
+        }
     }
 }
 /// True when `ty` is a tagged-union enum composite (`Result`/`Option`/user
@@ -2971,6 +4226,7 @@ pub(super) fn ty_is_heap_owning_enum_composite(
     ty: &ResolvedTy,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> bool {
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
@@ -2979,24 +4235,24 @@ pub(super) fn ty_is_heap_owning_enum_composite(
     // not an opaque/builtin handle). Indirect (heap-boxed) enums route their
     // payload drop through the boxed-storage release path, not this in-place
     // helper, so they are excluded here.
-    let short = hew_types::short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
-    } else {
-        let mangled = mangle_layout_key(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
+    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
     let Some(layout) = layout else {
         return false;
     };
     if layout.is_indirect {
         return false;
     }
-    crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts)
+    // Admission is the drop-OBLIGATION axis, not bare heap ownership: an
+    // `Option<Tok>` / `enum Held { One(Tok) }` whose payload is a scalar-field
+    // `#[resource]` owns no heap yet must run `close` exactly once — the
+    // heap-only axis admitted it only when a heap sibling arm happened to
+    // exist (`Result<Tok, string>` closed, `Result<Tok, i64>` leaked).
+    crate::model::ty_carries_drop_obligation_mir(
+        ty,
+        record_field_orders,
+        enum_layouts,
+        lifecycle_registry,
+    )
 }
 /// Resolve the `DropKind` for an `ElabDrop` given the addressable
 /// `Place` and the binding's `ResolvedTy`.
@@ -3230,14 +4486,56 @@ pub(super) fn drop_kind_for(
         | Place::EnumVariant { .. } => DropKind::Resource,
     }
 }
+
+/// Materialize the ordinary typed drop ritual used by a crash-only
+/// representation owner. The descriptor is deliberately kept out of lexical
+/// drop plans: success transfers or retires the owner without releasing the
+/// destination storage, while the dynamic crash registry may invoke this
+/// ritual if execution is abandoned before that handoff.
+///
+/// Keeping construction here makes the drop-plan dispatcher the only
+/// authority that maps the typed cleanup kind to an [`ElabDrop`]; codegen never
+/// infers the ritual from a raw local type or runtime symbol name.
+///
+/// # Errors
+///
+/// Returns an error when the typed cleanup kind is incompatible with the
+/// owner's resolved storage shape.
+pub fn crash_only_cleanup_drop(
+    place: Place,
+    ty: &ResolvedTy,
+    cleanup: ParamCrashCleanupKind,
+) -> Result<ElabDrop, String> {
+    match cleanup {
+        ParamCrashCleanupKind::Bytes if matches!(ty, ResolvedTy::Bytes) => {
+            let descriptor = ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(place, ty, None),
+                guard: None,
+            };
+            debug_assert_eq!(
+                descriptor.kind,
+                DropKind::CowHeap {
+                    release: crate::ownership::CowHeapRelease::Bytes,
+                }
+            );
+            Ok(descriptor)
+        }
+        ParamCrashCleanupKind::Bytes => Err(format!(
+            "bytes crash-cleanup owner at {place:?} carried incompatible type `{ty}`"
+        )),
+    }
+}
 /// RAII-1 opaque-resource close registry: `(opaque_type_name, "<Type>::<close>")`
 /// for every single-slot `#[resource] #[opaque]` handle whose close is a USER
 /// method.
 ///
-/// Parallel to the `resource_record_close` registry (which keys off
+/// Parallel to the typed resource-record lifecycle registry (which keys off
 /// `record_layouts` for `#[resource]` RECORDS): a single-handle opaque
 /// `#[resource]` has no record layout, so it is excluded from
-/// `resource_record_close` — that exclusion is exactly the W3.029 leak this
+/// resource-record lifecycles — that exclusion is exactly the W3.029 leak this
 /// registry closes. The classifier (`classify_named`) consults it to route such
 /// a handle to [`StateFieldCloneKind::Resource`] instead of the no-op-drop
 /// `OpaqueHandle`, and codegen reads the carried symbol to call `close(self)`
@@ -3248,37 +4546,49 @@ pub(super) fn drop_kind_for(
 /// and `type_classes`, so MIR and codegen classify a resource-bearing record
 /// the same way (no drift). The `<short>::<method>` symbol matches
 /// `declare_function`'s flattened `<Self>::<method>` mangling and the spelling
-/// `resource_record_close` / `resource_drop_fn` use.
+/// lifecycle registry / `resource_drop_fn` use.
 ///
-/// Runtime-descriptor closes (where `RuntimeDropDescriptor::from_drop_fn_name`
-/// matches, e.g. a builtin handle with a C-ABI release) are excluded: the
-/// `Resource` drop arm calls the close as a user LLVM function, which a C-ABI
-/// runtime symbol would not resolve to. Those keep their existing path.
+/// This registry contains declarations, not resolved use-site types. A user
+/// resource is therefore always registered even when its short name and close
+/// method collide with a builtin runtime descriptor (`Receiver::close`,
+/// `MonitorRef::close`, ...). The resolved type's builtin discriminator is the
+/// sole authority that selects runtime-vs-user teardown later.
+#[cfg(test)]
 pub(super) fn resource_opaque_close_registry(
-    opaque_handle_names: &[String],
     type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<(String, String)> {
-    use hew_types::runtime_call::RuntimeDropDescriptor;
-    opaque_handle_names
-        .iter()
-        .filter_map(|name| {
-            let short = short_name(name);
-            let (_, close) = type_classes
-                .get(name.as_str())
-                .or_else(|| type_classes.get(short))
-                .and_then(|entry| matches!(entry.0, ResourceMarker::Resource).then_some(entry))?;
-            let close_method = close.as_ref()?;
-            let symbol = format!("{short}::{close_method}");
-            // Open-set USER close only: a builtin runtime-descriptor close is a
-            // C-ABI symbol the `Resource` drop arm cannot call via
-            // `get_function`, so leave such a type on its existing path.
-            if RuntimeDropDescriptor::from_drop_fn_name(&symbol).is_some() {
-                return None;
-            }
-            Some((name.clone(), symbol))
+    type_classes
+        .opaque_resource_lifecycles()
+        .map(|lifecycle| {
+            (
+                lifecycle.resource_declaration.full_path().to_string(),
+                lifecycle.close_symbol.clone(),
+            )
         })
         .collect()
 }
+
+fn builtin_resource_drop_descriptor(
+    builtin: BuiltinType,
+) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    match builtin {
+        BuiltinType::Duplex => Some(RuntimeDropDescriptor::DuplexClose),
+        BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
+        BuiltinType::Sink => Some(RuntimeDropDescriptor::SinkClose),
+        BuiltinType::Sender => Some(RuntimeDropDescriptor::SenderClose),
+        BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
+        BuiltinType::LambdaActorHandle | BuiltinType::LambdaPid => {
+            Some(RuntimeDropDescriptor::LambdaActorHandleClose)
+        }
+        BuiltinType::SendHalf => Some(RuntimeDropDescriptor::SendHalfClose),
+        BuiltinType::RecvHalf => Some(RuntimeDropDescriptor::RecvHalfClose),
+        BuiltinType::CancellationToken => Some(RuntimeDropDescriptor::CancellationTokenRelease),
+        BuiltinType::MonitorRef => Some(RuntimeDropDescriptor::MonitorRefClose),
+        _ => None,
+    }
+}
+
 pub(super) fn resource_drop_fn(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -3288,37 +4598,28 @@ pub(super) fn resource_drop_fn(
         ResolvedTy::CancellationToken => Some(crate::model::DropFnSpec::Runtime(
             RuntimeDropDescriptor::CancellationTokenRelease,
         )),
-        ResolvedTy::Named { name, .. } => {
-            let short = short_name(name);
-            let qualified_collision = short != name
-                && type_classes
-                    .keys()
-                    .filter(|candidate| candidate.contains('.') && short_name(candidate) == short)
-                    .count()
-                    > 1;
-            let class_entry = if short == name {
-                type_classes.get_key_value(name)
-            } else if qualified_collision {
-                type_classes
-                    .get_key_value(name)
-                    .or_else(|| type_classes.get_key_value(short))
-            } else {
-                type_classes
-                    .get_key_value(short)
-                    .or_else(|| type_classes.get_key_value(name))
-            };
+        ResolvedTy::Named {
+            builtin: Some(builtin),
+            ..
+        } => builtin_resource_drop_descriptor(*builtin).map(crate::model::DropFnSpec::Runtime),
+        ResolvedTy::Named {
+            name,
+            builtin: None,
+            is_opaque,
+            ..
+        } => {
+            if let Some(lifecycle) = type_classes.opaque_resource_lifecycle_for_type_name(name) {
+                return Some(crate::model::DropFnSpec::UserClose(
+                    lifecycle.close_symbol.clone(),
+                ));
+            }
+            if *is_opaque {
+                return None;
+            }
+            let class_entry = type_classes.get_key_value(name);
             class_entry.and_then(|(class_name, (_, close))| {
-                close.as_ref().map(|m| {
-                    // Classify the close ritual at production: the type-class
-                    // table's `<Type>::<method>` spelling lifts onto the typed
-                    // runtime drop descriptor for the closed builtin set; user
-                    // `#[resource]` close methods stay on the open-set
-                    // generated-symbol arm.
-                    let qualified = format!("{class_name}::{m}");
-                    RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
-                        crate::model::DropFnSpec::UserClose(qualified),
-                        crate::model::DropFnSpec::Runtime,
-                    )
+                close.as_ref().map(|method| {
+                    crate::model::DropFnSpec::UserClose(format!("{class_name}::{method}"))
                 })
             })
         }
@@ -3326,6 +4627,8 @@ pub(super) fn resource_drop_fn(
         _ => None,
     }
 }
+#[cfg(test)]
+mod typed_resource_close_authority;
 /// Place-aware override of the type-derived `drop_fn`.
 ///
 /// `Place::LambdaActorHandle(N)` carries a `ResolvedTy::Named { name: "Duplex" }`
@@ -3467,10 +4770,10 @@ pub(super) fn dyn_rebind_source_binding(value: &HirExpr) -> Option<BindingId> {
 /// pipeline aborts at the MIR boundary.
 ///
 /// Recognised shapes:
-/// - `HirExprKind::CoerceToDynTrait` → `FrameOwned`. The producer wraps
-///   a concrete value into a fat pointer whose `data` word aliases the
-///   concrete's frame slot; the coerced fat pointer's drop is the
-///   slot-0 `drop_in_place` only.
+/// - `HirExprKind::CoerceToDynTrait` → `HeapBoxed`. Codegen transfers the
+///   concrete value into a `hew_dyn_box_alloc` buffer, so the fat pointer
+///   remains valid across helper returns, suspension, and crash snapshots; its
+///   drop runs slot 0 and releases that buffer.
 /// - `HirExprKind::Call` / `CallTraitMethodStatic` / `CallDynMethod`
 ///   whose return type is `dyn Trait` → `HeapBoxed`. Returning a fat
 ///   pointer across a call boundary is only well-defined via the
@@ -3490,8 +4793,8 @@ pub(super) fn classify_dyn_trait_storage(
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
 ) -> Result<TraitObjectStorage, String> {
     match &value.kind {
-        HirExprKind::CoerceToDynTrait { .. } => Ok(TraitObjectStorage::FrameOwned),
-        HirExprKind::Call { .. }
+        HirExprKind::CoerceToDynTrait { .. }
+        | HirExprKind::Call { .. }
         | HirExprKind::CallTraitMethodStatic { .. }
         | HirExprKind::ResolvedImplCall { .. }
         | HirExprKind::CallDynMethod { .. } => Ok(TraitObjectStorage::HeapBoxed),
@@ -3980,11 +5283,7 @@ fn unguarded_bind_sites_pairwise_exclusive(
 /// into owned child nodes), not an inline composite drop.
 #[must_use]
 fn name_is_indirect_enum(name: &str, enum_layouts: &[crate::model::EnumLayout]) -> bool {
-    let short = short_name(name);
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || short_name(&el.name) == short)
-        .is_some_and(|el| el.is_indirect)
+    crate::model::find_enum_layout(name, &[], enum_layouts).is_some_and(|layout| layout.is_indirect)
 }
 /// True when `ty` is an `indirect enum` type.
 #[must_use]
@@ -4224,6 +5523,7 @@ fn build_lifo_drops(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     enum_composite_drop_allowed: &HashSet<BindingId>,
+    machine_composite_drop_allowed: &HashSet<BindingId>,
     owned_vec_drop_allowed: &HashSet<BindingId>,
     local_collection_drop_allowed: &HashSet<BindingId>,
     local_bytes_drop_allowed: &HashSet<BindingId>,
@@ -4236,13 +5536,33 @@ fn build_lifo_drops(
     plain_vec_drop_allowed: &HashSet<BindingId>,
     indirect_enum_drop_allowed: &HashSet<BindingId>,
     affine_release_flags: &HashMap<BindingId, Place>,
+    overwrite_guard_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
     actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     conditional_record_drop_flags: &HashMap<BindingId, Place>,
+    projected_payload_overwrite_flags: &HashMap<BindingId, Place>,
     projection_alias_tainted: &HashSet<u32>,
+    borrowed_builtin_handle_projection_aliases: &HashSet<BindingId>,
+    collection_borrow_getter_aliases: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
+        // A binding whose value came from a BORROWING element getter
+        // (`hew_vec_get_owned` / `hew_vec_get_ptr` — contract:
+        // `returns_receiver_interior_alias`) is an interior alias of a
+        // still-live collection. The collection's own release is the single
+        // discharge authority for that element (for a close-obligated element,
+        // the exactly-once `close`); emitting this binding's LIFO drop would
+        // mint a second authority over one context (double-close/free).
+        // Skipping only ever un-emits a drop for a value the parent releases —
+        // never a leak (`boundary-fail-closed`).
+        if binding_locals
+            .get(binding)
+            .and_then(|place| base_local(*place))
+            .is_some_and(|local| collection_borrow_getter_aliases.contains(&local))
+        {
+            continue;
+        }
         // W5.021 (defect #1) — a member handed to the caller through a returned
         // aggregate is owned by the caller now; the callee must NOT drop it or
         // it double-frees (the value-flow `derive_returned_aggregate_member_
@@ -4275,6 +5595,16 @@ fn build_lifo_drops(
         // re-admit it. LESSONS: raii-null-after-move, cleanup-all-exits,
         // boundary-fail-closed.
         if spawn_consumed_handle_members.contains(binding) {
+            continue;
+        }
+        // A typed builtin handle projected without retain from a live
+        // aggregate remains owned by that aggregate. The projection-alias
+        // derivation excludes neutralized move-outs, so this skip applies only
+        // to borrow aliases; a transferred payload keeps its destination drop.
+        // Place this before every drop-class arm because field-bearing handles
+        // such as MonitorRef may otherwise route through the recursive record
+        // arm before reaching the scalar affine-resource arm.
+        if borrowed_builtin_handle_projection_aliases.contains(binding) {
             continue;
         }
         // W5.016 — owned-element `Vec<T>` local (an element that owns heap:
@@ -4455,7 +5785,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
-                guard: None,
+                guard: actor_message_cow_drop_flags.get(binding).copied(),
             });
             continue;
         }
@@ -4469,12 +5799,49 @@ fn build_lifo_drops(
         // payload at scope exit (`enum_composite_drop_allowed`). A binding the
         // prover did not clear leaks (as before W5.020); it never double-frees.
         if enum_composite_drop_allowed.contains(binding)
-            && ty_is_heap_owning_enum_composite(ty, record_field_orders, enum_layouts)
+            && ty_is_heap_owning_enum_composite(
+                ty,
+                record_field_orders,
+                enum_layouts,
+                type_classes.lifecycle_registry(),
+            )
         {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
                     "build_lifo_drops invariant: heap-owning enum composite binding {binding:?} \
                      is in owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before drop elaboration observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::EnumInPlace,
+                guard: overwrite_guard_flags.get(binding).copied(),
+            });
+            continue;
+        }
+        // Machine-typed local whose active state payload carries a release
+        // obligation. A machine is `ValueClass::Unknown`, so without this arm
+        // the binding falls through to the no-drop arm below and the
+        // `#[resource]` handle held in the state the machine ends its scope in
+        // is never closed — the same handle in a bare local closes correctly.
+        // Machines are enums at the value-classification layer
+        // (`machine_enum_views`), so the release is the same tag-aware
+        // `DropKind::EnumInPlace` helper family a user enum uses: it walks only
+        // the ACTIVE variant's owned fields and frees no wrapper. Gated on the
+        // fail-closed `derive_machine_composite_drop_allowed` prover, which
+        // admits only a binding whose every read is a step round-trip, a
+        // state-name read, or a tag test — a machine whose payload was matched
+        // out, returned, stored, or sent keeps the pre-existing leak posture and
+        // is never double-closed. Intercept BEFORE the value-class match,
+        // mirroring the enum-composite arm.
+        if machine_composite_drop_allowed.contains(binding) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: machine composite binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
                      Place before drop elaboration observes the binding"
                 )
             });
@@ -4578,7 +5945,12 @@ fn build_lifo_drops(
         // helper frees each member exactly once. A binding the prover did not
         // clear leaks (as before); it never double-frees.
         if tuple_composite_drop_allowed.contains(binding)
-            && ty_is_heap_owning_tuple(ty, record_field_orders, enum_layouts)
+            && ty_is_heap_owning_tuple(
+                ty,
+                record_field_orders,
+                enum_layouts,
+                type_classes.lifecycle_registry(),
+            )
         {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
@@ -4776,9 +6148,10 @@ fn build_lifo_drops(
             // the allow-set leaks (as before this fix); it never double-frees.
             // The default for any binding the prover did not positively clear
             // is exclusion, so an un-enumerated future alias producer cannot
-            // re-open the double-free. Aggregate/container `CowValue` self-drops
-            // (Vec, HashMap, HashSet, Tuple, Array, Bytes) are deferred to the
-            // retain-on-share follow-on and remain no-ops here.
+            // re-open the double-free. Aggregate/container `CowValue` drops
+            // (Vec, HashMap, HashSet, composite tuples/records, Bytes) are
+            // admitted by their separate structural authorities and
+            // interception arms; they remain no-ops in THIS scalar-leaf path.
             // LESSONS: cleanup-all-exits, raii-null-after-move,
             // boundary-fail-closed.
             ValueClass::CowValue => {
@@ -4793,7 +6166,10 @@ fn build_lifo_drops(
                             ty: ty.clone(),
                             drop_fn: None,
                             kind: drop_kind_for(*place, ty, None),
-                            guard: actor_message_cow_drop_flags.get(binding).copied(),
+                            guard: actor_message_cow_drop_flags
+                                .get(binding)
+                                .or_else(|| projected_payload_overwrite_flags.get(binding))
+                                .copied(),
                         });
                     }
                 }
@@ -4804,15 +6180,13 @@ fn build_lifo_drops(
 }
 /// W5-011 P3 (Slice 2). Map a `CowValue` leaf type to its C-ABI runtime
 /// release symbol for function-scope drop elaboration, or `None` for types
-/// whose scope-exit drop is deferred to a later slice.
+/// outside this scalar-leaf authority.
 ///
-/// Slice 2 is intentionally restricted to the single `string` leaf — the
-/// accumulating helper-local leak this fix targets. Aggregate and container
-/// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, tuples, arrays) own nested
-/// heap that, without retain-on-share at element-ingress sites, cannot be
-/// released here without risking a double-free against the container's own
-/// element-release path; they stay `None` (leak-as-before, never double-free)
-/// until the retain-on-share spine lands.
+/// This picker is intentionally restricted to the single `string` leaf.
+/// Aggregate/container shapes are not scalar leaves: their scope-exit releases
+/// are admitted by the `binding_ty_is_*_vec`, structural composite, and local
+/// collection authorities. Keeping them `None` here is delegation, not an
+/// assertion that those values receive no release.
 ///
 /// `Bytes` is deliberately absent TOO, but for a different reason: its
 /// scope-exit drop is live, with its own dedicated admission authority
@@ -4976,21 +6350,29 @@ pub(super) fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
 /// field/tuple projection (`for v in x.v`), or an rvalue (`for v in make()`).
 pub(super) fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr> {
     let HirExprKind::StructInit {
-        name,
-        fields,
-        base: None,
-        ..
+        fields, base: None, ..
     } = &value.kind
     else {
         return None;
     };
-    if name != "VecIter" {
+    if !matches!(
+        &value.ty,
+        ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::VecIter),
+            ..
+        } if args.len() == 1
+    ) {
         return None;
     }
-    fields
+    let mut source = fields
         .iter()
         .find(|(field, _)| field == "vec")
-        .map(|(_, src)| src)
+        .map(|(_, src)| src)?;
+    while let HirExprKind::SubsumedValue { source: inner, .. } = &source.kind {
+        source = inner;
+    }
+    Some(source)
 }
 /// True when a `for x in …` cursor `let __hew_for_iter = <value>` makes the
 /// cursor the SOLE owner of the `Vec` handle in its `vec` field, so the cursor
@@ -5332,10 +6714,30 @@ pub(super) fn enumerate_exits(
     // already carry the binding's Place but not its id; reverse the
     // builder's `binding_locals` (BindingId -> Place) is the cleanest
     // bridge. Builds only as large as there are owned bindings.
-    let place_to_binding: std::collections::HashMap<Place, BindingId> = binding_locals
-        .iter()
-        .map(|(binding, place)| (*place, *binding))
-        .collect();
+    //
+    // Adoption/transfer/machine-synth seams legitimately point two bindings
+    // at one `Place`, so this reversal is not always injective. `.collect()`
+    // over a `HashMap` iteration order would let a random one win —
+    // `RandomState`-nondeterministic across runs, violating the compiler's
+    // determinism doctrine. Fold with an explicit tie-break instead: the
+    // lowest `BindingId` (first-declared) wins.
+    let mut place_to_binding: std::collections::HashMap<Place, BindingId> =
+        std::collections::HashMap::with_capacity(binding_locals.len());
+    for (&binding, &place) in binding_locals {
+        place_to_binding
+            .entry(place)
+            .and_modify(|existing| *existing = (*existing).min(binding))
+            .or_insert(binding);
+    }
+
+    // Payload-alias → carrier composite map: `Ok(w)` / `Some(s)` binders whose
+    // heap ownership was NOT transferred out by a `NeutralizePayloadSlot` are
+    // non-owning interior aliases of the composite they were destructured from.
+    // Reuses the exact authority the obligation checker folds discharges
+    // through (`collect_payload_alias_map`), so the elaboration's exclusion and
+    // the checker's balance accounting agree on which binders alias which
+    // carrier.
+    let payload_alias_carrier = collect_payload_alias_map(blocks);
 
     // Narrow the function-wide LIFO to the drops whose owning binding is
     // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
@@ -5347,7 +6749,7 @@ pub(super) fn enumerate_exits(
         dataflow::BindingState,
     >|
      -> Vec<ElabDrop> {
-        drops_template
+        let live: Vec<ElabDrop> = drops_template
             .iter()
             .filter(|drop| match place_to_binding.get(&drop.place) {
                 Some(binding) => matches!(
@@ -5359,14 +6761,51 @@ pub(super) fn enumerate_exits(
                         | dataflow::BindingState::MaybeConsumed(_)
                         | dataflow::BindingState::AliasedIntoAggregate(_)
                 ),
-                // No binding mapping → conservatively keep the drop.
-                // This arm guards against future surfaces that build
-                // drops outside the binding_locals registry; the
-                // current `build_lifo_drops` `expect()` rules out
-                // this path today, but keep it for forward safety.
-                None => true,
+                // No binding mapping → conservatively DROP the drop, not
+                // keep it. This crate's posture is leak-not-double-free: an
+                // unrecognised place with no dataflow-tracked owning binding
+                // must not be assumed live, since firing an unproven drop
+                // risks a double-free. `build_lifo_drops` panics on a
+                // missing entry today, so this arm is unreachable — the
+                // leak-safe polarity only guards future surfaces that build
+                // drops outside the binding_locals registry.
+                None => false,
             })
             .cloned()
+            .collect();
+        // A projection-alias payload binder (`Ok(w)` destructured out of a
+        // call-scrutinee `Result<Resource, _>`) is freed by its OWNING
+        // composite's recursive `EnumInPlace` scope-exit drop. When the sibling
+        // arm diverges (`Err(_) => panic()`/`return`) the `Return` block's only
+        // reaching predecessor is the move-out arm, so the binder is still
+        // `Live` here and its independent drop lands alongside the composite's —
+        // a double-free of the shared payload. Exclude the binder's drop ONLY
+        // when its carrier composite's drop is co-present at this same exit: the
+        // composite covers the payload, so exactly one release fires. If the
+        // carrier is absent (consumed / moved out / not admitted for its own
+        // scope-exit drop), the binder is the live sole owner and keeps its
+        // drop — leak-not-double-free. This is the `Return`/`Panic`/`Cancel`
+        // sibling of the DI-020 exclusion `drops_for_scope_close_goto` already
+        // applies on scope-close `Goto` edges. The alias set exempts neutralized
+        // ownership transfers (`Ok(x) => x`) and fresh recv/generator/vec-iter
+        // payloads, which remain independently dropped.
+        let carrier_locals_present: HashSet<u32> = live
+            .iter()
+            .filter_map(|drop| base_local(drop.place))
+            .collect();
+        live.into_iter()
+            .filter(|drop| {
+                let Some(l) = base_local(drop.place) else {
+                    return true;
+                };
+                if !projection_alias_tainted.contains(&l) {
+                    return true;
+                }
+                match payload_alias_carrier.get(&l) {
+                    Some(carrier) => !carrier_locals_present.contains(carrier),
+                    None => true,
+                }
+            })
             .collect()
     };
 
@@ -6824,19 +8263,20 @@ mod drop_admission_type_shape_pins {
                 Wired("hew_bytes_drop"),
                 Wired("hew_bytes_drop"),
             ),
-            // HashMap/HashSet yields have no validated consumer-drop path —
-            // they leak-as-before (a frozen NoDropPath), never risk a
-            // double-free.
+            // VecIter clone-out and the existing generator/receiver frame
+            // contracts hand these collection values to the body as sole
+            // owners. Their layout-aware releases close the common per-yield
+            // lifecycle.
             (
-                "HashMap (yield leak-as-before)",
+                "HashMap",
                 hashmap_str_i64(),
-                NoDropPath,
+                Wired("hew_hashmap_free_layout"),
                 Wired("hew_hashmap_free_layout"),
             ),
             (
-                "HashSet (yield leak-as-before)",
+                "HashSet",
                 hashset_i64(),
-                NoDropPath,
+                Wired("hew_hashset_free_layout"),
                 Wired("hew_hashset_free_layout"),
             ),
             (
@@ -6917,6 +8357,7 @@ mod drop_admission_type_shape_pins {
     fn production_source() -> String {
         [
             include_str!("mod.rs"),
+            include_str!("drop_plan.rs"),
             include_str!("ownership.rs"),
             include_str!("scope.rs"),
             include_str!("expr.rs"),
@@ -6973,6 +8414,22 @@ mod drop_admission_type_shape_pins {
              seed decisions route through `binding_seeds_drop_elaboration`, \
              never an inline class test — classify any change to this \
              population in the allowlist above deliberately"
+        );
+    }
+
+    #[test]
+    fn seed_fact_comparison_inventory_rejects_a_raw_counterfactual() {
+        let squeezed: String = production_source()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let baseline = squeezed.matches("!=ValueClass::BitCopy").count();
+        let counterfactual = format!("{squeezed}ifraw!=ValueClass::BitCopy{{}}");
+        assert_eq!(baseline, 3, "the production inventory changed unexpectedly");
+        assert_ne!(
+            counterfactual.matches("!=ValueClass::BitCopy").count(),
+            baseline,
+            "a newly introduced raw seed comparison must make the inventory red"
         );
     }
 }
@@ -7132,6 +8589,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![place_arg],
             },
@@ -7171,6 +8629,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -7209,6 +8668,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -7243,6 +8703,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![],
             },
@@ -7255,724 +8716,396 @@ mod twin_gate_classifier {
     }
 }
 #[cfg(test)]
-mod obligation_balance_validator {
-    //! S1 obligation-balance unit fixtures — the plan's red-first validation
-    //! candidates as hand-constructed MIR (the `validate_drop_plan_*` /
-    //! `drop_kind_for_*` unit style). Each accept/reject decision below is a
-    //! pin: the branch-around leak (S1886 round-4 shape), the `move_out_arm`
-    //! double-free (S1882), and the transfer negative controls proving the
-    //! pass does not re-introduce move-checker liveness rejection (A278 /
-    //! S1875).
+mod returned_member_read_aliases {
     use super::*;
 
-    fn ret_ty() -> ResolvedTy {
-        ResolvedTy::Unit
-    }
-
-    fn elab_with_plans(plans: Vec<(ExitPath, DropPlan)>) -> ElaboratedMirFunction {
-        ElaboratedMirFunction {
-            name: "obligation_fixture".to_string(),
-            return_ty: ret_ty(),
-            statements: Vec::new(),
-            decisions: Vec::new(),
-            blocks: Vec::new(),
-            drop_plans: plans,
-            coroutine: None,
-            lambda_captures: Vec::new(),
-        }
-    }
-
-    fn block(id: u32, instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+    fn block(id: u32, terminator: Terminator) -> BasicBlock {
         BasicBlock {
             id,
             statements: Vec::new(),
-            instructions,
+            instructions: Vec::new(),
             terminator,
         }
     }
 
-    fn mint(local: u32) -> Instr {
-        // Any whole-slot write is a mint; the value is irrelevant.
-        Instr::ConstI64 {
-            dest: Place::Local(local),
-            value: 0,
-        }
-    }
-
-    fn mint_enum(local: u32) -> Instr {
-        Instr::ConstI64 {
-            dest: Place::EnumTag(local),
-            value: 0,
-        }
-    }
-
-    fn plain_drop(place: Place) -> ElabDrop {
-        ElabDrop {
-            place,
-            ty: ResolvedTy::String,
-            drop_fn: None,
-            kind: DropKind::Resource,
-            guard: None,
-        }
-    }
-
-    fn variant_place(local: u32) -> Place {
-        Place::EnumVariant {
-            local,
-            variant_idx: 0,
-            field_idx: 0,
-        }
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "fixture helper: taking ownership keeps the call sites free \
-                  of borrow noise"
-    )]
-    fn run(
-        blocks: Vec<BasicBlock>,
-        plans: Vec<(ExitPath, DropPlan)>,
-        tracked: &[(u32, &str)],
-    ) -> Vec<MirCheck> {
-        let elab = elab_with_plans(plans);
-        let tracked: BTreeMap<u32, String> = tracked
-            .iter()
-            .map(|(local, name)| (*local, (*name).to_string()))
-            .collect();
-        let suspend_kinds = HashMap::new();
-        let params = HashSet::new();
-        let local_types = BTreeMap::new();
-        validate_obligation_balance_with(
-            &elab,
-            &blocks,
-            &suspend_kinds,
-            &tracked,
-            &local_types,
-            &params,
-        )
-    }
-
-    use crate::model::NeutralizeAuthority;
-
+    /// Counterfactual for non-terminal re-admission: the candidate owner is
+    /// copied through unretained MIR handoff slots before a branch, and only
+    /// the final alias is read after the join. A direct-local scan sees no
+    /// future read of `_1` from either arm Goto and could free it there; the
+    /// alias-closed scan must attribute the joined `_3` read back to `_1`.
     #[test]
-    fn discharge_authority_missing_fails_closed() {
-        // A SendTransferLastUse neutralize structurally owns a destination, so a
-        // `transferee: None` is a fact-erased site — reject fail-closed.
-        let blocks = vec![block(
-            0,
-            vec![Instr::NeutralizePayloadSlot {
-                place: variant_place(1),
-                transferee: None,
-                authority: NeutralizeAuthority::SendTransferLastUse,
-            }],
-            Terminator::Return,
-        )];
-        let findings = validate_discharge_authority_over("f", &blocks);
-        assert!(
-            matches!(
-                findings.as_slice(),
-                [MirCheck::DischargeAuthorityMissing {
-                    authority: NeutralizeAuthority::SendTransferLastUse,
-                    ..
-                }]
-            ),
-            "a requires-transferee authority with no transferee must fail closed, got {findings:?}"
-        );
-    }
-
-    #[test]
-    fn discharge_authority_missing_allows_move_out_arm_without_transferee() {
-        // A MoveOutArmConsume neutralize consumes into an in-flight expression
-        // with no destination local, so `transferee: None` is legitimate.
-        let blocks = vec![block(
-            0,
-            vec![Instr::NeutralizePayloadSlot {
-                place: variant_place(1),
-                transferee: None,
-                authority: NeutralizeAuthority::MoveOutArmConsume,
-            }],
-            Terminator::Return,
-        )];
-        assert!(
-            validate_discharge_authority_over("f", &blocks).is_empty(),
-            "a move-out-arm authority does not structurally require a transferee"
-        );
-    }
-
-    #[test]
-    fn discharge_authority_corroboration_flags_fabricated_transferee() {
-        // The neutralize names local 9 as the new owner, but the primitive
-        // stream never moves any value into local 9 — the carried transfer fact
-        // and the actual routing disagree (dual-carrier drift).
-        let blocks = vec![block(
-            0,
-            vec![Instr::NeutralizePayloadSlot {
-                place: variant_place(1),
-                transferee: Some(Place::Local(9)),
-                authority: NeutralizeAuthority::WholeCarrierConsume,
-            }],
-            Terminator::Return,
-        )];
-        let findings = validate_discharge_authority_corroboration_over("f", &blocks);
-        assert!(
-            matches!(
-                findings.as_slice(),
-                [MirCheck::DischargeAuthorityDrift { .. }]
-            ),
-            "a transferee the stream never writes must drift, got {findings:?}"
-        );
-    }
-
-    #[test]
-    fn discharge_authority_corroboration_accepts_real_transfer() {
-        // The well-formed emit shape: the carrier is moved into the destination
-        // immediately before the neutralize names it as the transferee. The two
-        // carriers agree, so no drift.
-        let blocks = vec![block(
-            0,
-            vec![
-                Instr::Move {
-                    dest: Place::Local(9),
-                    src: variant_place(1),
-                },
-                Instr::NeutralizePayloadSlot {
-                    place: variant_place(1),
-                    transferee: Some(Place::Local(9)),
-                    authority: NeutralizeAuthority::WholeCarrierConsume,
-                },
-            ],
-            Terminator::Return,
-        )];
-        assert!(
-            validate_discharge_authority_corroboration_over("f", &blocks).is_empty(),
-            "a transferee the stream actually writes must corroborate clean"
-        );
-    }
-
-    /// A whole-local rebind out of a PARAMETER (`var iter = self;`) is a
-    /// caller-retained borrow alias: the rebound local must never produce a
-    /// definite under-release, even when re-minted per loop iteration from
-    /// a tuple-load (`iter = step.1`) — the `VecIter` cursor shape.
-    #[test]
-    fn param_rebind_and_tuple_load_remint_accept() {
-        let blocks = vec![block(
-            0,
-            vec![
-                Instr::Move {
-                    dest: Place::Local(3),
-                    src: Place::Local(0),
-                },
-                Instr::TupleFieldLoad {
-                    tuple: Place::Local(5),
-                    field_index: 1,
-                    dest: Place::Local(3),
-                },
-            ],
-            Terminator::Return,
-        )];
-        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
-        let elab = elab_with_plans(plans);
-        let tracked: BTreeMap<u32, String> = [(3_u32, "iter".to_string())].into_iter().collect();
-        let suspend_kinds = HashMap::new();
-        let params: HashSet<u32> = [0_u32].into_iter().collect();
-        let local_types = BTreeMap::new();
-        let findings = validate_obligation_balance_with(
-            &elab,
-            &blocks,
-            &suspend_kinds,
-            &tracked,
-            &local_types,
-            &params,
-        );
-        assert!(
-            findings.is_empty(),
-            "borrow-derived mints never definite-leak: {findings:?}"
-        );
-    }
-
-    /// Fail-closed cap exhaustion: when the fixpoint cannot converge within
-    /// its iteration budget the verdict is UNKNOWN, and an unknown verdict
-    /// must NOT certify the body as balanced. A zero cap forces the exhaustion
-    /// path a converging body would never reach; the gate must emit an
-    /// unverified hard error rather than the old silent empty result.
-    #[test]
-    fn fixpoint_cap_exhaustion_fails_closed_unverified() {
-        let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
-        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
-        let elab = elab_with_plans(plans);
-        let tracked: BTreeMap<u32, String> = [(1_u32, "leaky".to_string())].into_iter().collect();
-        let suspend_kinds = HashMap::new();
-        let params = HashSet::new();
-        let local_types = BTreeMap::new();
-        let findings = validate_obligation_balance_capped(
-            &elab,
-            &blocks,
-            &suspend_kinds,
-            &tracked,
-            &local_types,
-            &params,
-            0,
-        );
-        assert!(
-            matches!(
-                findings.as_slice(),
-                [MirCheck::ObligationBalanceUnverified { .. }]
-            ),
-            "cap exhaustion must fail closed with an unverified verdict, not \
-             silently certify balance: {findings:?}"
-        );
-    }
-
-    /// The unverified verdict is a hard diagnostic with NO allowlist escape:
-    /// `check_to_diagnostic` must upgrade it so the CLI rejects the program.
-    #[test]
-    fn unverified_balance_upgrades_to_hard_diagnostic() {
-        let check = MirCheck::ObligationBalanceUnverified {
-            function: "f".to_string(),
-            reason: "cap exhausted".to_string(),
-        };
-        assert!(
-            check_to_diagnostic(&check).is_some(),
-            "an unverified balance verdict must surface as a hard diagnostic"
-        );
-    }
-
-    fn is_under(check: &MirCheck) -> bool {
-        matches!(check, MirCheck::ObligationUnderReleased { .. })
-    }
-
-    fn is_over(check: &MirCheck) -> bool {
-        matches!(check, MirCheck::ObligationOverReleased { .. })
-    }
-
-    /// S1886 round-4 branch-around shape: a guard early-return BEFORE the
-    /// consuming path, whose exit plan carries NO drop for the minted local
-    /// (`return[bb1] drop plan (none)`), while the other return discharges
-    /// it. The guard exit is a definite zero → under-release REJECT.
-    #[test]
-    fn branch_around_missing_guard_drop_rejects_under_release() {
+    fn unretained_move_alias_read_after_join_is_attributed_to_candidate() {
         let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Branch {
-                    cond: Place::Local(0),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            ),
-            block(1, Vec::new(), Terminator::Return),
-            block(2, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![
-            (ExitPath::Return { block: 1 }, DropPlan::default()),
-            (
-                ExitPath::Return { block: 2 },
-                DropPlan {
-                    drops: vec![plain_drop(Place::Local(1))],
-                },
-            ),
-        ];
-        let findings = run(blocks, plans, &[(1, "leaked")]);
-        assert_eq!(
-            findings.len(),
-            1,
-            "exactly the guard exit is unbalanced: {findings:?}"
-        );
-        let MirCheck::ObligationUnderReleased { block, name, .. } = &findings[0] else {
-            panic!("expected under-release, got {:?}", findings[0]);
-        };
-        assert_eq!(*block, 1);
-        assert_eq!(name, "leaked");
-    }
-
-    /// The fixed round-4 shape: every return path carries exactly one
-    /// discharge → ACCEPT.
-    #[test]
-    fn branch_around_with_both_exit_drops_accepts() {
-        let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Branch {
-                    cond: Place::Local(0),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            ),
-            block(1, Vec::new(), Terminator::Return),
-            block(2, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![
-            (
-                ExitPath::Return { block: 1 },
-                DropPlan {
-                    drops: vec![plain_drop(Place::Local(1))],
-                },
-            ),
-            (
-                ExitPath::Return { block: 2 },
-                DropPlan {
-                    drops: vec![plain_drop(Place::Local(1))],
-                },
-            ),
-        ];
-        let findings = run(blocks, plans, &[(1, "balanced")]);
-        assert!(findings.is_empty(), "balanced on both exits: {findings:?}");
-    }
-
-    /// S1882 `move_out_arm` shape: a match-arm payload binder is moved out
-    /// of the carrier's variant slot with NO `NeutralizePayloadSlot`, and
-    /// the exit plan releases BOTH the binder and the variant slot — two
-    /// discharges of one obligation on one path → over-release REJECT.
-    #[test]
-    fn move_out_arm_without_neutralize_rejects_over_release() {
-        let blocks = vec![block(
-            0,
-            vec![
-                mint_enum(1),
-                Instr::Move {
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
                     dest: Place::Local(2),
-                    src: variant_place(1),
-                },
-            ],
-            Terminator::Return,
-        )];
-        let plans = vec![(
-            ExitPath::Return { block: 0 },
-            DropPlan {
-                drops: vec![plain_drop(Place::Local(2)), plain_drop(variant_place(1))],
-            },
-        )];
-        let findings = run(blocks, plans, &[(1, "carrier"), (2, "w")]);
-        assert_eq!(
-            findings.len(),
-            1,
-            "one over-release for the carrier: {findings:?}"
-        );
-        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
-            panic!("expected over-release, got {:?}", findings[0]);
-        };
-        assert_eq!(name, "carrier");
-    }
-
-    /// Branch-conditional double-free: the value is definitely discharged
-    /// TWICE on the `then` arm (returned twice) and once on the `else` arm,
-    /// and the two arms join before a common return. The join meet leaves the
-    /// per-path MINIMUM at 1, so a verdict keyed on `lo` path-dilutes the
-    /// double-free away and silently certifies. The per-path definite MAXIMUM
-    /// is 2, so the fixed verdict REJECTS: a double-free on any single path is
-    /// memory-unsafe regardless of the other paths.
-    #[test]
-    fn branch_conditional_double_free_on_one_arm_rejects_over_release() {
-        let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Branch {
-                    cond: Place::Local(0),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            ),
-            // `then`: two definite discharges (return-transfer twice) — the
-            // double-free arm.
-            block(
-                1,
-                vec![
-                    Instr::Move {
-                        dest: Place::ReturnSlot,
-                        src: Place::Local(1),
-                    },
-                    Instr::Move {
-                        dest: Place::ReturnSlot,
-                        src: Place::Local(1),
-                    },
-                ],
-                Terminator::Goto { target: 3 },
-            ),
-            // `else`: exactly one definite discharge — balanced.
-            block(
-                2,
-                vec![Instr::Move {
-                    dest: Place::ReturnSlot,
                     src: Place::Local(1),
                 }],
-                Terminator::Goto { target: 3 },
-            ),
-            block(3, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![(ExitPath::Return { block: 3 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "doubled")]);
-        assert_eq!(
-            findings.len(),
-            1,
-            "the then-arm double-free must reject even though it merges with a \
-             single-discharge arm: {findings:?}"
-        );
-        let MirCheck::ObligationOverReleased { name, .. } = &findings[0] else {
-            panic!("expected over-release, got {:?}", findings[0]);
-        };
-        assert_eq!(name, "doubled");
-    }
-
-    /// The FIXED move-out shape (#2523): the move-out is paired with a
-    /// `NeutralizePayloadSlot`, so the binder is an independent owner and
-    /// the carrier's variant-slot drop is a null-tolerant no-op → ACCEPT.
-    #[test]
-    fn move_out_arm_with_neutralize_accepts() {
-        let blocks = vec![block(
-            0,
-            vec![
-                mint_enum(1),
-                Instr::Move {
-                    dest: Place::Local(2),
-                    src: variant_place(1),
+                terminator: Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
                 },
-                Instr::NeutralizePayloadSlot {
-                    place: variant_place(1),
-                    transferee: Some(Place::Local(2)),
-                    authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
-                },
-            ],
-            Terminator::Return,
-        )];
-        let plans = vec![(
-            ExitPath::Return { block: 0 },
-            DropPlan {
-                drops: vec![plain_drop(Place::Local(2)), plain_drop(variant_place(1))],
             },
-        )];
-        let findings = run(blocks, plans, &[(1, "carrier"), (2, "w")]);
-        assert!(
-            findings.is_empty(),
-            "neutralized transfer balances: {findings:?}"
-        );
-    }
-
-    /// Negative control (A278 / S1873): a value transferred into an
-    /// aggregate (the `forward_param_into_field` family once the param
-    /// exclusion has removed the parameter itself) must NOT phantom-reject
-    /// — aggregation operands are ambiguous transfers, so an exit without a
-    /// terminal drop is not a definite leak.
-    #[test]
-    fn aggregate_transfer_without_exit_drop_accepts() {
-        let blocks = vec![block(
-            0,
-            vec![
-                mint(1),
-                Instr::RecordInit {
-                    ty: ResolvedTy::Unit,
-                    fields: vec![(FieldOffset(0), Place::Local(1))],
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
                     dest: Place::Local(3),
-                },
-            ],
-            Terminator::Return,
-        )];
-        let plans = vec![(ExitPath::Return { block: 0 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "forwarded")]);
-        assert!(
-            findings.is_empty(),
-            "aggregation is not a definite leak: {findings:?}"
-        );
-    }
-
-    /// Return-transfer is a definite discharge: `Move → ReturnSlot` with no
-    /// exit drop balances; adding a spurious exit drop on top is a definite
-    /// double release.
-    #[test]
-    fn return_transfer_balances_and_extra_drop_rejects() {
-        let make_blocks = || {
-            vec![block(
-                0,
-                vec![
-                    mint(1),
-                    Instr::Move {
-                        dest: Place::ReturnSlot,
-                        src: Place::Local(1),
-                    },
-                ],
-                Terminator::Return,
-            )]
-        };
-        let clean = run(
-            make_blocks(),
-            vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
-            &[(1, "returned")],
-        );
-        assert!(clean.is_empty(), "return-transfer balances: {clean:?}");
-
-        let doubled = run(
-            make_blocks(),
-            vec![(
-                ExitPath::Return { block: 0 },
-                DropPlan {
-                    drops: vec![plain_drop(Place::Local(1))],
-                },
-            )],
-            &[(1, "returned")],
-        );
-        assert_eq!(doubled.len(), 1, "{doubled:?}");
-        assert!(
-            is_over(&doubled[0]),
-            "spurious drop after return-transfer: {doubled:?}"
-        );
-    }
-
-    /// A guard-gated exit drop is path-sensitive at runtime — the validator
-    /// treats it as ambiguous, so it neither certifies balance nor
-    /// manufactures a definite report.
-    #[test]
-    fn guarded_exit_drop_is_never_a_definite_verdict() {
-        let blocks = vec![block(0, vec![mint(1)], Terminator::Return)];
-        let guarded = ElabDrop {
-            guard: Some(Place::Local(7)),
-            ..plain_drop(Place::Local(1))
-        };
-        let plans = vec![(
-            ExitPath::Return { block: 0 },
-            DropPlan {
-                drops: vec![guarded],
+                    src: Place::Local(2),
+                }],
+                terminator: Terminator::Goto { target: 3 },
             },
-        )];
-        let findings = run(blocks, plans, &[(1, "gated")]);
-        assert!(
-            findings.is_empty(),
-            "guarded drop widens, never decides: {findings:?}"
-        );
-    }
-
-    /// Per-iteration mint + per-iteration inline release around a loop back
-    /// edge balances: the defining write resets the count each iteration.
-    #[test]
-    fn loop_body_mint_and_release_accepts() {
-        let blocks = vec![
-            block(0, Vec::new(), Terminator::Goto { target: 1 }),
-            block(
-                1,
-                vec![
-                    mint(1),
-                    Instr::Drop {
-                        place: Place::Local(1),
-                        ty: ResolvedTy::String,
-                        drop_fn: None,
-                    },
-                ],
-                Terminator::Branch {
-                    cond: Place::Local(0),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            ),
-            block(2, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![(ExitPath::Return { block: 2 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "cursor")]);
-        assert!(
-            findings.is_empty(),
-            "per-iteration lifecycle balances: {findings:?}"
-        );
-    }
-
-    /// An unminted local (its defining write never executes on any path to
-    /// the exit) carries no obligation — no finding, and an exit-plan drop
-    /// for it is not counted into a phantom mint.
-    #[test]
-    fn unminted_local_is_skipped() {
-        let blocks = vec![block(0, Vec::new(), Terminator::Return)];
-        let plans = vec![(
-            ExitPath::Return { block: 0 },
-            DropPlan {
-                drops: vec![plain_drop(Place::Local(1))],
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(2),
+                }],
+                terminator: Terminator::Goto { target: 3 },
             },
-        )];
-        let findings = run(blocks, plans, &[(1, "never_minted")]);
-        assert!(findings.is_empty(), "no mint, no obligation: {findings:?}");
-    }
-
-    /// Functions carrying a suspend terminator are excluded wholesale (the
-    /// coro frame owns cross-suspend state; S2/OWN-V1 scope).
-    #[test]
-    fn suspending_function_is_excluded() {
-        let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Suspend {
-                    resume: 1,
-                    cleanup: 1,
-                    is_final: false,
-                },
-            ),
-            block(1, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "framed")]);
-        assert!(
-            findings.is_empty(),
-            "suspend carriers are out of S1 scope: {findings:?}"
-        );
-    }
-
-    /// Send transfers the prepared outbound owner to transport: definite
-    /// discharge, balanced without an exit drop.
-    #[test]
-    fn send_value_transfer_balances() {
-        let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Send {
-                    actor: Place::Local(0),
-                    msg_type: 0,
-                    value: Place::Local(1),
-                    next: 1,
-                    arg_modes: Vec::new(),
-                    cleanup_plan: None,
-                },
-            ),
-            block(1, Vec::new(), Terminator::Return),
-        ];
-        let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "payload")]);
-        assert!(
-            findings.is_empty(),
-            "transport consumed the owner: {findings:?}"
-        );
-    }
-
-    /// Interval meets are sound at merges: discharge on one arm only, then
-    /// a joined return with no plan drop is [0,1] — genuinely path-dependent
-    /// (the guard-flag case), so no definite verdict either way.
-    #[test]
-    fn merge_with_one_armed_discharge_is_not_definite() {
-        let blocks = vec![
-            block(
-                0,
-                vec![mint(1)],
-                Terminator::Branch {
-                    cond: Place::Local(0),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            ),
-            block(
-                1,
-                vec![Instr::Drop {
-                    place: Place::Local(1),
+            BasicBlock {
+                id: 3,
+                statements: Vec::new(),
+                instructions: vec![Instr::Drop {
+                    place: Place::Local(3),
                     ty: ResolvedTy::String,
                     drop_fn: None,
                 }],
-                Terminator::Goto { target: 3 },
-            ),
-            block(2, Vec::new(), Terminator::Goto { target: 3 }),
-            block(3, Vec::new(), Terminator::Return),
+                terminator: Terminator::Return,
+            },
         ];
-        let plans = vec![(ExitPath::Return { block: 3 }, DropPlan::default())];
-        let findings = run(blocks, plans, &[(1, "joined")]);
+        let binding = BindingId(7);
+        let candidate_locals = [(1_u32, binding)].into_iter().collect();
+        let reads = returned_member_alias_read_blocks(&blocks, &HashMap::new(), &candidate_locals);
+
         assert!(
-            findings.iter().all(|f| !is_under(f) && !is_over(f)),
-            "a some-paths discharge is ambiguous, not definite: {findings:?}"
+            reads
+                .get(&binding)
+                .is_some_and(|blocks| blocks.contains(&3)),
+            "the post-join read through `_3` must be attributed to returned-member \
+             candidate `_1`; otherwise an arm Goto may release the shared heap early: \
+             {reads:?}"
         );
     }
+
+    /// Diamond counterfactual: only the then arm has an earlier candidate A,
+    /// while both arms merge at candidate B. Reachability alone must not keep
+    /// A and suppress B (that leaks the else arm). B postdominates A's target,
+    /// so the selector keeps only B and both paths cross exactly one release.
+    #[test]
+    fn merged_later_candidate_covers_sibling_that_bypasses_earlier_candidate() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 3,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the later common candidate is unambiguous");
+        assert_eq!(
+            selected,
+            vec![candidates[1]],
+            "the common later candidate must replace the one-arm predecessor"
+        );
+
+        for path in [[0_u32, 1, 3, 4], [0_u32, 2, 3, 4]] {
+            let releases = selected
+                .iter()
+                .filter(|candidate| path.contains(&candidate.block))
+                .count();
+            assert_eq!(
+                releases, 1,
+                "both diamond paths must cross exactly one selected release: \
+                 path={path:?}, selected={selected:?}"
+            );
+        }
+    }
+
+    /// Existing-plan diamond counterfactual: the then arm already releases the
+    /// owner and a later common candidate covers both arms. A reachability veto
+    /// would delete the common candidate and leak the else arm. Because the
+    /// common block postdominates the existing arm's continuation, it may
+    /// replace that arm-local release and both paths retain exactly one release.
+    #[test]
+    fn common_candidate_replaces_branch_local_existing_release() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let existing = [ReturnedMemberReAdmission {
+            plan_index: 20,
+            block: 1,
+            path: ReturnedMemberReAdmissionPath::Normal,
+        }];
+        let candidate = ReturnedMemberReAdmission {
+            plan_index: 10,
+            block: 3,
+            path: ReturnedMemberReAdmissionPath::Normal,
+        };
+
+        let replaced =
+            existing_releases_replaced_by_candidate(&blocks, &block_reach, candidate, &existing)
+                .expect("the common postdominator must be comparable")
+                .expect("the common postdominator can replace the arm-local release");
+        assert_eq!(replaced, HashSet::from([existing[0].plan_index]));
+
+        for path in [[0_u32, 1, 3, 4], [0_u32, 2, 3, 4]] {
+            let releases = usize::from(
+                path.contains(&existing[0].block) && !replaced.contains(&existing[0].plan_index),
+            ) + usize::from(path.contains(&candidate.block));
+            assert_eq!(
+                releases, 1,
+                "both diamond paths must cross exactly one release after relocation: \
+                 path={path:?}, replaced={replaced:?}"
+            );
+        }
+    }
+
+    /// A normal scope-closing Goto can precede a later loop cancellation. The
+    /// later cancel must not duplicate the already-completed release, but an
+    /// independent cancellation route that bypasses the Goto still owns one.
+    #[test]
+    fn normal_goto_replaces_only_the_later_loop_cancellation_release() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 4,
+                },
+            ),
+            block(1, Terminator::Goto { target: 2 }),
+            block(2, Terminator::Goto { target: 2 }),
+            block(4, Terminator::Goto { target: 5 }),
+            block(5, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 2,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 12,
+                block: 4,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the dominated loop cancellation has one prior release owner");
+        assert_eq!(
+            selected,
+            vec![candidates[0], candidates[2]],
+            "the post-Goto loop cancellation is redundant, while the route that bypasses \
+             the Goto retains cancellation coverage"
+        );
+        let abandoned_existing = existing_releases_replaced_by_candidate(
+            &blocks,
+            &block_reach,
+            candidates[0],
+            &candidates[1..],
+        )
+        .expect("the normal Goto is comparable to both cancellation plans")
+        .expect("cross-path authority arbitration occurs after candidate selection");
+        assert_eq!(
+            abandoned_existing,
+            HashSet::new(),
+            "normal/cancellation replacements must wait until normal candidates are final"
+        );
+        assert_eq!(
+            existing_releases_replaced_by_candidate(
+                &blocks,
+                &block_reach,
+                candidates[1],
+                &candidates[..1],
+            )
+            .expect("the cancellation is comparable to the preceding Goto"),
+            Some(HashSet::new()),
+            "normal/cancellation arbitration must wait until normal candidates are final"
+        );
+
+        for path in [&[0_u32, 1, 2][..], &[0_u32, 4][..]] {
+            let releases = selected
+                .iter()
+                .filter(|candidate| path.contains(&candidate.block))
+                .count();
+            assert_eq!(
+                releases, 1,
+                "each normal or cancellation path must have exactly one release: \
+                 path={path:?}, selected={selected:?}"
+            );
+        }
+    }
+
+    /// If a downstream normal Goto replaces A, a cancellation between A and the
+    /// replacement bypasses the final normal authority and must stay selected.
+    #[test]
+    fn later_normal_replacement_does_not_suppress_intermediate_cancellation() {
+        let blocks = vec![
+            block(0, Terminator::Goto { target: 1 }),
+            block(1, Terminator::Goto { target: 2 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 2,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 12,
+                block: 3,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the normal replacement and intermediate cancellation are unambiguous");
+        assert_eq!(
+            selected,
+            vec![candidates[1], candidates[2]],
+            "the replacement owns normal completion while the intermediate cancel \
+             retains its bypass cleanup"
+        );
+        let cancellation_releases = selected
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment)
+                    && candidate.block == 2
+            })
+            .count();
+        assert_eq!(
+            cancellation_releases, 1,
+            "the cancellation at bb2 must retain exactly one release: {selected:?}"
+        );
+        let normal_releases = selected
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.path, ReturnedMemberReAdmissionPath::Normal)
+                    && [0_u32, 1, 2, 3, 4].contains(&candidate.block)
+            })
+            .count();
+        assert_eq!(
+            normal_releases, 1,
+            "the normal continuation must retain exactly one release: {selected:?}"
+        );
+    }
+
+    /// Partial overlap counterfactual: one release can reach the other, but
+    /// neither covers all of the other's paths. Selecting either candidate
+    /// leaks one path and selecting both double-releases their overlap, so this
+    /// topology must reject instead of silently omitting every cleanup.
+    #[test]
+    fn partial_overlap_re_admission_is_rejected() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 4 }),
+            block(
+                3,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 4,
+                    else_target: 5,
+                },
+            ),
+            block(4, Terminator::Goto { target: 5 }),
+            block(5, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 4,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+        ];
+
+        let ambiguity = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect_err("partial overlap has no exactly-once cleanup owner");
+        assert_eq!(ambiguity.first, candidates[0]);
+        assert_eq!(ambiguity.second, candidates[1]);
+    }
 }
+#[cfg(test)]
+mod obligation_balance_validator;

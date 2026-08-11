@@ -1,0 +1,5 @@
+fn main() {
+    let x = |v: i64| v * 2;
+    let x_r = x(21);
+    println(f"{x_r}");
+}

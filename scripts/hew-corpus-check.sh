@@ -41,9 +41,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-corpus-expected-failures.txt"
 HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 
@@ -123,6 +123,15 @@ is_reject_fixture() {
         *"/reject/"*)
             return 0
             ;;
+        tests/core-matrix/cells/*)
+            # The core matrix is a deliberate enumeration of primitive x
+            # operation, so a large minority of its cells are combinations the
+            # compiler does not yet support. Their outcome is recorded per cell
+            # in tests/core-matrix/matrix.tsv and gated by make test-core-matrix,
+            # which fails on drift in either direction. Sweeping them here would
+            # duplicate that verdict as a second, weaker expected-failures list.
+            return 0
+            ;;
     esac
     case "$base" in
         *"reject"*)
@@ -161,7 +170,7 @@ TOTAL=${#SWEPT[@]}
 # `git ls-files` run from the wrong tree, or a pattern that stops matching,
 # yields an empty sweep: no files checked, no failures found, expected set
 # trivially satisfied. Floor the swept count before the ratchet compares.
-corpus_floor_assert "hew-corpus-check-files" "$TOTAL" || exit 1
+corpus_nonempty_assert "hew-corpus-check-files" "$TOTAL" || exit 1
 
 # Run hew check on every tracked non-reject .hew file and collect failures.
 ACTUAL_STR=""
@@ -240,7 +249,12 @@ if [[ $count_unexpected_fail -gt 0 ]]; then
     while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         echo "  UNEXPECTED: $path"
-        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | head -3 | sed 's/^/    /'
+        # This command is known to fail — it is the failure we are reporting.
+        # `head` under `pipefail` instead turns a long diagnostic into SIGPIPE
+        # (141), preventing the deliberate corpus-gate failure and hiding the
+        # rest of the compact report.  `sed -n` reads the full stream while
+        # printing only the first three lines, so the compiler exits normally.
+        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | sed -n '1,3{s/^/    /;p;}' || true
     done <<< "$unexpected_failures"
     echo ""
     echo "  If these are deferred (NYI feature), add them to:"

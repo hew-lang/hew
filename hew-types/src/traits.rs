@@ -288,6 +288,18 @@ impl TraitRegistry {
         self.type_fields.contains_key(name)
     }
 
+    /// The registered structural member types for `name`, if any.
+    ///
+    /// This is the same member set marker derivation walks. Ownership
+    /// predicates that must see through an aggregate — an actor message
+    /// argument whose record field is a `#[resource]` still transfers that
+    /// resource — read it here rather than re-deriving field lists, so the two
+    /// walks cannot disagree about what a type contains.
+    #[must_use]
+    pub fn member_types(&self, name: &str) -> Option<&[Ty]> {
+        self.type_fields.get(name).map(Vec::as_slice)
+    }
+
     /// Register a `record` declaration so the marker-derivation path knows to
     /// suppress `Resource` and apply field-driven derivation exhaustively.
     ///
@@ -301,11 +313,9 @@ impl TraitRegistry {
         self.serializable_members.insert(name, member_types);
     }
 
-    /// Look up `Serializable` members by exact or module-qualified/unqualified name.
+    /// Look up `Serializable` members by canonical declaration identity.
     fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.serializable_members
-            .get(name)
-            .or_else(|| self.serializable_members.get(crate::short_name(name)))
+        self.serializable_members.get(name)
     }
 
     fn has_encode_decode(&self, ty: &Ty) -> bool {
@@ -413,25 +423,17 @@ impl TraitRegistry {
         self.drop_types.insert(name);
     }
 
-    /// Check if a name is a handle type (qualified or unqualified).
+    /// Check a canonical handle declaration identity.
     fn is_handle_type_any(&self, name: &str) -> bool {
         self.handle_types.contains(name)
-            || self
-                .handle_types
-                .iter()
-                .any(|ht| crate::short_name(ht) == name)
     }
 
-    /// Check if a name is a drop type (qualified or unqualified).
+    /// Check a canonical drop declaration identity.
     fn is_drop_type_any(&self, name: &str) -> bool {
         self.drop_types.contains(name)
-            || self
-                .drop_types
-                .iter()
-                .any(|dt| crate::short_name(dt) == name)
     }
 
-    /// Register a `#[resource]` type by its declared (bare) name.
+    /// Register a `#[resource]` type by its canonical declaration path.
     ///
     /// Called at type-decl registration for every user/stdlib `#[resource]`
     /// declaration. The registry is the single authority for this fact;
@@ -481,28 +483,17 @@ impl TraitRegistry {
 
     /// Report whether `name` is a `#[resource]` type.
     ///
-    /// `resource_types` is keyed by the declared (bare) type name. A receiver
-    /// type name may arrive module-qualified (`mod.Conn`) for an imported
-    /// handle type, so the unqualified suffix is matched too — mirroring the
-    /// bare/unqualified lookup the `Drop`/handle type sets use.
+    /// `resource_types` is keyed by the canonical declaration path. Missing
+    /// metadata fails closed instead of retrying with a leaf spelling.
     #[must_use]
     pub fn is_resource(&self, name: &str) -> bool {
-        if self.resource_types.contains(name) {
-            return true;
-        }
-        let unqualified = crate::short_name(name);
-        self.resource_types.contains(unqualified)
+        self.resource_types.contains(name)
     }
 
-    /// Report whether `name` is a `#[linear]` type. Matches the bare and
-    /// module-qualified-suffix spellings, mirroring `is_resource`.
+    /// Report whether `name` is a canonical `#[linear]` declaration.
     #[must_use]
     pub fn is_linear(&self, name: &str) -> bool {
-        if self.linear_types.contains(name) {
-            return true;
-        }
-        let unqualified = crate::short_name(name);
-        self.linear_types.contains(unqualified)
+        self.linear_types.contains(name)
     }
 
     /// Register a negative impl (type does NOT implement trait).
@@ -795,6 +786,13 @@ impl TraitRegistry {
                 args,
                 builtin,
             } => {
+                // Affine declarations are never bitwise-copyable, even when
+                // their representation is a single pointer/integer or all of
+                // their visible fields are Copy. Their declaration carries one
+                // close/consume obligation that must move, not duplicate.
+                if marker == MarkerTrait::Copy && (self.is_resource(name) || self.is_linear(name)) {
+                    return false;
+                }
                 // Check negative impls first
                 if let Some(negatives) = self.negative_impls.get(name) {
                     if negatives.contains(&marker) {
@@ -1160,6 +1158,33 @@ mod tests {
     }
 
     #[test]
+    fn affine_declarations_are_not_copy_even_with_copy_fields() {
+        let mut registry = TraitRegistry::new();
+        for name in ["ResourceHandle", "LinearHandle"] {
+            registry.register_type(name.to_string(), vec![Ty::I64]);
+        }
+        registry.register_resource_type("ResourceHandle".to_string());
+        registry.register_linear_type("LinearHandle".to_string());
+
+        for name in [
+            "ResourceHandle",
+            "module.ResourceHandle",
+            "LinearHandle",
+            "module.LinearHandle",
+        ] {
+            let ty = Ty::Named {
+                builtin: None,
+                name: name.to_string(),
+                args: vec![],
+            };
+            assert!(
+                !registry.implements_marker(&ty, MarkerTrait::Copy),
+                "affine declaration `{name}` must move despite its scalar representation"
+            );
+        }
+    }
+
+    #[test]
     fn test_negative_impl() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Handle".to_string(), vec![Ty::I32]);
@@ -1494,10 +1519,10 @@ mod tests {
         registry.register_resource_type("Child".to_string());
         // Registered bare name resolves through the registry alone.
         assert!(registry.is_resource("Child"));
-        // Module-qualified receiver name resolves via the unqualified suffix,
-        // matching the imported-handle dispatch path.
-        assert!(registry.is_resource("process.Child"));
-        // A different qualified type is not admitted by the suffix fallback.
+        // A qualified declaration is a different nominal; no leaf retry is
+        // permitted at the registry boundary.
+        assert!(!registry.is_resource("process.Child"));
+        // Nor is an unrelated qualified type admitted.
         assert!(!registry.is_resource("process.Parent"));
     }
 

@@ -2,18 +2,21 @@ use std::collections::HashMap;
 
 use hew_hir::{
     ids::IdGen, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
-    HirStmtKind, IntentKind, ScopeId, ValueClass,
+    HirStmtKind, IntentKind, ScopeId, TypeClassTable, ValueClass,
 };
 use hew_mir::lower_hir_module;
-use hew_types::{BuiltinType, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+use hew_types::{BuiltinType, CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),
@@ -51,6 +54,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
             impl_id: ImplId(2),
             method_name: "len".to_string(),
             target_symbol: "hew_vec_len".to_string(),
@@ -77,6 +81,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
     let module = empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],

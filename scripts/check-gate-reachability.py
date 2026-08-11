@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """check-gate-reachability.py — assert every gate in this repo is actually run.
 
-The sibling gate `scripts/check-preflight-ci-parity.sh` asserts that local
-preflight and CI agree about the checks they *share*. It says nothing about a
-check that neither of them runs. That blind spot let eight gate targets, an
-entire test crate, a whole test binary and a pile of `#[ignore]`d tests sit in
-the tree looking like coverage while executing nowhere.
+The required Linux job executes the local dispatcher directly, so this checker
+expands its fail-closed selection when it builds the hosted command graph.
+It also detects a check absent from both graphs, the blind spot that previously
+left test code in the tree while executing nowhere.
 
 This gate closes it, in five directions:
 
   A0  self-anchor — this checker is invoked by a CI workflow step.
-  A1  every gate-shaped Makefile target is reached by a CI workflow step, by the
-      workflow, or transitively as a prerequisite of one that is.
+  A1  every CI-gate-shaped Makefile target is reached by a CI workflow step, by
+      the workflow, or transitively as a prerequisite of one that is. A named
+      host-release authority is checked separately: it is a real local port,
+      not a hosted CI result pretending to be that port.
   A2  every workspace crate is covered by a CI test invocation: included in a
       `--workspace` run that does not `--exclude` it, or named with `-p` by a
       CI step or by a CI-reached Makefile target.
@@ -110,11 +111,86 @@ GATE_NAME_RE = re.compile(
           test | test-.* | check-.* | .*-check | .*-gate | .*-selftest
         | .*-ratchet | lint | lint-.* | .*-lint | leak-scan | verify-ffi
         | asan | asan-fixtures | tsan | miri | ll-diff | grammar
-        | fuzz-oracle | sandbox-parity | licenses-check
+        | fuzz-oracle | sandbox-parity | licenses-check | .*-oracle | .*-e2e
         | libhew-link-race-test | observe-functional-test
         )$""",
     re.VERBOSE,
 )
+
+
+@dataclass(frozen=True)
+class HostReleaseAuthority:
+    """A release verdict whose measuring tool belongs to a specific host.
+
+    This is intentionally a *named class*, not an ``unreached by design``
+    escape hatch.  A member must have an executable Make port and must stay
+    out of hosted CI: a hosted result cannot certify a measurement that needs
+    the release operator's Darwin environment.  The runner itself must reject
+    a wrong host rather than turn a skip into a green verdict (pinned by the
+    self-tests below).
+    """
+
+    target: str
+    host: str
+    runner: str
+
+
+# `leaks(1)` observes a local Darwin allocator/process configuration. GitHub's
+# hosted macOS runners do not supply that release-authority environment, so
+# adding this target to a hosted workflow would be a category error, not extra
+# coverage. Keep the small, explicit set here rather than letting a comment or
+# a target-name convention silently turn a non-CI gate green.
+HOST_RELEASE_AUTHORITIES = (
+    HostReleaseAuthority(
+        target="macos-leak-oracle",
+        host="Darwin",
+        runner="scripts/macos-leak-oracle.sh",
+    ),
+)
+HOST_RELEASE_AUTHORITY_BY_TARGET = {
+    authority.target: authority for authority in HOST_RELEASE_AUTHORITIES
+}
+
+
+def ci_gate_targets(phony: set[str]) -> list[str]:
+    """Gate-shaped targets that must execute in runnable hosted CI.
+
+    Every generic ``*-oracle``/``*-e2e`` belongs here automatically. The only
+    subtraction is the named host-release-authority class above; a new target
+    cannot self-classify out of CI by adding a comment, a skip, or a suffix.
+    """
+    return sorted(
+        target
+        for target in phony
+        if GATE_NAME_RE.match(target) and target not in HOST_RELEASE_AUTHORITY_BY_TARGET
+    )
+
+
+def unreached_ci_gates(phony: set[str], reached: set[str]) -> list[str]:
+    """The CI-gate class that remains red for a particular CI graph."""
+    return [target for target in ci_gate_targets(phony) if target not in reached]
+
+
+def host_release_authority_is_ported(
+    authority: HostReleaseAuthority,
+    known: set[str],
+    recipes: dict[str, str],
+) -> bool:
+    """Whether the authority has a real Make port, not a prose claim.
+
+    Shell comments are stripped before comparing a complete command. An echo,
+    a comment, or a conditional `skip` therefore cannot impersonate execution
+    of the host runner.
+    """
+    if authority.target not in known:
+        return False
+    return any(
+        segment.lstrip("@-").strip() == authority.runner
+        for segment in _command_segments(
+            strip_shell_comments(recipes.get(authority.target, ""))
+        )
+    )
+
 
 # Nextest profiles CI is allowed to run. Anything else would let a fast local
 # iteration tier (which excludes most of the corpus) stand in for the CI tier.
@@ -1620,8 +1696,8 @@ def uncompensated_packages(
 
 # ── Containment: proving a target CI never names is nevertheless run ──────────
 #
-# `make test`, `make test-rust` and `make lint` are local entry points that fan
-# out to work CI does in pieces — CI cannot run `make test-rust` verbatim,
+# `make test` and `make lint` are local entry points that fan out to work CI
+# does in pieces — CI cannot run `make test` verbatim,
 # because its workspace run has no `--exclude hew-cabi` and that crate's
 # cfg(test) symbols collide with hew-runtime's at link time. Deleting the
 # developer entry point is not the answer, and neither is a waiver.
@@ -1629,7 +1705,7 @@ def uncompensated_packages(
 # So: a PROOF, uniform and mechanical. A target no CI step invokes is reached
 # only when every prerequisite is reached AND every command in its recipe is
 # one CI already runs. Anything the rules below cannot classify leaves the
-# target unreached — `lint-wasm-todo`'s `bash scripts/lint-wasm-todo-issue-ref.sh`
+# target unreached — `lint-wasm-todo`'s Python validator
 # is not provable by any of them, which is exactly why it had to be wired into
 # a workflow rather than argued about.
 
@@ -2021,6 +2097,25 @@ def main() -> int:
     live = triggerable(workflows)
     step_commands = ci_step_commands(workflows)
     ci_text = "\n".join(command for _, command in step_commands)
+    if "ci-preflight-dispatcher.sh" in ci_text:
+        fallback = subprocess.run(
+            [
+                "bash",
+                str(DISPATCHER),
+                "--dry-run",
+                "--",
+                "some-unclassified-root-file.txt",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if fallback.returncode != 0:
+            print(fallback.stderr, file=sys.stderr)
+            return 2
+        step_commands.append(("ci dispatcher fail-closed selection", fallback.stdout))
+        ci_text += "\n" + fallback.stdout
 
     print(
         f"==> parsed {len(workflows)} workflow(s); {len(live)} can trigger; "
@@ -2049,13 +2144,9 @@ def main() -> int:
         )
 
     # ── A1: every gate target is reached ──────────────────────────────────────
-    # Roots are CI workflow invocations ONLY. The local preflight dispatcher is
-    # deliberately NOT a root: it is a convenience that predicts CI, not an
-    # authority that gates merges. Accepting a dispatcher-only edge would let a
-    # gate be "reached" while never running on a pull request — the exact hole
-    # this script exists to close. The reverse direction (a CI-required step
-    # missing from the dispatcher) is check-preflight-ci-parity.sh's job, so
-    # between the two every gate is pinned to both graphs.
+    # Roots are commands reached from CI. When CI invokes the dispatcher, its
+    # fail-closed selection is expanded above from the same executable used by
+    # local preflight instead of from a separately maintained command list.
     members = workspace_members()
     crates = [crate_name(m) for m in members]
     exclusions = profile_ci_exclusions()
@@ -2073,15 +2164,15 @@ def main() -> int:
     roots = make_targets_in(ci_text, known)
     reached = close_over_makefile(roots, prereqs, recipes, known)
 
-    gates = sorted(t for t in phony if GATE_NAME_RE.match(t))
-    print(f"\n==> A1: Makefile gate-target reachability ({len(gates)} gate targets)")
+    gates = ci_gate_targets(phony)
+    print(f"\n==> A1: CI Makefile gate-target reachability ({len(gates)} gate targets)")
     if verbose:
         print("    Roots (invoked directly by a CI workflow step):")
         for t in sorted(roots):
             print(f"      - {t}")
     # Then the containment proof, to a fixpoint: a target CI never names is
     # reached when every prerequisite is reached and every command in its recipe
-    # is one CI runs anyway. `make test-rust` is the workspace suite CI runs in
+    # is one CI runs anyway. `make test` is the workspace suite CI runs in
     # pieces; `make lint` is CI's clippy invocation plus prerequisites that are
     # each their own CI step. A target with one unclassifiable command — a bash
     # script, a sanitizer-flagged run, a `cargo miri test` — is NOT proved, and
@@ -2114,7 +2205,7 @@ def main() -> int:
         for t in sorted(proved):
             print(f"      - {t}")
 
-    unreached = [t for t in gates if t not in reached]
+    unreached = unreached_ci_gates(phony, reached)
     for target in unreached:
         findings.fail(
             "A1",
@@ -2124,7 +2215,50 @@ def main() -> int:
             "serve it. A local-preflight-only edge does not count: it never "
             "runs on a pull request, and neither does a mention in a comment.",
         )
-    print(f"    {len(gates) - len(unreached)}/{len(gates)} gate targets reached.")
+    print(f"    {len(gates) - len(unreached)}/{len(gates)} CI gate targets reached.")
+
+    # ── A1H: named host-release authorities are real, and not hosted CI ──────
+    # A host authority is not an exception to A1. It is a different claim:
+    # “this local host can take this measurement.” Treating a hosted macOS job
+    # as equivalent would let a missing entitlement, allocator setting, or
+    # inspector tool turn into a green skip. The port must execute its exact
+    # runner, while CI must NOT reach it. Both conditions are structural and
+    # comment-free.
+    print(
+        "\n==> A1H: named host-release authorities "
+        f"({len(HOST_RELEASE_AUTHORITIES)} authority/authorities)"
+    )
+    host_failures = 0
+    for authority in HOST_RELEASE_AUTHORITIES:
+        if not host_release_authority_is_ported(authority, known, recipes):
+            findings.fail(
+                "A1H",
+                f"make {authority.target}",
+                f"the named {authority.host} release authority has no direct "
+                f"executable `{authority.runner}` Make port. A comment, echo, "
+                "or skip is not a release measurement; restore the runner or "
+                "remove the authority class deliberately.",
+            )
+            host_failures += 1
+        elif authority.target in reached:
+            findings.fail(
+                "A1H",
+                f"make {authority.target}",
+                f"the named {authority.host} release authority is CI-reached. "
+                "Hosted CI cannot report a local host-release measurement as "
+                "green authority; remove that workflow edge and retain the "
+                "local port.",
+            )
+            host_failures += 1
+        elif verbose:
+            print(
+                f"  ok  make {authority.target}: local {authority.host} "
+                "authority is ported and not CI-reached"
+            )
+    print(
+        f"    {len(HOST_RELEASE_AUTHORITIES) - host_failures}/"
+        f"{len(HOST_RELEASE_AUTHORITIES)} host authorities are real local ports."
+    )
 
     # ── A2: every workspace crate is tested by CI ─────────────────────────────
     blobs = ci_test_commands(step_commands, recipes, reached)
@@ -2299,9 +2433,10 @@ def main() -> int:
         print("      This gate has no exemption list by design.")
         return 1
 
-    print("==> Gate reachability: every gate target, workspace crate, profile.ci")
+    print("==> Gate reachability: every CI gate target, workspace crate, profile.ci")
     print("    exclusion, inline `-E` filter and `#[ignore]`d crate is reached by")
-    print("    CI, and every documented `make` target exists.")
+    print("    CI; named host-release authorities are real local ports; and every")
+    print("    documented `make` target exists.")
     return 0
 
 

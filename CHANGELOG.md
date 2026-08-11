@@ -1,14 +1,16 @@
 # Changelog
 
-## [0.6.0-rc1] — unreleased (in preparation)
+## [0.6.0-rc1] - 2026-07-29
 
-This is the first release candidate for v0.6. **The tag is not cut yet** — this
-entry tracks the major work landed on the v0.6 line and will be finalized when
-the candidate ships. v0.6 completes the ownership model, closes a batch of
-actor and machine correctness gaps, and reshapes several language surfaces. The
-headline change is that ownership and drop elaboration are now unconditional and
-type-directed: every owned value is released exactly once, with no reliance on
-ad-hoc per-shape heap walkers.
+Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the
+ownership model, closes a batch of actor and machine correctness gaps, and
+reshapes several language surfaces. The headline change is that ownership and
+drop elaboration are now unconditional and type-directed: every owned value
+walks a single type-directed release authority instead of an ad-hoc per-shape
+heap walker. A small number of edges (a never-resolved crash-path projection
+transfer, an unvalidated Cancel/Panic drop path, one documented constant
+credential-file allocation) remain tracked residual leak-only surfaces rather
+than double-free risks.
 
 ### Changed — ownership and drop elaboration
 
@@ -32,6 +34,14 @@ ad-hoc per-shape heap walkers.
   required. Stdlib `Child` (`std::process`) and `MonitorRef`
   (`std::link_monitor`) have been migrated to the `#[resource]` close model.
   (#1986)
+- **`extern "C"` symbol declarations are program-wide unique.** A second
+  declaration of an already-declared C symbol must repeat its established
+  parameter types, return type, variadic shape, and `consume` ownership modes
+  exactly; a drifting redeclaration is now a compile error even if it is never
+  called. Previously such a redeclaration was accepted, and codegen would
+  bind every call site to whichever declaration's signature the linker
+  happened to pick. Identical redeclarations of the same symbol still
+  coexist and resolve to the one established contract.
 
 ### Removed — actor system-message symbols (breaking)
 
@@ -113,8 +123,12 @@ ad-hoc per-shape heap walkers.
 - **`try_to_*` numeric conversions.** Fallible numeric conversions with exactness
   checking (`try_to_i32`, `try_to_u8`, …) return an error on an out-of-range or
   lossy conversion instead of truncating silently. (#2368)
-- **Unified `.send()`.** Actor fire-and-forget sends use one `.send()` verb
-  across local and remote targets. (#2369)
+- **Named local dispatch and typed remote `.send()`.** Local fire-and-forget
+  dispatch remains `ref.method(args)`, using the declared `receive fn` name.
+  `.send(args)` on a `LocalPid` dispatches only to a handler literally named
+  `send`; it is not a universal local-send spelling. `RemotePid<T>.send(message)`
+  remains the remote fire-and-forget surface, and lambda-actor handles retain
+  `.send()`. (#2369)
 - **`#[wire]` types.** Wire-format declarations use the `#[wire]` type attribute;
   the `struct` keyword has been removed. (#2370, closes #2365)
 - **Iterator-trait completion.** The iterator surface is completed across
@@ -296,7 +310,7 @@ structured changelog.
   the targets that failed it are gone: `test-all`, `test-hew`, `test-stdlib`,
   `test-real-timing`, `test-lane`, `test-lane-all`, `test-fast`, `lane-gates`,
   `fuzz-smoke`, `grammar`, `install-check`, and the `profile.lane`
-  nextest tier they shared. Use `make test-rust` for the workspace suite,
+  nextest tier they shared. Use `make test` for the workspace suite,
   `make test-hew-ratchet` and `make test-stdlib-ratchet` for the ratcheted `.hew`
   and stdlib sweeps, `make fuzz-oracle` for the fuzz corpus, and
   `cargo nextest run -p <crate> --profile ci` for fast per-crate iteration. The

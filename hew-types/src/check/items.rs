@@ -33,6 +33,7 @@ impl Checker {
             Item::Machine(md) => {
                 if !crate::ty::is_reserved_type_name(&md.name) {
                     self.check_machine_exhaustiveness(md, span);
+                    self.check_machine_state_resource_payloads(&md.name, span);
                 }
             }
             Item::Trait(td) => {
@@ -345,7 +346,11 @@ impl Checker {
 
             // Look up the actor's init parameter list.  Unknown actors are
             // handled elsewhere; skip here to avoid duplicate diagnostics.
-            let Some(init_params) = self.actor_init_params.get(&child.actor_type).cloned() else {
+            // The registry is keyed by canonical actor identity; a package-
+            // module child stores the alias-prefixed spelling, so canonicalize
+            // before the lookup or this reproducibility wall silently skips.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(init_params) = self.actor_init_params.get(&child_identity).cloned() else {
                 continue;
             };
 
@@ -481,8 +486,12 @@ impl Checker {
             }
 
             // Look up the actor's TypeDef.  If the type is unknown or is not
-            // an actor, a separate diagnostic already covers it.
-            let Some(type_def) = self.type_defs.get(&child.actor_type).cloned() else {
+            // an actor, a separate diagnostic already covers it. The registry is
+            // keyed by canonical actor identity; canonicalize the package-module
+            // child's alias-prefixed spelling before the lookup so the owned-heap
+            // wall does not silently skip.
+            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
+            let Some(type_def) = self.type_defs.get(&child_identity).cloned() else {
                 continue;
             };
             if type_def.kind != TypeDefKind::Actor {
@@ -491,7 +500,7 @@ impl Checker {
 
             // Init params for the child's actor, used to resolve whether an init
             // arg covering an owned field is reproducible (init-thunk path).
-            let init_params = self.actor_init_params.get(&child.actor_type).cloned();
+            let init_params = self.actor_init_params.get(&child_identity).cloned();
 
             for (field_name, field_ty) in &type_def.fields {
                 if !ty_is_known_owned_heap(field_ty) {
@@ -633,11 +642,19 @@ impl Checker {
     }
 
     fn check_supervisor_wired_to(&mut self, sd: &SupervisorDecl, span: &Span) {
-        // Build a sibling-name → actor-type map for fast resolution.
-        let sibling_types: std::collections::HashMap<&str, &str> = sd
+        // Build a sibling-name → actor-type map for fast resolution. The stored
+        // child type is the raw user spelling; canonicalize each to the
+        // registered actor identity so a package-module sibling compares against
+        // the same identity the dependent's init-param annotation resolves to.
+        let sibling_types: std::collections::HashMap<&str, String> = sd
             .children
             .iter()
-            .map(|c| (c.name.as_str(), c.actor_type.as_str()))
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    self.canonical_supervisor_child_type(&c.actor_type),
+                )
+            })
             .collect();
 
         for child in &sd.children {
@@ -647,7 +664,7 @@ impl Checker {
 
             for (param_key, sibling_name) in wired_to {
                 // ── Key resolution: sibling must exist ──────────────────────
-                let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
+                let Some(sibling_type) = sibling_types.get(sibling_name.as_str()) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::SupervisorError {
                             subkind: SupervisorErrorKind::WiredToUnknownSibling,
@@ -675,10 +692,11 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // with type `LocalPid<sibling_type>`.
+                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
                     &child.name,
-                    &child.actor_type,
+                    &dependent_identity,
                     param_key,
                     sibling_type,
                     span,
@@ -846,7 +864,10 @@ impl Checker {
     }
 
     pub(super) fn check_function(&mut self, fd: &FnDecl) {
-        let fn_name = scoped_module_item_name(self.current_module.as_deref(), &fd.name)
+        // rc1-F1 stage A: body checking resolves the same canonical key
+        // `register_fn_sig_with_name` minted — root items included — so
+        // `current_function` (a `fn_sigs`-family key) is always canonical.
+        let fn_name = scoped_module_item_name(self.canonical_fn_owner(), &fd.name)
             .unwrap_or_else(|| fd.name.clone());
         self.check_function_as(fd, &fn_name);
     }
@@ -1113,14 +1134,14 @@ impl Checker {
     }
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
-        // The actor's checker identity: dotted `{module_short}.{name}` for a
+        // The actor's checker identity: dotted `{module_path}.{name}` for a
         // module actor (the body is checked with `current_module` set), bare
         // for root/flat actors. All signature lookups during body checking
         // (`fn_sigs["{identity}::{rf}"]`), the `this` receiver type, and the
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module_short(), &ad.name);
+        let identity = Self::actor_identity(self.current_module.as_deref(), &ad.name);
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
@@ -1203,6 +1224,7 @@ impl Checker {
                 self.bind_actor_fields(&ad.fields);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
+                self.reject_unplugged_actor_state_fields(&ad.fields);
                 self.env.pop_scope();
                 continue;
             }
@@ -1368,6 +1390,72 @@ impl Checker {
         }
     }
 
+    /// Reject an actor state field left CONSUMED at the end of a body that
+    /// bound the actor's fields as bare names.
+    ///
+    /// An actor's state outlives every handler invocation and messages arrive
+    /// in arbitrary order, so a consuming use of a state field that the body
+    /// does not re-initialise leaves a hole the NEXT message consumes again —
+    /// `receive fn steal() { return sock.detach(); }` detaches one socket once
+    /// per message. No ordering discipline can plug that from outside; the
+    /// sound rule is that the body must plug it itself, on every path. Because
+    /// place facts join by union, a field re-initialised on only some paths is
+    /// still reported.
+    ///
+    /// This is deliberately a CHECKER reject and NOT a lowering change: a naive
+    /// retain at `ActorStateFieldLoad` regressed once
+    /// (`state-load-retains-unless-borrow-proven`) and an unconditional
+    /// projected-leaf drop double-freed once
+    /// (`state-drop-unconditional-projected-leaf-is-borrow`). The escape hatch
+    /// is re-initialisation, which the assignment path already discharges.
+    ///
+    /// Call sites run this AFTER popping any parameter scope, so a parameter
+    /// that shadows a field name cannot be mistaken for the field.
+    pub(super) fn reject_unplugged_actor_state_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let Some(binding) = self.env.lookup_ref(&field.name) else {
+                continue;
+            };
+            let (place, moved_at) = if binding.is_moved {
+                let Some(moved_at) = binding.moved_at.clone() else {
+                    continue;
+                };
+                (field.name.clone(), moved_at)
+            } else {
+                let Some(moved) = binding.moved_places.first() else {
+                    continue;
+                };
+                (
+                    std::iter::once(field.name.as_str())
+                        .chain(moved.path.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    moved.moved_at.clone(),
+                )
+            };
+            let mut error = TypeError::new(
+                TypeErrorKind::UseAfterConsume,
+                moved_at,
+                format!(
+                    "actor state `{place}` is consumed here and never re-initialised; \
+                     the next message would consume it again"
+                ),
+            )
+            .with_note(
+                field.ty.1.clone(),
+                "actor state outlives the handler that consumed it",
+            )
+            .with_suggestion(format!(
+                "re-initialise `{place}` before the body returns, or take a copy \
+                 instead of consuming the state"
+            ));
+            if let Some(source_module) = &self.current_module {
+                error = error.with_source_module(source_module.clone());
+            }
+            self.errors.push(error);
+        }
+    }
+
     /// Bind actor fields as writable regardless of declared mutability.
     ///
     /// `init { }` is the actor's constructor: it must be able to assign
@@ -1416,6 +1504,7 @@ impl Checker {
         self.current_return_type = None;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1518,6 +1607,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1578,13 +1668,10 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_info = matches!(
+                let is_crash_info = is_canonical_std_named_type(
                     &pty,
-                    Ty::Named {
-                        builtin: Some(crate::BuiltinType::CrashInfo),
-                        args,
-                        ..
-                    } if args.is_empty()
+                    crate::BuiltinType::CrashInfo,
+                    "std.failure.CrashInfo",
                 );
                 if !is_crash_info {
                     self.errors.push(TypeError::new(
@@ -1625,13 +1712,10 @@ impl Checker {
     ) -> Ty {
         if let Some(rt) = &hook.return_type {
             let ty = self.resolve_type_expr(rt);
-            if !matches!(
+            if !is_canonical_std_named_type(
                 &ty,
-                Ty::Named {
-                    builtin: Some(crate::BuiltinType::CrashAction),
-                    args,
-                    ..
-                } if args.is_empty()
+                crate::BuiltinType::CrashAction,
+                "std.failure.CrashAction",
             ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
@@ -1654,11 +1738,8 @@ impl Checker {
                     hook.name
                 ),
             ));
-            Ty::Named {
-                builtin: None,
-                name: "CrashAction".to_string(),
-                args: vec![],
-            }
+            crate::builtin_enums::monomorphic_builtin_enum_ty("CrashAction")
+                .expect("generated builtin enum catalog must contain CrashAction")
         }
     }
 
@@ -1706,6 +1787,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1727,18 +1809,17 @@ impl Checker {
 
         self.reject_hook_modifier_set(actor_name, hook, hook_kind);
 
-        // Param: exactly one `note: CrashNotification`. CrashNotification is a
-        // std/failure.hew type (not a compiler builtin), so match by resolved
-        // type name rather than a builtin marker.
+        // Param: exactly one canonical `note: CrashNotification`. Match either
+        // the compiler discriminator or the exact source-owned std identity:
+        // the module graph resolves the declaration to
+        // `std.failure.CrashNotification` without a builtin marker, while an
+        // unrelated user type can share the short name.
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_notification = matches!(
-                    &pty,
-                    Ty::Named { name, args, .. }
-                        if name == "CrashNotification" && args.is_empty()
-                );
-                if !is_crash_notification {
+                let is_crash_notification =
+                    is_canonical_lifecycle_source_type(&pty, "std.failure.CrashNotification");
+                if !is_crash_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -1802,6 +1883,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1818,15 +1900,9 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_down_notification = matches!(
-                    &pty,
-                    Ty::Named {
-                        builtin: Some(crate::BuiltinType::DownNotification),
-                        args,
-                        ..
-                    } if args.is_empty()
-                );
-                if !is_down_notification {
+                let is_down_notification =
+                    is_canonical_lifecycle_source_type(&pty, "std.link_monitor.DownNotification");
+                if !is_down_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -1883,6 +1959,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope();
     }
 
@@ -1966,7 +2043,7 @@ impl Checker {
         }
 
         if valid_every_duration {
-            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::Timers);
+            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::PeriodicTimers);
         }
 
         // Periodic handlers must not have parameters (they receive no message payload).
@@ -2165,6 +2242,7 @@ impl Checker {
             self.generic_ctx.pop();
         }
         self.env.pop_scope(); // params scope
+        self.reject_unplugged_actor_state_fields(fields);
         self.env.pop_scope(); // fields scope
     }
 
@@ -2435,6 +2513,10 @@ impl Checker {
         is_receiver: bool,
     ) {
         let resolved_param_ty = self.subst.resolve(ty);
+        if !is_receiver && self.param_ty_has_caller_visible_projection(&resolved_param_ty) {
+            self.caller_visible_param_projections
+                .insert(SpanKey::in_module(&param.ty.1, self.current_module_idx));
+        }
         if !param.is_mutable
             || is_receiver
             || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
@@ -2524,6 +2606,11 @@ impl Checker {
         visiting_nominals: &mut std::collections::HashSet<String>,
     ) -> bool {
         match self.subst.resolve(ty) {
+            // Hew's CoW descriptor values are borrowed across an ordinary
+            // function boundary. A bytes mutator can replace the descriptor's
+            // backing representation, so the positive checker fact must
+            // survive even though String/Bytes are not `BuiltinType` handles.
+            Ty::String | Ty::Bytes => true,
             Ty::Named {
                 builtin: Some(builtin),
                 args: _,
@@ -2603,6 +2690,44 @@ fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     }
 }
 
+/// Whether `ty` is a canonical stdlib nominal used by a lifecycle hook.
+///
+/// Some compilation surfaces attach the compiler builtin discriminator, while
+/// module-graph resolution retains the exact source-owned identity instead.
+/// Both denote the same std type; a bare or foreign same-short-name user type
+/// denotes a different type and must remain rejected.
+fn is_canonical_std_named_type(
+    ty: &Ty,
+    builtin: crate::BuiltinType,
+    source_identity: &str,
+) -> bool {
+    matches!(
+        ty,
+        Ty::Named {
+            name,
+            args,
+            builtin: resolved_builtin,
+        } if args.is_empty()
+            && (*resolved_builtin == Some(builtin)
+                || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
+/// Lifecycle payload records are source-owned: after resolution, only their
+/// canonical owner-qualified source identity proves the hook ABI.  Unlike
+/// compiler-intrinsic carriers, a bare builtin discriminator is not authority
+/// for these records because it has no accompanying source layout.
+fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
+    matches!(
+        ty,
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() && name == source_identity
+    )
+}
+
 /// Returns `true` for types that carry owned heap allocations and therefore
 /// cannot be safely byte-copied as `init_state` for a permanent supervisor
 /// child restart (C1 UAF guard — v0.5.0.1 P0).
@@ -2625,4 +2750,44 @@ fn ty_is_known_owned_heap(ty: &Ty) -> bool {
                 ..
             }
         )
+}
+
+#[cfg(test)]
+mod lifecycle_std_identity_tests {
+    use super::*;
+
+    fn named(name: &str, builtin: Option<crate::BuiltinType>) -> Ty {
+        Ty::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin,
+        }
+    }
+
+    #[test]
+    fn canonical_lifecycle_type_requires_marker_or_exact_source_owner() {
+        let builtin = crate::BuiltinType::CrashNotification;
+        let source_identity = "failure.CrashNotification";
+
+        assert!(is_canonical_std_named_type(
+            &named("CrashNotification", Some(builtin)),
+            builtin,
+            source_identity,
+        ));
+        assert!(is_canonical_std_named_type(
+            &named(source_identity, None),
+            builtin,
+            source_identity,
+        ));
+        assert!(!is_canonical_std_named_type(
+            &named("CrashNotification", None),
+            builtin,
+            source_identity,
+        ));
+        assert!(!is_canonical_std_named_type(
+            &named("foreign.CrashNotification", None),
+            builtin,
+            source_identity,
+        ));
+    }
 }

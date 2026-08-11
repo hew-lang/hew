@@ -28,10 +28,9 @@
 //! the identical call and R1/R2/R3 read the identical buffer.
 //!
 //! The three handle-scoped QUIC variants (`hew_quic_endpoint_last_error`,
-//! `hew_quic_conn_last_error`, `hew_quic_stream_last_error`) are deliberately
-//! absent: reaching their message requires a live endpoint, connection and
-//! stream, which this oracle cannot stand up without I/O. No evidence, no
-//! `result-retention` row, no mint — the fail-closed direction.
+//! `hew_quic_conn_last_error`, `hew_quic_stream_last_error`) require live
+//! transport state, so their real loopback R1/R2/R3 proofs live in
+//! `quic/string_result_retention.rs` rather than this I/O-free family module.
 
 use std::ffi::{c_char, CStr};
 

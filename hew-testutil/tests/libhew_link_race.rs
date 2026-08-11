@@ -1207,4 +1207,21 @@ fn stamp_sharing_across_real_processes_builds_exactly_once() {
          collapse every caller but the winner onto the fast path with no further \
          cargo invocation"
     );
+
+    // The sole locked debug build must also publish the certificate consumed by
+    // Make's pre-link gate.  This proves the helper path cannot bypass that
+    // authority while preserving the exactly-one Cargo invocation above.
+    let (target_dir, profile) = target_dir_and_profile();
+    assert_eq!(profile, "debug", "the libhew link-race gate runs in debug");
+    let certificate = Command::new(repo_root().join("scripts/check-libhew-fresh.sh"))
+        .args(["--debug-dir"])
+        .arg(target_dir.join(profile))
+        .output()
+        .expect("run libhew certificate verifier");
+    assert!(
+        certificate.status.success(),
+        "ensure_hew_lib_built left no valid freshness certificate\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&certificate.stdout),
+        String::from_utf8_lossy(&certificate.stderr),
+    );
 }

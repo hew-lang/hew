@@ -1,0 +1,29 @@
+// Cross-iteration double consume. The env checker walks a loop body once and
+// is silent here by design; the checked-MIR dataflow pass owns this rejection
+// and reports `E_MIR_CHECK: UseAfterConsume` for the back edge.
+//
+// This fixture pins that split: relaxing the env checker at branch joins must
+// not relax the loop verdict, because the loop verdict was never the env
+// checker's to give.
+#[resource]
+type Conn {
+    fd: i64
+}
+
+impl Conn {
+    fn close(consuming self) {}
+    fn detach(consuming self) -> i64 {
+        self.fd
+    }
+}
+
+fn move_in_loop() {
+    let held = Conn { fd: 1 };
+    for _i in 0..3 {
+        let _ = held.detach();
+    }
+}
+
+fn main() {
+    move_in_loop();
+}

@@ -1,0 +1,9 @@
+fn use_it(v: fn(i64) -> i64) {
+    let v_r = v(21);
+    println(f"{v_r}");
+}
+
+fn main() {
+    let x = |v: i64| v * 2;
+    use_it(x);
+}

@@ -19,6 +19,7 @@ use crate::internal::types::HewActorState;
 use crate::lifetime::live_actors::pin_actor_by_id;
 use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::PoisonSafeRw;
+#[cfg(test)]
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 
@@ -273,8 +274,7 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
 
     {
         let linked_actor_ref = linked_actor_pin.actor();
-        let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-        if !mailbox.is_null() {
+        if !linked_actor_ref.mailbox.is_null() {
             let exit_data = ExitMessage {
                 crashed_actor_id,
                 reason,
@@ -289,26 +289,12 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
 
             // SAFETY: the ActorId pin keeps the linked actor and mailbox live.
             unsafe {
-                mailbox::mailbox_send_sys(mailbox, HewSysMsg::Exit, data_ptr.cast_mut(), data_size);
-            }
-
-            if linked_actor_ref
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                linked_actor_ref
-                    .idle_count
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                linked_actor_ref
-                    .hibernating
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                crate::scheduler::sched_enqueue(linked_actor);
+                let _ = crate::actor::send_system_message(
+                    linked_actor,
+                    HewSysMsg::Exit,
+                    data_ptr.cast_mut(),
+                    data_size,
+                );
             }
         }
 
@@ -652,6 +638,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 

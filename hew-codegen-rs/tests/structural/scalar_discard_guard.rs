@@ -55,7 +55,7 @@ fn pipeline_discard_extern_owned(
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args,
                 dest: None, // intentional discard — the arm under test
                 next: 1,
@@ -153,8 +153,7 @@ fn pipeline_discard_extern_owned(
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

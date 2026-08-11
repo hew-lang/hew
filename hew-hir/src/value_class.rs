@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::{Deref, DerefMut};
 
 use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::{BuiltinType, ResolvedTy};
@@ -36,24 +37,226 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
 /// for compatibility with existing HIR/MIR construction sites; callers must use
 /// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
 /// are still observed. LESSONS: `type-info-survival`.
-pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
+/// Checker-admitted lifecycle for one exact qualified opaque resource.
+///
+/// This is deliberately distinct from the user-facing type-class entry.  The
+/// class says that values are affine; this fact says *why* that class was
+/// admitted and pins its sole automatic close to the exact producer/release
+/// contract the checker validated.  Downstream stages consume this fact and
+/// never reconstruct it from a short type name or a method spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OpaqueResourceLifecycle {
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub release_declaration: hew_types::DefId,
+    /// Emitted linkage names. These are never semantic lookup keys.
+    pub close_symbol: String,
+    pub release_symbol: String,
+    pub discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth,
+    pub producer_declarations: std::collections::BTreeSet<hew_types::DefId>,
+    pub producer_symbols: std::collections::BTreeSet<String>,
+    pub producer_modules: std::collections::BTreeSet<String>,
+}
+
+/// MIR-admitted lifecycle for one exact field-bearing resource record.
+///
+/// Record resources share the same declaration-identity authority as opaque
+/// resources.  The emitted close symbol is linkage metadata only; semantic
+/// lookup is always keyed by the exact qualified resource declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResourceRecordLifecycle {
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub close_symbol: String,
+}
+
+/// Canonical declaration-identity registry for resource lifecycles.
+///
+/// This is the only carrier permitted beyond HIR lowering.  It intentionally
+/// exposes exact [`hew_types::DefId`] lookup only: callers may not retry a
+/// qualified miss with a short, suffix, or leaf name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LifecycleRegistry {
+    opaque_resources: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+    resource_records: BTreeMap<hew_types::DefId, ResourceRecordLifecycle>,
+}
+
+impl LifecycleRegistry {
+    /// Admit one exact opaque-resource lifecycle into a standalone registry.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    pub fn admit_opaque_resource(
+        &mut self,
+        lifecycle: OpaqueResourceLifecycle,
+    ) -> Result<(), Box<OpaqueResourceLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .opaque_resources
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+    #[must_use]
+    pub fn opaque_resource(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.opaque_resources.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_for_ty(&self, ty: &ResolvedTy) -> Option<&OpaqueResourceLifecycle> {
+        let ResolvedTy::Named {
+            name,
+            builtin: None,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        self.opaque_resource(&hew_types::DefId::new(name))
+    }
+
+    #[must_use]
+    pub fn opaque_resources(&self) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
+        self.opaque_resources.values()
+    }
+
+    /// Admit one exact field-bearing resource-record lifecycle.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    fn admit_resource_record(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .resource_records
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+
+    #[must_use]
+    pub fn resource_record(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&ResourceRecordLifecycle> {
+        self.resource_records.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn resource_records(&self) -> impl ExactSizeIterator<Item = &ResourceRecordLifecycle> {
+        self.resource_records.values()
+    }
+}
+
+/// Per-named-type classification plus exact closeable-opaque lifecycles.
+///
+/// `Deref` preserves the long-established map API for ordinary class reads;
+/// lifecycle consumers must use [`Self::opaque_resource_lifecycle`] so an
+/// exact qualified key is mandatory and no short-name retry is available.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeClassTable {
+    classes: HashMap<String, (ResourceMarker, Option<String>)>,
+    lifecycle_registry: LifecycleRegistry,
+}
+
+impl Deref for TypeClassTable {
+    type Target = HashMap<String, (ResourceMarker, Option<String>)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.classes
+    }
+}
+
+impl DerefMut for TypeClassTable {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.classes
+    }
+}
+
+impl TypeClassTable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Admit one lifecycle. Duplicate exact identities are refused even when
+    /// equal: HIR admission is a one-shot boundary, not a merge operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejected lifecycle when its exact qualified identity was
+    /// already admitted.
+    pub fn admit_opaque_resource_lifecycle(
+        &mut self,
+        lifecycle: OpaqueResourceLifecycle,
+    ) -> Result<(), Box<OpaqueResourceLifecycle>> {
+        self.lifecycle_registry.admit_opaque_resource(lifecycle)
+    }
+
+    /// Admit one exact field-bearing resource-record lifecycle at the HIR
+    /// boundary. Downstream phases receive only an immutable registry view.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle when the resource declaration was
+    /// already admitted.
+    pub fn admit_resource_record_lifecycle(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        self.lifecycle_registry.admit_resource_record(lifecycle)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycle(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.lifecycle_registry
+            .opaque_resource(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycle_for_type_name(
+        &self,
+        canonical_type_name: &str,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.opaque_resource_lifecycle(&hew_types::DefId::new(canonical_type_name))
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycles(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
+        self.lifecycle_registry.opaque_resources()
+    }
+
+    /// Return the structured lifecycle authority carried into MIR/codegen.
+    #[must_use]
+    pub const fn lifecycle_registry(&self) -> &LifecycleRegistry {
+        &self.lifecycle_registry
+    }
+}
 
 #[must_use]
 pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
     crate::builtin_type_classes::builtin_type_registration(name)
         .map(|registration| registration.marker)
-        .or_else(|| {
-            let exact = type_classes.get(name).map(|(marker, _)| *marker);
-            let short = hew_types::short_name(name);
-            match (exact, short != name) {
-                (Some(ResourceMarker::None), true) => {
-                    type_classes.get(short).map(|(marker, _)| *marker).or(exact)
-                }
-                (Some(marker), _) => Some(marker),
-                (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
-                (None, false) => None,
-            }
-        })
+        .or_else(|| type_classes.get(name).map(|(marker, _)| *marker))
 }
 
 #[must_use]
@@ -71,62 +274,60 @@ pub fn lookup_type_marker_for_ty(
         return None;
     };
 
-    if builtin.is_some() {
-        return lookup_type_marker(name, type_classes);
+    if let Some(builtin) = builtin {
+        // Builtin ownership is an identity fact, not a spelling convention.
+        // In particular, a user record named `Sender` or `Receiver` must not
+        // inherit the channel endpoint's resource/drop class merely because
+        // the compiler also has a builtin with that short name.  Use the
+        // carried discriminator and its canonical registration so qualified
+        // spellings such as `channel.Sender<T>` retain the endpoint class.
+        if let Some(registration) =
+            crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())
+        {
+            return Some(registration.marker);
+        }
+        // Source-layout-backed lifecycle values retain an exact builtin
+        // discriminator even though their record/enum shape comes from the
+        // imported `.hew` declaration rather than `BUILTIN_TYPE_REGISTRATIONS`.
+        // A non-`None` marker on that discriminator is already the checker-
+        // admitted value-semantic authority: consume it directly instead of
+        // trying to rediscover the class through a leaf-name table row. This
+        // keeps `DownNotification` and its nested `DownTarget`/`DownReason`
+        // values total at every HIR/MIR decision site while a user declaration
+        // with the same spelling (which carries `builtin: None`) remains
+        // completely distinct. Builtins whose marker is `None` still fall
+        // through to the source-derived table so aggregate payload ownership
+        // such as `CrashInfo { message: string }` is classified structurally.
+        match builtin.marker() {
+            hew_types::builtin_type::BuiltinTypeMarker::BitCopy => {
+                return Some(ResourceMarker::BitCopy);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::Resource => {
+                return Some(ResourceMarker::Resource);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::Linear => {
+                return Some(ResourceMarker::Linear);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::None => {}
+        }
     }
 
     if !args.is_empty() {
-        // `type_classes` is keyed on the per-instantiation `mangled_name`, which
-        // the registry side (`RecordLayoutRegistry::insert`, `layout_mono`,
-        // `finalize_user_record_value_classes`) builds from the BARE-normalised
-        // type-arg spine. So the probe must shorten its args too: a generic with
-        // a module-qualified payload (`Holder<lmonobox.Box>`) is registered as
-        // `Holder$$Box`, and a raw `mangle(name, args)` keying `Holder$$lmonobox.Box`
-        // would miss and silently fall through to the coarse outer-name lookup
-        // below, losing the per-instantiation marker. Nested qualified payloads
-        // are shortened at depth by `shorten_named_arg_qualifiers`.
-        let short_args: Vec<ResolvedTy> = args
+        // Generic keys retain their canonical nominal paths throughout the
+        // spine; no leaf-name normalisation may select a value class.
+        let canonical_args: Vec<ResolvedTy> = args
             .iter()
             .cloned()
             .map(crate::monomorph::shorten_named_arg_qualifiers)
             .collect();
-        let concrete_key = crate::monomorph::mangle(name, &short_args);
+        let concrete_key =
+            crate::monomorph::mangle(&crate::mangle_dotted_name(name), &canonical_args);
         if let Some((marker, _)) = type_classes.get(&concrete_key) {
             return Some(*marker);
         }
-        // A generic value record defined in an IMPORTED module carries a
-        // module-qualified USE-site name (`k.Key<string>`), but its layout is
-        // registered under the bare-origin mangling the DECLARATION produced
-        // (`Key$$string`) — `RecordLayoutRegistry::insert` shortens the type
-        // args but keeps the origin name verbatim, and the declaration's own
-        // name is unqualified. So the qualified `concrete_key`
-        // (`k.Key$$string`) misses while the bare per-instantiation marker is
-        // present. Probe the short-origin mangling too so an imported-origin
-        // generic instance resolves to the same per-instantiation value class
-        // as its single-file / non-generic siblings (#2744). Without this the
-        // probe falls through to the coarse outer-name lookup below, which
-        // sees the generic origin's `ResourceMarker::None` and misclassifies
-        // the mono instance as `Unknown` → the MIR value-class gate rejects a
-        // valid BitCopy record.
-        let short_origin = hew_types::short_name(name);
-        if short_origin != name.as_str() {
-            let short_key = crate::monomorph::mangle(short_origin, &short_args);
-            if let Some((marker, _)) = type_classes.get(&short_key) {
-                return Some(*marker);
-            }
-        }
     }
 
-    let exact = type_classes.get(name).map(|(marker, _)| *marker);
-    let short = hew_types::short_name(name);
-    match (exact, short != name.as_str()) {
-        (Some(ResourceMarker::None), true) => {
-            type_classes.get(short).map(|(marker, _)| *marker).or(exact)
-        }
-        (Some(marker), _) => Some(marker),
-        (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
-        (None, false) => None,
-    }
+    type_classes.get(name).map(|(marker, _)| *marker)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -442,76 +643,92 @@ mod tests {
         assert!(!components[1].has_args);
     }
 
-    // ── C1 qualified-payload concrete-key symmetry ──────────────────────────
-    //
-    // `lookup_type_marker_for_ty` probes the per-instantiation marker via a
-    // mangled concrete key. `type_classes` is registered under the BARE-spine
-    // mangled name (`RecordLayoutRegistry::insert` / `layout_mono` /
-    // `finalize_user_record_value_classes` all shorten the spine). So a generic
-    // with a module-qualified payload (`Holder<lmonobox.Box>`) must shorten its
-    // probe args or the concrete key (`Holder$$lmonobox.Box`) diverges from the
-    // registered `Holder$$Box`, silently missing the per-instantiation marker.
+    #[test]
+    fn source_layout_lifecycle_discriminators_are_total_without_leaf_rows() {
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable, ValueClass};
+
+        let table = TypeClassTable::default();
+        for builtin in [
+            BuiltinType::MonitorId,
+            BuiltinType::DownTarget,
+            BuiltinType::DownReason,
+            BuiltinType::DownNotification,
+        ] {
+            let ty = ResolvedTy::named_builtin(
+                format!("std.link_monitor.{}", builtin.canonical_name()),
+                builtin,
+                Vec::new(),
+            );
+            assert_eq!(
+                lookup_type_marker_for_ty(&ty, &table),
+                Some(ResourceMarker::BitCopy),
+                "the exact {builtin:?} discriminator must carry its compiler-admitted marker"
+            );
+            assert_eq!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::BitCopy,
+                "the exact {builtin:?} discriminator must produce a concrete decision"
+            );
+        }
+    }
 
     #[test]
-    fn qualified_payload_resolves_per_instantiation_marker() {
+    fn source_layout_lifecycle_marker_does_not_cross_user_nominal_identity() {
+        use super::{lookup_type_marker_for_ty, TypeClassTable, ValueClass};
+
+        let table = TypeClassTable::default();
+        for name in ["DownNotification", "user.DownNotification"] {
+            let ty = ResolvedTy::named_user(name, Vec::new());
+            assert_eq!(lookup_type_marker_for_ty(&ty, &table), None);
+            assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::Unknown);
+        }
+    }
+
+    // ── Canonical qualified-payload concrete-key identity ───────────────────
+
+    #[test]
+    fn qualified_payload_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
-        // Registered under the BARE spine, exactly as the registry keys it.
+        let mut table = TypeClassTable::default();
+        // Registered under a distinct bare declaration identity.
         let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::named_user("Box", vec![])]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
 
-        // Probe with the QUALIFIED payload (`lmonobox.Box`), the import-use form.
-        // A raw `mangle("Holder", [lmonobox.Box])` keys `Holder$$lmonobox.Box`
-        // and would miss the registered `Holder$$Box`.
+        // Probe with a QUALIFIED payload. It must not select the bare key.
         let qualified = ResolvedTy::named_user(
             "Holder",
             vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
         );
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
-            Some(ResourceMarker::BitCopy),
-            "the qualified-payload probe must shorten its spine to hit the \
-             bare-key per-instantiation marker"
+            None,
+            "the qualified-payload probe must not collapse onto a bare declaration"
         );
     }
 
-    // ── #2744 qualified-ORIGIN concrete-key symmetry ────────────────────────
-    //
-    // A generic value record defined in an IMPORTED module is used through its
-    // module-qualified OUTER name (`keyed.Key<string>`), but its layout — and
-    // therefore its per-instantiation value-class marker — is registered under
-    // the bare-origin mangling the declaration produced (`Key$$string`). The
-    // probe must shorten the qualified ORIGIN (not just the payload spine) or
-    // the concrete key (`keyed.Key$$string`) diverges from the registered
-    // `Key$$string`, the outer-name fallback sees the generic origin's
-    // `ResourceMarker::None`, and the mono instance is misclassified Unknown.
+    // ── Canonical qualified-origin concrete-key identity ────────────────────
 
     #[test]
-    fn qualified_origin_resolves_per_instantiation_marker() {
+    fn qualified_origin_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
-        // The mono instance is registered under the BARE origin, exactly as the
-        // declaration-side registry / finalize keys it.
+        let mut table = TypeClassTable::default();
+        // The mono instance is registered under a distinct bare origin.
         let bare_key = crate::monomorph::mangle("Key", &[ResolvedTy::String]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
         // The generic origin itself carries `ResourceMarker::None` under both
-        // its qualified and bare spellings (finalize seeds every registry key),
-        // so the coarse outer-name fallback must NOT be what answers the probe.
+        // spellings, allowing the assertion to prove the concrete bare marker
+        // was not selected.
         table.insert("keyed.Key".to_string(), (ResourceMarker::None, None));
         table.insert("Key".to_string(), (ResourceMarker::None, None));
 
-        // Probe with the QUALIFIED origin (`keyed.Key<string>`), the import-use
-        // form. A raw `mangle("keyed.Key", [string])` keys `keyed.Key$$string`
-        // and misses the registered bare `Key$$string`.
+        // A QUALIFIED origin must remain distinct from bare `Key<string>`.
         let qualified = ResolvedTy::named_user("keyed.Key", vec![ResolvedTy::String]);
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
-            Some(ResourceMarker::BitCopy),
-            "the qualified-origin probe must shorten the outer name to hit the \
-             bare-key per-instantiation marker, not fall through to the \
-             generic origin's None marker"
+            Some(ResourceMarker::None),
+            "the qualified-origin probe must not collapse onto the bare instance"
         );
     }
 
@@ -519,7 +736,7 @@ mod tests {
     fn distinct_payload_does_not_resolve_marker_via_concrete_key() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
+        let mut table = TypeClassTable::default();
         // Only `Holder$$i64` is registered with a BitCopy marker.
         let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::I64]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
@@ -535,5 +752,62 @@ mod tests {
         assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
         // Sanity: the unused variant keeps the linter honest.
         let _ = ResourceMarker::Resource;
+    }
+
+    #[test]
+    fn resource_record_registry_is_exact_and_refuses_duplicate_identity() {
+        use super::{ResourceRecordLifecycle, TypeClassTable};
+        use hew_types::DefId;
+
+        let lifecycle = |owner: &str, close: &str, symbol: &str| ResourceRecordLifecycle {
+            resource_declaration: DefId::new(owner),
+            close_declaration: DefId::new(close),
+            close_symbol: symbol.to_string(),
+        };
+        let mut table = TypeClassTable::default();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "left.Connection::close",
+                "left.Connection::close",
+            ))
+            .unwrap();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "right.Connection",
+                "right.Connection::close",
+                "right.Connection::close",
+            ))
+            .unwrap();
+
+        let registry = table.lifecycle_registry();
+        assert_eq!(registry.resource_records().len(), 2);
+        assert!(registry
+            .resource_record(&DefId::new("Connection"))
+            .is_none());
+        assert_eq!(
+            registry
+                .resource_record(&DefId::new("right.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("right.Connection::close")
+        );
+
+        assert!(table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "other.close",
+                "other_close",
+            ))
+            .is_err());
+        assert_eq!(
+            table
+                .lifecycle_registry()
+                .resource_record(&DefId::new("left.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("left.Connection::close"),
+            "duplicate admission must not overwrite the sole close authority"
+        );
     }
 }

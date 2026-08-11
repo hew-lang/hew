@@ -185,8 +185,10 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 /// callee's copy-in mints its own independent owner. Exactly-once teeth on
 /// both callee liveness shapes: `stash` consumes the binder as a last use
 /// (push handoff), `stash_after` keeps the binder live past the push (retain
-/// mint). Skipping the binder drop leaks the payload per call; re-arming the
-/// variant slot double-frees it.
+/// mint). `inspect` is the non-forwarding control whose enum shell keeps
+/// ownership; `take` is the genuine consume control whose returned string owns
+/// the payload. Skipping the forwarded binder drop leaks the payload per call;
+/// promoting either control's binder would double-free it.
 fn payload_forward_source(frames: usize) -> String {
     format!(
         "fn stash(s: string) -> i64 {{\n\
@@ -205,13 +207,22 @@ fn payload_forward_source(frames: usize) -> String {
          fn forward_live(e: Result<string, string>) -> i64 {{\n\
          \x20   match e {{ Ok(x) => stash_after(x), Err(y) => y.len() }}\n\
          }}\n\
+         fn inspect(e: Result<string, string>) -> i64 {{\n\
+         \x20   match e {{ Ok(x) => x.len(), Err(y) => y.len() }}\n\
+         }}\n\
+         fn take(e: Result<string, string>) -> string {{\n\
+         \x20   match e {{ Ok(x) => x, Err(y) => y }}\n\
+         }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
          \x20       total = total + forward_last(Ok(\"a\" + \"b\"));\n\
          \x20       total = total + forward_live(Ok(\"c\" + \"d\"));\n\
+         \x20       total = total + inspect(Ok(\"e\" + \"f\"));\n\
+         \x20       let moved = take(Ok(\"g\" + \"h\"));\n\
+         \x20       total = total + moved.len();\n\
          \x20   }}\n\
-         \x20   if total != {frames} * 4 {{ return 78; }}\n\
+         \x20   if total != {frames} * 8 {{ return 78; }}\n\
          \x20   0\n\
          }}\n"
     )

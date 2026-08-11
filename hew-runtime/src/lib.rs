@@ -70,6 +70,90 @@ pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
+/// Process-wide source of non-zero identities for `std::arena::Arena<T>`.
+///
+/// Keys carry this identity alongside their slot index and generation, so a
+/// key minted by one arena cannot name the same-shaped slot in another arena.
+/// `u64::MAX` is the exhausted sentinel and is never returned.
+static NEXT_ARENA_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn claim_arena_instance_id(counter: &std::sync::atomic::AtomicU64) -> Option<i64> {
+    use std::sync::atomic::Ordering;
+
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            if next == u64::MAX {
+                None
+            } else if next == i64::MAX as u64 {
+                Some(u64::MAX)
+            } else {
+                Some(next + 1)
+            }
+        })
+        .ok()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id != 0)
+}
+
+/// Mint a process-unique, positive identity for one `std::arena::Arena<T>`.
+///
+/// Returns `0` after the positive `i64` identity space is exhausted. The Hew
+/// wrapper treats that sentinel as a hard construction failure rather than
+/// issuing an aliasing identity.
+#[no_mangle]
+pub extern "C" fn hew_arena_instance_id_new() -> i64 {
+    claim_arena_instance_id(&NEXT_ARENA_INSTANCE_ID).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod arena_instance_id_tests {
+    use super::claim_arena_instance_id;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::hew_arena_instance_id_new;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::collections::HashSet;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn instance_ids_are_positive_and_distinct() {
+        let counter = AtomicU64::new(1);
+        assert_eq!(claim_arena_instance_id(&counter), Some(1));
+        assert_eq!(claim_arena_instance_id(&counter), Some(2));
+    }
+
+    #[test]
+    fn instance_id_exhaustion_fails_closed_without_wraparound() {
+        let counter = AtomicU64::new(i64::MAX as u64);
+        assert_eq!(claim_arena_instance_id(&counter), Some(i64::MAX));
+        assert_eq!(claim_arena_instance_id(&counter), None);
+        assert_eq!(claim_arena_instance_id(&counter), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn exported_instance_ids_are_unique_under_concurrency() {
+        const THREADS: usize = 8;
+        const IDS_PER_THREAD: usize = 1_024;
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    (0..IDS_PER_THREAD)
+                        .map(|_| hew_arena_instance_id_new())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let ids: Vec<_> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("arena id worker must not panic"))
+            .collect();
+
+        assert!(ids.iter().all(|id| *id > 0));
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
+    }
+}
+
 /// Native no-op for the target-neutral actor metadata registration call.
 ///
 /// The v0.5 LLVM emitter builds one textual module before object emission, so
@@ -311,7 +395,7 @@ pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub mod profiler;
 
-// WASM-TODO(#1451): pprof/sampler require OS threads + HTTP; no WASM path planned until WASI threads land
+// WASM-TODO(profiler): pprof/sampler require OS threads and HTTP; design a WASM path before enabling them.
 // When the profiler feature is disabled (or on WASM), provide a minimal stub
 // so that scheduler.rs can still call profiler::maybe_start() etc.
 #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
@@ -716,7 +800,10 @@ pub mod scheduler;
 pub mod scheduler_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
-#[cfg(not(target_arch = "wasm32"))]
+// `signal` owns native signal recovery and also provides the target-neutral
+// crash-recovery ABI stubs used by continuation state-cleanup on WASI.  Keep
+// the module available on wasm32: its internal platform layer selects no-op
+// implementations there, while `cont` remains shared between native and WASI.
 pub mod signal;
 
 pub mod actor;
@@ -881,21 +968,22 @@ pub use execution_context::{
 
 // ── WASM entry point ─────────────────────────────────────────────────────────
 // Provides `_start` for WASI command modules. The compiler keeps the
-// freestanding export as `main` and also defines `__original_main` for the
-// WASI runtime entry point.
+// freestanding source-shaped export as `main` and also defines the canonical
+// `__hew_wasi_main() -> i32` adapter for the WASI runtime entry point.
 
 #[cfg(all(target_arch = "wasm32", not(test)))]
 extern "C" {
-    fn __original_main() -> i32;
+    fn __hew_wasi_main() -> i32;
 }
 
-/// WASI entry point — delegates to the compiler-generated `__original_main`.
+/// WASI entry point — delegates to the compiler-generated canonical adapter.
 #[cfg(all(target_arch = "wasm32", not(test)))]
 #[no_mangle]
 pub extern "C" fn _start() {
-    // SAFETY: `__original_main` is emitted by hew-codegen for every WASI-linked
-    // Hew program and has the signature `() -> i32`.
-    let code = unsafe { __original_main() };
+    // SAFETY: `__hew_wasi_main` is emitted by hew-codegen for every WASI-linked
+    // Hew program with this canonical signature, independently of the
+    // source-level main return width.
+    let code = unsafe { __hew_wasi_main() };
     if code != 0 {
         std::process::exit(code);
     }

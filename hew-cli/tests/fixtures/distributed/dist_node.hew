@@ -28,7 +28,14 @@ import std::os;
 
 import std::fs;
 
-import std::link_monitor::{DownNotification, DownReason, DownTarget, MonitorError};
+import std::link_monitor::{
+    DownNotification,
+    DownReason,
+    DownTarget,
+    MonitorError,
+    MonitorRef,
+    PartitionPolicy,
+};
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
@@ -1155,6 +1162,40 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
     0
 }
 
+fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: string, iterations: i64) -> i64 {
+    let node_id = identity.node_id();
+    let location = identity.location();
+    var completed: i64 = 0;
+    while completed < iterations {
+        // Direct temporaries: all three public identity display surfaces must
+        // release the fresh runtime string immediately after `.len()`.
+        println(node_id.display().len());
+        println(location.display().len());
+        println(identity.display().len());
+
+        // Named controls: these are released by the ordinary binding-scope
+        // authority, never by the direct-temporary rule.
+        let named_node = node_id.display();
+        let named_location = location.display();
+        let named_pid = identity.display();
+        println(named_node.len());
+        println(named_location.len());
+        println(named_pid.len());
+
+        // Mixed control: exactly one direct temporary and two named values in
+        // the same scope catches both a missing drop and a duplicate drop.
+        let mixed_node = node_id.display();
+        println(mixed_node.len());
+        println(location.display().len());
+        let mixed_pid = identity.display();
+        println(mixed_pid.len());
+        println("frame");
+        completed = completed + 1;
+    }
+    println(f"PASS {scenario} iterations={iterations}");
+    0
+}
+
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
     let probe = spawn MonitorProbe(
         active_monitor: Err(MonitorError::InvalidTarget),
@@ -1962,7 +2003,7 @@ fn run_client(port: string, scenario: string) -> i64 {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()
-    } else if scenario == "identity_location" {
+    } else if scenario == "identity_location" || scenario == "identity_display_low" || scenario == "identity_display_high" {
         let found_identity = lookup_identity_with_retry("identity");
         match found_identity {
             Result::Err(_) => {
@@ -1970,7 +2011,15 @@ fn run_client(port: string, scenario: string) -> i64 {
                 1
             },
             Result::Ok(identity) => {
-                scenario_identity_location(identity)
+                if scenario == "identity_location" {
+                    scenario_identity_location(identity)
+                } else {
+                    if scenario == "identity_display_low" {
+                        scenario_identity_display(identity, scenario, 3)
+                    } else {
+                        scenario_identity_display(identity, scenario, 50)
+                    }
+                }
             },
         }
     } else if scenario == "wire_cbor" {

@@ -120,13 +120,16 @@
 
 mod support;
 
+use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, assert_frame_slope_below_tolerance_exact_lines,
-    compile_to_native, require_macos_poisoned_allocator,
+    compile_to_native, measure_leaks, measure_leaks_exact, require_leaks_tool,
+    require_macos_poisoned_allocator, run_under_malloc_scribble, HIGH_FRAMES, LOW_FRAMES,
+    SLOPE_TOLERANCE,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 /// Every slope shape in this file prints exactly one line per frame from
 /// its consuming loop body, so the drained-frame count is the frame
@@ -208,6 +211,231 @@ fn for_await_source(frames: usize) -> String {
          \x20   sleep(3000ms);\n\
          }}\n"
     )
+}
+
+// ── Direct Receiver handoff: park, then destroy ───────────────────────────
+//
+// The full-drain `for_await_source` above proves the ordinary source-to-cursor
+// handoff and the per-item drop path, but closes the sender before the loop.
+// Every receive therefore completes immediately. This fixture makes the
+// complementary ownership seam observable: each child transfers its direct
+// `Receiver<string>` into `for await`, consumes exactly one owned payload, and
+// then parks on the next receive while its Sender remains live in the same
+// coroutine frame. `supervisor_stop` destroys those parked children through the
+// production actor teardown path. A stale source authority would double-drop
+// the receiver handle; a missing cursor authority would leak it (and its live
+// Sender/channel state) per child.
+//
+// `frames` is the number of children deliberately parked at the same seam.
+// The high/low leak comparison catches a per-child abandon leak, while the
+// poisoned allocator run makes the competing source/cursor drop authority an
+// immediate failure. Each child prints exactly once after consuming its owned
+// value, so the stdout count is a work witness that every handoff reached the
+// parked second receive before teardown.
+fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
+    use std::fmt::Write as _;
+
+    let children = (0..frames).fold(String::new(), |mut acc, index| {
+        let _ = writeln!(acc, "    child receiver{index}: ParkedReceiver;");
+        acc
+    });
+    let starts = (0..frames).fold(String::new(), |mut acc, index| {
+        let _ = writeln!(
+            acc,
+            "    let receiver{index} = app.receiver{index};\n    receiver{index}.run({index});"
+        );
+        acc
+    });
+
+    format!(
+        "import std::channel::channel;\n\
+         \n\
+         actor ParkedReceiver {{\n\
+         \x20   receive fn run(index: i64) {{\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20       let payload = f\"parked-direct-receiver-{{index}}\";\n\
+         \x20       tx.send(payload);\n\
+         \x20       for await item in rx {{\n\
+         \x20           if item.len() <= 0 {{ panic(\"receiver payload\"); }}\n\
+         \x20           println(\"parked\");\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         supervisor App {{\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 3 within 60s;\n\
+         {children}\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         \x20   let app = spawn App;\n\
+         {starts}\
+         \x20   sleep(500ms);\n\
+         \x20   supervisor_stop(app);\n\
+         }}\n"
+    )
+}
+
+/// The ordinary run is a work witness for the slope samples and the poisoned
+/// run. A successful `leaks --atExit` invocation alone cannot prove the probe
+/// reached its second, parked receive: the inspector reports its own status
+/// rather than the inspected program's. Require every requested child to have
+/// consumed its first frame and printed the exact marker before teardown.
+fn assert_parked_for_await_receiver_work(bin: &Path, expected_frames: usize, context: &str) {
+    let output = run_bounded_command(
+        Command::new(bin),
+        format!("run parked direct Receiver handoff ({context})"),
+    );
+    assert!(
+        output.status.success(),
+        "{context}: parked direct Receiver handoff failed:\n{}",
+        describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        expected_frames,
+        "{context}: work witness expected {expected_frames} parked Receiver handoffs, got {} lines {lines:?}. A missing line means the child did not consume its owned first payload and park on the next `for await` receive before supervisor teardown.",
+        lines.len(),
+    );
+    assert!(
+        lines.iter().all(|line| *line == "parked"),
+        "{context}: work witness had an unexpected marker sequence {lines:?}; every child must consume exactly one direct Receiver payload before being destroyed while parked",
+    );
+}
+
+// ── Drop-only Vec<Receiver<T>> ownership ──────────────────────────────────
+//
+// A Receiver cannot be cloned, so `Vec<Receiver<T>>` uses the owned move-in
+// element ABI with a descriptor whose clone thunk is null and whose drop thunk
+// closes exactly one slot. Each helper invocation below creates a fresh channel,
+// explicitly closes its Sender, moves the sole Receiver into `[rx]`, witnesses
+// the Vec length, and returns so the Vec owns the only remaining endpoint drop.
+//
+// Repeating the helper makes both failure directions authoritative:
+//
+//   * a missing/incorrect descriptor drop grows one live channel allocation
+//     family per call and fails the exact-zero LOW/HIGH endpoint checks;
+//   * retaining source authority after `hew_vec_push_owned_move` closes the same
+//     Receiver twice when the source binding and Vec unwind, which the HIGH
+//     MallocScribble run turns into an abort.
+fn receiver_vec_drop_only_source(frames: usize) -> String {
+    use std::fmt::Write as _;
+
+    let calls = (0..frames).fold(String::new(), |mut acc, _| {
+        let _ = writeln!(acc, "    drop_receiver_vec();");
+        acc
+    });
+    format!(
+        "import std::channel::channel;\n\
+         \n\
+         fn drop_receiver_vec() {{\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   tx.close();\n\
+         \x20   let receivers: Vec<channel.Receiver<i64>> = [rx];\n\
+         \x20   if receivers.len() != 1 {{ panic(\"receiver Vec move\"); }}\n\
+         \x20   println(\"receiver-vec-dropped\");\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         {calls}\
+         }}\n"
+    )
+}
+
+fn assert_receiver_vec_drop_only_work(bin: &Path, expected_frames: usize, context: &str) {
+    let output = run_bounded_command(
+        Command::new(bin),
+        format!("run drop-only Receiver Vec fixture ({context})"),
+    );
+    assert!(
+        output.status.success(),
+        "{context}: drop-only Receiver Vec fixture failed:\n{}",
+        describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        expected_frames,
+        "{context}: work witness expected {expected_frames} dropped Receiver Vecs, got {} lines {lines:?}",
+        lines.len(),
+    );
+    assert!(
+        lines.iter().all(|line| *line == "receiver-vec-dropped"),
+        "{context}: drop-only Receiver Vec fixture had an unexpected marker sequence {lines:?}",
+    );
+}
+
+// ── Cloneable Vec<Sender<T>> ownership ───────────────────────────────────
+//
+// Sender is the complementary endpoint contract to the drop-only Receiver
+// above: moving `tx` into the first Vec transfers its endpoint authority, and
+// cloning that Vec must call the descriptor's sender-clone thunk once for its
+// sole slot.  Both Vec values then release their separate sender references at
+// scope exit, while the paired Receiver is closed explicitly.  Repeating this
+// complete lifecycle catches every refcount imbalance directly:
+//
+//   * a missing Vec clone retain makes the second Vec drop an unowned sender
+//     reference (MallocScribble turns that use-after-free into a failure);
+//   * a missing Vec-slot close retains one sender/channel family per helper
+//     invocation and fails the exact-zero endpoint checks;
+//   * retaining source authority after move-in closes one sender twice.
+//
+// The `sender-vec-cloned` line is an exact work witness.  It proves the clone
+// and both length reads completed before either Vec reaches scope teardown;
+// a binary that failed before taking the clone would otherwise look leak-free
+// merely because it did no relevant work.
+fn sender_vec_clone_drop_source(frames: usize) -> String {
+    use std::fmt::Write as _;
+
+    let calls = (0..frames).fold(String::new(), |mut acc, _| {
+        let _ = writeln!(acc, "    clone_and_drop_sender_vec();");
+        acc
+    });
+    format!(
+        "import std::channel::channel;\n\
+         \n\
+         fn clone_and_drop_sender_vec() {{\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let senders: Vec<channel.Sender<i64>> = [tx];\n\
+         \x20   let senders_copy = senders.clone();\n\
+         \x20   if senders.len() != 1 {{ panic(\"sender Vec source clone\"); }}\n\
+         \x20   if senders_copy.len() != 1 {{ panic(\"sender Vec cloned clone\"); }}\n\
+         \x20   rx.close();\n\
+         \x20   println(\"sender-vec-cloned\");\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         {calls}\
+         }}\n"
+    )
+}
+
+fn assert_sender_vec_clone_drop_work(bin: &Path, expected_frames: usize, context: &str) {
+    let output = run_bounded_command(
+        Command::new(bin),
+        format!("run cloneable Sender Vec fixture ({context})"),
+    );
+    assert!(
+        output.status.success(),
+        "{context}: cloneable Sender Vec fixture failed:\n{}",
+        describe_output(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        expected_frames,
+        "{context}: work witness expected {expected_frames} cloned Sender Vec lifecycles, got {} lines {lines:?}",
+        lines.len(),
+    );
+    assert!(
+        lines.iter().all(|line| *line == "sender-vec-cloned"),
+        "{context}: cloneable Sender Vec fixture had an unexpected marker sequence {lines:?}",
+    );
 }
 
 /// Source-level `let opt = await rx.recv(); match opt {{ Some(item) =>
@@ -426,6 +654,208 @@ fn for_await_recv_string_loop_no_per_frame_leak_slope() {
         "for_await",
         for_await_source,
         one_line_per_frame,
+    );
+}
+
+/// Direct `Receiver<string>` ownership handoff under the hard lifecycle edge:
+/// every child has transferred `rx` into `for await`, consumed one owned value,
+/// then is destroyed while parked on the next receive. The low/high samples
+/// must have a flat leak slope, and the high sample must complete cleanly under
+/// Darwin's poisoned allocator — together pin no leaked cursor and no duplicate
+/// source/cursor drop authority on abandonment.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn parked_for_await_receiver_handoff_has_flat_leak_slope_and_no_double_free() {
+    require_leaks_tool();
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("parked-for-await-receiver-")
+        .tempdir()
+        .expect("tempdir");
+    let low = compile_to_native(
+        &parked_for_await_receiver_handoff_source(LOW_FRAMES),
+        dir.path(),
+        "parked_for_await_receiver_low",
+    );
+    let high = compile_to_native(
+        &parked_for_await_receiver_handoff_source(HIGH_FRAMES),
+        dir.path(),
+        "parked_for_await_receiver_high",
+    );
+
+    assert_parked_for_await_receiver_work(&low, LOW_FRAMES, "low plain run");
+    assert_parked_for_await_receiver_work(&high, HIGH_FRAMES, "high plain run");
+
+    let scribble = run_under_malloc_scribble(&high);
+    assert!(
+        scribble.status.success(),
+        "parked direct Receiver handoff aborted under the poisoned allocator — the source and cursor may both have released the handoff handle on the abandon edge:\n{}",
+        describe_output(&scribble)
+    );
+    let scribble_stdout = String::from_utf8_lossy(&scribble.stdout);
+    let scribble_lines: Vec<_> = scribble_stdout.lines().collect();
+    assert_eq!(
+        scribble_lines.len(),
+        HIGH_FRAMES,
+        "poisoned allocator run did not witness all {HIGH_FRAMES} parked Receiver handoffs: {scribble_lines:?}"
+    );
+    assert!(
+        scribble_lines.iter().all(|line| *line == "parked"),
+        "poisoned allocator run had an unexpected work witness {scribble_lines:?}"
+    );
+
+    let low_leaks = measure_leaks(&low);
+    let high_leaks = measure_leaks(&high);
+    eprintln!(
+        "parked_for_await_receiver: low_children={LOW_FRAMES} low_leaks={low_leaks} high_children={HIGH_FRAMES} high_leaks={high_leaks} tolerance={SLOPE_TOLERANCE}"
+    );
+    assert!(
+        high_leaks <= low_leaks + SLOPE_TOLERANCE,
+        "parked direct Receiver handoff leaked on the destroy-while-parked edge: low_children={LOW_FRAMES} low_leaks={low_leaks}, high_children={HIGH_FRAMES} high_leaks={high_leaks}, tolerance={SLOPE_TOLERANCE}. A positive slope means the transferred source or cursor was not reclaimed per stopped child. Re-run with `MallocStackLogging=1 leaks --atExit -- {}`",
+        high.display()
+    );
+}
+
+/// `Vec<Receiver<i64>>` owns its moved-in endpoint through a clone-null,
+/// drop-present element descriptor. Both LOW and HIGH samples must be exact
+/// zero-leak endpoints, and the HIGH sample must unwind cleanly under Darwin's
+/// poisoned allocator. This pins the runtime behavior of the descriptor path,
+/// not merely its emitted IR shape.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn receiver_vec_drop_only_has_zero_leak_endpoints_and_no_double_close() {
+    require_leaks_tool();
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("receiver-vec-drop-only-")
+        .tempdir()
+        .expect("tempdir");
+    let low = compile_to_native(
+        &receiver_vec_drop_only_source(LOW_FRAMES),
+        dir.path(),
+        "receiver_vec_drop_only_low",
+    );
+    let high = compile_to_native(
+        &receiver_vec_drop_only_source(HIGH_FRAMES),
+        dir.path(),
+        "receiver_vec_drop_only_high",
+    );
+
+    assert_receiver_vec_drop_only_work(&low, LOW_FRAMES, "low plain run");
+    assert_receiver_vec_drop_only_work(&high, HIGH_FRAMES, "high plain run");
+
+    let scribble = run_under_malloc_scribble(&high);
+    assert!(
+        scribble.status.success(),
+        "drop-only Receiver Vec aborted under the poisoned allocator — source and slot may both have closed the moved endpoint:\n{}",
+        describe_output(&scribble)
+    );
+    let scribble_stdout = String::from_utf8_lossy(&scribble.stdout);
+    let scribble_lines: Vec<_> = scribble_stdout.lines().collect();
+    assert_eq!(
+        scribble_lines.len(),
+        HIGH_FRAMES,
+        "poisoned allocator run did not witness all {HIGH_FRAMES} Receiver Vec drops: {scribble_lines:?}"
+    );
+    assert!(
+        scribble_lines
+            .iter()
+            .all(|line| *line == "receiver-vec-dropped"),
+        "poisoned allocator run had an unexpected Receiver Vec work witness {scribble_lines:?}"
+    );
+
+    let low_leaks = measure_leaks_exact(&low);
+    let high_leaks = measure_leaks_exact(&high);
+    eprintln!(
+        "receiver_vec_drop_only: low_frames={LOW_FRAMES} low={low_leaks:?} high_frames={HIGH_FRAMES} high={high_leaks:?}"
+    );
+    assert_eq!(
+        low_leaks,
+        (0, 0),
+        "drop-only Receiver Vec LOW endpoint leaked: {low_leaks:?}"
+    );
+    assert_eq!(
+        high_leaks,
+        (0, 0),
+        "drop-only Receiver Vec HIGH endpoint leaked: {high_leaks:?}; a per-Vec endpoint leak must not be hidden behind a slope tolerance"
+    );
+}
+
+/// `Vec<Sender<i64>>` moves the original endpoint into an owned descriptor,
+/// clones it through that descriptor's sender retain thunk, then releases both
+/// Vecs while an explicitly closed paired Receiver completes the channel
+/// lifecycle.  LOW and HIGH endpoints must both be exactly zero leaks; the
+/// HIGH `MallocScribble` execution catches duplicate/missing sender ownership
+/// before a flat slope could hide it.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn sender_vec_clone_drop_has_zero_leak_endpoints_and_no_double_free() {
+    require_leaks_tool();
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("sender-vec-clone-drop-")
+        .tempdir()
+        .expect("tempdir");
+    let low = compile_to_native(
+        &sender_vec_clone_drop_source(LOW_FRAMES),
+        dir.path(),
+        "sender_vec_clone_drop_low",
+    );
+    let high = compile_to_native(
+        &sender_vec_clone_drop_source(HIGH_FRAMES),
+        dir.path(),
+        "sender_vec_clone_drop_high",
+    );
+
+    assert_sender_vec_clone_drop_work(&low, LOW_FRAMES, "low plain run");
+    assert_sender_vec_clone_drop_work(&high, HIGH_FRAMES, "high plain run");
+
+    let scribble = run_under_malloc_scribble(&high);
+    assert!(
+        scribble.status.success(),
+        "cloneable Sender Vec aborted under the poisoned allocator — source, clone, or one Vec slot may have released an endpoint twice:\n{}",
+        describe_output(&scribble)
+    );
+    let scribble_stdout = String::from_utf8_lossy(&scribble.stdout);
+    let scribble_lines: Vec<_> = scribble_stdout.lines().collect();
+    assert_eq!(
+        scribble_lines.len(),
+        HIGH_FRAMES,
+        "poisoned allocator run did not witness all {HIGH_FRAMES} cloned Sender Vec lifecycles: {scribble_lines:?}"
+    );
+    assert!(
+        scribble_lines
+            .iter()
+            .all(|line| *line == "sender-vec-cloned"),
+        "poisoned allocator run had an unexpected Sender Vec work witness {scribble_lines:?}"
+    );
+
+    let low_leaks = measure_leaks_exact(&low);
+    let high_leaks = measure_leaks_exact(&high);
+    eprintln!(
+        "sender_vec_clone_drop: low_frames={LOW_FRAMES} low={low_leaks:?} high_frames={HIGH_FRAMES} high={high_leaks:?}"
+    );
+    assert_eq!(
+        low_leaks,
+        (0, 0),
+        "cloneable Sender Vec LOW endpoint leaked: {low_leaks:?}"
+    );
+    assert_eq!(
+        high_leaks,
+        (0, 0),
+        "cloneable Sender Vec HIGH endpoint leaked: {high_leaks:?}; a per-Vec clone/drop imbalance must not be hidden behind a slope tolerance"
     );
 }
 

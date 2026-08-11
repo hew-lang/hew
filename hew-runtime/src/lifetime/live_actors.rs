@@ -306,13 +306,12 @@ pub(crate) fn with_live_actor_by_id<R>(
 /// Look up an actor by ID and return a copy of its raw pointer if live.
 ///
 /// The lock is *not* held after this returns.  Call sites that can tolerate
-/// a narrow TOCTOU window (e.g. remote routing that fails gracefully if the
-/// actor disappears, or drain paths that immediately re-validate with
-/// `with_live_actor_by_id`) may use this.
+/// a narrow TOCTOU window (e.g. remote routing that only compares the pointer
+/// or fails gracefully if the actor disappears) may use this.
 ///
 /// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
 /// instead so the actor cannot be freed between lookup and dereference.
-// live on not(wasm32) — collect_pending_actor / hew_node; dead on wasm32
+// live on not(wasm32) — remote routing probes; dead on wasm32
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     with_live_actors_opt(|map| {
@@ -617,9 +616,7 @@ pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>)
     for handle in finished {
         // Ordering: only handles that reported `is_finished() == true`
         // under the lock above reach here, so this join is non-blocking.
-        if handle.join().is_err() {
-            eprintln!("hew: warning: deferred teardown thread panicked");
-        }
+        crate::util::report_join_panic("deferred teardown thread", handle.join());
     }
 }
 
@@ -637,9 +634,7 @@ pub(crate) fn drain_deferred_teardown_threads() {
         });
         let Some(handles) = handles else { return };
         for handle in handles {
-            if handle.join().is_err() {
-                eprintln!("hew: warning: deferred teardown thread panicked");
-            }
+            crate::util::report_join_panic("deferred teardown thread", handle.join());
         }
     }
 }

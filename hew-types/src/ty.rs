@@ -33,6 +33,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
+            | BuiltinType::VecIter
+            | BuiltinType::HashMapIter
             | BuiltinType::Task
             | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair
@@ -64,6 +66,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
+            | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
@@ -734,6 +737,11 @@ impl Ty {
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
+        if let Some(fact) = crate::builtin_enums::monomorphic_builtin_enum(name) {
+            if name == fact.canonical_name {
+                return Some(fact.canonical_name);
+            }
+        }
         lookup_builtin_type(name).map(BuiltinType::canonical_name)
     }
 
@@ -784,8 +792,8 @@ impl Ty {
     /// collision — a root-local `Widget` and an imported `widgeti8.Widget` share
     /// a final segment yet are DISTINCT nominal types (issue #2651). That
     /// discrimination requires the checker's resolution tables and is enforced
-    /// by `nominal_owner_conflict` at the `expect_type` boundary BEFORE this
-    /// permissive rule is reached; see `canonical_nominal_name`.
+    /// by `nominal_owner_conflict` at every checker unification boundary BEFORE
+    /// this permissive rule is reached; see `canonical_nominal_name`.
     #[must_use]
     pub fn names_match_qualified(a: &str, b: &str) -> bool {
         if a == b {
@@ -797,14 +805,20 @@ impl Ty {
         if a_qualified && b_qualified {
             return false;
         }
-        let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
-        let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
+        let a_bare = a.rsplit_once('.').map_or(a, |(_, leaf)| leaf);
+        let b_bare = b.rsplit_once('.').map_or(b, |(_, leaf)| leaf);
         a_bare == b_bare
     }
 
     #[must_use]
     pub fn contains_error(&self) -> bool {
         matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
+    }
+
+    /// Whether this type contains a dynamic trait object at any depth.
+    #[must_use]
+    pub fn contains_trait_object(&self) -> bool {
+        matches!(self, Ty::TraitObject { .. }) || self.any_child(&Ty::contains_trait_object)
     }
 
     #[must_use]
@@ -958,24 +972,39 @@ impl Ty {
     }
 
     /// Construct `SendError` — error type for tell-shaped lambda-actor calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn send_error() -> Ty {
-        Self::builtin_named(BuiltinType::SendError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("SendError")
+            .expect("generated builtin enum catalog must contain SendError")
     }
 
     /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn ask_error() -> Ty {
-        Self::builtin_named(BuiltinType::AskError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("AskError")
+            .expect("generated builtin enum catalog must contain AskError")
     }
 
     /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
     /// and `await stream.recv() | after d`.  A unit enum with one variant
     /// (`Timeout`) distinguishing deadline expiry from a closed channel
     /// (`Ok(None)`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn timeout_error() -> Ty {
-        Self::builtin_named(BuiltinType::TimeoutError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("TimeoutError")
+            .expect("generated builtin enum catalog must contain TimeoutError")
     }
 
     /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
@@ -987,17 +1016,27 @@ impl Ty {
     /// Construct `LinkError` — error type for `link(handle)` calls.
     ///
     /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
-    /// `std/link_monitor.hew` and wired in codegen slice B3. At the checker
+    /// `std/builtins.hew` and wired in codegen slice B3. At the checker
     /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn link_error() -> Ty {
-        Self::builtin_named(BuiltinType::LinkError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("LinkError")
+            .expect("generated builtin enum catalog must contain LinkError")
     }
 
     /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated stdlib enum catalog is inconsistent.
     #[must_use]
     pub fn monitor_error() -> Ty {
-        Self::builtin_named(BuiltinType::MonitorError, vec![])
+        crate::builtin_enums::monomorphic_builtin_enum_ty("MonitorError")
+            .expect("generated builtin enum catalog must contain MonitorError")
     }
 
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.

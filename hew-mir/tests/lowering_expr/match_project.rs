@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, IntentKind, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, DropKind, ElabDrop, ExitPath, FieldOffset, Instr, IrPipeline,
-    MirDiagnosticKind, MirStatement,
+    MirDiagnosticKind, MirStatement, Place,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -1011,13 +1011,14 @@ fn main() -> i64 {
 }
 
 /// An owned call-carrier enum param gets a terminal `ValueSnapshotDrop` on
-/// every exit, so a match arm that MOVES the payload out must neutralize the
-/// variant slot ON THAT ARM — the returned binder becomes the sole owner and
-/// the terminal drop observes null there, while a read-only sibling arm keeps
-/// its slot live for the terminal drop. Path-sensitive by construction: the
-/// neutralize sits in the arm's own block, never shared.
+/// every exit. Under the uniform carrier protocol a returned payload is
+/// TRANSFERRED: the variant slot is neutralized to a return-bound transferee
+/// and no retain is minted — the transferred share IS the result share. The
+/// legacy retained-return shape this test previously pinned was itself leaky:
+/// the retain minted a second share nothing ever discharged (one leaked
+/// payload per call).
 #[test]
-fn carrier_param_move_out_arm_neutralizes_variant_slot() {
+fn carrier_param_return_transfers_payload_and_keeps_terminal_drop() {
     let pipeline = pipeline_with_tc(
         r#"
 fn ef(e: Result<string, string>) -> string {
@@ -1030,15 +1031,12 @@ fn main() -> i64 {
 }
 "#,
     );
-    let ef = pipeline
-        .raw_mir
-        .iter()
-        .find(|f| f.name == "ef")
-        .expect("raw fn ef");
+    let ef = find_fn(&pipeline, "ef");
 
-    // The move-out (Ok) arm neutralizes its variant payload slot; the
-    // read-only (Err) arm must NOT — its payload is the terminal drop's.
-    let neutralized_variants: Vec<u32> = ef
+    // Exactly the returned Ok payload slot is neutralized, with its new owner
+    // named. The Err arm produces a fresh concat and must leave its slot for
+    // the guarded terminal drop.
+    let neutralized: Vec<(u32, Option<hew_mir::Place>)> = ef
         .blocks
         .iter()
         .flat_map(|block| block.instructions.iter())
@@ -1050,31 +1048,416 @@ fn main() -> i64 {
                         variant_idx,
                         ..
                     },
+                transferee,
                 ..
-            } => Some(*variant_idx),
+            } => Some((*variant_idx, *transferee)),
             _ => None,
         })
         .collect();
     assert_eq!(
-        neutralized_variants,
-        vec![0],
-        "exactly the Ok arm's variant slot must be neutralized"
+        neutralized.len(),
+        1,
+        "exactly the returned payload slot transfers out of the carrier"
+    );
+    let (variant_idx, transferee) = neutralized[0];
+    assert_eq!(variant_idx, 0, "only the Ok slot is consumed by the return");
+    let transferee = transferee.expect("a whole-carrier consume names its new owner");
+
+    // The transferee reaches the returned join local, and NO retain is minted
+    // anywhere: a second share on a transferred payload is exactly the
+    // stranded `+1` this shape leaked before.
+    let return_src = ef
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::Move {
+                dest: hew_mir::Place::ReturnSlot,
+                src,
+            } => Some(*src),
+            _ => None,
+        })
+        .expect("ef returns through an explicit ReturnSlot move");
+    assert!(
+        ef.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|instr| matches!(
+                instr,
+                Instr::Move { dest, src } if *dest == return_src && *src == transferee
+            )),
+        "the transferred payload must feed the returned join local"
+    );
+    assert_eq!(
+        ef.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
+            .count(),
+        0,
+        "a transferred payload must not gain a second share (stranded +1 = leak)"
     );
 
-    // The terminal carrier drop remains on the return path (it releases the
-    // Err payload when that arm runs, and no-ops on the neutralized Ok path).
+    // The terminal carrier drop remains on the return path; the neutralized
+    // slot is null there, so it releases only what the carrier still owns.
     assert!(
-        ef.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instr| {
-                matches!(
-                    instr,
-                    Instr::ValueSnapshotDrop {
-                        value: hew_mir::Place::Local(0),
-                        ..
-                    }
-                )
-            })
-        }),
+        ef.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    value: hew_mir::Place::Local(0),
+                    ..
+                }
+            )),
         "the carrier param keeps its terminal snapshot drop"
+    );
+    // No string-typed binder drop competes with the returned share: the
+    // payload is freed exactly once, by the caller of `ef`.
+    assert!(
+        all_drops(&pipeline, "ef")
+            .iter()
+            .all(|drop| drop.ty != hew_types::ResolvedTy::String),
+        "the return value is the sole owner of the transferred payload"
+    );
+}
+
+/// The three-way ownership differential over one owned call-carrier enum
+/// param, under the uniform carrier protocol:
+///
+///   - `forward` moves the payload into an owning Hew callee: the variant
+///     slot is neutralized to the call argument — a transfer, not a borrow
+///     plus a second share.
+///   - `inspect` only reads: no neutralize, no share, the shell stays the
+///     sole owner for its guarded terminal drop.
+///   - `take` returns the payload from BOTH arms: each variant slot is
+///     neutralized to its return-bound transferee and no retain is minted.
+///
+/// The legacy borrow-protocol shape this test previously pinned retained the
+/// returned payload on top of the transfer — a stranded `+1` per call.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the three-way MIR differential keeps forward, read, and consume ownership evidence together"
+)]
+fn carrier_payload_transfer_forward_keeps_sole_owner() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn stash(s: string) -> i64 {
+    let v: Vec<string> = Vec::new();
+    v.push(s);
+    v.len()
+}
+
+fn forward(e: Result<string, string>) -> i64 {
+    match e { Ok(x) => stash(x), Err(y) => y.len() }
+}
+
+fn inspect(e: Result<string, string>) -> i64 {
+    match e { Ok(x) => x.len(), Err(y) => y.len() }
+}
+
+fn take(e: Result<string, string>) -> string {
+    match e { Ok(x) => x, Err(y) => y }
+}
+
+fn main() -> i64 {
+    let n = forward(Ok("a" + "b"));
+    let m = inspect(Ok("c" + "d"));
+    let s = take(Ok("e" + "f"));
+    n + m + s.len()
+}
+"#,
+    );
+
+    let forward = find_fn(&pipeline, "forward");
+    let forward_block = forward
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                &block.terminator,
+                hew_mir::Terminator::Call { callee, .. } if callee == "stash"
+            )
+        })
+        .expect("forwarding call block");
+    let call_arg = match &forward_block.terminator {
+        hew_mir::Terminator::Call { args, .. } => args[0],
+        _ => unreachable!("block selected by call terminator"),
+    };
+    let forward_neutralized: Vec<(u32, Option<hew_mir::Place>)> = forward
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place:
+                    hew_mir::Place::MachineVariant {
+                        local: 0,
+                        variant_idx,
+                        ..
+                    },
+                transferee,
+                ..
+            } => Some((*variant_idx, *transferee)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        forward_neutralized,
+        vec![(0, Some(call_arg))],
+        "the forwarded Ok payload transfers into the owning call argument; \
+         the read-only Err arm leaves its slot for the guarded terminal drop"
+    );
+    assert!(
+        forward.blocks.iter().all(|block| block
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::StringRetain { .. }))),
+        "a transferred call argument must not gain a second share"
+    );
+
+    // The transferred binder's leaf release survives only as a
+    // transfer-GUARDED drop: the flag is cleared before the owning call, so
+    // the release fires exactly on paths where the transfer did not happen.
+    // An UNGUARDED string leaf release here would double-free the payload
+    // the callee already owns.
+    let forward_leaf_drops = all_drops(&pipeline, "forward")
+        .into_iter()
+        .filter(|drop| {
+            drop.ty == hew_types::ResolvedTy::String
+                && matches!(drop.kind, DropKind::CowHeap { .. })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        forward_leaf_drops.iter().all(|drop| drop.guard.is_some()),
+        "every string leaf release in a transferring function must be \
+         transfer-guarded, never unconditional"
+    );
+    assert!(
+        forward
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    value: hew_mir::Place::Local(0),
+                    ..
+                }
+            )),
+        "the carrier must keep its terminal structural release"
+    );
+
+    let inspect = find_fn(&pipeline, "inspect");
+    assert!(
+        inspect.blocks.iter().all(|block| block
+            .instructions
+            .iter()
+            .all(|instr| { !matches!(instr, Instr::NeutralizePayloadSlot { .. }) })),
+        "the non-forwarding read control must leave the enum shell owning"
+    );
+    assert!(
+        all_drops(&pipeline, "inspect")
+            .iter()
+            .all(|drop| drop.ty != hew_types::ResolvedTy::String),
+        "the non-forwarding control must not mint a competing payload-binder drop"
+    );
+
+    let take = find_fn(&pipeline, "take");
+    let mut take_neutralized: Vec<u32> = Vec::new();
+    let return_src = take
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .find_map(|instr| match instr {
+            Instr::Move {
+                dest: hew_mir::Place::ReturnSlot,
+                src,
+            } => Some(*src),
+            _ => None,
+        })
+        .expect("take returns through an explicit ReturnSlot move");
+    for instr in take
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+    {
+        let Instr::NeutralizePayloadSlot {
+            place:
+                hew_mir::Place::MachineVariant {
+                    local: 0,
+                    variant_idx,
+                    ..
+                },
+            transferee,
+            ..
+        } = instr
+        else {
+            continue;
+        };
+        take_neutralized.push(*variant_idx);
+        let transferee = transferee.expect("a whole-carrier consume names its new owner");
+        assert!(
+            take.blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .any(|instr| matches!(
+                    instr,
+                    Instr::Move { dest, src } if *dest == return_src && *src == transferee
+                )),
+            "each arm's transferred payload must feed the returned join local"
+        );
+    }
+    take_neutralized.sort_unstable();
+    assert_eq!(
+        take_neutralized,
+        vec![0, 1],
+        "both returned arms transfer their payload slot out of the carrier"
+    );
+    assert_eq!(
+        take.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(instr, Instr::StringRetain { .. }))
+            .count(),
+        0,
+        "a transferred return payload must not gain a second share (stranded +1 = leak)"
+    );
+    assert!(
+        all_drops(&pipeline, "take")
+            .iter()
+            .all(|drop| drop.ty != hew_types::ResolvedTy::String),
+        "the return value, not either projected binder, owns each consumed payload"
+    );
+}
+
+/// `string.join` exposes the same carrier boundary through a `Vec<string>`
+/// projection: the indexed element becomes `result`, then a borrowing concat
+/// reads it before the assignment releases the old generation. Pin both sides
+/// of that exactly-once split. Removing the delayed exit release leaks on
+/// panic/cancel; duplicating it competes with itself on the same exit.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression audits every exit of one generation-aware projection pipeline"
+)]
+fn vec_string_projection_forward_has_one_release_per_exit() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn join_like(parts: Vec<string>, sep: string) -> string {
+    let n = parts.len();
+    if n == 0 {
+        return "";
+    }
+    var result = parts[0];
+    for i in 1 .. n {
+        result = result + sep + parts[i];
+    }
+    result
+}
+
+fn main() -> i64 {
+    join_like(["a", "b"], ",").len()
+}
+"#,
+    );
+
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "join_like")
+        .expect("join_like elaborated MIR");
+    let delayed = function
+        .drop_plans
+        .iter()
+        .flat_map(|(exit, plan)| {
+            plan.drops.iter().filter_map(move |drop| {
+                (drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. }))
+                .then_some((exit, drop))
+            })
+        })
+        .collect::<Vec<_>>();
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|raw| raw.name == "join_like")
+        .expect("join_like raw MIR");
+    let result_local = raw
+        .local_names
+        .iter()
+        .position(|name| name.as_deref() == Some("result"))
+        .expect("result binding local");
+    let owner = Place::Local(u32::try_from(result_local).expect("local index fits u32"));
+    let destination_drops = delayed
+        .iter()
+        .filter(|(_, drop)| drop.place == owner)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destination_drops.len(),
+        5,
+        "the destination generation must release on each of the five panic/cancel exits"
+    );
+    let intermediate_drops = delayed
+        .iter()
+        .filter(|(_, drop)| drop.place != owner)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        intermediate_drops.len(),
+        4,
+        "the first concat generation stays live across the projected RHS and must release once on each later exit"
+    );
+    let intermediate_owner = intermediate_drops[0].1.place;
+    assert!(intermediate_drops
+        .iter()
+        .all(|(_, drop)| drop.place == intermediate_owner));
+    assert_ne!(
+        owner, intermediate_owner,
+        "destination and first-concat generations must never alias one cleanup authority"
+    );
+    for (exit, plan) in &function.drop_plans {
+        let releases = plan
+            .drops
+            .iter()
+            .filter(|drop| {
+                drop.place == owner
+                    && drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. })
+            })
+            .count();
+        assert!(
+            releases <= 1,
+            "exit {exit:?} must not duplicate the projected result release"
+        );
+    }
+    assert!(
+        function
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .all(|(_, plan)| plan.drops.iter().all(|drop| drop.place != owner)),
+        "the successful return transfers the result instead of releasing it"
+    );
+
+    let inline_owner_releases = find_fn(&pipeline, "join_like")
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    place,
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                } if *place == owner
+            )
+        })
+        .count();
+    assert_eq!(
+        inline_owner_releases, 1,
+        "the successful loop iteration must release the old result generation once"
     );
 }

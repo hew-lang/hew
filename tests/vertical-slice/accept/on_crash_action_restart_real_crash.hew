@@ -14,7 +14,8 @@
 //      OOB-read the bytes before the buffer, miss the sentinel, and libc::abort()
 //      the whole runtime — exit 134, NOT a clean restart.
 //   2. reads info.message (proving the header-aware allocation is valid) and
-//      returns CrashAction::Restart.
+//      mutates the child's restart-template state and returns
+//      CrashAction::Restart.
 //
 // Teeth: a wrong string ABI / a move-of-borrow aborts the process (exit 134) the
 // instant the hook runs on a real crash. A CLEAN restart that re-asks the fresh
@@ -22,6 +23,9 @@
 // dropped correctly. The on_crash body also branches on info.message.len() so a
 // garbage (uninitialised / OOB) length would route to Kill (no restart → the
 // await_restart never completes → 30s timeout, a visible failure), not Restart.
+// The fresh child must then report 43, proving actor-state field access in the
+// hook used the explicit fourth ABI argument rather than the supervisor's
+// execution-context actor.
 import std::failure;
 
 actor Worker {
@@ -40,6 +44,7 @@ actor Worker {
         // aborts before reaching here or yields a nonsense length → Kill (no
         // restart), turning the bug into a timeout rather than a false pass.
         if !info.message.is_empty() {
+            value = value + 1;
             CrashAction::Restart
         } else {
             CrashAction::Kill
@@ -66,7 +71,7 @@ fn main() -> i64 {
     // the crash-message clone/drop without aborting.
     let w2 = await_restart sup.w;
     match await w2.get() {
-        Ok(n) => n, // 42 — the fresh child's init value.
+        Ok(n) => n, // 43 — on_crash mutated the restart template from 42.
         Err(_) => 1,
     }
 }

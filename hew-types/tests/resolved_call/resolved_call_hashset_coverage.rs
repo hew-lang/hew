@@ -84,11 +84,11 @@ fn layout_element_hashset_methods_dual_emit_resolved_calls() {
             "ResolvedCall type args should mirror HashSet<T> receiver binding"
         );
         assert_eq!(
-            call.target.call_hint,
+            call.method_target.call_hint,
             hew_types::check::dispatch::CallAbiHint::RuntimeShim
         );
         assert!(
-            !call.target.consumes_receiver,
+            !call.method_target.consumes_receiver,
             "legacy HashSet runtime methods do not consume the receiver"
         );
     }
@@ -117,7 +117,7 @@ fn float_hashset_is_admitted_via_layout_element_path() {
         output
             .resolved_calls
             .values()
-            .any(|call| { call.target.symbol_name == "hew_hashset_insert_layout" }),
+            .any(|call| { call.method_target.symbol_name == "hew_hashset_insert_layout" }),
         "HashSet<f64>::insert must route to the layout element path: {:#?}",
         output.resolved_calls
     );

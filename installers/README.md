@@ -1,6 +1,6 @@
 # Hew Installers
 
-Installation options for [Hew](https://hew.sh) and [Adze](https://hew.sh/adze).
+Installation options for [Hew](https://hew.sh).
 
 ## Quick Install (Linux / macOS)
 
@@ -16,8 +16,9 @@ FreeBSD base includes `fetch(1)` — no extra packages needed:
 fetch -o - https://hew.sh/install | sh
 ```
 
-Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` on the
-[releases page](https://github.com/hew-lang/hew/releases) (x86_64 only today).
+Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` and
+`hew-v<ver>-freebsd-aarch64.tar.gz` on the
+[releases page](https://github.com/hew-lang/hew/releases).
 
 ## Quick Install (Windows)
 
@@ -47,7 +48,7 @@ docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew -o /work/out
 # Run a Hew program directly
 docker run --rm -v $(pwd):/work r.hew.sh/hew run /work/main.hew
 
-# Interactive shell with hew and adze available
+# Interactive shell with hew available
 docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
 ```
 

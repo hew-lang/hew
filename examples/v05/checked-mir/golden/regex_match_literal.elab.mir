@@ -48,9 +48,9 @@ fn main -> i64
     return[bb6] ->
       (none)
 
-fn Pattern::is_match -> bool
+fn std.text.regex.Pattern::is_match -> bool
   statements:
-    use BindingId(1) pat site=SiteId(24) ty=Pattern intent=Read
+    use BindingId(1) pat site=SiteId(24) ty=std.text.regex.Pattern intent=Read
     use BindingId(2) input site=SiteId(25) ty=string intent=Read
     return site=Some(SiteId(21)) ty=bool
   drop_plans:
@@ -61,9 +61,9 @@ fn Pattern::is_match -> bool
     return[bb1] ->
       (none)
 
-fn Pattern::matches -> bool
+fn std.text.regex.Pattern::matches -> bool
   statements:
-    use BindingId(3) pat site=SiteId(30) ty=Pattern intent=Read
+    use BindingId(3) pat site=SiteId(30) ty=std.text.regex.Pattern intent=Read
     use BindingId(4) input site=SiteId(31) ty=string intent=Read
     return site=Some(SiteId(27)) ty=bool
   drop_plans:
@@ -74,10 +74,11 @@ fn Pattern::matches -> bool
     return[bb1] ->
       (none)
 
-fn Pattern::find -> string
+fn std.text.regex.Pattern::find -> string
   statements:
-    use BindingId(5) pat site=SiteId(36) ty=Pattern intent=Read
+    use BindingId(5) pat site=SiteId(36) ty=std.text.regex.Pattern intent=Read
     use BindingId(6) input site=SiteId(37) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(34) ty=string
     return site=Some(SiteId(33)) ty=string
   drop_plans:
     call[bb0 hew_regex_find -> bb1] ->
@@ -87,11 +88,12 @@ fn Pattern::find -> string
     return[bb1] ->
       (none)
 
-fn Pattern::replace -> string
+fn std.text.regex.Pattern::replace -> string
   statements:
-    use BindingId(7) pat site=SiteId(42) ty=Pattern intent=Read
+    use BindingId(7) pat site=SiteId(42) ty=std.text.regex.Pattern intent=Read
     use BindingId(8) input site=SiteId(43) ty=string intent=Read
     use BindingId(9) replacement site=SiteId(44) ty=string intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(40) ty=string
     return site=Some(SiteId(39)) ty=string
   drop_plans:
     call[bb0 hew_regex_replace -> bb1] ->
@@ -101,9 +103,9 @@ fn Pattern::replace -> string
     return[bb1] ->
       (none)
 
-fn Pattern::find_all -> Vec<string>
+fn std.text.regex.Pattern::find_all -> Vec<string>
   statements:
-    use BindingId(10) pat site=SiteId(49) ty=Pattern intent=Read
+    use BindingId(10) pat site=SiteId(49) ty=std.text.regex.Pattern intent=Read
     use BindingId(11) input site=SiteId(50) ty=string intent=Read
     return site=Some(SiteId(46)) ty=Vec<string>
   drop_plans:
@@ -114,15 +116,18 @@ fn Pattern::find_all -> Vec<string>
     return[bb1] ->
       (none)
 
-fn Pattern::capture -> Option<string>
+fn std.text.regex.Pattern::capture -> Option<string>
   statements:
-    use BindingId(12) pat site=SiteId(55) ty=Pattern intent=Read
+    use BindingId(12) pat site=SiteId(55) ty=std.text.regex.Pattern intent=Read
     use BindingId(13) input site=SiteId(56) ty=string intent=Read
     use BindingId(14) group site=SiteId(57) ty=i64 intent=Read
     bind BindingId(15) values site=SiteId(52) ty=Vec<string>
     use BindingId(15) values site=SiteId(62) ty=Vec<string> intent=Read
     use BindingId(15) values site=SiteId(69) ty=Vec<string> intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(59) ty=Option<string>
     return site=Some(SiteId(59)) ty=Option<string>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(68) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(67) ty=Option<string>
     drop BindingId(15) values ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_capture_index_one -> bb1] ->
@@ -146,15 +151,18 @@ fn Pattern::capture -> Option<string>
     cancel[bb7] ->
       drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
-fn Pattern::capture_named -> Option<string>
+fn std.text.regex.Pattern::capture_named -> Option<string>
   statements:
-    use BindingId(16) pat site=SiteId(74) ty=Pattern intent=Read
+    use BindingId(16) pat site=SiteId(74) ty=std.text.regex.Pattern intent=Read
     use BindingId(17) input site=SiteId(75) ty=string intent=Read
     use BindingId(18) name site=SiteId(76) ty=string intent=Read
     bind BindingId(19) values site=SiteId(71) ty=Vec<string>
     use BindingId(19) values site=SiteId(81) ty=Vec<string> intent=Read
     use BindingId(19) values site=SiteId(88) ty=Vec<string> intent=Read
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(78) ty=Option<string>
     return site=Some(SiteId(78)) ty=Option<string>
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(87) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(86) ty=Option<string>
     drop BindingId(19) values ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_capture_name_one -> bb1] ->
@@ -178,17 +186,17 @@ fn Pattern::capture_named -> Option<string>
     cancel[bb7] ->
       drop _6 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
-fn Pattern::captures -> CaptureMatches
+fn std.text.regex.Pattern::captures -> std.text.regex.CaptureMatches
   statements:
-    use BindingId(20) pat site=SiteId(93) ty=Pattern intent=Read
+    use BindingId(20) pat site=SiteId(93) ty=std.text.regex.Pattern intent=Read
     use BindingId(21) input site=SiteId(94) ty=string intent=Read
     bind BindingId(22) groups site=SiteId(90) ty=Vec<string>
-    use BindingId(20) pat site=SiteId(99) ty=Pattern intent=Read
+    use BindingId(20) pat site=SiteId(99) ty=std.text.regex.Pattern intent=Read
     bind BindingId(23) group_count site=SiteId(96) ty=i64
     use BindingId(22) groups site=SiteId(102) ty=Vec<string> intent=Read
     use BindingId(23) group_count site=SiteId(103) ty=i64 intent=Read
     agg_alias BindingId(22) groups site=SiteId(102) ty=Vec<string>
-    return site=Some(SiteId(101)) ty=CaptureMatches
+    return site=Some(SiteId(101)) ty=std.text.regex.CaptureMatches
     drop BindingId(22) groups ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_captures_flat -> bb1] ->
@@ -200,17 +208,17 @@ fn Pattern::captures -> CaptureMatches
     return[bb2] ->
       (none)
 
-fn Pattern::find_all_submatch -> CaptureMatches
+fn std.text.regex.Pattern::find_all_submatch -> std.text.regex.CaptureMatches
   statements:
-    use BindingId(24) pat site=SiteId(107) ty=Pattern intent=Read
+    use BindingId(24) pat site=SiteId(107) ty=std.text.regex.Pattern intent=Read
     use BindingId(25) input site=SiteId(108) ty=string intent=Read
     bind BindingId(26) groups site=SiteId(104) ty=Vec<string>
-    use BindingId(24) pat site=SiteId(113) ty=Pattern intent=Read
+    use BindingId(24) pat site=SiteId(113) ty=std.text.regex.Pattern intent=Read
     bind BindingId(27) group_count site=SiteId(110) ty=i64
     use BindingId(26) groups site=SiteId(116) ty=Vec<string> intent=Read
     use BindingId(27) group_count site=SiteId(117) ty=i64 intent=Read
     agg_alias BindingId(26) groups site=SiteId(116) ty=Vec<string>
-    return site=Some(SiteId(115)) ty=CaptureMatches
+    return site=Some(SiteId(115)) ty=std.text.regex.CaptureMatches
     drop BindingId(26) groups ty=Vec<string>
   drop_plans:
     call[bb0 hew_regex_find_all_submatch_flat -> bb1] ->
@@ -222,10 +230,11 @@ fn Pattern::find_all_submatch -> CaptureMatches
     return[bb2] ->
       (none)
 
-fn Pattern::clone -> Pattern
+fn std.text.regex.Pattern::clone -> std.text.regex.Pattern
   statements:
-    use BindingId(28) pat site=SiteId(122) ty=Pattern intent=Read
-    return site=Some(SiteId(118)) ty=Pattern
+    use BindingId(28) pat site=SiteId(122) ty=std.text.regex.Pattern intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(119) ty=std.text.regex.Pattern
+    return site=Some(SiteId(118)) ty=std.text.regex.Pattern
   drop_plans:
     call[bb0 hew_regex_clone -> bb1] ->
       (none)
@@ -234,9 +243,9 @@ fn Pattern::clone -> Pattern
     return[bb1] ->
       (none)
 
-fn Pattern::close -> ()
+fn std.text.regex.Pattern::close -> ()
   statements:
-    use BindingId(29) pat site=SiteId(127) ty=Pattern intent=Read
+    use BindingId(29) pat site=SiteId(127) ty=std.text.regex.Pattern intent=Read
     eval site=SiteId(124) ty=()
   drop_plans:
     call[bb0 hew_regex_free -> bb1] ->
@@ -246,13 +255,13 @@ fn Pattern::close -> ()
     return[bb1] ->
       (none)
 
-fn CaptureMatches::len -> i64
+fn std.text.regex.CaptureMatches::len -> i64
   statements:
-    use BindingId(30) rows site=SiteId(131) ty=CaptureMatches intent=Read
+    use BindingId(30) rows site=SiteId(131) ty=std.text.regex.CaptureMatches intent=Read
     return site=Some(SiteId(133)) ty=i64
     eval site=SiteId(135) ty=()
-    use BindingId(30) rows site=SiteId(139) ty=CaptureMatches intent=Read
-    use BindingId(30) rows site=SiteId(141) ty=CaptureMatches intent=Read
+    use BindingId(30) rows site=SiteId(139) ty=std.text.regex.CaptureMatches intent=Read
+    use BindingId(30) rows site=SiteId(141) ty=std.text.regex.CaptureMatches intent=Read
     return site=Some(SiteId(136)) ty=i64
   drop_plans:
     branch[bb0: bb1/bb2] ->
@@ -282,44 +291,46 @@ fn CaptureMatches::len -> i64
     panic[bb10] ->
       (none)
 
-fn CaptureMatches::is_empty -> bool
+fn std.text.regex.CaptureMatches::is_empty -> bool
   statements:
-    use BindingId(31) rows site=SiteId(144) ty=CaptureMatches intent=Read
+    use BindingId(31) rows site=SiteId(144) ty=std.text.regex.CaptureMatches intent=Read
     return site=Some(SiteId(142)) ty=bool
   drop_plans:
-    call[bb0 CaptureMatches::len -> bb1] ->
+    call[bb0 std.text.regex.CaptureMatches::len -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     return[bb1] ->
       (none)
 
-fn CaptureMatches::width -> i64
+fn std.text.regex.CaptureMatches::width -> i64
   statements:
-    use BindingId(32) rows site=SiteId(148) ty=CaptureMatches intent=Read
+    use BindingId(32) rows site=SiteId(148) ty=std.text.regex.CaptureMatches intent=Read
     return site=Some(SiteId(147)) ty=i64
   drop_plans:
     return[bb0] ->
       (none)
 
-fn CaptureMatches::group -> Option<string>
+fn std.text.regex.CaptureMatches::group -> Option<string>
   statements:
     use BindingId(34) match_index site=SiteId(152) ty=i64 intent=Read
     use BindingId(35) group_index site=SiteId(155) ty=i64 intent=Read
     use BindingId(35) group_index site=SiteId(158) ty=i64 intent=Read
-    use BindingId(33) rows site=SiteId(160) ty=CaptureMatches intent=Read
+    use BindingId(33) rows site=SiteId(160) ty=std.text.regex.CaptureMatches intent=Read
     return site=Some(SiteId(161)) ty=Option<string>
     eval site=SiteId(163) ty=()
-    use BindingId(33) rows site=SiteId(165) ty=CaptureMatches intent=Read
+    use BindingId(33) rows site=SiteId(165) ty=std.text.regex.CaptureMatches intent=Read
     bind BindingId(36) row_count site=SiteId(164) ty=i64
     use BindingId(34) match_index site=SiteId(168) ty=i64 intent=Read
     use BindingId(36) row_count site=SiteId(169) ty=i64 intent=Read
     return site=Some(SiteId(170)) ty=Option<string>
     eval site=SiteId(172) ty=()
-    use BindingId(33) rows site=SiteId(176) ty=CaptureMatches intent=Read
+    use BindingId(33) rows site=SiteId(176) ty=std.text.regex.CaptureMatches intent=Read
     use BindingId(34) match_index site=SiteId(179) ty=i64 intent=Read
-    use BindingId(33) rows site=SiteId(181) ty=CaptureMatches intent=Read
+    use BindingId(33) rows site=SiteId(181) ty=std.text.regex.CaptureMatches intent=Read
     use BindingId(35) group_index site=SiteId(182) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(174) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(173) ty=Option<string>
     return site=Some(SiteId(173)) ty=Option<string>
   drop_plans:
     branch[bb0: bb2/bb1] ->
@@ -338,7 +349,7 @@ fn CaptureMatches::group -> Option<string>
       (none)
     goto[bb6->bb7] ->
       (none)
-    call[bb7 CaptureMatches::len -> bb9] ->
+    call[bb7 std.text.regex.CaptureMatches::len -> bb9] ->
       (none)
     goto[bb8->bb7] ->
       (none)
@@ -369,34 +380,37 @@ fn CaptureMatches::group -> Option<string>
     return[bb19] ->
       (none)
 
-fn CaptureMatches::whole -> Option<string>
+fn std.text.regex.CaptureMatches::whole -> Option<string>
   statements:
-    use BindingId(37) rows site=SiteId(184) ty=CaptureMatches intent=Read
+    use BindingId(37) rows site=SiteId(184) ty=std.text.regex.CaptureMatches intent=Read
     use BindingId(38) match_index site=SiteId(185) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(183) ty=Option<string>
     return site=Some(SiteId(183)) ty=Option<string>
   drop_plans:
-    call[bb0 CaptureMatches::group -> bb1] ->
+    call[bb0 std.text.regex.CaptureMatches::group -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
     return[bb1] ->
       (none)
 
-fn regex$new -> Pattern
+fn std$text$regex$new -> std.text.regex.Pattern
   statements:
     use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
-    bind BindingId(40) handle site=SiteId(189) ty=regex.PatternHandle
-    use BindingId(40) handle site=SiteId(193) ty=regex.PatternHandle intent=Read
-    bind BindingId(41) re site=SiteId(192) ty=Pattern
-    use BindingId(41) re site=SiteId(197) ty=Pattern intent=Read
+    bind BindingId(40) handle site=SiteId(189) ty=std.text.regex.PatternHandle
+    use BindingId(40) handle site=SiteId(193) ty=std.text.regex.PatternHandle intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(192) ty=std.text.regex.Pattern
+    bind BindingId(41) re site=SiteId(192) ty=std.text.regex.Pattern
+    use BindingId(41) re site=SiteId(197) ty=std.text.regex.Pattern intent=Read
     use BindingId(39) pattern site=SiteId(202) ty=string intent=Read
     eval site=SiteId(209) ty=()
-    use BindingId(41) re site=SiteId(210) ty=Pattern intent=Read
-    return site=Some(SiteId(188)) ty=Pattern
-    bind BindingId(4294967231) __hew_temp_arg site=SiteId(200) ty=string
+    use BindingId(41) re site=SiteId(210) ty=std.text.regex.Pattern intent=Read
+    return site=Some(SiteId(188)) ty=std.text.regex.Pattern
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(204) ty=string
+    bind BindingId(4294967229) __hew_temp_arg site=SiteId(200) ty=string
     eval site=SiteId(199) ty=!
-    drop BindingId(4294967231) __hew_temp_arg ty=string
-    drop BindingId(41) re ty=Pattern
+    drop BindingId(4294967229) __hew_temp_arg ty=string
+    drop BindingId(41) re ty=std.text.regex.Pattern
   drop_plans:
     call[bb0 hew_regex_new -> bb1] ->
       (none)
@@ -406,27 +420,27 @@ fn regex$new -> Pattern
       (none)
     branch[bb2: bb3/bb4] ->
       (none)
-    call[bb3 string::fmt -> bb6] ->
+    call[bb3 to_string_str -> bb6] ->
       (none)
     goto[bb4->bb5] ->
       (none)
     return[bb5] ->
       (none)
-    call[bb6 string_concat -> bb7] ->
+    call[bb6 hew_panic_msg -> bb7] ->
       (none)
-    call[bb7 panic -> bb8] ->
-      (none)
-    goto[bb8->bb5] ->
+    goto[bb7->bb5] ->
       drop _12 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb8] ->
+    cancel[bb7] ->
       drop _12 ty=string kind=cow_heap(hew_string_drop)
+      drop _4 ty=std.text.regex.Pattern kind=resource fn=user_close(std.text.regex.Pattern::close) guard=_5
 
 fn i8::fmt -> string
   statements:
     use BindingId(50) val site=SiteId(281) ty=i8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(279) ty=string
     return site=Some(SiteId(279)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -436,9 +450,10 @@ fn i8::fmt -> string
 fn i16::fmt -> string
   statements:
     use BindingId(51) val site=SiteId(285) ty=i16 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(283) ty=string
     return site=Some(SiteId(283)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -448,9 +463,10 @@ fn i16::fmt -> string
 fn i32::fmt -> string
   statements:
     use BindingId(52) val site=SiteId(288) ty=i32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(287) ty=string
     return site=Some(SiteId(287)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -460,9 +476,10 @@ fn i32::fmt -> string
 fn i64::fmt -> string
   statements:
     use BindingId(53) val site=SiteId(291) ty=i64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(290) ty=string
     return site=Some(SiteId(290)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -472,9 +489,10 @@ fn i64::fmt -> string
 fn u8::fmt -> string
   statements:
     use BindingId(54) val site=SiteId(294) ty=u8 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(293) ty=string
     return site=Some(SiteId(293)) ty=string
   drop_plans:
-    call[bb0 to_string_u8 -> bb1] ->
+    call[bb0 hew_u8_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -484,9 +502,10 @@ fn u8::fmt -> string
 fn u16::fmt -> string
   statements:
     use BindingId(55) val site=SiteId(297) ty=u16 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(296) ty=string
     return site=Some(SiteId(296)) ty=string
   drop_plans:
-    call[bb0 to_string_u16 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -496,9 +515,10 @@ fn u16::fmt -> string
 fn u32::fmt -> string
   statements:
     use BindingId(56) val site=SiteId(300) ty=u32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(299) ty=string
     return site=Some(SiteId(299)) ty=string
   drop_plans:
-    call[bb0 to_string_u32 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -508,9 +528,10 @@ fn u32::fmt -> string
 fn u64::fmt -> string
   statements:
     use BindingId(57) val site=SiteId(303) ty=u64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(302) ty=string
     return site=Some(SiteId(302)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -520,9 +541,10 @@ fn u64::fmt -> string
 fn isize::fmt -> string
   statements:
     use BindingId(58) val site=SiteId(307) ty=isize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(305) ty=string
     return site=Some(SiteId(305)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -532,9 +554,10 @@ fn isize::fmt -> string
 fn usize::fmt -> string
   statements:
     use BindingId(59) val site=SiteId(311) ty=usize intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(309) ty=string
     return site=Some(SiteId(309)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -544,9 +567,10 @@ fn usize::fmt -> string
 fn bool::fmt -> string
   statements:
     use BindingId(60) val site=SiteId(314) ty=bool intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(313) ty=string
     return site=Some(SiteId(313)) ty=string
   drop_plans:
-    call[bb0 to_string_bool -> bb1] ->
+    call[bb0 hew_bool_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -556,9 +580,10 @@ fn bool::fmt -> string
 fn char::fmt -> string
   statements:
     use BindingId(61) val site=SiteId(317) ty=char intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(316) ty=string
     return site=Some(SiteId(316)) ty=string
   drop_plans:
-    call[bb0 to_string_char -> bb1] ->
+    call[bb0 hew_char_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -568,9 +593,10 @@ fn char::fmt -> string
 fn f64::fmt -> string
   statements:
     use BindingId(62) val site=SiteId(320) ty=f64 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(319) ty=string
     return site=Some(SiteId(319)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -580,9 +606,10 @@ fn f64::fmt -> string
 fn f32::fmt -> string
   statements:
     use BindingId(63) val site=SiteId(324) ty=f32 intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(322) ty=string
     return site=Some(SiteId(322)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -648,12 +675,16 @@ fn duration::from_secs -> duration
 fn duration::fmt -> string
   statements:
     use BindingId(69) val site=SiteId(342) ty=duration intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(340) ty=string
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(339) ty=string
     return site=Some(SiteId(339)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_duration_nanos -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    return[bb1] ->
+    call[bb1 hew_i64_to_string -> bb2] ->
+      (none)
+    return[bb2] ->
       (none)
 

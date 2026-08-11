@@ -30,7 +30,7 @@ Key boundary checks most contributors encounter:
 
 - **`serializer-fail-closed` (P0):** Any Rust-to-C++ or wire boundary must hard-error on unsupported shapes — never silently omit.
 - **`checker-output-boundary` (P0):** Reject unresolved `Ty::Var` and missing checker metadata at `check_program` output. Serialize/codegen should consume checker-authoritative types instead of reconstructing them from AST fallbacks.
-- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs both a native and a WASM implementation, or an explicit `// WASM-TODO:` comment plus a PR note.  See [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the authoritative Tier 1 / Tier 2 feature table and disposition of each unsupported feature.
+- **`native-wasm-parity` (P1):** New runtime behaviour (channels, timers, actors) needs both a native and a WASM implementation, or an exact `// WASM-TODO(<stable-backlog-id>):` marker plus a PR note. Define the narrow semantic id in the `[[backlog]]` authority in `wasm-capability-manifest.toml`; do not use GitHub issue numbers or a general umbrella id. See [`docs/wasm-capability-matrix.md`](docs/wasm-capability-matrix.md) for the rendered Tier 1 / Tier 2 feature table and unsupported-feature backlog.
 - **`test-runner-trust` (P1):** Changes to discovery, reporting, or timeout in `hew test` must keep the runner fail-closed on parse errors and preserve stable ordering.
 
 ## What to Work On
@@ -72,15 +72,11 @@ Always use `make` targets instead of running `cargo` directly. See the [Makefile
 |---|---|---|---|
 | Full (default) | `make test` | Rust workspace (via nextest) | medium |
 | Stdlib type-check | `make test-stdlib-ratchet` | `std/` type-check sweep, ratcheted against `scripts/stdlib-expected-failures.txt` | medium |
-| Rust only | `make test-rust` | All Rust workspace crates | medium |
-| Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
-| Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
-| CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
-| Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
+| Compiler pipeline | `make test-compiler-pipeline` | Lexer through CLI and package consumers | medium |
 | Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
 | Hew test files | `make test-hew-ratchet` | `tests/hew/` via `hew test`, ratcheted against `scripts/hew-suite-expected-failures.txt` | medium |
 
-Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`, `test-runtime-unit`) during inner-loop iteration and `make test` before opening a PR.
+Use `test-runtime-unit` for no-network runtime iteration and `test-compiler-pipeline` for compiler iteration. Run `make test` before opening a PR.
 
 `make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 
@@ -92,14 +88,14 @@ When adding new language features, add an end-to-end test:
 
 1. Create a `.hew` source file under `tests/hew/`.
 2. Run it via `make test-hew-ratchet` (`hew test tests/hew/`, compared against the tracked expected-failure set).
-3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, exercise it via the `wasi_run_e2e` integration tests under `hew-cli/tests/`. If WASM support is deferred, add a `// WASM-TODO(#NNN): <reason>` comment at the registration site, where `#NNN` is a GitHub issue tracking the gap (use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity work).
+3. **WASM parity** (see `native-wasm-parity` in LESSONS.md): if the feature is supported on WASM, exercise it via the `wasi_run_e2e` integration tests under `hew-cli/tests/`. If WASM support is deferred, add `// WASM-TODO(<stable-backlog-id>): <reason>` at the registration site. The id must name the narrow gap in the `[[backlog]]` table in `wasm-capability-manifest.toml`; `make lint-wasm-todo` validates both the authority and every actionable marker without network access.
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 
 ### WASM / native parity
 
 New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with a WASM implementation or an explicit tracked gap. Per LESSONS.md `native-wasm-parity` (P1):
 
-- Implement both native and WASM paths, or add `// WASM-TODO(#NNN): <reason>` where the WASM path is deferred. The `#NNN` must be an open GitHub issue; use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity gaps. `make lint-wasm-todo` rejects bare `WASM-TODO:` markers without an issue reference.
+- Implement both native and WASM paths, or add `// WASM-TODO(<stable-backlog-id>): <reason>` where the WASM path is deferred. Add or reuse the narrow semantic id in `wasm-capability-manifest.toml`; never substitute an issue number or umbrella. `make lint-wasm-todo` parses the manifest, rejects malformed/duplicate/unknown ids and legacy issue markers, and fails closed if its actionable marker corpus disappears.
 - New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.

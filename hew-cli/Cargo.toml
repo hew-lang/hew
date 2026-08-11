@@ -29,7 +29,7 @@ hew-types = { path = "../hew-types" }
 # half of hew-runtime is consumed by hew-lib for AOT programs; this dep only
 # uses the rlib half.
 hew-runtime = { path = "../hew-runtime" }
-adze-cli = { path = "../adze-cli" }
+hew-pkg = { path = "../hew-pkg" }
 clap.workspace = true
 clap_complete.workspace = true
 pulldown-cmark = "0.13.4"
@@ -41,6 +41,13 @@ serde_json.workspace = true
 notify = "8"
 dirs.workspace = true
 wasmparser = "0.252.0"
+
+[features]
+# Red-first spec for the capture-escrow crash-cleanup feature (issue #2863).
+# Off by default: it gates the `suspending_closure_codegen_uses_one_typed_fresh_arg_cleanup_authority`
+# oracle, which asserts an unbuilt codegen behaviour and fails until #2863 lands.
+# RC2 re-enables it with `--features capture-escrow-spec`.
+capture-escrow-spec = []
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

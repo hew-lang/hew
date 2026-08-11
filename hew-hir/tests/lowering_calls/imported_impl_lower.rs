@@ -285,15 +285,16 @@ fn imported_impl_methods_registered_and_emitted() {
         "expected no ImportedBodyMissingPrivateHelper diagnostics; got: {blocked:?}"
     );
 
-    // `Foo::bar` must appear as an `HirItem::Function` in the lowered module.
+    // The emitted method keeps its full imported declaration owner.  A bare
+    // `Foo::bar` would collapse same-leaf types from different packages.
     let bar_emitted = output
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::bar"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::bar"));
     assert!(
         bar_emitted,
-        "expected `HirItem::Function` with name \"Foo::bar\" in lowered module items; \
+        "expected `HirItem::Function` with canonical name \"shapes.Foo::bar\" in lowered module items; \
          got: {:#?}",
         output
             .module
@@ -305,6 +306,62 @@ fn imported_impl_methods_registered_and_emitted() {
                 None
             })
             .collect::<Vec<_>>()
+    );
+    assert!(
+        !output
+            .module
+            .items
+            .iter()
+            .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::bar")),
+        "imported impl method must not be emitted under a leaf-only owner"
+    );
+}
+
+#[test]
+fn imported_opaque_impl_keeps_resolved_self_identity_and_bare_symbol() {
+    // An imported opaque type must preserve its module-qualified identity in
+    // `HirImplBlock` and its method symbol. MIR uses the former to distinguish
+    // a named receiver from an associated function's ordinary first argument.
+    let imported_src = r"
+#[opaque]
+pub type Handle {
+}
+
+trait Touch {
+    fn touch(self) -> Handle;
+}
+
+impl Touch for Handle {
+    fn touch(handle: Handle) -> Handle {
+        handle
+    }
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    0
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let impl_block = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Impl(block) if block.trait_name.as_deref() == Some("Touch") => Some(block),
+            _ => None,
+        })
+        .expect("expected imported opaque `Touch for Handle` impl metadata");
+    assert_eq!(impl_block.self_type_name, "shapes.Handle");
+    assert_eq!(impl_block.method_symbols, vec!["shapes.Handle::touch"]);
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "imported opaque impl must lower cleanly. Got: {:#?}",
+        result.err()
     );
 }
 
@@ -336,10 +393,10 @@ impl Foo {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::try_get"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::try_get"));
     assert!(
         try_get_emitted,
-        "expected `Foo::try_get` to be emitted (not skipped) even though its body \
+        "expected `shapes.Foo::try_get` to be emitted (not skipped) even though its body \
          constructs `Ok(..)`/`Err(..)`; got: {:#?}",
         output
             .module
@@ -373,10 +430,10 @@ impl Foo {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::apply"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::apply"));
     assert!(
         apply_emitted,
-        "expected `Foo::apply` to be emitted: `callback` is a lexically-bound \
+        "expected `shapes.Foo::apply` to be emitted: `callback` is a lexically-bound \
          fn-typed parameter, not an unresolved global call"
     );
 
@@ -407,10 +464,10 @@ impl Foo {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::report"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::report"));
     assert!(
         report_emitted,
-        "expected `Foo::report` to be emitted: `println` is a source builtin \
+        "expected `shapes.Foo::report` to be emitted: `println` is a source builtin \
          resolved to a concrete catalog entry during overload lowering"
     );
 
@@ -453,10 +510,10 @@ impl Foo {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::captures"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::captures"));
     assert!(
         captures_emitted,
-        "expected `Foo::captures` to be emitted: its return type is a public \
+        "expected `shapes.Foo::captures` to be emitted: its return type is a public \
          same-module record registered by the imported-module pre-pass; got: {:#?}",
         output
             .module
@@ -504,10 +561,10 @@ fn imported_impl_body_calling_private_helper_is_emitted_via_closure() {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name == "Foo::bar"));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes.Foo::bar"));
     assert!(
         bar_emitted,
-        "expected `Foo::bar` to be emitted: its private same-module helper is \
+        "expected `shapes.Foo::bar` to be emitted: its private same-module helper is \
          reachable through the impl-method private-fn closure; got: {:#?}",
         output
             .module
@@ -527,10 +584,10 @@ fn imported_impl_body_calling_private_helper_is_emitted_via_closure() {
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Function(f) if f.name.ends_with("helper")));
+        .any(|item| matches!(item, HirItem::Function(f) if f.name == "shapes$helper"));
     assert!(
         helper_emitted,
-        "expected the private `helper` to be emitted (qualified) so `Foo::bar` \
+        "expected the private `helper` to be emitted as `shapes$helper` so `shapes.Foo::bar` \
          resolves it; got: {:#?}",
         output
             .module
@@ -623,20 +680,21 @@ fn main() -> i64 {
         .find(|diagnostic| {
             matches!(
                 &diagnostic.kind,
-                HirDiagnosticKind::CallableUnsupportedInMir { name } if name == "Foo::bar"
+                HirDiagnosticKind::CallableUnsupportedInMir { name }
+                    if name == "shapes.Foo::<impl inherent for shapes.Foo>::bar"
             )
         })
         .unwrap_or_else(|| {
             panic!(
                 "calling a skipped imported impl method must fail closed with \
-                 CallableUnsupportedInMir for `Foo::bar`; got: {:#?}",
+                CallableUnsupportedInMir for the canonical `shapes.Foo` declaration; got: {:#?}",
                 output.diagnostics
             )
         });
     assert!(
         diagnostic
             .note
-            .contains("has no MIR body or runtime-ABI lowering"),
-        "fail-closed diagnostic must explain the missing callable body: {diagnostic:?}"
+            .contains("implementation declaration whose HIR body was not registered"),
+        "fail-closed diagnostic must explain the missing registered implementation body: {diagnostic:?}"
     );
 }

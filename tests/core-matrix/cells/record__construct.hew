@@ -1,0 +1,11 @@
+type Rec {
+    a: i64;
+    b: string;
+}
+
+fn main() {
+    let x = Rec { a: 1, b: "x0" };
+    let x_a = x.a;
+    let x_b = x.b;
+    println(f"{x_a} {x_b}");
+}

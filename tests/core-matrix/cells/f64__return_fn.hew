@@ -1,0 +1,9 @@
+fn make() -> f64 {
+    let m: f64 = 3.5;
+    m
+}
+
+fn main() {
+    let x = make();
+    println(f"{x}");
+}

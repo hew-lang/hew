@@ -1,0 +1,20 @@
+// Positive control: ownership markers remain valid on nominal `type`
+// declarations and retain their established resource/linear behaviour.
+#[resource]
+type ResourceToken { id: i64 }
+impl ResourceToken {
+    fn close(self) {}
+}
+
+#[linear]
+type LinearTicket { id: i64 }
+impl LinearTicket {
+    fn redeem(consuming self) {}
+}
+
+fn main() {
+    let resource = ResourceToken { id: 1 };
+    resource.close();
+    let ticket = LinearTicket { id: 2 };
+    ticket.redeem();
+}

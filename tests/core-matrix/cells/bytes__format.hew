@@ -1,0 +1,6 @@
+fn main() {
+    let x: bytes = bytes::new();
+    x.push(65);
+    x.push(66);
+    println(f"v={x}");
+}

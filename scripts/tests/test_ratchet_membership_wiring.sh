@@ -70,6 +70,14 @@ assert_exact_source_line scripts/hew-corpus-check.sh \
 assert_exact_source_line scripts/hew-corpus-check.sh \
     '    if ! line_set_contains "$ACTUAL_STR" "$path"; then' \
     "corpus ratchet actual-set lookup stays pipe-safe"
+# The corpus reporter intentionally re-runs a known-failing source to print a
+# compact diagnostic.  It must not use `head` under `pipefail`: a source with
+# more than three diagnostic lines would receive SIGPIPE and make the reporter
+# exit 141 before its deliberate gate verdict.  Pin the draining `sed` form.
+# shellcheck disable=SC2016
+assert_exact_source_line scripts/hew-corpus-check.sh \
+    '        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | sed -n '\''1,3{s/^/    /;p;}'\'' || true' \
+    "corpus reporter drains diagnostics beyond its three-line display"
 
 echo ""
 echo "Ratchet membership wiring self-test: $PASSES passed, $FAILURES failed"

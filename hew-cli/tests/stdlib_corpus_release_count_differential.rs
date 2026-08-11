@@ -76,6 +76,22 @@ enum FileCounts {
 const BASELINE: &str = "hew-cli/tests/fixtures/release-count-baseline.tsv";
 const REJECTED: &str = "REJECTED";
 
+/// Files whose source changed after the corpus-wide baseline was anchored and
+/// whose complete positive-count block was therefore recaptured. The global
+/// differential deliberately permits new release cells (the fix direction),
+/// but a source refresh must not omit one of its new functions from future
+/// regression coverage.
+///
+/// `examples/mqtt_broker.hew` is no longer here: it is REJECTED at the
+/// current compiler by a real, tracked static leak-obligation finding (an
+/// owned value reaching a suspend-abandon exit with more mints than
+/// discharges in `Acceptor__recv__start`), so it no longer has a
+/// `Functions`-shaped block for this mechanism to protect. Its baseline row
+/// is `REJECTED`; the main differential's `(Rejected, Rejected)` branch
+/// covers it, and the suspend-abandon gap itself is a compiler defect to fix
+/// separately, not something this ratchet can paper over.
+const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &[];
+
 /// Cells that stand BELOW the `main` baseline on purpose, each with the reason.
 ///
 /// This is the "without a stated reason" clause, written down. An entry here is
@@ -83,64 +99,67 @@ const REJECTED: &str = "REJECTED";
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    // The `Err(err)` binder is an interior byte-alias of the parent `Result`.
-    // The local-call snapshot is separately cloned, but the binder itself is
-    // not: dropping both binder and parent on cancellation walked the same
-    // `CronError` string twice.
-    (
-        "std/time/cron/cron.hew",
-        "Expr::next",
-        6,
-        "the nested CronError binder aliases its parent Result; suppressing its duplicate cancellation drop prevents a child-plus-parent double-free",
-    ),
     // The benchmark loops moved to `serve_forever`; these `main` functions now
-    // own only listener construction and its typed failure branch.
+    // own only listener construction, the handoff edge, and the typed failure
+    // branch. The listener close remains on cancel-before-handoff.
     (
         "examples/benchmarks/http_server.hew",
         "main",
         5,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        "the current main has exactly five releases: the Server close on serve_forever's cancel-before-handoff edge, plus reason/detail on both the normal and cancel exits from the listen-error print (1 + 2 + 2). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 10 describes an obsolete main topology",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
         9,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        "the current main has exactly nine releases: addr on return, panic, serve_forever cancel, and listen-error-print cancel; the Server close on serve_forever's cancel-before-handoff edge; and reason/detail on both exits from the error print (4 + 1 + 4). The request loop and its owned path temporaries now live in serve_forever, so the pre-refactor baseline of 14 describes an obsolete main topology",
     ),
-    // SMTP constructors now return Result and transfer either the live
-    // connection or error detail directly through the selected match arm.
+    // The non-benchmark examples share the same current 21-entry topology.
+    // The Server close remains on cancel-before-handoff; the remaining entries
+    // cover the three persistent strings and the two error strings on every
+    // live exit where each value is still owned.
+    ("examples/http_server.hew", "main", 21, "the current main has exactly 21 releases: port/root on both os.args cancel edges (4); port/root/addr on return, panic, serve_forever cancel, and listen-error-print cancel (12); the Server close on serve_forever's cancel-before-handoff edge (1); and reason/detail on both exits from the error print (4). This complete live-owner topology, not a removed Server close, accounts for the shortfall from the obsolete 25-entry baseline"),
+    ("examples/static_server.hew", "main", 21, "the current main has the same exact 21-entry topology as examples/http_server.hew::main: four os.args-edge string releases, twelve port/root/addr releases across four live exits, one Server close on cancel-before-handoff, and four reason/detail releases. The 25-entry baseline predates this consolidated serve_forever control flow"),
     (
-        "examples/smtp_client.hew",
+        "examples/http_json_demo.hew",
         "main",
-        35,
-        "fallible SMTP constructors transfer selected Result payloads instead of dropping null-backed temporaries",
+        14,
+        "main explicitly consumes the three owned JSON Value handles with Value::free, so their implicit resource plans are retracted; the 14 remaining entries are exactly the Option<string> shell and url string paired on seven return, panic, and cancel exits (7 * 2). The former 19-entry count included five plans that no longer belong to live implicit owners",
     ),
     // `Child` is now a resource record around an opaque runtime handle. These
     // methods contain no Hew heap value: resource teardown is the `Child.close`
     // action itself, outside the cow-heap drop count measured here.
+    //
+    // Key renamed (not a count change): commit 0897d68da ("enforce canonical
+    // executable identities") qualifies root-compiled stdlib method names with
+    // their full type path (`Child::close` -> `std.process.Child::close`);
+    // count re-verified unchanged under the new name.
     (
         "std/process.hew",
-        "Child::close",
+        "std.process.Child::close",
         0,
         "Child now wraps an opaque runtime handle; its resource close action owns no Hew heap allocation and therefore emits no cow-heap release",
     ),
     (
         "std/process.hew",
-        "Child::kill",
+        "std.process.Child::kill",
         0,
         "Child now wraps an opaque runtime handle; kill touches only that native handle and therefore has no Hew cow-heap release to emit",
     ),
     (
         "std/process.hew",
-        "Child::wait",
+        "std.process.Child::wait",
         0,
         "Child now wraps an opaque runtime handle; wait touches only that native handle and therefore has no Hew cow-heap release to emit",
     ),
+    // Key renamed (not a count change): same 0897d68da qualification, applied
+    // to a root-compiled free function (`last_process_error` ->
+    // `std$process$last_process_error`); count re-verified unchanged.
     (
         "std/process.hew",
-        "last_process_error",
-        0,
-        "both owned string inputs transfer directly into the selected ProcessError payload, leaving no untransferred Hew heap value to release",
+        "std$process$last_process_error",
+        1,
+        "the nonempty message transfers into ProcessError, while the empty-message arm transfers default_message and releases its now-unselected message buffer on that join edge",
     ),
     // SemVer numeric components are strings now. `try_parse` transfers them
     // into `Version` rather than parsing and dropping them, while
@@ -163,19 +182,127 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     // durable, continuously-run proof that `matches_single` is exactly
     // leak-free across all eight operators plus the unmatched-operator
     // fallthrough.
+    // Keys renamed (not a count change): same 0897d68da qualification, applied
+    // to root-compiled stdlib free functions (`matches_single` ->
+    // `std$text$semver$matches_single`, `try_parse` ->
+    // `std$text$semver$try_parse`); counts re-verified unchanged.
     (
         "std/text/semver/semver.hew",
-        "matches_single",
+        "std$text$semver$matches_single",
         82,
         "pre-migration baseline of 86 held ten `req_ver` return-plan sites under an older function shape; a later source/control-flow migration changed the plan topology, and the scanner ownership repair restores `req_ver`'s release at the one normal-return plan plus eight cancel/unwind plans, giving 82 (25/24/24/9) against the broken merge base's 73 (25/24/24/0) — see `semver_matches_leak_oracle.rs` for the leak-free proof",
     ),
     (
         "std/text/semver/semver.hew",
-        "try_parse",
-        63,
-        "validated component strings transfer into the returned Version instead of being dropped after fixed-width parsing, so those releases are intentionally absent",
+        "std$text$semver$try_parse",
+        105,
+        "the current source retains major_str, minor_str, patch_str, pre, and build as owned strings in the returned Version; its remaining releases are the live error/cancel paths for the cloned and sliced intermediates, so the three transferred component owners are intentionally absent from the pre-migration 108-plan topology",
     ),
 ];
+
+// These files carry inlined copies of the same current `std::net::connect_timeout`
+// helper. The owner has no suspend edge: its releases are the host's live
+// terminal/error paths, the receiver error-path releases, and formatting
+// temporaries on the panic arms. `hew_tcp_connect_timeout(host, ...)` borrows
+// `host`; it does not retain or free it. The former 18-plan shape belonged to
+// the pre-refactor endpoint/control-flow topology, so these copies remain
+// pinned below it rather than silently accepting another loss.
+//
+// Keys renamed (not a count change): commit 0897d68da ("enforce canonical
+// executable identities") qualifies root-compiled stdlib function names with
+// their full module path (`net$connect_timeout` -> `std$net$connect_timeout`,
+// and the `std/net/net.hew` root copy's bare `connect_timeout` likewise).
+//
+// Refreshed from 14 to 17: the P0 double-free in `connect_timeout`,
+// bisected to `1b78e7065`, is fixed (the join-prefix-redefinition liveness
+// fix landed). Measured 17 is stable across repeated runs and is one below
+// the obsolete pre-refactor 18-plan topology — the prior 14 was a stale
+// bottom-up estimate written while the double-free made real output
+// unobservable, not a target this fix needed to hit exactly.
+const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
+    ("examples/actor_net_reader.hew", "std$net$connect_timeout"),
+    (
+        "examples/benchmarks/http_server.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "std$net$connect_timeout",
+    ),
+    ("examples/chat_client.hew", "std$net$connect_timeout"),
+    ("examples/chat_server.hew", "std$net$connect_timeout"),
+    ("examples/curl_client.hew", "std$net$connect_timeout"),
+    // examples/http_server.hew is not here: the whole file is now REJECTED
+    // (a separate finding — see the report), unreachable through the
+    // per-function comparison branch, and `every_accounted_shortfall_is_a_real_shortfall`
+    // requires an accounted file to still have a `Functions` baseline block.
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "std$net$connect_timeout",
+    ),
+    ("examples/net/await_read.hew", "std$net$connect_timeout"),
+    (
+        "examples/net/await_read_fanout.hew",
+        "std$net$connect_timeout",
+    ),
+    ("examples/net/await_read_hup.hew", "std$net$connect_timeout"),
+    (
+        "examples/net/http_await_service.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_a_conn_field.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_await_outer_crash.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_capture_await.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_multi_await.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_unit_await.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b3_closure_capture_noawait.hew",
+        "std$net$connect_timeout",
+    ),
+    ("examples/net/tls_client.hew", "std$net$connect_timeout"),
+    (
+        "examples/quic_service/client.hew",
+        "std$net$connect_timeout",
+    ),
+    (
+        "examples/quic_service/server.hew",
+        "std$net$connect_timeout",
+    ),
+    // examples/static_server.hew is not here either: same REJECTED-file
+    // reason as examples/http_server.hew above.
+    ("std/net/dns/dns.hew", "std$net$connect_timeout"),
+    ("std/net/http/http.hew", "std$net$connect_timeout"),
+    ("std/net/net.hew", "std$net$connect_timeout"),
+    ("std/net/quic/quic.hew", "std$net$connect_timeout"),
+    ("std/net/tls/tls.hew", "std$net$connect_timeout"),
+    ("std/net/websocket/websocket.hew", "std$net$connect_timeout"),
+];
+
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete. Refreshed from 14 to 17: the P0 double-free in connect_timeout (bisected to 1b78e7065) is fixed by the join-prefix-redefinition liveness fix; the measured count is stable at 17 across repeated runs, one below the obsolete pre-refactor 18, and the prior 14 was a stale bottom-up estimate written while the double-free made real output unobservable.";
+
+fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
+{
+    ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
+        ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
+            .iter()
+            .map(|(file, function)| (*file, *function, 17, NET_CONNECT_TIMEOUT_REASON)),
+    )
+}
 
 fn capture_mode() -> bool {
     std::env::var_os("HEW_RELEASE_COUNT_CAPTURE").is_some()
@@ -234,17 +361,41 @@ fn counts_for(file: &Path) -> FileCounts {
     if !output.status.success() {
         return FileCounts::Rejected;
     }
-    FileCounts::Functions(parse_dump(&String::from_utf8_lossy(&output.stdout)))
+    let direct_prefix =
+        hew_types::module_registry::is_canonical_stdlib_module_source(file, "std.stream")
+            .then_some("stream$");
+    FileCounts::Functions(parse_dump_for_direct_module(
+        &String::from_utf8_lossy(&output.stdout),
+        direct_prefix,
+    ))
 }
 
 /// The parser the whole observable rests on, factored out so the self-test
 /// below exercises THIS code rather than a copy of it.
 fn parse_dump(stdout: &str) -> BTreeMap<String, usize> {
+    parse_dump_for_direct_module(stdout, None)
+}
+
+/// Parse one dump, optionally normalising the canonical prefix of the module
+/// compiled directly as the root unit.
+///
+/// Imported dependency symbols retain their prefixes. `std/stream.hew` is the
+/// first non-intrinsic source module whose exact std provenance requires the
+/// frontend to lower it under `std.stream`; its own `stream$pipe` symbol must
+/// therefore compare with the historical root-source key `pipe`, while an
+/// imported `fs$read` in the same dump remains `fs$read`.
+fn parse_dump_for_direct_module(
+    stdout: &str,
+    direct_prefix: Option<&str>,
+) -> BTreeMap<String, usize> {
     let mut per: BTreeMap<String, usize> = BTreeMap::new();
     let mut current: Option<String> = None;
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("fn ") {
-            let name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let raw_name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let name = direct_prefix
+                .and_then(|prefix| raw_name.strip_prefix(prefix))
+                .unwrap_or(raw_name);
             current = Some(name.to_string());
             per.entry(name.to_string()).or_insert(0);
         } else if line.starts_with("      drop _") {
@@ -358,9 +509,8 @@ fn no_shipped_program_silently_loses_a_release() {
     }
 
     let baseline = load_baseline();
-    let accounted: BTreeMap<(&str, &str), (usize, &str)> = ACCOUNTED_BELOW_BASELINE
-        .iter()
-        .map(|(file, function, count, reason)| ((*file, *function), (*count, *reason)))
+    let accounted: BTreeMap<(&str, &str), (usize, &str)> = accounted_shortfalls()
+        .map(|(file, function, count, reason)| ((file, function), (count, reason)))
         .collect();
 
     let mut drops: Vec<String> = Vec::new();
@@ -471,21 +621,48 @@ fn the_differential_reads_plan_drops_and_not_binding_statements() {
     );
 }
 
+#[test]
+fn direct_module_prefix_normalization_preserves_imported_dependency_symbols() {
+    let dump = [
+        "fn stream$pipe -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _1 ty=string kind=cow_heap(hew_string_drop)",
+        "",
+        "fn fs$read -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _2 ty=string kind=cow_heap(hew_string_drop)",
+    ]
+    .join("\n");
+    let per = parse_dump_for_direct_module(&dump, Some("stream$"));
+    assert_eq!(per.get("pipe"), Some(&1));
+    assert_eq!(
+        per.get("fs$read"),
+        Some(&1),
+        "an imported dependency name must retain its owner prefix"
+    );
+    assert!(
+        !per.contains_key("stream$pipe"),
+        "only the direct module's canonical prefix is normalized"
+    );
+}
+
 /// Every accounted-for shortfall names a real cell in the baseline and really
 /// is BELOW it. Without this an entry could quietly waive a cell that no longer
 /// exists, or "account for" a count that never dropped.
 #[test]
 fn every_accounted_shortfall_is_a_real_shortfall() {
     let baseline = load_baseline();
-    for (file, function, expected, reason) in ACCOUNTED_BELOW_BASELINE {
-        let Some(FileCounts::Functions(per)) = baseline.get(*file) else {
+    for (file, function, expected, reason) in accounted_shortfalls() {
+        let Some(FileCounts::Functions(per)) = baseline.get(file) else {
             panic!("{file} is accounted for but is not an accepted file in the baseline");
         };
-        let before = per.get(*function).unwrap_or_else(|| {
+        let before = per.get(function).unwrap_or_else(|| {
             panic!("{file}::{function} is accounted for but is not in the baseline")
         });
         assert!(
-            expected < before,
+            expected < *before,
             "{file}::{function} is accounted for at {expected} but the baseline is \
              {before}; an accounted entry must describe a SHORTFALL"
         );
@@ -493,6 +670,28 @@ fn every_accounted_shortfall_is_a_real_shortfall() {
             reason.len() > 80,
             "{file}::{function}: \"without a stated reason\" means the reason has to \
              say something"
+        );
+    }
+}
+
+#[test]
+fn source_refreshed_baseline_blocks_are_complete() {
+    let baseline = load_baseline();
+    for file in SOURCE_REFRESHED_BASELINE_FILES {
+        let measured = match counts_for(&repo_root().join(file)) {
+            FileCounts::Functions(per) => per
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .collect::<BTreeMap<_, _>>(),
+            FileCounts::Rejected => panic!("{file} is rejected after its baseline was refreshed"),
+        };
+        let Some(FileCounts::Functions(recorded)) = baseline.get(*file) else {
+            panic!("{file} has no accepted block in the release-count baseline");
+        };
+        assert_eq!(
+            recorded, &measured,
+            "{file} changed after its baseline block was refreshed; recapture every \
+             positive release-count cell so a new function cannot remain unguarded"
         );
     }
 }

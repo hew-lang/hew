@@ -1,0 +1,5 @@
+fn main() {
+    var x: f64 = 3.5;
+    x = 4.5;
+    println(f"{x}");
+}

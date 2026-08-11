@@ -143,6 +143,78 @@ pub struct RegistryEvent {
 struct ConnectionTokens {
     current: HashMap<u16, u64>,
     visible: HashMap<u16, u64>,
+    /// Guarded transitions that have passed their guard but have not emitted
+    /// yet, keyed by peer.
+    ///
+    /// A guarded transition cannot emit while holding the token lock — the
+    /// emit runs user callbacks — so between authorization and emission there
+    /// is a window in which a refusal can retire the very token the transition
+    /// was authorized against. Recording the authorization here makes it
+    /// revocable: retirement takes it away under this same lock, and the
+    /// emission has to claim it back before it may emit. Exactly one of the
+    /// two wins, so an authorized-but-unemitted ALIVE can never outlive the
+    /// retirement that supersedes it.
+    pending_emissions: HashMap<u16, u64>,
+    /// Guarded transitions that have already CLAIMED and are inside their
+    /// observable delivery, keyed by peer.
+    ///
+    /// Revocation of the *whole* transition cannot reach these: the claim
+    /// succeeded, the lock was dropped, and the delivery is running user
+    /// callbacks with no cluster lock held (holding one across a callback
+    /// deadlocks). Retirement therefore neither cancels the transition nor
+    /// waits for it — it CANCELS THE REMAINDER of it, by flipping the flag
+    /// below under this lock. The delivering thread re-reads that flag under
+    /// the same lock immediately before every remaining observable step and
+    /// abandons the rest. A successful re-read is the next step's
+    /// linearization point: retirement suppresses every step that has not
+    /// already passed that point, without blocking on user code. A step that
+    /// passed it immediately before cancellation may enter its callback after
+    /// retirement returns; the single transition drainer keeps the queued
+    /// `TokenLost` demotion ordered behind that already-authorized step.
+    in_flight_deliveries: HashMap<u16, InFlightGuardedDelivery>,
+}
+
+/// A guarded delivery that has claimed its authorization and is mid-flight.
+#[derive(Debug)]
+struct InFlightGuardedDelivery {
+    publication_token: u64,
+    /// Set by a retirement or supersede that took this token away. Read by the
+    /// delivering thread under `connection_tokens` before each remaining
+    /// observable step; once set, no step that has not already passed its gate
+    /// runs.
+    cancelled: bool,
+}
+
+/// Keeps a claimed guarded delivery registered as in flight for as long as it
+/// can still produce an observable event, so a retirement can cancel whatever
+/// of it has not happened yet. Deregisters on every exit path, unwinding
+/// included.
+struct GuardedDeliveryInFlight<'a> {
+    cluster: &'a HewCluster,
+    node_id: u16,
+    publication_token: u64,
+}
+
+impl GuardedDeliveryInFlight<'_> {
+    /// True while this delivery is still allowed to produce its next
+    /// observable step. Re-read under `connection_tokens` before every step:
+    /// that is the step's linearization point against a retirement's cancel.
+    fn may_emit(&self) -> bool {
+        let tokens = self.cluster.connection_tokens.lock_or_recover();
+        matches!(
+            tokens.in_flight_deliveries.get(&self.node_id),
+            Some(in_flight)
+                if in_flight.publication_token == self.publication_token
+                    && !in_flight.cancelled
+        )
+    }
+}
+
+impl Drop for GuardedDeliveryInFlight<'_> {
+    fn drop(&mut self) {
+        self.cluster
+            .finish_guarded_delivery(self.node_id, self.publication_token);
+    }
 }
 
 #[derive(Debug)]
@@ -398,6 +470,33 @@ pub struct HewCluster {
     /// `None` (the default) means no queues are registered and the
     /// fan-out is a no-op — backward-compatible with all existing callers.
     partition_registry: Option<Arc<PartitionRegistry>>,
+    /// Test-only park point between a guarded transition's authorization and
+    /// its emission (see `guarded_emission_rendezvous`).
+    #[cfg(test)]
+    guarded_emission_probe: Mutex<Option<Arc<std::sync::Barrier>>>,
+    /// Test-only park point AFTER a guarded transition has claimed and before
+    /// any of its observable deliveries (see `guarded_delivery_rendezvous`).
+    #[cfg(test)]
+    guarded_delivery_probe: Mutex<Option<Arc<GuardedDeliveryProbe>>>,
+    /// Test-only park point after the membership callback's per-step gate has
+    /// succeeded and immediately before the callback is entered.
+    #[cfg(test)]
+    guarded_membership_callback_probe: Mutex<Option<Arc<GuardedDeliveryProbe>>>,
+}
+
+/// Test-only handshake for the post-claim park point.
+///
+/// Deliberately not a `Barrier`: the thread that releases the parked delivery
+/// must not be a thread that could itself be blocked waiting for that delivery
+/// to finish. Announce-then-await-release keeps the releaser free.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct GuardedDeliveryProbe {
+    /// Signalled once the delivery has claimed and is about to become
+    /// observable.
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    /// Blocks the delivery until the test releases it.
+    pub(crate) release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 /// Maximum number of gossip events to retain.
@@ -792,6 +891,12 @@ impl HewCluster {
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
             partition_registry: None,
+            #[cfg(test)]
+            guarded_emission_probe: Mutex::new(None),
+            #[cfg(test)]
+            guarded_delivery_probe: Mutex::new(None),
+            #[cfg(test)]
+            guarded_membership_callback_probe: Mutex::new(None),
         }
     }
 
@@ -913,8 +1018,233 @@ impl HewCluster {
         }
     }
 
+    /// Evaluate a guarded transition's guard and, if it passes, record a
+    /// revocable authorization to emit.
+    ///
+    /// Lock order: `publication_sync` -> `connection_tokens` -> `members`, all
+    /// released on return. Nothing is emitted here, because an emit runs user
+    /// callbacks and must hold no cluster lock.
+    fn authorize_guarded_emission(
+        &self,
+        transition: &MemberTransition,
+        publication_token: u64,
+        publication_sync: &Mutex<()>,
+        publication_removed: &AtomicBool,
+    ) -> bool {
+        let _publication = publication_sync.lock_or_recover();
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        let should_deliver = if publication_removed.load(Ordering::Acquire) {
+            false
+        } else {
+            match tokens.current.get(&transition.node_id) {
+                Some(current) if *current == publication_token => {
+                    let members = self.members.lock_or_recover();
+                    matches!(
+                        members.iter().find(|m| m.node_id == transition.node_id),
+                        Some(member)
+                            if member.state == transition.state
+                                && member.incarnation == transition.incarnation
+                    )
+                }
+                _ => false,
+            }
+        };
+        if should_deliver {
+            // Authorized, not yet observable: the emission still has to claim
+            // this back, and a retirement arriving first revokes it.
+            tokens
+                .pending_emissions
+                .insert(transition.node_id, publication_token);
+            return true;
+        }
+        if matches!(
+            tokens.current.get(&transition.node_id),
+            Some(current) if *current == publication_token
+        ) {
+            tokens.current.remove(&transition.node_id);
+        }
+        if matches!(
+            tokens.visible.get(&transition.node_id),
+            Some(current) if *current == publication_token
+        ) {
+            tokens.visible.remove(&transition.node_id);
+        }
+        if matches!(
+            tokens.pending_emissions.get(&transition.node_id),
+            Some(pending) if *pending == publication_token
+        ) {
+            tokens.pending_emissions.remove(&transition.node_id);
+        }
+        false
+    }
+
+    /// Take back the authorization a guarded transition recorded when it passed
+    /// its guard, and register the delivery that authorization now makes
+    /// inevitable.
+    ///
+    /// Returns `true` only while the authorization is still live. A refusal
+    /// that retires this token in the window since the guard passed revokes it,
+    /// and a superseding admission moves `current` on. In both cases the ALIVE
+    /// this transition would have emitted is not emitted at all — it is not
+    /// merely emitted late. Once claimed, later cancellation operates at the
+    /// per-step gates documented by [`GuardedDeliveryInFlight::may_emit`].
+    ///
+    /// `visible` is published HERE, not at authorization, so a peer is only
+    /// ever recorded as observably alive if its ALIVE is genuinely about to be
+    /// emitted.
+    ///
+    /// The in-flight registration happens HERE too, under the same lock, and
+    /// that atomicity closes the other half of the window. Past this point the
+    /// transition as a whole can no longer be revoked — the delivery runs with
+    /// no lock held — so a retirement either takes the authorization away
+    /// before this call, and no ALIVE is ever emitted, or finds the delivery
+    /// registered and cancels whatever of it has not started yet. There is no
+    /// interleaving in which it does neither.
+    fn claim_guarded_emission(&self, node_id: u16, publication_token: u64) -> bool {
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        if !matches!(
+            tokens.pending_emissions.get(&node_id),
+            Some(pending) if *pending == publication_token
+        ) {
+            return false;
+        }
+        tokens.pending_emissions.remove(&node_id);
+        if !matches!(
+            tokens.current.get(&node_id),
+            Some(current) if *current == publication_token
+        ) {
+            return false;
+        }
+        tokens.visible.insert(node_id, publication_token);
+        tokens.in_flight_deliveries.insert(
+            node_id,
+            InFlightGuardedDelivery {
+                publication_token,
+                cancelled: false,
+            },
+        );
+        true
+    }
+
+    /// Deregister a finished guarded delivery.
+    fn finish_guarded_delivery(&self, node_id: u16, publication_token: u64) {
+        let mut tokens = self.connection_tokens.lock_or_recover();
+        if matches!(
+            tokens.in_flight_deliveries.get(&node_id),
+            Some(in_flight) if in_flight.publication_token == publication_token
+        ) {
+            tokens.in_flight_deliveries.remove(&node_id);
+        }
+    }
+
+    /// Suppress every observable step a claimed guarded delivery of
+    /// `publication_token` has not started yet.
+    ///
+    /// This is the whole of retirement's interaction with a claimed delivery:
+    /// it flips a flag under `connection_tokens` and returns. It NEVER waits.
+    /// Waiting would mean blocking on the delivering thread, which is running
+    /// externally-registered callbacks that may re-enter the cluster or block
+    /// on the retiring thread — that is the deadlock, and on the delivering
+    /// thread itself (a callback retiring its own connection) there is nothing
+    /// to wait for that is not the caller.
+    ///
+    /// Ordering argument. Every remaining step of a claimed delivery is
+    /// preceded by a `connection_tokens`-locked re-read of this flag, and the
+    /// mutex totally orders those re-reads against this store. If a re-read
+    /// follows the store, its step is abandoned. If it precedes the store, the
+    /// step was authorized before the retirement reached its own
+    /// linearization point (the token removal, in this same critical section),
+    /// so it linearizes before the retirement even if its callback is entered
+    /// after retirement returns. The single transition drainer keeps the
+    /// queued `TokenLost` demotion ordered behind that authorized step.
+    ///
+    /// Callers must already have made a further claim on this token impossible
+    /// (by removing it from `current`, or by having observed that it is not
+    /// `current`), so no new delivery can register behind this.
+    fn cancel_guarded_delivery(
+        tokens: &mut ConnectionTokens,
+        node_id: u16,
+        publication_token: u64,
+    ) {
+        if let Some(in_flight) = tokens.in_flight_deliveries.get_mut(&node_id) {
+            if in_flight.publication_token == publication_token {
+                in_flight.cancelled = true;
+            }
+        }
+    }
+
+    /// Test-only rendezvous in the window between a guarded transition's
+    /// authorization and the claim that emits it — the window the stale-ALIVE
+    /// finding is about. Parks the draining thread there so another thread can
+    /// retire the token underneath it.
+    #[cfg(test)]
+    fn guarded_emission_rendezvous(&self) {
+        let probe = self.guarded_emission_probe.lock_or_recover().clone();
+        if let Some(barrier) = probe {
+            // Announce that the transition is authorized but unemitted, then
+            // hold here until the test has finished racing it.
+            barrier.wait();
+            barrier.wait();
+        }
+    }
+
+    /// Park every guarded transition between authorization and emission on
+    /// `barrier` (two parties: the draining thread and the test).
+    #[cfg(test)]
+    pub(crate) fn set_guarded_emission_probe(&self, barrier: Option<Arc<std::sync::Barrier>>) {
+        *self.guarded_emission_probe.lock_or_recover() = barrier;
+    }
+
+    /// Test-only rendezvous AFTER a guarded transition has claimed and BEFORE
+    /// any of its observable deliveries — the window the claim-to-emit finding
+    /// is about. Parks the delivering thread there, registered as in flight, so
+    /// another thread can try to retire the token underneath it.
+    #[cfg(test)]
+    fn guarded_delivery_rendezvous(&self) {
+        let probe = self.guarded_delivery_probe.lock_or_recover().clone();
+        if let Some(probe) = probe {
+            let _ = probe.entered.send(());
+            let _ = probe.release.lock_or_recover().recv();
+        }
+    }
+
+    /// Park every claimed guarded delivery on `probe` until it is released.
+    #[cfg(test)]
+    pub(crate) fn set_guarded_delivery_probe(&self, probe: Option<Arc<GuardedDeliveryProbe>>) {
+        *self.guarded_delivery_probe.lock_or_recover() = probe;
+    }
+
+    /// Test-only rendezvous after the membership callback's successful
+    /// per-step gate and immediately before callback entry.
+    #[cfg(test)]
+    fn guarded_membership_callback_rendezvous(&self) {
+        let probe = self
+            .guarded_membership_callback_probe
+            .lock_or_recover()
+            .clone();
+        if let Some(probe) = probe {
+            let _ = probe.entered.send(());
+            let _ = probe.release.lock_or_recover().recv();
+        }
+    }
+
+    /// Park guarded membership-callback delivery on `probe` after its gate.
+    #[cfg(test)]
+    pub(crate) fn set_guarded_membership_callback_probe(
+        &self,
+        probe: Option<Arc<GuardedDeliveryProbe>>,
+    ) {
+        *self.guarded_membership_callback_probe.lock_or_recover() = probe;
+    }
+
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         let membership_event = transition.membership_event();
+        // Present for the whole of the observable delivery below when the
+        // transition is a claimed guarded one. It is both the registration a
+        // retirement cancels and the gate each observable step below is
+        // re-checked against. Dropped last, after every callback and side
+        // effect has returned or been abandoned.
+        let mut in_flight: Option<GuardedDeliveryInFlight<'_>> = None;
         let deliver = match &transition.publication {
             PublicationTransition::Plain => {
                 if matches!(membership_event, Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)) {
@@ -944,44 +1274,40 @@ impl HewCluster {
                 publication_sync,
                 publication_removed,
             } => {
-                let _publication = publication_sync.lock_or_recover();
-                let mut tokens = self.connection_tokens.lock_or_recover();
-                let should_deliver = if publication_removed.load(Ordering::Acquire) {
-                    false
-                } else {
-                    match tokens.current.get(&transition.node_id) {
-                        Some(current) if *current == *publication_token => {
-                            let members = self.members.lock_or_recover();
-                            matches!(
-                                members.iter().find(|m| m.node_id == transition.node_id),
-                                Some(member)
-                                    if member.state == transition.state
-                                        && member.incarnation == transition.incarnation
-                            )
-                        }
-                        _ => false,
-                    }
-                };
-                if should_deliver {
-                    tokens
-                        .visible
-                        .insert(transition.node_id, *publication_token);
-                    true
-                } else {
-                    if matches!(
-                        tokens.current.get(&transition.node_id),
-                        Some(current) if *current == *publication_token
-                    ) {
-                        tokens.current.remove(&transition.node_id);
-                    }
-                    if matches!(
-                        tokens.visible.get(&transition.node_id),
-                        Some(current) if *current == *publication_token
-                    ) {
-                        tokens.visible.remove(&transition.node_id);
-                    }
-                    false
+                // Phase 1 — AUTHORIZE.
+                if !self.authorize_guarded_emission(
+                    transition,
+                    *publication_token,
+                    publication_sync,
+                    publication_removed,
+                ) {
+                    return;
                 }
+                #[cfg(test)]
+                self.guarded_emission_rendezvous();
+                // Phase 2 — CLAIM. The window between the two phases is exactly
+                // where a refusal retires the token this transition was
+                // authorized against, so the authorization is re-taken here
+                // rather than assumed.
+                if !self.claim_guarded_emission(transition.node_id, *publication_token) {
+                    return;
+                }
+                // Phase 3 — DELIVER. The claim registered this delivery as in
+                // flight. The transition as a whole can no longer be revoked —
+                // it runs with no lock held — but each step of it is still
+                // cancellable: `may_emit` is re-read under the token lock
+                // before every observable step below, and a retirement that
+                // flips the flag suppresses every step that has not passed its
+                // gate. That per-step linearization, not a wait, is what keeps
+                // cancellation deadlock-free.
+                in_flight = Some(GuardedDeliveryInFlight {
+                    cluster: self,
+                    node_id: transition.node_id,
+                    publication_token: *publication_token,
+                });
+                #[cfg(test)]
+                self.guarded_delivery_rendezvous();
+                true
             }
             PublicationTransition::TokenLost(publication_token) => {
                 let mut tokens = self.connection_tokens.lock_or_recover();
@@ -998,12 +1324,42 @@ impl HewCluster {
             return;
         }
 
+        // Every observable step of a guarded delivery is gated on a fresh
+        // read of the in-flight registration. A retirement that cancelled this
+        // token stops the delivery here rather than being made to wait for it.
+        // Passing this gate linearizes the next step before a racing
+        // retirement: that already-authorized step may enter after retirement
+        // returns, but every later step observes cancellation, and the
+        // single-drainer queue orders the retirement's `TokenLost` demotion
+        // behind it. Ungated transitions have no token to retire and always run
+        // the full sequence.
+        let may_emit = || {
+            in_flight
+                .as_ref()
+                .is_none_or(GuardedDeliveryInFlight::may_emit)
+        };
+        if !may_emit() {
+            return;
+        }
         self.emit_event(transition.node_id, transition.state, transition.incarnation);
+        if !may_emit() {
+            return;
+        }
         self.notify_callback(transition.node_id, transition.state, transition.incarnation);
+        if !may_emit() {
+            return;
+        }
         if let Some(event) = membership_event {
+            #[cfg(test)]
+            if in_flight.is_some() {
+                self.guarded_membership_callback_rendezvous();
+            }
             let _ = self.with_membership_callback_dispatch(|callback, user_data| {
                 callback(transition.node_id, event, user_data);
             });
+        }
+        if !may_emit() {
+            return;
         }
         self.apply_member_transition_side_effects(transition);
     }
@@ -1503,12 +1859,50 @@ impl HewCluster {
     fn notify_connection_lost_if_current(&self, node_id: u16, publication_token: u64) {
         let mut should_drain = false;
         let known_member = {
+            // Lock order: connection_tokens -> members, both released before
+            // the drain below. Serializing the revocation with the guarded
+            // emission claim under `connection_tokens` is what keeps an
+            // authorized-but-unemitted ALIVE from outliving this retirement;
+            // the drain lock is deliberately not held across either, because
+            // holding it across an emit deadlocks.
             let mut tokens = self.connection_tokens.lock_or_recover();
-            match tokens.current.get(&node_id) {
-                Some(current) if *current == publication_token => {
-                    tokens.current.remove(&node_id);
+            let is_current = matches!(
+                tokens.current.get(&node_id),
+                Some(current) if *current == publication_token
+            );
+            if is_current {
+                tokens.current.remove(&node_id);
+                // Revoke a guarded transition for this exact token that has
+                // passed its guard but not yet emitted. It was authorized
+                // against the token being retired here, so its ALIVE is
+                // superseded, not merely late.
+                if matches!(
+                    tokens.pending_emissions.get(&node_id),
+                    Some(pending) if *pending == publication_token
+                ) {
+                    tokens.pending_emissions.remove(&node_id);
                 }
-                _ => return,
+            }
+            // Revocation of the whole transition only reaches one that has not
+            // CLAIMED yet. One that has is already past every check and is
+            // running its callbacks with no lock held, so it cannot be
+            // revoked — its REMAINDER is cancelled instead. Either branch
+            // above has made a further claim on this token impossible
+            // (`current` no longer matches it), so nothing can register a new
+            // delivery behind this.
+            //
+            // This cancels every step that has not already passed its
+            // per-step gate without ever blocking on user code. A step that
+            // passed immediately before this cancel is already linearized and
+            // may enter after this function returns; the queued `TokenLost`
+            // demotion remains ordered behind it by the single drainer. The
+            // cancel takes `connection_tokens` only, holds it for a hash-map
+            // write, and waits on nothing — no condvar, no other thread, and
+            // above all not the delivering thread, which may be this very
+            // thread re-entering from inside its own state callback.
+            Self::cancel_guarded_delivery(&mut tokens, node_id, publication_token);
+            if !is_current {
+                return;
             }
 
             let mut clear_visible_now = false;

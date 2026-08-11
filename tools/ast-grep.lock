@@ -1,0 +1,10 @@
+# Deliberately small, reviewable dependency contract for structural linting.
+# `scripts/build-ast-grep-lang.sh --bootstrap` fetches only these exact bytes.
+AST_GREP_CARGO_PACKAGE=ast-grep
+AST_GREP_VERSION=0.45.0
+TREE_SITTER_CLI_CARGO_PACKAGE=tree-sitter-cli
+TREE_SITTER_CLI_VERSION=0.26.5
+TREE_SITTER_HEW_REPOSITORY=https://github.com/hew-lang/tree-sitter-hew
+TREE_SITTER_HEW_REV=fa93c86489338dc668eda54444da094e442ce19a
+TREE_SITTER_HEW_ARCHIVE_SHA256=a8591ecaa995f9c1f69451f81819bbc4d9e2525909283d41815cc28558d08f29
+TREE_SITTER_HEW_LANGUAGE_ABI=15

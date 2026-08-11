@@ -5,6 +5,535 @@
 pub(super) use super::*;
 
 #[test]
+fn closable_consume_authority_matches_exact_impl_trait_identity() {
+    let parsed = hew_parser::parse(
+        r"
+        import std::io::closable;
+        type Probe { value: i64; }
+        impl Closable for Probe {
+            fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }
+        }
+        fn main() { let p = Probe { value: 1 }; let _ = p.close(); }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "fixture typecheck: {:?}",
+        output.errors
+    );
+    assert!(
+        checker
+            .trait_impls_set
+            .contains(&("Probe".to_string(), "std.io.closable.Closable".to_string())),
+        "impl authority must retain exact Closable owner: {:?}",
+        checker.trait_impls_set
+    );
+    assert!(
+        checker
+            .consume_receiver_methods
+            .contains("std.io.closable.Closable::close"),
+        "consume authority must use the same exact owner: {:?}",
+        checker.consume_receiver_methods
+    );
+    assert_eq!(output.method_call_consumes_receiver.len(), 1);
+}
+
+#[test]
+fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder {
+                self
+            }
+        }
+
+        fn touch_twice<T: Fluent>(value: T) {
+            value.touch();
+            value.touch();
+        }
+
+        fn transfer(value: Builder) -> Builder {
+            value.touch()
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch();
+            let next = value.touch();
+            next.touch();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "validated identity calls must preserve a discarded owner and transfer a captured one: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::StaticTraitDispatch {
+                consumes_receiver: true,
+                returns_receiver_identity: true,
+                ..
+            }
+        )),
+        "generic trait dispatch must carry both receiver ownership facts"
+    );
+    assert!(
+        output.method_call_preserves_receiver_identity.len() >= 3,
+        "statement-position identity calls must carry an explicit preservation fact"
+    );
+    assert!(
+        output.produced_value_ownership.values().any(|fact| {
+            fact.ownership == crate::runtime_call::ProducedValueOwnership::ReceiverIdentity
+                && fact.receiver_span.is_some()
+                && fact.receiver_boundary
+                    == Some(crate::runtime_call::ProducedArgumentBoundary::Transfer)
+        }),
+        "captured receiver-identity calls must publish their exact transferring receiver anchor"
+    );
+}
+
+#[test]
+fn captured_receiver_identity_result_moves_original_binding() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder {
+                self
+            }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            let next = value.touch();
+            value.touch();
+            next.touch();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "capturing the exact receiver result must transfer the original owner: errors={:#?}, \
+         consumes={:#?}, rewrites={:#?}, preserves={:#?}",
+        output.errors,
+        output.method_call_consumes_receiver,
+        output.method_call_rewrites,
+        output.method_call_preserves_receiver_identity
+    );
+}
+
+#[test]
+fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
+    let borrowed = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+            fn inspect(self) -> i64 { self.value }
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch().inspect();
+            value.touch();
+        }
+        ",
+    );
+    assert!(
+        borrowed.errors.is_empty(),
+        "a borrowing terminal call may return the exact intermediate owner to its root: {:#?}",
+        borrowed.errors
+    );
+
+    let consumed = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch().close();
+            value.touch();
+        }
+        ",
+    );
+    assert!(
+        consumed
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "a terminal consuming call must not restore an inner receiver identity: {:#?}",
+        consumed.errors
+    );
+}
+
+#[test]
+fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
+    for source in [
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                Builder { value: 2 }
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                if self.value == 0 {
+                    return self;
+                }
+                self
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                self
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self, consume other: Builder) -> Builder {
+                other
+            }
+        }
+        ",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("returns_receiver")
+            }),
+            "identity authority must reject non-exact bodies: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn receiver_identity_allows_nonreceiver_arguments() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        trait Fluent {
+            #[returns_receiver]
+            fn with(consuming self, value: i64) -> Self;
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn with(consuming self, value: i64) -> Builder {
+                self
+            }
+        }
+
+        fn twice<T: Fluent>(value: T) {
+            value.with(1);
+            value.with(2);
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.with(2);
+            value.with(3);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-receiver arguments do not change the exact receiver identity: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_impl_inference_and_receiver_identity_share_one_signature() {
+    let output = check_source(
+        r"
+        type Box<T> { value: T }
+
+        impl<T> Box<T> {
+            fn get(boxed: Box<T>, value: T) -> _ {
+                value
+            }
+        }
+
+        trait Fluent<T> {
+            #[returns_receiver]
+            fn with(consuming self, value: T) -> Self;
+        }
+
+        impl<T> Fluent<T> for Box<T> {
+            #[returns_receiver]
+            fn with(consuming self, value: T) -> Box<T> {
+                self
+            }
+        }
+
+        fn main() {
+            let box = Box { value: 1 };
+            box.with(2);
+            box.with(3);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "generic impl inference and exact generic receiver identity must coexist: {:#?}",
+        output.errors
+    );
+
+    let get_sig = output
+        .fn_sigs
+        .get("Box::get")
+        .expect("generic inherent method must retain its signature");
+    assert_eq!(
+        get_sig.return_type,
+        Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        },
+        "the body must resolve the primary return hole"
+    );
+
+    let with_sig = output
+        .fn_sigs
+        .get("Box::with")
+        .expect("generic trait impl method must retain its signature");
+    assert!(
+        with_sig.returns_receiver_identity,
+        "validated identity metadata must stay attached to the inferred carrier"
+    );
+    assert!(matches!(
+        &with_sig.return_type,
+        Ty::Named { name, args, .. }
+            if name == "Box"
+                && matches!(args.as_slice(), [Ty::Named { name, args, .. }]
+                    if name == "T" && args.is_empty())
+    ));
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                returns_receiver_identity: true,
+                ..
+            }
+        )),
+        "generic trait impl dispatch must retain both conformance axes"
+    );
+}
+
+#[test]
+fn generic_receiver_identity_rejects_changed_type_arguments() {
+    let output = check_source(
+        r"
+        type Pair<T, U> { first: T, second: U }
+
+        impl<T, U> Pair<T, U> {
+            #[returns_receiver]
+            fn swap_identity(consuming self) -> Pair<U, T> {
+                Pair { first: self.second, second: self.first }
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("returns_receiver")
+        }),
+        "generic receiver identity must compare the complete instantiated self type: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .fn_sigs
+            .get("Pair::swap_identity")
+            .is_some_and(|sig| !sig.returns_receiver_identity),
+        "a changed generic instantiation must fail closed in dispatch metadata"
+    );
+}
+
+#[test]
+fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
+    let output = check_source(
+        r"
+        trait Fluent {
+            #[returns_receiver]
+            fn bad(consuming self) -> Self {
+                return self;
+            }
+        }
+
+        fn call_bad<T: Fluent>(value: T) {
+            value.bad();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("returns_receiver")),
+        "the invalid authority must be diagnosed: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_rewrites
+            .values()
+            .all(|rewrite| !matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )),
+        "rejected receiver identity must fail closed before generic dispatch metadata: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn trait_impl_must_match_receiver_identity_and_consume_axes() {
+    for source in [
+        r"
+        type Builder { value: i64 }
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+        impl Fluent for Builder {
+            fn touch(consuming self) -> Builder { self }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        trait Fluent {
+            fn inspect(self) -> Self;
+        }
+        impl Fluent for Builder {
+            fn inspect(consuming self) -> Builder { self }
+        }
+        ",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::TraitImplSignatureMismatch { .. }
+            )),
+            "trait conformance must reject receiver ownership mismatches: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn receiver_identity_trait_method_is_not_dyn_object_safe() {
+    let output = check_source(
+        r"
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn use_dyn(value: dyn Fluent) {
+            value.touch();
+        }
+
+        fn main() {
+            use_dyn(Builder { value: 1 });
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "a Self-returning receiver-identity method must not silently cross dyn dispatch"
+    );
+}
+
+#[test]
 fn structural_satisfies_returns_false_for_unknown_trait() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     assert!(
@@ -102,6 +631,82 @@ fn module_local_dyn_trait_method_records_vtable_call() {
         .expect("module-local dyn trait call should populate vtable metadata");
     assert_eq!(dyn_call.trait_name, "Drawable");
     assert_eq!(dyn_call.method_name, "draw");
+}
+
+#[test]
+fn dyn_trait_return_signature_fails_closed_before_codegen() {
+    let source = r#"
+        trait Named {
+            fn name(val: Self) -> string;
+        }
+
+        type Person {
+            name: string;
+        }
+
+        impl Named for Person {
+            fn name(person: Person) -> string { person.name }
+        }
+
+        fn make_person() -> dyn Named {
+            Person { name: "Ada" }
+        }
+    "#;
+
+    let (errors, _) = parse_and_check(source);
+    let boundary_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("heap-promoted before its fat pointer can escape")
+        })
+        .collect();
+    assert_eq!(
+        boundary_errors.len(),
+        1,
+        "a dyn-returning signature must fail closed exactly once at the return \
+         annotation; got: {errors:#?}"
+    );
+}
+
+#[test]
+fn nested_dyn_trait_return_signature_fails_closed_before_codegen() {
+    let source = r#"
+        trait Named {
+            fn name(val: Self) -> string;
+        }
+
+        type Person {
+            name: string;
+        }
+
+        impl Named for Person {
+            fn name(person: Person) -> string { person.name }
+        }
+
+        fn maybe_person() -> Option<dyn Named> {
+            Some(Person { name: "Ada" })
+        }
+    "#;
+
+    let (errors, _) = parse_and_check(source);
+    let boundary_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("heap-promoted before its fat pointer can escape")
+        })
+        .collect();
+    assert_eq!(
+        boundary_errors.len(),
+        1,
+        "a signature returning a carrier containing dyn Trait must fail closed \
+         exactly once at the return annotation; got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -1430,7 +2035,7 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 }
 
 #[test]
-fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
+fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(
         "Thing".to_string(),
@@ -1456,22 +2061,10 @@ fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
     let receiver = (Expr::Identifier("thing".to_string()), 0..5);
     let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
 
-    assert_eq!(ty, Ty::String);
+    assert_eq!(ty, Ty::Error);
     assert!(
-        checker.errors.is_empty(),
-        "expected clean module-qualified method dispatch, got: {:?}",
-        checker.errors
-    );
-    assert!(
-        checker
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| matches!(
-                rewrite,
-                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Thing::label"
-            )),
-        "module-qualified receiver must rewrite via unqualified method key, got: {:?}",
-        checker.method_call_rewrites
+        !checker.errors.is_empty(),
+        "a missing canonical widgets.Thing::label declaration must fail closed"
     );
     assert!(
         !checker
@@ -1479,11 +2072,27 @@ fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
             .values()
             .any(|rewrite| matches!(
                 rewrite,
-                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                    if c_symbol == "widgets.Thing::label"
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Thing::label"
             )),
-        "qualified type prefix must not leak into method rewrite symbol: {:?}",
-        checker.method_call_rewrites
+        "the bare Thing::label key must not become a fallback authority"
+    );
+    assert!(
+        !checker
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "widgets.Thing::label"
+            )),
+        "no synthetic qualified linker label may conceal the missing declaration"
+    );
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| error.message.contains("label")),
+        "expected method-resolution diagnostic, got: {:?}",
+        checker.errors
     );
 }
 
@@ -1952,6 +2561,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 span: 0..0,
             },
             TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "do_it".to_string(),
                 type_params: None,
                 params: vec![Param {
@@ -1993,6 +2604,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "run".to_string(),
             type_params: None,
             params: vec![Param {
@@ -2044,6 +2657,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "map".to_string(),
             type_params: Some(vec![TypeParam {
                 name: "U".to_string(),
@@ -2086,6 +2701,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "run".to_string(),
             type_params: None,
             params: vec![Param {

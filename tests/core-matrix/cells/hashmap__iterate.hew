@@ -1,0 +1,9 @@
+fn main() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    let ks = m.keys();
+    let vs = m.values();
+    let k0 = ks[0];
+    let v0 = vs[0];
+    println(f"{k0}={v0}");
+}

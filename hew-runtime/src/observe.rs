@@ -1087,6 +1087,12 @@ pub unsafe extern "C" fn hew_observe_string_free(ptr: *mut c_char) {
 /// In particular, this deliberately does **not** reset live gauges or the
 /// dispatch-ticket/barrier state.  Those values have active writers and are
 /// reset only by [`reset_all`] after scheduler shutdown has joined workers.
+///
+/// KEEP(wasm32): called from `scheduler::hew_sched_metrics_reset`, the
+/// counter-reset half of the public metrics C ABI. lib.rs gates `pub mod
+/// scheduler` behind `#[cfg(not(target_arch = "wasm32"))]` while `pub mod
+/// observe` is unconditional, so only wasm32 sees no caller.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn reset_live_safe_counters() {
     shard_reset(&HEAP_ALLOCATED_TOTAL);
     shard_reset(&HEAP_FREED_TOTAL);
@@ -1115,6 +1121,13 @@ pub(crate) fn reset_live_safe_counters() {
 /// workers before firing `session_reset`, which invokes this hook.  Do not call
 /// this from a live metrics API: clearing a dispatch ticket while its worker
 /// still owns it makes that worker panic when it closes the ticket.
+///
+/// KEEP(wasm32): registered on `session::RESET_HOOKS` by
+/// [`register_reset_hooks`] and fired from `scheduler::hew_sched_shutdown`
+/// after workers are joined — both in the native-only `scheduler` module.
+/// Dropping it would silently leak a prior session's metrics registry and
+/// dispatch-ticket state into the next JIT/AOT reload cycle.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn reset_all() {
     reset_live_safe_counters();
     COROUTINES_LIVE.store(0, Ordering::Relaxed);
@@ -1141,6 +1154,11 @@ pub(crate) fn reset_all() {
     }
 }
 
+/// KEEP(wasm32): called from `scheduler::hew_sched_init`, which lib.rs gates
+/// behind `#[cfg(not(target_arch = "wasm32"))]`. Structurally identical to the
+/// sibling registrations in bridge.rs, tracing.rs and profiler/mod.rs on the
+/// same shared `session::RESET_HOOKS` registry.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn register_reset_hooks() {
     use std::sync::Once;
     static ONCE: Once = Once::new();

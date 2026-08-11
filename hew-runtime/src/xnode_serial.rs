@@ -242,6 +242,17 @@ fn register_codec_into(
     }
 }
 
+// KEEP(wasm32): this is the live cross-node actor wire codec. `pub mod
+// xnode_serial` is unconditional in lib.rs while its only consumer,
+// `pub mod hew_node`, is `#[cfg(not(target_arch = "wasm32"))]`, so a wasm32
+// build — which compiles no cross-node transport — is the one place these
+// entry points have no caller. On native every remote actor send or ask
+// reaches them, and the fail-closed rule of the wire-format doctrine (no
+// registered codec means the send is refused) is enforced here.
+//
+// The four `lookup_*` resolvers below are the codec-key layer those entry
+// points call, so they stay reachable without an allow of their own.
+
 /// Look up the deserialize thunk for `(dispatch, msg_type)`, if registered.
 pub(crate) fn lookup_deserialize(
     dispatch: *const c_void,
@@ -284,6 +295,8 @@ pub(crate) fn lookup_reply_deserialize(
 ///
 /// # Safety
 /// `data` must be valid for `len` bytes (or null when `len == 0`).
+// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn decode_reply(
     dispatch: *const c_void,
     msg_type: i32,
@@ -307,6 +320,8 @@ pub(crate) unsafe fn decode_reply(
 ///
 /// # Safety
 /// `data` must be valid for `len` bytes (or null when `len == 0`).
+// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn decode_payload(
     dispatch: *const c_void,
     msg_type: i32,
@@ -339,6 +354,8 @@ pub(crate) fn lookup_serialize(dispatch: *const c_void, msg_type: i32) -> Option
 /// # Safety
 /// `value_ptr` must point to a valid value of the message type for `msg_type`;
 /// `out_len` must be a valid writable pointer.
+// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn encode_payload(
     dispatch: *const c_void,
     msg_type: i32,
@@ -364,6 +381,8 @@ pub(crate) unsafe fn encode_payload(
 /// # Safety
 /// `value_ptr` must point to a valid value of the reply type for `msg_type`;
 /// `out_len` must be a valid writable pointer.
+// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn encode_reply(
     dispatch: *const c_void,
     msg_type: i32,

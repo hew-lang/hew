@@ -286,6 +286,14 @@ thread_local! {
 /// at unwind, and until then its storage is held so its address cannot be reused
 /// mid-drain. A crash-cleanup escrow thunk that also owns this frame observes it
 /// as quarantined and skips its own (would-be double) free.
+// KEEP(wasm32): called from `drain_active_coroutine_frames_excluding`, whose
+// only caller `reclaim_active_coroutine_frames_excluding` is
+// `#[cfg(not(target_arch = "wasm32"))]` — the native crash-drain path taken
+// after a signal longjmp abandons a stack. This module is ungated, so wasm32 is
+// the only build where the drain has no entry point. Deleting it reopens the
+// same-drain ABA / tcache double-free closed by PR #2865 (LESSONS.md
+// `crash-recovery-frame-owner-is-single-authority`).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn quarantine_reclaimed_frame(frame: *mut c_void) {
     if frame.is_null() {
         return;
@@ -769,6 +777,10 @@ unsafe fn discard_frame_crash_cleanup_registry(frame: *mut c_void) {
     }
 }
 
+// KEEP(wasm32): same native crash-drain path as `quarantine_reclaimed_frame`;
+// this half discharges the frame's typed escrow owners before the storage is
+// released.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 unsafe fn run_frame_crash_cleanups(frame: *mut c_void) {
     // Detach before running user/resource thunks so recursive runtime calls
     // cannot observe a half-drained registry.

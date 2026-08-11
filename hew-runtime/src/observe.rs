@@ -22,7 +22,16 @@ use crate::util::{CondvarExt, MutexExt};
 
 const SHARD_COUNT: usize = HEW_MAX_WORKERS + 1;
 const OBSERVE_BARRIER_OK: i64 = 0;
+// The two failure codes of the `hew_observe_barrier` runtime call. They are read
+// only inside that function's `#[cfg(not(target_arch = "wasm32"))]` body, while
+// this module is compiled for every target — so wasm32, whose `hew_observe_barrier`
+// is a documented no-op returning `OBSERVE_BARRIER_OK`, is the only build with no
+// reader. They are the fail-closed half of a shipping surface: `std/observe.hew`
+// declares the call, `hew-types` maps `RuntimeCall::ObserveBarrier` to the symbol,
+// and `hew-codegen-rs` emits its i64 signature.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const OBSERVE_BARRIER_ERR_WORKER_CONTEXT: i64 = -1;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const OBSERVE_BARRIER_ERR_TIMEOUT: i64 = -2;
 #[cfg(not(target_arch = "wasm32"))]
 const OBSERVE_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);

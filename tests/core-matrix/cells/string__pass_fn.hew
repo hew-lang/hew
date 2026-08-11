@@ -1,0 +1,8 @@
+fn use_it(v: string) {
+    println(f"{v}");
+}
+
+fn main() {
+    let x: string = "ab";
+    use_it(x);
+}

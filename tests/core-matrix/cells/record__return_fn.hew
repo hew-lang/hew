@@ -1,0 +1,16 @@
+type Rec {
+    a: i64;
+    b: string;
+}
+
+fn make() -> Rec {
+    let m = Rec { a: 1, b: "x0" };
+    m
+}
+
+fn main() {
+    let x = make();
+    let x_a = x.a;
+    let x_b = x.b;
+    println(f"{x_a} {x_b}");
+}

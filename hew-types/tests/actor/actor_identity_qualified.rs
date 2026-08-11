@@ -2,8 +2,8 @@
 //!
 //! Two modules each exporting `pub actor Account` must produce DISTINCT
 //! checker identities: `spawn bank.Account()` types to
-//! `LocalPid<bank.Account>`, `spawn store.Account()` to
-//! `LocalPid<store.Account>`, and the two `deposit` signatures are
+//! `LocalPid<hew.bank.Account>`, `spawn store.Account()` to
+//! `LocalPid<hew.store.Account>`, and the two `deposit` signatures are
 //! independently resolvable in `fn_sigs` under their dotted keys. A bare
 //! reference resolves local-first; a bare name exported by two modules with
 //! no local actor is a typed `AmbiguousActorReference` error naming the
@@ -109,7 +109,10 @@ fn main() {
     let pids = local_pid_inner_names(&output);
     assert_eq!(
         pids,
-        vec!["bank.Account".to_string(), "store.Account".to_string()],
+        vec![
+            "hew.bank.Account".to_string(),
+            "hew.store.Account".to_string(),
+        ],
         "spawn results must carry the dotted actor identity"
     );
 }
@@ -127,12 +130,12 @@ fn main() {
     );
     let bank_sig = output
         .fn_sigs
-        .get("bank.Account::deposit")
-        .expect("bank.Account::deposit must be registered under the dotted key");
+        .get("hew.bank.Account::deposit")
+        .expect("hew.bank.Account::deposit must be registered under the canonical key");
     let store_sig = output
         .fn_sigs
-        .get("store.Account::deposit")
-        .expect("store.Account::deposit must be registered under the dotted key");
+        .get("hew.store.Account::deposit")
+        .expect("hew.store.Account::deposit must be registered under the canonical key");
     assert!(
         matches!(bank_sig.return_type, Ty::I64),
         "bank.Account::deposit returns i64, got {:?}",
@@ -200,7 +203,7 @@ fn main() {
                     actor_name,
                     candidate_modules,
                 } if actor_name == "Account"
-                    && candidate_modules == &["bank".to_string(), "store".to_string()]
+                    && candidate_modules == &["hew.bank".to_string(), "hew.store".to_string()]
             )
         })
         .collect();
@@ -213,7 +216,7 @@ fn main() {
     );
     let err = ambiguous[0];
     assert!(
-        err.message.contains("`bank.Account`") && err.message.contains("`store.Account`"),
+        err.message.contains("`hew.bank.Account`") && err.message.contains("`hew.store.Account`"),
         "diagnostic must name both candidates; got: {}",
         err.message
     );
@@ -237,7 +240,7 @@ fn main() {
     let pids = local_pid_inner_names(&output);
     assert_eq!(
         pids,
-        vec!["bank.Account".to_string()],
+        vec!["hew.bank.Account".to_string()],
         "a bare name exported by exactly one module resolves to that module"
     );
 }

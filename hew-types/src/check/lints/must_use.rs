@@ -34,6 +34,7 @@ use hew_parser::ast::{Block, Span, Stmt};
 
 use crate::error::TypeError;
 use crate::ty::Ty;
+use crate::BuiltinType;
 
 use super::{LintCtx, LintId, LintLevels, NodeVisitor};
 
@@ -148,13 +149,85 @@ fn must_use_error(ty: &Ty) -> Option<MustUseError> {
 
 /// `WriteError` / `SendError` / `AskError` named-type detection.
 fn error_kind(ty: &Ty) -> Option<MustUseError> {
-    let Ty::Named { name, .. } = ty else {
+    let Ty::Named { name, builtin, .. } = ty else {
         return None;
     };
-    match name.as_str() {
-        "WriteError" => Some(MustUseError::WRITE),
-        "SendError" => Some(MustUseError::SEND),
-        "AskError" => Some(MustUseError::ASK),
-        _ => None,
+    if *builtin == Some(BuiltinType::SendError)
+        && generated_builtin_enum_has_identity("SendError", name)
+    {
+        return Some(MustUseError::SEND);
+    }
+    if *builtin == Some(BuiltinType::AskError)
+        && generated_builtin_enum_has_identity("AskError", name)
+    {
+        return Some(MustUseError::ASK);
+    }
+    (builtin.is_none() && name == crate::stdlib::STD_NET_WRITE_ERROR).then_some(MustUseError::WRITE)
+}
+
+/// Prove that a compiler-owned enum has both its generated discriminator and
+/// the exact source owner published by the shared enum catalog.
+fn generated_builtin_enum_has_identity(leaf: &str, actual_name: &str) -> bool {
+    crate::builtin_enums::monomorphic_builtin_enum(leaf)
+        .is_some_and(|fact| fact.canonical_name == actual_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(name: &str, builtin: Option<BuiltinType>) -> Ty {
+        Ty::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin,
+        }
+    }
+
+    #[test]
+    fn generated_error_requires_discriminator_and_exact_catalog_owner() {
+        let ask = crate::builtin_enums::monomorphic_builtin_enum("AskError")
+            .expect("generated AskError catalog row");
+        assert!(error_kind(&named(ask.canonical_name, Some(BuiltinType::AskError))).is_some());
+
+        for missing_or_wrong in [None, Some(BuiltinType::SendError)] {
+            assert!(
+                error_kind(&named(ask.canonical_name, missing_or_wrong)).is_none(),
+                "the canonical owner alone must not grant AskError authority"
+            );
+        }
+        for foreign_or_leaf in ["foreign.AskError", "AskError"] {
+            assert!(
+                error_kind(&named(foreign_or_leaf, Some(BuiltinType::AskError))).is_none(),
+                "the discriminator alone must not grant AskError authority"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_send_error_requires_discriminator_and_exact_catalog_owner() {
+        let send = crate::builtin_enums::monomorphic_builtin_enum("SendError")
+            .expect("generated SendError catalog row");
+        assert!(error_kind(&named(send.canonical_name, Some(BuiltinType::SendError))).is_some());
+
+        for missing_or_wrong in [None, Some(BuiltinType::AskError)] {
+            assert!(
+                error_kind(&named(send.canonical_name, missing_or_wrong)).is_none(),
+                "the canonical owner alone must not grant SendError authority"
+            );
+        }
+        for foreign_or_leaf in ["foreign.SendError", "SendError"] {
+            assert!(
+                error_kind(&named(foreign_or_leaf, Some(BuiltinType::SendError))).is_none(),
+                "the discriminator alone must not grant SendError authority"
+            );
+        }
+    }
+
+    #[test]
+    fn write_error_requires_exact_std_net_source_identity() {
+        assert!(error_kind(&named(crate::stdlib::STD_NET_WRITE_ERROR, None)).is_some());
+        assert!(error_kind(&named("WriteError", None)).is_none());
+        assert!(error_kind(&named("foreign.WriteError", None)).is_none());
     }
 }

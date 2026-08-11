@@ -227,6 +227,10 @@ fn main() -> i32 {
     let init_result = initialize_system();
     // Run stress test
     let stress_result = stress_test_actors();
-    // Return combined result
-    init_result + stress_result
+    // A runnable example follows the process convention that success is zero.
+    // Pin the workload result instead of leaking it through the process status
+    // (which truncates it and makes a successful stress run look like a crash).
+    assert(init_result == 0);
+    assert(stress_result == 642484);
+    0
 }

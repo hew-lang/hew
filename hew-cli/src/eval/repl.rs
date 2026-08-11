@@ -503,7 +503,13 @@ fn remap_type_diagnostic(
     let notes = diagnostic
         .notes
         .iter()
-        .map(|(span, message)| Some((remap_type_span(diagnostic_view, span)?, message.clone())))
+        .map(|(span, message, source_module)| {
+            Some((
+                remap_type_span(diagnostic_view, span)?,
+                message.clone(),
+                source_module.clone(),
+            ))
+        })
         .collect::<Option<Vec<_>>>()?;
 
     Some(hew_types::TypeError {

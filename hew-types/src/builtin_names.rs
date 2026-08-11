@@ -370,6 +370,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
+            | BuiltinType::VecIter
+            | BuiltinType::HashMapIter
             | BuiltinType::Task
             | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair
@@ -401,6 +403,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::DownNotification
             | BuiltinType::SendError
             | BuiltinType::AskError
+            | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
@@ -560,10 +563,11 @@ pub fn resolve_builtin_method_symbol(
 pub fn runtime_symbol_consumes_receiver(c_symbol: &str) -> bool {
     // Family-keyed: the closed-set verdict lives on
     // `RuntimeCallFamily::consumes_receiver` (one authority, exhaustively
-    // matchable). A string outside the catalog maps to `None` → borrowing,
-    // preserving the fail-closed leak-not-double-free default for open-set
-    // `#[extern_symbol]` strings. The independent literal-symbol anchor lives
-    // in the `consumes_receiver_mirrors_builtin_names` parity test.
+    // matchable). The TCP attach member of that catalogue reads its first-arg
+    // consume fact from the generated FFI ownership table; the remaining
+    // closed-set members are literal runtime families. A string outside the
+    // catalog maps to `None` → borrowing, preserving the fail-closed
+    // leak-not-double-free default for open-set `#[extern_symbol]` strings.
     crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
         .is_some_and(crate::runtime_call::RuntimeCallFamily::consumes_receiver)
 }

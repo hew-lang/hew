@@ -1,0 +1,5 @@
+pub actor ClashActor {
+    receive fn ping() -> i64 {
+        15
+    }
+}

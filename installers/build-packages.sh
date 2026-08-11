@@ -84,6 +84,20 @@ _record_fail() {
 _require_cmd() { command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"; }
 _has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Resolve an artifact directory exactly as Cargo does. The shared resolver may
+# print a repository-relative path (the default `target/...`) or an absolute
+# path (`CARGO_TARGET_DIR` outside the checkout); package assembly needs an
+# absolute path in both cases because it changes directories while staging.
+_cargo_output_dir() {
+    local output
+    output="$("${REPO_DIR}/scripts/cargo-output-dir.py" "$@")"
+    if [[ "${output}" = /* ]]; then
+        printf '%s\n' "${output}"
+    else
+        printf '%s\n' "${REPO_DIR}/${output}"
+    fi
+}
+
 # Clean up directories that may contain root-owned files from Docker
 _docker_rm() {
     local dir="$1"
@@ -169,8 +183,15 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-observe hew-lib (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe -p hew-lib --release
+    info "cargo" "hew-cli hew-lsp hew-observe (release)..."
+    cargo build -p hew-cli -p hew-lsp -p hew-observe --release
+    info "cargo" "hew-lib (release-lib)..."
+    cargo build -p hew-lib --profile release-lib
+
+    local release_dir
+    local release_lib_dir
+    release_dir="$(_cargo_output_dir --native --profile release)"
+    release_lib_dir="$(_cargo_output_dir --native --profile release-lib)"
 
     step "Assembling tarball"
     local staging_root="${DIST_DIR}/.staging-$$"
@@ -178,19 +199,19 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-    for bin in hew adze hew-lsp hew-observe; do
-        if [[ -f "${REPO_DIR}/target/release/${bin}" ]]; then
-            cp "${REPO_DIR}/target/release/${bin}" "${staging}/bin/"
+    for bin in hew hew-lsp hew-observe; do
+        if [[ -f "${release_dir}/${bin}" ]]; then
+            cp "${release_dir}/${bin}" "${staging}/bin/"
             chmod +x "${staging}/bin/${bin}"
         else
-            warn "binary not found: target/release/${bin}"
+            warn "binary not found: ${release_dir}/${bin}"
         fi
     done
 
-    if [[ -f "${REPO_DIR}/target/release/libhew.a" ]]; then
-        cp "${REPO_DIR}/target/release/libhew.a" "${staging}/lib/"
+    if [[ -f "${release_lib_dir}/libhew.a" ]]; then
+        cp "${release_lib_dir}/libhew.a" "${staging}/lib/"
     else
-        warn "libhew.a not found — run 'make stdlib'"
+        warn "libhew.a not found: ${release_lib_dir}/libhew.a"
     fi
 
     # Standard library sources (all .hew files, including subdirectories)
@@ -199,7 +220,6 @@ build_tarball() {
     # Generate shell completions from built binaries
     for shell in bash zsh fish; do
         "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
-        "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
     done
 
     cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
@@ -437,10 +457,13 @@ build_alpine() {
             musl_target="aarch64-unknown-linux-musl"
         fi
 
-        info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
+        info "cargo" "Building Rust binaries for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-observe -p hew-lib)
+                -p hew-cli -p hew-lsp -p hew-observe)
+        info "cargo" "Building hew-lib (release-lib) for ${musl_target}..."
+        (cd "${REPO_DIR}" &&
+            cargo build --profile release-lib --target "${musl_target}" -p hew-lib)
 
         # Assemble Alpine tarball
         local staging_root="${DIST_DIR}/.alpine-staging-$$"
@@ -448,8 +471,15 @@ build_alpine() {
         rm -rf "${staging_root}"
         mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-        local musl_release="${REPO_DIR}/target/${musl_target}/release"
-        for bin in hew adze hew-lsp hew-observe; do
+        local musl_release
+        local musl_release_lib
+        musl_release="$(
+            _cargo_output_dir --native --profile release --target "${musl_target}"
+        )"
+        musl_release_lib="$(
+            _cargo_output_dir --native --profile release-lib --target "${musl_target}"
+        )"
+        for bin in hew hew-lsp hew-observe; do
             if [[ -f "${musl_release}/${bin}" ]]; then
                 cp "${musl_release}/${bin}" "${staging}/bin/"
                 chmod +x "${staging}/bin/${bin}"
@@ -458,10 +488,10 @@ build_alpine() {
             fi
         done
 
-        if [[ -f "${musl_release}/libhew.a" ]]; then
-            cp "${musl_release}/libhew.a" "${staging}/lib/"
+        if [[ -f "${musl_release_lib}/libhew.a" ]]; then
+            cp "${musl_release_lib}/libhew.a" "${staging}/lib/"
         else
-            warn "musl libhew.a not found — run 'make stdlib'"
+            warn "musl libhew.a not found: ${musl_release_lib}/libhew.a"
         fi
 
         # Standard library sources (all .hew files, including subdirectories)
@@ -470,7 +500,6 @@ build_alpine() {
         # Generate shell completions from built binaries
         for shell in bash zsh fish; do
             "${staging}/bin/hew" completions "${shell}" > "${staging}/completions/hew.${shell}"
-            "${staging}/bin/adze" completions "${shell}" > "${staging}/completions/adze.${shell}"
         done
 
         cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
@@ -578,7 +607,6 @@ RUN apk add --no-cache \
       gcompat \
       ca-certificates
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/

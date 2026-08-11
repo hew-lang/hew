@@ -1,0 +1,25 @@
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: Generator<i64, ()>) -> i64 {
+        var v_sum = 0;
+        for v_y in v {
+            v_sum = v_sum + v_y;
+        }
+        println(f"sum {v_sum}");
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

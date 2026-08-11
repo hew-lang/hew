@@ -3,6 +3,7 @@
 //! The Hew runtime recovers from poisoned locks rather than panicking,
 //! because a panicked thread should not cascade-crash independent actors.
 
+use std::io::Write as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -69,13 +70,46 @@ pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) 
     }
 }
 
+/// Dispose a caught panic payload without allowing hostile payload drop glue
+/// to escape the runtime containment boundary.
+///
+/// `catch_unwind` transfers ownership of the payload allocation to its `Err`
+/// value. Dropping that value is arbitrary Rust code: a custom panic payload
+/// may itself panic from `Drop`. One secondary panic is quarantined and its
+/// replacement payload is disposed as well. A recursively hostile chain is
+/// not recoverable without either leaking or permitting an unwind through the
+/// boundary, so the process terminates deterministically after two attempts.
+pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send>) {
+    for _ in 0..2 {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload))) {
+            Ok(()) => return,
+            Err(next_payload) => payload = next_payload,
+        }
+    }
+
+    // Do not use `eprintln!` on this terminal path: its internal write is
+    // unwrapped and can panic when stderr is unavailable, which would let a
+    // third unwind escape the containment boundary instead of aborting.
+    let _ = std::io::stderr()
+        .write_all(b"fatal: recursively panicking runtime panic-payload destructor\n");
+    std::process::abort();
+}
+
+/// Extract a diagnostic string, then release the owned payload through the
+/// runtime's containment authority.
+pub(crate) fn take_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    let message = panic_payload_message(payload.as_ref());
+    quarantine_panic_payload(payload);
+    message
+}
+
 /// Report a background-thread panic observed while joining during teardown.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn report_join_panic(context: &str, join_result: std::thread::Result<()>) {
     if let Err(panic_payload) = join_result {
         let message = format!(
             "{context} panicked during teardown: {}",
-            panic_payload_message(panic_payload.as_ref())
+            take_panic_payload_message(panic_payload)
         );
         crate::set_last_error(message.clone());
         eprintln!("hew: {message}");

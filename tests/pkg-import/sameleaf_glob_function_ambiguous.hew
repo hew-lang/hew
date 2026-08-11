@@ -1,0 +1,6 @@
+import ambiguity::function_left::*;
+import ambiguity::function_right::*;
+
+fn main() {
+    println(clash_fn());
+}

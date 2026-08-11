@@ -5,18 +5,18 @@
 //! > **Ownership / drop / ABI facts must be a typed, total decision attached to
 //! > the value — not a boolean re-derived per shape at each consumer.**
 //!
-//! Today ~8 independent shape-walkers each re-answer "does this own heap / how
-//! is it released / how does it cross the ABI?" by matching on the nominal
-//! [`ResolvedTy`] at their own call site (`ty_owns_heap`,
-//! `ValueClass::of_ty`, the `derive_*_drop_allowed` family, the
-//! `cow_value_leaf_drop_symbol` / `binding_ty_is_plain_vec` release buckets, …).
-//! Because the answer is re-derived rather than carried, the walkers drift at
-//! seams (MIR ↔ codegen, getter ↔ release) and fall through on unenumerated
-//! shapes (`_ => false`), which is the proximate cause of the leak / double-free
-//! / abort class of regressions.
+//! Historically, independent shape-walkers re-answered "does this own heap /
+//! how is it released / how does it cross the ABI?" by matching on nominal
+//! [`ResolvedTy`] at each consumer. The live implementation now carries the
+//! shared decision through the consolidated seed, ABI, codegen, and `Vec`
+//! release buckets. Deliberately narrow authorities remain where their domain
+//! is different: the structural `derive_*_drop_allowed` provers establish
+//! path-sensitive sole ownership, while `cow_value_leaf_drop_symbol` is an
+//! exhaustive scalar-leaf picker that delegates containers and `Bytes` to
+//! their own admission authorities.
 //!
-//! [`OwnershipDecision`] is the single typed fact those walkers will later read
-//! off the value instead of re-deriving. The complete classification of a value
+//! [`OwnershipDecision`] is the single typed fact routed consumers read from
+//! the value instead of re-deriving. The complete classification of a value
 //! is [`ValueOwnership`]: the rich [`OwnershipDecision`] (drop / ABI / layout)
 //! plus the two coarse seed answers — the `ty_owns_heap` boolean and the
 //! [`ValueClass`] — **carried on the value**, each computed once from its live
@@ -57,10 +57,10 @@
 //!
 //! The shape-specialised ownership/drop/ABI walkers that re-answer the heap /
 //! release / ABI question by matching on [`ResolvedTy`] at their own call site,
-//! with their disposition. This list is the consolidation worklist:
-//! every `bypasses` row is a seam the release-bucket consolidation routes through [`ValueOwnership`]
-//! / the single authority. The `_ => false` / `_ => None` fall-through arms are
-//! the leak surface (an unenumerated heap shape silently classified non-owning).
+//! with their disposition. The inventory distinguishes typed projections from
+//! intentionally narrow authorities. A narrow authority must remain exhaustive
+//! over [`ResolvedTy`] and explicitly delegate shapes outside its domain; an
+//! unenumerated `_ => false` / `_ => None` fall-through is still a leak surface.
 //!
 //! | Walker | Crate · entry | Re-derives | Status |
 //! |---|---|---|---|
@@ -68,7 +68,7 @@
 //! | CBOR `Vec` element ownership probe | `hew-codegen-rs` · `wire.rs` | heap ownership + enum indirectness | **ROUTED** — reads `ty_heap_ownership` through `CborHeapLayouts`; the local heap walker, indirect-enum re-walk, and deprecated shim are deleted. |
 //! | `callee_ownership_contract` | `hew-mir` · `runtime_symbols.rs` | runtime-callee receiver borrow, string-argument borrow, and result ownership facts | **LANDED (callee ownership contract consolidation)** — MIR drop-admission provers read the typed [`ReceiverOwnership`](crate::runtime_symbols::ReceiverOwnership), [`StringArgsOwnership`](crate::runtime_symbols::StringArgsOwnership), and [`ResultOwnership`](crate::runtime_symbols::ResultOwnership) projections; unknown callees return the fail-closed `Escapes` / `Escaping` / `Untracked` contract. |
 //! | owned-locals seed gate (`Builder::binding_seeds_drop_elaboration`) | `hew-mir` · `lower.rs` → `hew-hir` · `value_class.rs` | which locals enter drop elaboration | **LANDED (seed-authority consolidation)** — one named authority answers "does this binding's type oblige drop elaboration?" at every `owned_locals` seed site AND the consume-side removal mirror, so the two sides of the ledger cannot desynchronise (a looser consume side keeps a moved-out binding in `owned_locals` and double-frees at function exit; a tighter one leaks). The verdict remains the value-class seed — record-blind via [`ValueClass`] (an unmarked user record classifies `Unknown`, which seeds); a record-aware seed upgrade reads [`ValueOwnership`] at this one seam when it lands. Pinned by a frozen verdict table over every value class plus a source-inventory scan keeping the authority's body the only seed-fact spelling (`seed_gate_matches_value_class_authority` / `seed_fact_comparison_site_inventory_is_closed` in `lower.rs`). |
-//! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **LANDED (release-bucket consolidation)** — routed through the typed decision; see the partition-totality test below. |
+//! | `cow_value_leaf_drop_symbol` | `hew-mir` · `lower/drop_plan.rs` | scalar-leaf release symbol (`string` → `hew_string_drop`, else `None`) | **NARROW AUTHORITY** — an exhaustive scalar-leaf picker. `Bytes` and named containers are deliberately delegated to their separate admission/release authorities, preventing a second union-admitting drop path. |
 //! | `binding_ty_is_plain_vec` · `is_plain_vec_element` · `binding_ty_is_owned_element_vec` · `is_owned_vec_element` · `tuple_is_all_bitcopy` | `hew-mir` · `lower.rs` | `Vec<E>` release partition (plain vs owned-element) | **LANDED (release-bucket consolidation)** — release buckets PROJECT from the typed `classify_vec_element_release` decision; their union is total vs the authority leaf set. The Plain bucket's `Named` arm reads the `named_elem_owns_heap` AUTHORITY, not `ValueClass::of_ty == BitCopy` alone: a heap-free DIRECT user enum is never `BitCopy` (value-class finalisation covers records only), so the pre-fix `BitCopy`-only gate classified `Vec<fieldless-enum>` NEITHER plain nor owned and leaked its whole buffer+handle at every scope exit — now closed by the `ty_is_direct_enum_element(e) && !named_elem_owns_heap(e)` disjunct. The unwired `Vec<bytes>` / `Vec<indirect_enum>` elements (`Unsupported(NoReleaseProtocol)`) are REJECTED at compile by `Builder::unsupported_vec_element_diagnostics` rather than silently leaked at scope exit. |
 //! | `generator_yield_drop_symbol` · `project_field_inline_drop_symbol` | `hew-mir` · `lower.rs` | per-yield / per-field `Vec<E>` release-symbol picker | **LANDED (release-bucket consolidation)** — both check the closure-pair bucket before the owned/plain split, and every recursive element shape now resolves to descriptor-driven `hew_vec_free_owned`. |
 //! | `ty_is_closure_pair_vec` · `ty_is_local_collection_handle` | `hew-mir` · `lower.rs` | closure-pair / collection-handle release | **LANDED (release-bucket consolidation)** — both are documented projections of the typed decision. `ty_is_closure_pair_vec` projects [`VecElementRelease::ClosurePair`] for `Builder`-free contexts (pinned by the partition-totality test) and the `Builder`-side release-symbol pickers read `classify_vec_element_release` itself; `ty_is_local_collection_handle` is the single ABI-shape authority for the `HashMap`/`HashSet` bucket, pinned against the [`HeapLeaf`] classification with a release-symbol tripwire (`collection_handle_predicate_projects_from_heap_leaf` in `lower.rs`). |
@@ -477,6 +477,9 @@ pub enum InPlaceReleaseKind {
     Record,
     /// A registered heap-owning enum (tagged-union composite).
     Enum,
+    /// A structural tuple/array whose owned leaves are released recursively
+    /// from the value's inline storage.
+    AggregateRecursive,
 }
 
 // ──────────────────────────────── provenance ─────────────────────────────
@@ -912,7 +915,7 @@ fn classify_named<S: BuildHasher>(
     let layouts = ctx.heap_layouts();
 
     // 2. User record layout → in-place record drop iff it owns heap.
-    if layouts.record_field_tys(name, args).is_some() {
+    if layouts.record_field_tys(name, args, builtin).is_some() {
         return if ty_owns_heap(ty, &layouts) {
             OwnershipDecision::OwnsHeap {
                 drop: DropClass::RecordInPlace,
@@ -985,13 +988,19 @@ impl TryFrom<DropKind> for DropClass {
             DropKind::DuplexHalfClose(direction) => DropClass::DuplexHalfClose { direction },
             DropKind::LambdaActorRelease => DropClass::LambdaActorRelease,
             DropKind::TraitObject { storage } => DropClass::DynTrait { storage },
-            DropKind::CowHeap { release } => DropClass::CowHeapLeaf {
-                // The typed carrier names its leaf directly — no symbol to
-                // parse, so this arm is now infallible (an unrecognised release
-                // is unrepresentable). `CowHeapRelease` is never a
-                // `CancellationToken` leaf, so `CowHeapLeaf` stays copy-on-write.
-                leaf: release.heap_leaf(),
-            },
+            DropKind::CowHeap { release } | DropKind::VecIterCursor { release } => {
+                DropClass::CowHeapLeaf {
+                    // The typed carrier names its leaf directly — no symbol to
+                    // parse, so this arm is now infallible (an unrecognised release
+                    // is unrepresentable). `CowHeapRelease` is never a
+                    // `CancellationToken` leaf, so `CowHeapLeaf` stays copy-on-write.
+                    //
+                    // A VecIter cursor addresses field 0 of its enclosing record,
+                    // but the discharged obligation is still this Vec-family
+                    // leaf. DropClass deliberately subsumes addressing.
+                    leaf: release.heap_leaf(),
+                }
+            }
             DropKind::RecordInPlace => DropClass::RecordInPlace,
             DropKind::AggregateRecursive => DropClass::AggregateRecursive,
             DropKind::EnumInPlace => DropClass::EnumInPlace,
@@ -1862,6 +1871,30 @@ mod tests {
                 "round-trip mismatch for {kind:?}",
             );
         }
+
+        // VecIterCursor is deliberately field-addressed in MIR but collapses
+        // to the same semantic CowHeap leaf as its field-0 Vec snapshot.
+        let cursor_kind = DropKind::VecIterCursor {
+            release: CowHeapRelease::VecOwnedElement,
+        };
+        let cursor_class = DropClass::try_from(cursor_kind).unwrap_or_else(|e| {
+            panic!("DropKind {cursor_kind:?} did not map to a DropClass: {e:?}")
+        });
+        assert_eq!(
+            cursor_class,
+            DropClass::CowHeapLeaf {
+                leaf: CowHeapRelease::VecOwnedElement.heap_leaf(),
+            }
+        );
+        assert_eq!(
+            cursor_class.canonical_drop_kind(),
+            DropKind::CowHeap {
+                // Canonical projection deliberately collapses the Vec-family
+                // leaf to its plain representative; the typed MIR carrier
+                // retains the element-specific refinement.
+                release: CowHeapRelease::VecPlain,
+            }
+        );
     }
 
     /// The Vec element-symbol collapse is intentional and documented: owned /

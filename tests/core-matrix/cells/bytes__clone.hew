@@ -1,0 +1,12 @@
+fn main() {
+    let x: bytes = bytes::new();
+    x.push(65);
+    x.push(66);
+    let y = clone x;
+    let y_l = y.len();
+    let y_0 = y[0];
+    println(f"len={y_l} b0={y_0}");
+    let x_l = x.len();
+    let x_0 = x[0];
+    println(f"len={x_l} b0={x_0}");
+}

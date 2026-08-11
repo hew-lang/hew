@@ -10,16 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 WORKFLOW = ROOT / ".github" / "workflows" / "freebsd.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 
 REQUIRED_CI_JOB = "lint"
 REQUIRED_CI_JOB_NAME = "Clippy & format"
 CONTRACT_STEP_NAME = "Verify FreeBSD workflow contract"
 CONTRACT_COMMAND = "make freebsd-workflow-contract-check"
 
-WASI_FILTER = (
-    "not ((test(eval_wasm) & not test(reject)) | "
-    "(binary(wasi_run_e2e) & not test(native_)))"
-)
 EXPECTED_NEXTEST_COMMAND = (
     "cargo",
     "nextest",
@@ -29,8 +26,6 @@ EXPECTED_NEXTEST_COMMAND = (
     "hew-wasm",
     "--exclude",
     "hew-cabi",
-    "-E",
-    WASI_FILTER,
     "--profile",
     "ci",
     "--no-fail-fast",
@@ -47,30 +42,14 @@ PKG_INSTALL_PREFIX = (
     "pkg",
     "install",
     "-y",
-    "-U",
     "-r",
     "FreeBSD",
 )
-FREEBSD_TOOL_PACKAGES = (
+X86_64_FREEBSD_TOOL_PACKAGES = (
     "llvm22",
-    "rust",
-    "cmake",
-    "ninja",
-    "git",
-    "pkgconf",
-    "libffi",
-    "libxml2",
-    "wasmtime",
-)
-EXPECTED_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *FREEBSD_TOOL_PACKAGES)
-EXPECTED_PKG_PHASES = (
-    EXPECTED_PKG_BOOTSTRAP,
-    EXPECTED_PKG_UPDATE,
-    EXPECTED_PKG_INSTALL,
-)
-NIGHTLY_TOOL_PACKAGES = (
-    "llvm22",
-    "rust",
+    "gdb",
+    "rustup-init",
+    "python3",
     "cmake",
     "ninja",
     "git",
@@ -81,11 +60,44 @@ NIGHTLY_TOOL_PACKAGES = (
     "libxml2",
     "wasmtime",
 )
-EXPECTED_NIGHTLY_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *NIGHTLY_TOOL_PACKAGES)
-EXPECTED_NIGHTLY_PKG_PHASES = (
+EXPECTED_X86_64_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *X86_64_FREEBSD_TOOL_PACKAGES)
+EXPECTED_X86_64_PKG_PHASES = (
     EXPECTED_PKG_BOOTSTRAP,
     EXPECTED_PKG_UPDATE,
-    EXPECTED_NIGHTLY_PKG_INSTALL,
+    EXPECTED_X86_64_PKG_INSTALL,
+)
+AARCH64_FREEBSD_TOOL_PACKAGES = (
+    "llvm22",
+    "gdb",
+    "rust",
+    "python3",
+    "cmake",
+    "ninja",
+    "git",
+    "gmake",
+    "bash",
+    "pkgconf",
+    "libffi",
+    "libxml2",
+    "wasmtime",
+)
+EXPECTED_AARCH64_PKG_INSTALL = (*PKG_INSTALL_PREFIX, *AARCH64_FREEBSD_TOOL_PACKAGES)
+EXPECTED_AARCH64_PKG_PHASES = (
+    EXPECTED_PKG_BOOTSTRAP,
+    EXPECTED_PKG_UPDATE,
+    EXPECTED_AARCH64_PKG_INSTALL,
+)
+PINNED_RUST_TOOLCHAIN = "1.96.0"
+EXPECTED_RUSTUP_INIT = (
+    "/usr/local/bin/rustup-init",
+    "-y",
+    "--no-modify-path",
+    "--profile",
+    "minimal",
+    "--default-toolchain",
+    PINNED_RUST_TOOLCHAIN,
+    "--target",
+    "wasm32-wasip1",
 )
 EXPECTED_WASM_LD_LINK = (
     "ln",
@@ -132,13 +144,88 @@ EXPECTED_EXACT_REF_CHECK = (
     "$GITHUB_SHA",
 )
 EXPECTED_LLVM_ENV = ("export", "LLVM_SYS_221_PREFIX=/usr/local/llvm22")
+EXPECTED_RUSTUP_PATH_ENV = (
+    "export",
+    "PATH=$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+)
+EXPECTED_PKG_RUST_PATH_ENV = (
+    "export",
+    "PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+)
+EXPECTED_RUSTUP_CARGO_ENV = ("export", "CARGO=$HOME/.cargo/bin/cargo")
+EXPECTED_PKG_RUST_CARGO_ENV = ("export", "CARGO=/usr/local/bin/cargo")
+EXPECTED_PYTHON_ENV = ("export", "PYTHON=/usr/local/bin/python3")
+EXPECTED_CARGO_PROBE = ("test", "-x", "$CARGO")
+EXPECTED_PYTHON_PROBE = ("test", "-x", "$PYTHON")
+EXPECTED_RUSTC_PIN_PROBE = (
+    "rustup",
+    "run",
+    PINNED_RUST_TOOLCHAIN,
+    "rustc",
+    "--version",
+    "|",
+    "grep",
+    "-q",
+    rf"^rustc 1\.96\.0 ",
+)
+EXPECTED_WASI_TARGET_PROBE = (
+    "rustup",
+    "target",
+    "list",
+    "--toolchain",
+    PINNED_RUST_TOOLCHAIN,
+    "--installed",
+    "|",
+    "grep",
+    "-qx",
+    "wasm32-wasip1",
+)
 EXPECTED_GNU_MAKE_ENV = ("export", "MAKE=gmake")
 EXPECTED_VERTICAL_SLICE_GATE = ("gmake", "test-vertical-slice")
 EXPECTED_HEW_RATCHET_GATE = ("gmake", "test-hew-ratchet")
+FREEBSD_CI_USER = "hew-ci"
+EXPECTED_CI_USER_CREATE = (
+    "pw",
+    "useradd",
+    "-n",
+    FREEBSD_CI_USER,
+    "-m",
+    "-s",
+    "/bin/sh",
+)
+EXPECTED_ID_PROBE = ("id",)
+EXPECTED_ROOT_UID_ASSERT = ("test", "$(id -u)", "=", "0")
+EXPECTED_WORKSPACE_CHOWN = (
+    "chown",
+    "-R",
+    f"{FREEBSD_CI_USER}:{FREEBSD_CI_USER}",
+    "$GITHUB_WORKSPACE",
+)
+EXPECTED_CI_USER_SWITCH = (
+    "su",
+    "-m",
+    FREEBSD_CI_USER,
+    "-c",
+    "sh -s",
+    "<<HEW_FREEBSD_CI",
+)
+EXPECTED_CI_HOME = ("export", "HOME=/home/hew-ci")
+EXPECTED_NON_ROOT_UID_ASSERT = ("test", "$(id -u)", "-ne", "0")
+EXPECTED_CI_SCRIPT_END = ("HEW_FREEBSD_CI",)
+EXPECTED_AARCH64_STDLIB_BUILD = ("gmake", "stdlib")
+EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK = ("gmake", "check-libhew-fresh")
+EXPECTED_AARCH64_SMOKE_LINK = (
+    "target/release/hew",
+    "build",
+    "_smoke.hew",
+    "-o",
+    "_smoke_bin",
+)
 WASI_TOOL_COMMANDS = (
     EXPECTED_PKG_UPDATE,
     EXPECTED_PKG_BOOTSTRAP,
-    EXPECTED_NIGHTLY_PKG_INSTALL,
+    EXPECTED_X86_64_PKG_INSTALL,
+    EXPECTED_WASI_TARGET_PROBE,
     EXPECTED_WASM_LD_LINK,
     EXPECTED_WASMTIME_PROBE,
     EXPECTED_WASM_LD_PROBE,
@@ -237,7 +324,7 @@ def _literal_block(step: str, key: str) -> str:
             break
         base_indent = content_indent
         break
-    assert base_indent == child_indent + 2, (
+    assert base_indent is not None and base_indent == child_indent + 2, (
         f"direct 'with' child {key!r} must use the canonical two-space "
         f"scalar indentation, got {base_indent!r}"
     )
@@ -290,7 +377,7 @@ def _active_shell_commands(block: str) -> list[tuple[str, ...]]:
 def _rewrite_pkg_commands(
     step: str,
     replacements: dict[int, tuple[str, ...] | None],
-    expected_phases: tuple[tuple[str, ...], ...] = EXPECTED_PKG_PHASES,
+    expected_phases: tuple[tuple[str, ...], ...] = EXPECTED_X86_64_PKG_PHASES,
 ) -> str:
     lines = step.splitlines(keepends=True)
     pkg_lines: list[int] = []
@@ -319,9 +406,9 @@ def _rewrite_pkg_commands(
 
 
 def _expected_pkg_phases(job_name: str) -> tuple[tuple[str, ...], ...]:
-    if job_name == "build-and-test":
-        return EXPECTED_NIGHTLY_PKG_PHASES
-    return EXPECTED_PKG_PHASES
+    if job_name in ("build-and-test", "gate-freebsd-x86_64"):
+        return EXPECTED_X86_64_PKG_PHASES
+    return EXPECTED_AARCH64_PKG_PHASES
 
 
 def _assert_wasi_tool_setup(
@@ -345,12 +432,28 @@ def _assert_wasi_tool_setup(
         f"the exact tool set without an automatic update; got {pkg_commands!r}"
     )
     required_commands = [
+        EXPECTED_PYTHON_ENV,
+        EXPECTED_CARGO_PROBE,
+        EXPECTED_PYTHON_PROBE,
         EXPECTED_WASM_LD_LINK,
         EXPECTED_WASMTIME_PROBE,
         EXPECTED_WASM_LD_PROBE,
     ]
-    if job_name == "build-and-test":
-        required_commands.append(EXPECTED_BASH_PROBE)
+    if job_name in ("build-and-test", "gate-freebsd-x86_64"):
+        required_commands.extend(
+            (
+                EXPECTED_RUSTUP_INIT,
+                EXPECTED_RUSTUP_PATH_ENV,
+                EXPECTED_RUSTUP_CARGO_ENV,
+                EXPECTED_RUSTC_PIN_PROBE,
+                EXPECTED_WASI_TARGET_PROBE,
+            )
+        )
+    else:
+        required_commands.extend(
+            (EXPECTED_PKG_RUST_PATH_ENV, EXPECTED_PKG_RUST_CARGO_ENV)
+        )
+    required_commands.append(EXPECTED_BASH_PROBE)
     for required in required_commands:
         assert run_commands.count(required) == 1, (
             f"{job_name} must run exactly one active command {required!r}"
@@ -438,6 +541,55 @@ def _assert_nightly_compiled_hew_authority(workflow: str) -> None:
     )
 
 
+def _assert_unprivileged_full_suite(
+    workflow: str,
+    job_name: str,
+    step_name: str,
+) -> None:
+    step = _step_block(_job_block(workflow, job_name), step_name)
+    prepare_commands = _active_shell_commands(_literal_block(step, "prepare"))
+    run_commands = _active_shell_commands(_literal_block(step, "run"))
+
+    assert prepare_commands.count(EXPECTED_CI_USER_CREATE) == 1, (
+        f"{job_name} must create exactly one dedicated FreeBSD CI user"
+    )
+    for command in (
+        EXPECTED_ROOT_UID_ASSERT,
+        EXPECTED_WORKSPACE_CHOWN,
+        EXPECTED_CI_USER_SWITCH,
+        EXPECTED_CI_HOME,
+        EXPECTED_NON_ROOT_UID_ASSERT,
+        EXPECTED_CI_SCRIPT_END,
+    ):
+        assert run_commands.count(command) == 1, (
+            f"{job_name} must run exactly one active command {command!r}"
+        )
+    assert run_commands.count(EXPECTED_ID_PROBE) == 2, (
+        f"{job_name} must log both the VM login and test user identities"
+    )
+
+    root_id, ci_id = [
+        index
+        for index, command in enumerate(run_commands)
+        if command == EXPECTED_ID_PROBE
+    ]
+    ordered = (
+        root_id,
+        run_commands.index(EXPECTED_ROOT_UID_ASSERT),
+        run_commands.index(EXPECTED_WORKSPACE_CHOWN),
+        run_commands.index(EXPECTED_CI_USER_SWITCH),
+        run_commands.index(EXPECTED_CI_HOME),
+        ci_id,
+        run_commands.index(EXPECTED_NON_ROOT_UID_ASSERT),
+        run_commands.index(EXPECTED_HEW_RATCHET_GATE),
+        run_commands.index(EXPECTED_CI_SCRIPT_END),
+    )
+    assert list(ordered) == sorted(ordered), (
+        f"{job_name} must prove root, transfer workspace ownership, then prove "
+        "the full test workload finishes under a non-root user"
+    )
+
+
 def _assert_rejected(check: Callable[[], None]) -> None:
     try:
         check()
@@ -452,6 +604,47 @@ def test_freebsd_nextest_command_is_exact() -> None:
 
 def test_freebsd_nightly_runs_authenticated_compiled_hew_gates() -> None:
     _assert_nightly_compiled_hew_authority(WORKFLOW.read_text())
+
+
+def test_full_freebsd_suites_run_as_a_non_root_user() -> None:
+    _assert_unprivileged_full_suite(
+        WORKFLOW.read_text(),
+        "build-and-test",
+        "Build and test on FreeBSD",
+    )
+    _assert_unprivileged_full_suite(
+        RELEASE_GATE.read_text(),
+        "gate-freebsd-x86_64",
+        "Build and test on FreeBSD",
+    )
+
+
+def test_freebsd_user_boundary_cannot_be_removed() -> None:
+    for workflow, job_name, step_name in (
+        (WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"),
+        (
+            RELEASE_GATE.read_text(),
+            "gate-freebsd-x86_64",
+            "Build and test on FreeBSD",
+        ),
+    ):
+        job = _job_block(workflow, job_name)
+        step = _step_block(job, step_name)
+        for command_text in (
+            "pw useradd -n hew-ci -m -s /bin/sh",
+            'test "$(id -u)" = 0',
+            'chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"',
+            "su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'",
+            'test "$(id -u)" -ne 0',
+        ):
+            assert step.count(command_text) == 1
+            mutated_step = step.replace(command_text, f"# {command_text}", 1)
+            mutated = workflow.replace(step, mutated_step, 1)
+            _assert_rejected(
+                lambda mutated=mutated, job_name=job_name, step_name=step_name: (
+                    _assert_unprivileged_full_suite(mutated, job_name, step_name)
+                )
+            )
 
 
 def test_nightly_compiled_hew_commands_cannot_be_commented_out() -> None:
@@ -507,10 +700,20 @@ def test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest() -> None:
     _assert_rejected(lambda: _assert_nightly_compiled_hew_authority(mutated))
 
 
-def test_both_release_gate_freebsd_commands_are_exact() -> None:
-    release_gate = RELEASE_GATE.read_text()
-    _assert_exact_nextest(release_gate, "gate-freebsd-x86_64")
-    _assert_exact_nextest(release_gate, "gate-freebsd-aarch64")
+def test_x86_64_release_gate_command_is_exact() -> None:
+    _assert_exact_nextest(RELEASE_GATE.read_text(), "gate-freebsd-x86_64")
+
+
+def test_aarch64_release_gate_runs_no_nextest_suite() -> None:
+    # gate-freebsd-aarch64 intentionally diverges from gate-freebsd-x86_64:
+    # under full-system QEMU emulation the shared full-scope workload never
+    # completed inside its 180-minute timeout (see the job's header comment
+    # in release-gate.yml for the measured evidence). The leg is scoped down
+    # to a release build of hew-cli plus a compile+run smoke test; it must
+    # not carry any `cargo nextest run` invocation. A future PR reintroducing
+    # one must also revert this test consciously.
+    arm_job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    assert _nextest_commands(arm_job) == []
 
 
 def test_all_freebsd_jobs_provision_and_probe_wasi_tools() -> None:
@@ -530,23 +733,57 @@ def test_all_freebsd_jobs_provision_and_probe_wasi_tools() -> None:
     )
 
 
+def test_x86_64_wasi_target_setup_matches_repository_toolchain() -> None:
+    match = re.search(
+        r'^channel = "(?P<channel>[^"]+)"$',
+        RUST_TOOLCHAIN.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert match.group("channel") == PINNED_RUST_TOOLCHAIN
+
+    for workflow, job_name, step_name in (
+        (WORKFLOW.read_text(), "build-and-test", "Build and test on FreeBSD"),
+        (
+            RELEASE_GATE.read_text(),
+            "gate-freebsd-x86_64",
+            "Build and test on FreeBSD",
+        ),
+    ):
+        step = _step_block(_job_block(workflow, job_name), step_name)
+        install = f"--default-toolchain {PINNED_RUST_TOOLCHAIN} --target wasm32-wasip1"
+        assert step.count(install) == 1
+        mutated_step = step.replace(
+            install,
+            f"--default-toolchain {PINNED_RUST_TOOLCHAIN} "
+            "--target wasm32-unknown-unknown",
+            1,
+        )
+        mutated = workflow.replace(step, mutated_step, 1)
+        _assert_rejected(
+            lambda mutated=mutated, job_name=job_name, step_name=step_name: (
+                _assert_wasi_tool_setup(mutated, job_name, step_name)
+            )
+        )
+
+
 def test_required_clippy_job_runs_contract_unconditionally() -> None:
     _assert_required_ci_path(CI_WORKFLOW.read_text())
 
 
-def test_docs_copy_cannot_mask_required_job_mutation() -> None:
+def test_dispatcher_copy_cannot_mask_required_job_mutation() -> None:
     workflow = CI_WORKFLOW.read_text()
     job = _job_block(workflow, REQUIRED_CI_JOB)
     assert job.count(f"run: {CONTRACT_COMMAND}") == 1
+    dispatcher = (ROOT / "scripts/ci-preflight-dispatcher.sh").read_text()
+    assert f'add_command "{CONTRACT_COMMAND}"' in dispatcher
     mutated_job = job.replace(
         f"run: {CONTRACT_COMMAND}",
         "run: echo contract-check-removed",
         1,
     )
     mutated = workflow.replace(job, mutated_job, 1)
-    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 1, (
-        "the optional docs/scripts copy must remain in the mutation control"
-    )
+    assert mutated.count(f"run: {CONTRACT_COMMAND}") == 0
     _assert_rejected(lambda: _assert_required_ci_path(mutated))
 
 
@@ -580,12 +817,12 @@ def test_nightly_bash_package_removal_is_rejected() -> None:
     job_name = "build-and-test"
     step_name = "Build and test on FreeBSD"
     step = _step_block(_job_block(workflow, job_name), step_name)
-    install_text = " ".join(EXPECTED_NIGHTLY_PKG_INSTALL)
+    install_text = " ".join(EXPECTED_X86_64_PKG_INSTALL)
     assert step.count(install_text) == 1
     mutated_install = tuple(
-        package for package in EXPECTED_NIGHTLY_PKG_INSTALL if package != "bash"
+        package for package in EXPECTED_X86_64_PKG_INSTALL if package != "bash"
     )
-    assert len(mutated_install) + 1 == len(EXPECTED_NIGHTLY_PKG_INSTALL)
+    assert len(mutated_install) + 1 == len(EXPECTED_X86_64_PKG_INSTALL)
     mutated_step = step.replace(install_text, " ".join(mutated_install), 1)
     mutated = workflow.replace(step, mutated_step, 1)
     assert "gmake" in mutated_step and "pkgconf" in mutated_step
@@ -605,16 +842,50 @@ def test_nightly_bash_probe_removal_is_rejected() -> None:
     _assert_rejected(lambda: _assert_wasi_tool_setup(mutated, job_name, step_name))
 
 
-def test_aarch64_release_gate_drift_is_rejected() -> None:
+def test_aarch64_release_gate_stays_scoped_down() -> None:
+    # Companion to test_aarch64_release_gate_runs_no_nextest_suite: guards
+    # the other expensive commands the aarch64 leg dropped (the release-lib
+    # profile rebuild, vertical-slice, the Hew ratchet) from silently
+    # reappearing, and that the minimal build+smoke proof it keeps is still
+    # present. A PR that wants any of these back must edit this test.
     release_gate = RELEASE_GATE.read_text()
     arm_job = _job_block(release_gate, "gate-freebsd-aarch64")
-    assert arm_job.count("--profile ci --no-fail-fast") == 1
-    mutated_arm_job = arm_job.replace("--profile ci --no-fail-fast", "--profile ci", 1)
-    _assert_rejected(
-        lambda: _assert_command_list(
-            _nextest_commands(mutated_arm_job), "gate-freebsd-aarch64"
+    for forbidden in (
+        "cargo build -p hew-lib",
+        "gmake test-vertical-slice",
+        "gmake test-hew-ratchet",
+        "cargo install cargo-nextest",
+    ):
+        assert forbidden not in arm_job, (
+            f"gate-freebsd-aarch64 must not reintroduce {forbidden!r} without "
+            "consciously updating this scope-down contract"
         )
+    assert "cargo build -p hew-cli --release" in arm_job
+    assert re.search(r"^\s+cpu:\s*4\s*$", arm_job, re.MULTILINE), (
+        "gate-freebsd-aarch64 must keep cpu: 4 to use the runner's full core "
+        "budget for the emulated build"
     )
+
+
+def test_aarch64_release_gate_builds_and_checks_libhew_before_smoke() -> None:
+    job = _job_block(RELEASE_GATE.read_text(), "gate-freebsd-aarch64")
+    step = _step_block(job, "Build and test on FreeBSD aarch64")
+    commands = _active_shell_commands(_literal_block(step, "run"))
+
+    for command in (
+        EXPECTED_AARCH64_STDLIB_BUILD,
+        EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK,
+        EXPECTED_AARCH64_SMOKE_LINK,
+    ):
+        assert commands.count(command) == 1, (
+            f"gate-freebsd-aarch64 must run exactly one active command {command!r}"
+        )
+
+    assert (
+        commands.index(EXPECTED_AARCH64_STDLIB_BUILD)
+        < commands.index(EXPECTED_AARCH64_LIBHEW_FRESHNESS_CHECK)
+        < commands.index(EXPECTED_AARCH64_SMOKE_LINK)
+    ), "gate-freebsd-aarch64 must build and verify libhew before its smoke link"
 
 
 def test_commented_nightly_tool_commands_are_rejected() -> None:
@@ -624,7 +895,7 @@ def test_commented_nightly_tool_commands_are_rejected() -> None:
     step = _step_block(_job_block(workflow, job_name), step_name)
     for command in WASI_TOOL_COMMANDS:
         command_text = " ".join(command)
-        expected_count = EXPECTED_NIGHTLY_PKG_PHASES.count(command) or 1
+        expected_count = EXPECTED_X86_64_PKG_PHASES.count(command) or 1
         assert step.count(command_text) == expected_count
         mutated_step = step.replace(command_text, f"# {command_text}", 1)
         mutated = workflow.replace(step, mutated_step, 1)
@@ -644,7 +915,7 @@ def test_single_release_leg_missing_wasmtime_is_rejected() -> None:
     ):
         job = _job_block(release_gate, job_name)
         step = _step_block(job, step_name)
-        install_text = " ".join(EXPECTED_PKG_INSTALL)
+        install_text = " ".join(_expected_pkg_phases(job_name)[2])
         assert step.count(install_text) == 1
         mutated_step = step.replace(
             install_text, install_text.removesuffix(" wasmtime"), 1
@@ -656,7 +927,8 @@ def test_single_release_leg_missing_wasmtime_is_rejected() -> None:
             if job_name == "gate-freebsd-x86_64"
             else "gate-freebsd-x86_64"
         )
-        assert install_text in _job_block(mutated, other_job), (
+        other_install = " ".join(_expected_pkg_phases(other_job)[2])
+        assert other_install in _job_block(mutated, other_job), (
             "the opposite release leg must remain intact in the mutation control"
         )
         _assert_rejected(
@@ -690,7 +962,7 @@ def test_named_repository_drift_is_rejected_in_every_freebsd_job() -> None:
                 command_text.replace(" -r FreeBSD", " -r FreeBSD-ports", 1),
             ]
             if command[:2] == ("pkg", "install"):
-                replacements.append(command_text.replace(" -U", "", 1))
+                replacements.append(command_text.replace(" -y", " -y -U", 1))
             if command == EXPECTED_PKG_BOOTSTRAP:
                 replacements.extend(
                     (
@@ -1007,18 +1279,23 @@ def test_implicit_indent_leading_character_decoys_are_rejected() -> None:
 _TESTS = (
     test_freebsd_nextest_command_is_exact,
     test_freebsd_nightly_runs_authenticated_compiled_hew_gates,
+    test_full_freebsd_suites_run_as_a_non_root_user,
+    test_freebsd_user_boundary_cannot_be_removed,
     test_nightly_compiled_hew_commands_cannot_be_commented_out,
     test_nightly_compiled_hew_gate_order_cannot_drift,
     test_nightly_compiled_hew_gates_cannot_be_reduced_to_nextest,
-    test_both_release_gate_freebsd_commands_are_exact,
+    test_x86_64_release_gate_command_is_exact,
+    test_aarch64_release_gate_runs_no_nextest_suite,
     test_all_freebsd_jobs_provision_and_probe_wasi_tools,
+    test_x86_64_wasi_target_setup_matches_repository_toolchain,
     test_required_clippy_job_runs_contract_unconditionally,
-    test_docs_copy_cannot_mask_required_job_mutation,
+    test_dispatcher_copy_cannot_mask_required_job_mutation,
     test_required_job_parity_marker_drift_is_rejected,
     test_added_nightly_exclusion_is_rejected,
     test_nightly_bash_package_removal_is_rejected,
     test_nightly_bash_probe_removal_is_rejected,
-    test_aarch64_release_gate_drift_is_rejected,
+    test_aarch64_release_gate_stays_scoped_down,
+    test_aarch64_release_gate_builds_and_checks_libhew_before_smoke,
     test_commented_nightly_tool_commands_are_rejected,
     test_single_release_leg_missing_wasmtime_is_rejected,
     test_named_repository_drift_is_rejected_in_every_freebsd_job,

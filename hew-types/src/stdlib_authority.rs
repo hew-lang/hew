@@ -28,6 +28,7 @@ pub enum StdlibRoot {
     LinkMonitor,
     String,
     Io,
+    Metrics,
     Net,
     NetDns,
     Prelude,
@@ -44,6 +45,7 @@ impl StdlibRoot {
             Self::LinkMonitor => "link_monitor",
             Self::String => "string",
             Self::Io => "io",
+            Self::Metrics => "metrics",
             Self::Net => "net",
             Self::NetDns => "net::dns",
             Self::Prelude => "prelude",
@@ -115,6 +117,11 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
         include_str!("../../std/io.hew"),
     ),
     AuthoritySource::embedded(
+        StdlibRoot::Metrics,
+        "std/metrics/metrics.hew",
+        include_str!("../../std/metrics/metrics.hew"),
+    ),
+    AuthoritySource::embedded(
         StdlibRoot::Net,
         "std/net/net.hew",
         include_str!("../../std/net/net.hew"),
@@ -167,15 +174,10 @@ pub enum Intrinsic {
     MathFloor,
     MathCeil,
     MathAbs,
-    MathTanh,
-    MathLog2,
-    MathLog10,
-    MathExp2,
     MathPow,
     MathMax,
     MathMin,
-    MathPi,
-    MathE,
+    MathRound,
     MemAlloc,
     MemRealloc,
     MemDealloc,
@@ -195,15 +197,10 @@ impl Intrinsic {
             Self::MathFloor => "math.floor",
             Self::MathCeil => "math.ceil",
             Self::MathAbs => "math.abs",
-            Self::MathTanh => "math.tanh",
-            Self::MathLog2 => "math.log2",
-            Self::MathLog10 => "math.log10",
-            Self::MathExp2 => "math.exp2",
             Self::MathPow => "math.pow",
             Self::MathMax => "math.max",
             Self::MathMin => "math.min",
-            Self::MathPi => "math.pi",
-            Self::MathE => "math.e",
+            Self::MathRound => "math.round",
             Self::MemAlloc => "mem.alloc",
             Self::MemRealloc => "mem.realloc",
             Self::MemDealloc => "mem.dealloc",
@@ -240,6 +237,7 @@ pub struct ExternRuntimeCapabilityEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternRuntimeCapability {
     BlockingOffload,
+    Metrics,
 }
 
 impl ExternRuntimeCapability {
@@ -247,6 +245,7 @@ impl ExternRuntimeCapability {
     pub const fn key(self) -> &'static str {
         match self {
             Self::BlockingOffload => "blocking_offload",
+            Self::Metrics => "metrics",
         }
     }
 
@@ -254,6 +253,7 @@ impl ExternRuntimeCapability {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "blocking_offload" => Some(Self::BlockingOffload),
+            "metrics" => Some(Self::Metrics),
             _ => None,
         }
     }
@@ -1110,6 +1110,12 @@ mod tests {
                 "missing blocking-offload capability on {symbol}"
             );
         }
+        assert_eq!(
+            authority.extern_runtime_capabilities()["metrics::hew_metric_counter_register"]
+                .capability,
+            ExternRuntimeCapability::Metrics,
+            "metrics externs must carry the authority that installs their RuntimeInner"
+        );
     }
 
     #[test]

@@ -5,10 +5,16 @@
 // once per element. The body never touches the element value, so the result is
 // purely a function of how many times the generic for-in yields — isolating the
 // Stage 2 VecIter desugar from the Stage 1 element-write path. Proven across
-// three element ABIs (`i64`, `string`, and the Copy value-record `Point`): the
-// loop runs exactly once per element for each (`3`, `4`, `2`).
+// four concrete identities (`i64`, `string`, the Copy value-record `Point`,
+// and a user-authored clone-total `MonitorRef` that shadows the builtin):
+// the loop runs exactly once per element for each (`3`, `4`, `2`, `1`).
 
 type Point { x: i64; y: i64 }
+
+// The builtin `MonitorRef` is an affine resource and must fail generic
+// VecIter clone-out. This source declaration is a distinct clone-total nominal,
+// so short-name fallback must neither steal its builtin identity nor reject it.
+type MonitorRef { ref_id: u64 }
 
 fn count<T>(items: Vec<T>) -> i64 {
     var c: i64 = 0;
@@ -16,6 +22,49 @@ fn count<T>(items: Vec<T>) -> i64 {
         c = c + 1;
     }
     c
+}
+
+record Pair(i64, string);
+record Slot<T>(T);
+
+// Positional records keep their payload shape outside named-field access.
+// Both direct and generic VecIter paths must accept this clone-total layout.
+fn positional_direct(items: Vec<Pair>) -> i64 {
+    var c: i64 = 0;
+    for _item in items {
+        c = c + 1;
+    }
+    c
+}
+
+fn positional_generic(items: Vec<Pair>) -> i64 {
+    count(items)
+}
+
+// The post-function-mono layout walk must also substitute positional payloads
+// declared on a generic record before the concrete VecIter proof runs.
+fn generic_positional_record_direct(items: Vec<Slot<string>>) -> i64 {
+    var c: i64 = 0;
+    for _item in items {
+        c = c + 1;
+    }
+    c
+}
+
+fn generic_positional_record_via_count(items: Vec<Slot<string>>) -> i64 {
+    count(items)
+}
+
+// Rc/Weak are terminal retainable owners: VecIter clone-out retains the outer
+// shared allocation and does not recursively clone its payload. These
+// compile-only wrappers force concrete monomorphisations without changing the
+// fixture's stdout.
+fn count_rc_strings(items: Vec<Rc<string>>) -> i64 {
+    count(items)
+}
+
+fn count_weak_strings(items: Vec<Weak<string>>) -> i64 {
+    count(items)
 }
 
 fn main() {
@@ -36,4 +85,8 @@ fn main() {
     c.push(Point { x: 1, y: 1 });
     c.push(Point { x: 2, y: 2 });
     println(count(c));
+
+    let monitors: Vec<MonitorRef> = Vec::new();
+    monitors.push(MonitorRef { ref_id: 7 });
+    println(count(monitors));
 }

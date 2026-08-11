@@ -1,0 +1,13 @@
+fn make() -> bytes {
+    let m: bytes = bytes::new();
+    m.push(65);
+    m.push(66);
+    m
+}
+
+fn main() {
+    let x = make();
+    let x_l = x.len();
+    let x_0 = x[0];
+    println(f"len={x_l} b0={x_0}");
+}

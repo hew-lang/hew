@@ -51,6 +51,11 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors: {:#?}",
+        tc_output.errors
+    );
     let output = lower_program(
         &parsed.program,
         &tc_output,
@@ -115,6 +120,17 @@ fn total_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
     inline_string_drops(pl, fn_name) + return_exit_string_drops(pl, fn_name)
 }
 
+/// Callee-side `+1` mints for a returned borrowed string parameter.
+fn string_retains(pl: &IrPipeline, fn_name: &str) -> usize {
+    pl.raw_mir
+        .iter()
+        .filter(|f| f.name == fn_name)
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instructions.iter())
+        .filter(|i| matches!(i, Instr::StringRetain { .. }))
+        .count()
+}
+
 /// Per-Panic-path (bounds-check / OOB trap) elaborated `hew_string_drop`
 /// `CowHeap` drops in one function — the max over panic exits. A binding that is
 /// `Uninit` at the trap edge (e.g. `let y = xs[i];` traps in the bounds check
@@ -156,6 +172,20 @@ fn assert_no_nyi(pl: &IrPipeline) {
         "unexpected NotYetImplemented gate; diagnostics: {:?}",
         pl.diagnostics
     );
+}
+
+#[test]
+fn borrowed_projection_from_owned_index_uses_the_parent_owner() {
+    let pl = pipeline_with_tc(
+        r"
+        fn borrow_len(value: string) -> i64 { value.len() }
+
+        fn projected(values: Vec<(string, string)>) -> i64 {
+            borrow_len(values[0].0)
+        }
+        ",
+    );
+    assert_no_nyi(&pl);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +354,384 @@ fn canary4b_string_call_temp_arg_releases_once() {
 }
 
 // ---------------------------------------------------------------------------
+// Return carriers — pointer aliasing does not imply a borrowed return.
+//
+// A whole by-value string parameter is retained before the return-slot move.
+// A string projection is retained by the field load. Both therefore hand the
+// caller exactly one independently releasable share even though the returned
+// pointer can alias input storage. A direct borrowing consumer gives each
+// checker-owned anonymous carrier one caller-side release. The generic identity
+// call is checker-authored `Borrowed`, so it must keep the parameter's existing
+// owner instead of letting HIR closure mint another one.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture compares every direct return-carrier route"
+)]
+fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
+    let pl = pipeline_with_tc(
+        "record Holder { value: string }\n\
+         fn passthru(value: string) -> string { value }\n\
+         fn choose(holder: Holder, fallback: string, project: bool) -> string {\n\
+         \x20   if project { holder.value } else { fallback }\n\
+         }\n\
+         fn repeated(value: string, first: bool) -> string {\n\
+         \x20   if first { value } else { value }\n\
+         }\n\
+         fn nested(value: string, through_call: bool) -> string {\n\
+         \x20   if through_call { passthru(value) } else { value }\n\
+         }\n\
+         fn early(value: string, return_value: bool) -> string {\n\
+         \x20   if return_value { return value; }\n\
+         \x20   \"static-control\"\n\
+         }\n\
+         fn return_join_twice(holder: Holder, fallback: string, project: bool, early: bool) -> string {\n\
+         \x20   let joined = if project { holder.value } else { fallback };\n\
+         \x20   if early { return joined; }\n\
+         \x20   joined\n\
+         }\n\
+         fn identity<T>(value: T) -> T { value }\n\
+         fn borrow_len(value: string) -> i64 { value.len() }\n\
+         fn direct(value: string) -> i64 { borrow_len(passthru(value)) }\n\
+         fn mixed(holder: Holder, fallback: string, project: bool) -> i64 {\n\
+         \x20   borrow_len(choose(holder, fallback, project))\n\
+         }\n\
+         fn repeat_call(value: string, first: bool) -> i64 {\n\
+         \x20   borrow_len(repeated(value, first))\n\
+         }\n\
+         fn nested_call(value: string, through_call: bool) -> i64 {\n\
+         \x20   borrow_len(nested(value, through_call))\n\
+         }\n\
+         fn early_call(value: string, return_value: bool) -> i64 {\n\
+         \x20   borrow_len(early(value, return_value))\n\
+         }\n\
+         fn return_join_twice_call(holder: Holder, fallback: string, project: bool, early: bool) -> i64 {\n\
+         \x20   borrow_len(return_join_twice(holder, fallback, project, early))\n\
+         }\n\
+         fn generic_call(value: string) -> i64 {\n\
+         \x20   borrow_len(identity<string>(value))\n\
+         }\n\
+         fn return_again(value: string) -> string {\n\
+         \x20   passthru(value)\n\
+         }\n",
+    );
+    assert_no_nyi(&pl);
+
+    assert_eq!(
+        string_retains(&pl, "passthru"),
+        1,
+        "the forwarded parameter must gain exactly one return share"
+    );
+    assert_eq!(
+        string_retains(&pl, "choose"),
+        1,
+        "only the forwarded branch needs an explicit retain; the projection \
+         branch is retained by its field load"
+    );
+    assert_eq!(
+        string_retains(&pl, "return_join_twice"),
+        1,
+        "multiple return slots for one mixed join must not duplicate its \
+         path-specific retain"
+    );
+    assert_eq!(
+        string_retains(&pl, "nested"),
+        1,
+        "a nested carrier already owns its share; only the directly forwarded \
+         sibling arm needs a retain"
+    );
+    for caller in [
+        "direct",
+        "mixed",
+        "repeat_call",
+        "nested_call",
+        "early_call",
+        "return_join_twice_call",
+    ] {
+        assert_eq!(
+            return_exit_string_drops(&pl, caller),
+            1,
+            "{caller}: the anonymous returned carrier borrowed by the consumer \
+             must have one caller-side scope-exit release"
+        );
+        assert_eq!(
+            inline_string_drops(&pl, caller),
+            0,
+            "{caller}: the carrier is owned by the synthetic binding path, not \
+             by the nested runtime-temp path"
+        );
+    }
+    assert_eq!(
+        return_exit_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: a concrete Borrowed checker verdict must keep the parameter owner \
+         instead of minting a caller-side release"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "generic_call"),
+        0,
+        "generic_call: borrowing the identity result needs no independent temp release"
+    );
+    assert_eq!(
+        total_string_drops(&pl, "return_again"),
+        0,
+        "a returned carrier transferred onward is not a borrowing consumer and \
+         must not gain a caller-side drop"
+    );
+}
+
+#[test]
+fn bound_return_carrier_keeps_one_release_without_a_second_temp_owner() {
+    let pl = pipeline_with_tc(
+        "fn passthru(value: string) -> string { value }\n\
+         fn bound(value: string) -> i64 {\n\
+         \x20   let returned = passthru(value);\n\
+         \x20   returned.len()\n\
+         }\n",
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        total_string_drops(&pl, "bound"),
+        1,
+        "binding the returned carrier must preserve the existing exactly-once \
+         release path"
+    );
+}
+
+const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
+        fn invoke(make: fn() -> string) -> string {
+            make()
+        }
+
+        fn borrow_len(value: string) -> i64 {
+            value.len()
+        }
+
+        fn captured(seed: string) -> i64 {
+            let make = || seed;
+            borrow_len(make())
+        }
+
+        fn parameter() -> i64 {
+            let identity = |value: string| value;
+            borrow_len(identity("parameter-owner".to_upper()))
+        }
+
+        fn fresh() -> i64 {
+            let make = || "x".to_upper();
+            borrow_len(make())
+        }
+
+        fn explicit_return_only() -> i64 {
+            let make = || -> string {
+                return "explicit-owner".to_upper();
+            };
+            borrow_len(make())
+        }
+
+        fn wrapped(seed: string) -> i64 {
+            let make = || seed;
+            borrow_len(invoke(make))
+        }
+
+        fn nested_runtime(seed: string) -> i64 {
+            let make = || seed;
+            make().len()
+        }
+
+        fn discarded() {
+            let make = || "discarded".to_upper();
+            make();
+        }
+
+        "#;
+
+#[test]
+fn closure_invoke_string_carriers_release_once_without_widening_opaque_externs() {
+    let pl = pipeline_with_tc(CLOSURE_STRING_CARRIER_SOURCE);
+    assert_no_nyi(&pl);
+    assert_eq!(
+        string_retains(&pl, "__hew_closure_invoke_parameter_0"),
+        1,
+        "the identity closure shim must retain its borrowed string parameter \
+         before returning an independently releasable share"
+    );
+    assert_eq!(
+        string_retains(&pl, "__hew_closure_invoke_fresh_0"),
+        0,
+        "a closure shim returning a fresh string producer must not retain its \
+         already-owned result a second time"
+    );
+    for caller in ["captured", "fresh", "wrapped", "explicit_return_only"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "{caller}: every closure-invoke string result carries exactly one \
+             caller-owned share, including through a Hew wrapper"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "parameter"),
+        2,
+        "the heap-producing closure argument keeps its original caller drop \
+         obligation while the identity result carries the shim-retained share"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "parameter"),
+        1,
+        "the fresh argument share must be released immediately after the \
+         borrowing CallClosure"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "parameter"),
+        1,
+        "the closure result retains a distinct share balanced by the existing \
+         caller-side result owner"
+    );
+    for caller in ["nested_runtime", "discarded"] {
+        assert_eq!(
+            inline_string_drops(&pl, caller),
+            1,
+            "{caller}: a bare CallClosure string temp must receive one inline \
+             release after its borrowing runtime use or discard"
+        );
+        assert_eq!(
+            return_exit_string_drops(&pl, caller),
+            0,
+            "{caller}: the bare CallClosure temp must not also acquire a \
+             binding-scoped owner"
+        );
+    }
+}
+
+#[test]
+fn direct_opaque_extern_string_scrutinee_fails_closed() {
+    let pl = pipeline_with_tc(
+        r#"
+        extern "C" { fn host_opaque_string() -> string; }
+        fn opaque_extern_wrapper() -> string { unsafe { host_opaque_string() } }
+        fn borrow_len(value: string) -> i64 { value.len() }
+        fn main() -> i64 { borrow_len(opaque_extern_wrapper()) }
+        "#,
+    );
+    assert!(
+        pl.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "call-scrutinee ownership is unresolved"
+        )),
+        "an ownership-opaque result must stop before codegen: {:#?}",
+        pl.diagnostics
+    );
+    assert_eq!(total_string_drops(&pl, "main"), 0);
+}
+
+#[test]
+fn opaque_extern_string_return_cannot_be_laundered_through_function_value() {
+    let pl = pipeline_with_tc(
+        r#"
+        type FactoryBox {
+            make: fn() -> string;
+        }
+
+        extern "C" {
+            fn host_factory() -> fn() -> string;
+            fn host_factory_box() -> FactoryBox;
+            fn host_opaque_string() -> string;
+        }
+
+        fn borrow_len(value: string) -> i64 {
+            value.len()
+        }
+
+        fn direct_extern_factory() -> i64 {
+            let make = unsafe { host_factory() };
+            borrow_len(make())
+        }
+
+        fn aggregate_extern_factory() -> i64 {
+            let factory = unsafe { host_factory_box() };
+            borrow_len((factory.make)())
+        }
+
+        fn opaque_wrapper() -> string {
+            unsafe { host_opaque_string() }
+        }
+
+        fn closure_wrapped_extern() -> i64 {
+            let make = || opaque_wrapper();
+            borrow_len(make())
+        }
+
+        fn closure_explicit_return_extern() -> i64 {
+            let make = || -> string {
+                return opaque_wrapper();
+            };
+            borrow_len(make())
+        }
+
+        fn domestic_factory() -> fn() -> string {
+            || "domestic".to_upper()
+        }
+
+        fn domestic_factory_is_preserved() -> i64 {
+            let make = domestic_factory();
+            borrow_len(make())
+        }
+        "#,
+    );
+
+    let foreign_factory_refusals = pl
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct.contains(
+                        "returning a string-returning callable value"
+                    )
+            )
+        })
+        .count();
+    assert_eq!(
+        foreign_factory_refusals, 2,
+        "both direct and record-contained ownership-opaque extern factories \
+         must fail closed before their callable pairs can acquire the \
+         ClosureInvoke +1 return contract; \
+         diagnostics: {:#?}",
+        pl.diagnostics
+    );
+    let closure_refusals = pl
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct
+                        == "closure string return without an owned-return contract"
+            )
+        })
+        .count();
+    assert_eq!(
+        closure_refusals, 2,
+        "both tail and tail-less explicit-return closure paths forwarding an opaque \
+         string extern wrapper must remain fail-closed; \
+         diagnostics: {:#?}",
+        pl.diagnostics
+    );
+    assert_eq!(
+        total_string_drops(&pl, "domestic_factory_is_preserved"),
+        1,
+        "a Hew-produced callable remains admitted and its string result carries \
+         exactly one caller release"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Canary 5 — DISCARD compatibility: a discarded fresh producer (`a + b;`) is
 // released by exactly one inline drop, producer-agnostically (this folds the
 // vec-branch's Vec-specific discard fix into the general substrate).
@@ -344,6 +752,255 @@ fn canary5_discarded_producer_releases_once() {
         inline_string_drops(&pl, "dvecget"),
         1,
         "a discarded Vec<string> getter (retained owner) must be released by one inline drop"
+    );
+}
+
+#[test]
+fn discarded_audited_runtime_string_result_releases_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_stream_last_error() -> string;
+}
+
+fn drain_error() {
+    unsafe {
+        let _ = hew_stream_last_error();
+    }
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "drain_error"),
+        1,
+        "an audited runtime extern with a measured transferred string result \
+         still needs one caller-side drop when discarded"
+    );
+    assert_eq!(return_exit_string_drops(&pl, "drain_error"), 0);
+}
+
+#[test]
+fn audited_xml_string_result_and_forwarder_release_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn xml_text(node: i64) -> string {
+    unsafe { hew_xml_to_string(node) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn forwarded(node: i64) -> i64 {
+    borrow_len(xml_text(node))
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        total_string_drops(&pl, "forwarded"),
+        1,
+        "the measured XML string transfer must carry exactly one caller-side \
+         release through its Hew forwarder"
+    );
+    assert_eq!(
+        total_string_drops(&pl, "xml_text"),
+        0,
+        "the forwarding function transfers the XML string owner to its caller"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ownership-boundary matrix keeps positive wrapper forms and their fail-closed controls in the same checked module"
+)]
+fn audited_extern_string_temp_through_unsafe_tail_releases_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn xml_text(node: i64) -> string {
+    unsafe { hew_xml_to_string(node) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn domestic(node: i64) -> string {
+    f"node={node}"
+}
+
+fn direct(node: i64) -> i64 {
+    borrow_len(unsafe { hew_xml_to_string(node) })
+}
+
+fn nested(node: i64) -> i64 {
+    borrow_len(unsafe { unsafe { hew_xml_to_string(node) } })
+}
+
+fn plain(node: i64) -> i64 {
+    borrow_len(domestic(node))
+}
+
+fn forwarded(node: i64) -> i64 {
+    borrow_len(xml_text(node))
+}
+
+fn statement_tail(node: i64) -> i64 {
+    borrow_len(unsafe {
+        let marker = 0;
+        hew_xml_to_string(node + marker)
+    })
+}
+
+fn immutable_alias(node: i64) -> i64 {
+    borrow_len(unsafe {
+        let value = hew_xml_to_string(node);
+        value
+    })
+}
+
+fn all_fresh_if(node: i64, take_first: bool) -> i64 {
+    borrow_len(unsafe {
+        if take_first {
+            hew_xml_to_string(node)
+        } else {
+            hew_xml_to_string(node + 1)
+        }
+    })
+}
+
+fn all_fresh_match(node: i64, choice: i64) -> i64 {
+    borrow_len(unsafe {
+        match choice {
+            0 => hew_xml_to_string(node),
+            _ => hew_xml_to_string(node + 1),
+        }
+    })
+}
+
+fn mixed_if(node: i64, fallback: string, take_fresh: bool) -> i64 {
+    borrow_len(unsafe {
+        if take_fresh {
+            hew_xml_to_string(node)
+        } else {
+            fallback
+        }
+    })
+}
+
+fn mutable_alias(node: i64) -> i64 {
+    borrow_len(unsafe {
+        var value = hew_xml_to_string(node);
+        value
+    })
+}
+
+fn static_literal() -> i64 {
+    borrow_len(unsafe { "static" })
+}
+
+fn borrowed(value: string) -> i64 {
+    borrow_len(unsafe { value })
+}
+
+fn opaque(make: fn() -> string) -> string {
+    make()
+}
+
+fn opaque_wrapped(make: fn() -> string) -> i64 {
+    borrow_len(unsafe { opaque(make) })
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    for caller in [
+        "direct",
+        "nested",
+        "statement_tail",
+        "immutable_alias",
+        "mutable_alias",
+        "all_fresh_if",
+        "all_fresh_match",
+        "plain",
+        "forwarded",
+    ] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "`{caller}` must balance the measured transferred string with \
+             exactly one caller-side release"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "mixed_if"),
+        1,
+        "the fresh-or-borrowed join retains one independent result share"
+    );
+    for caller in ["static_literal", "borrowed"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            0,
+            "`{caller}` has no audited fresh-producer tail and must not acquire \
+             a synthetic owner"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "opaque_wrapped"),
+        1,
+        "the indirect closure ABI returns one independently releasable string \
+         share, so its Hew wrapper must propagate that carrier authority"
+    );
+}
+
+#[test]
+fn measured_markdown_result_releases_once_direct_and_through_wrapper() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_markdown_to_html(markdown: string) -> string;
+}
+
+fn to_html(markdown: string) -> string {
+    unsafe { hew_markdown_to_html(markdown) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn direct(markdown: string) -> i64 {
+    let html = unsafe { hew_markdown_to_html(markdown) };
+    html.len()
+}
+
+fn forwarded(markdown: string) -> i64 {
+    to_html(markdown).len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    for caller in ["direct", "forwarded"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "{caller}: a measured Markdown result borrowed by the caller must \
+             earn exactly one caller-side string drop"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "to_html"),
+        0,
+        "the shipped-wrapper shape forwards its owner instead of releasing it"
     );
 }
 
@@ -530,5 +1187,51 @@ fn compose() -> i64 {
         return_exit_string_drops(&pl, "compose"),
         1,
         "the final bound concat result remains owned by the ordinary scope-exit path"
+    );
+}
+
+/// `var` reassignment from a fresh producer temp is a TRANSFER, not a share.
+/// The `let` path records the produced temp's handoff
+/// (`retire_provisional_owner_for_bound_value`), which suppresses the
+/// share-retain at the initializing move; the assignment path retired the
+/// provisional temp owner but never recorded the handoff, so
+/// `finalize_string_ownership` spliced a `StringRetain` before the
+/// reassignment move with no balancing release of the source temp — one
+/// leaked node per reassignment (`var s = a.to_upper(); s = b.to_upper();`),
+/// on both the normal and the crash-drain path.
+#[test]
+fn var_reassignment_from_fresh_temp_transfers_without_retain() {
+    let pl = pipeline_with_tc(
+        r#"
+fn work() -> i64 {
+    var s = "pre-overwrite-owner".to_upper();
+    s = "post-overwrite-owner".to_upper();
+    s.len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    let retains = pl
+        .raw_mir
+        .iter()
+        .filter(|f| f.name == "work")
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instructions.iter())
+        .filter(|i| matches!(i, Instr::StringRetain { .. }))
+        .count();
+    assert_eq!(
+        retains, 0,
+        "the reassignment move consumes the produced temp; a retain here has \
+         no balancing source release and leaks one node per reassignment"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "work"),
+        1,
+        "exactly one inline release: the overwritten pre-assignment value"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "work"),
+        1,
+        "the binding keeps its single scope-exit drop for the current value"
     );
 }

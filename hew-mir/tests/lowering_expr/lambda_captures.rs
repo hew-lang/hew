@@ -11,7 +11,10 @@
 //! regression on either the resolver or the producer surfaces here.
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_mir::{lower_hir_module, CaptureKind, ElaboratedMirFunction, IrPipeline, Place};
+use hew_mir::{
+    lower_hir_module, CaptureKind, ElaboratedMirFunction, IrPipeline, LambdaEnvFieldDrop, Place,
+    Terminator,
+};
 use hew_types::TypeCheckOutput;
 
 /// Run the full source → HIR → MIR pipeline. Asserts parser cleanliness
@@ -203,6 +206,53 @@ fn main() {
 }
 
 #[test]
+fn nested_lambda_pid_capture_owns_an_independent_strong_env_handle() {
+    let source = r"
+fn main() {
+    let printer = actor |x: i32| { println(x); };
+    let forward = actor |x: i32| { printer.send(x); };
+    forward.send(1);
+}
+";
+    let p = lower_checked(source);
+    let rejects: Vec<_> = p
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
+            )
+        })
+        .collect();
+    assert!(
+        rejects.is_empty(),
+        "a nested LambdaPid capture has clone/release ownership now: {rejects:?}"
+    );
+
+    let main = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main raw MIR lowered");
+    let env_drop_classes: Vec<_> = main
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::MakeLambdaActor {
+                env_field_drops, ..
+            } if !env_field_drops.is_empty() => Some(env_field_drops.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        env_drop_classes,
+        vec![vec![LambdaEnvFieldDrop::StrongLambdaActorHandle]],
+        "the forwarding actor must own exactly one strong LambdaPid env clone"
+    );
+}
+
+#[test]
 fn lambda_vec_capture_still_fails_closed() {
     // The pid admission must not widen the capture surface: an owned
     // aggregate (Vec) capture still refuses with
@@ -214,7 +264,7 @@ fn main() {
     let f = actor |n: i64| -> i64 { xs[0] + n };
 }
 ";
-    let p = pipeline(source);
+    let p = lower_checked(source);
     assert!(
         p.diagnostics.iter().any(|d| matches!(
             d.kind,

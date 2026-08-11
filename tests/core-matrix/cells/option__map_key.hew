@@ -1,0 +1,9 @@
+fn main() {
+    let k: Option<i64> = Some(5);
+    let m: HashMap<Option<i64>, i64> = HashMap::new();
+    m.insert(k, 9);
+    match m.get(k) {
+        Some(v) => println(f"got {v}"),
+        None => println("missing"),
+    }
+}

@@ -30,8 +30,17 @@
 import std::string;
 
 /// A handle to a completed command invocation inside the runtime.
+#[resource]
 #[opaque]
 pub type ProcessResultHandle {
+}
+
+impl ProcessResultHandle {
+    fn close(consuming self) {
+        unsafe {
+            hew_process_result_free(self)
+        };
+    }
 }
 
 /// The runtime-owned child-process handle behind a `Child`.
@@ -307,7 +316,7 @@ extern "C" {
     fn hew_process_result_exit_code(result: ProcessResultHandle) -> i32;
     fn hew_process_result_stdout(result: ProcessResultHandle) -> string;
     fn hew_process_result_stderr(result: ProcessResultHandle) -> string;
-    fn hew_process_result_free(result: ProcessResultHandle);
+    fn hew_process_result_free(consume result: ProcessResultHandle);
     fn hew_process_spawn(command: string) -> ChildHandle;
     fn hew_process_spawn_argv(command: string, args: Vec<string>) -> ChildHandle;
     fn hew_process_is_valid(child: ChildHandle) -> bool;

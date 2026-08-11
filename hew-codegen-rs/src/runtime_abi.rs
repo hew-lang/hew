@@ -23,7 +23,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy};
-use hew_mir::Place;
+use hew_mir::{ParamBoundaryMode, ParamLoanStorage, Place};
 use hew_types::{BuiltinType, ResolvedTy};
 
 use crate::layout::{
@@ -38,6 +38,113 @@ fn stamped_vec_element_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
         return None;
     };
     (ty.is_builtin(BuiltinType::Vec) && args.len() == 1).then(|| &args[0])
+}
+
+/// Typed marshalling decision for one argument at a direct LLVM call edge.
+///
+/// This is deliberately a storage-shape decision, not a symbol allowlist:
+/// `bytes` is the one inline Hew value whose FFI parameter ABI is always the
+/// address of its `{ptr, len, cap}` slot.  An aliasable representation loan
+/// uses the same pointer shape for a different reason: the callee must mutate
+/// the caller-visible slot.  Every other argument crosses as the value loaded
+/// from its slot, subject to the integer-width reconciliation performed by the
+/// caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypedCallArgPass {
+    LoadedValue,
+    StorageAddress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypedCallBoundary {
+    /// A stdlib/runtime or user-authored extern declaration.
+    ExternFfi,
+    /// A source function. Older hand-built MIR fixtures may omit the fact;
+    /// their already-identical by-value shapes remain admissible, but an
+    /// unstamped source parameter can never acquire an FFI/loan pointer ABI.
+    Source(Option<ParamBoundaryMode>),
+}
+
+/// Classify one direct-call argument from checker-resolved type, finalized MIR
+/// boundary mode, local storage shape, and the callee's declared LLVM type.
+///
+/// [`TypedCallBoundary::ExternFfi`] means an extern/runtime FFI declaration.
+/// In that domain an inline `bytes` slot may cross a pointer-declared
+/// parameter by address.  For source functions only an
+/// aliasable [`ParamBoundaryMode::BorrowRepresentationLoan`] may do so.
+///
+/// Any other shape disagreement fails closed before LLVM verification.  This
+/// keeps `String`/opaque handles (pointer values), ordinary aggregates
+/// (struct values), and integer width reconciliation distinct from the bytes
+/// address ABI instead of treating every pointer-declared parameter as a
+/// reason to pass a slot address.
+pub(crate) fn classify_typed_call_arg_pass(
+    resolved_ty: &ResolvedTy,
+    storage_ty: BasicTypeEnum<'_>,
+    declared_ty: BasicMetadataTypeEnum<'_>,
+    boundary: TypedCallBoundary,
+    callee: &str,
+    param_idx: usize,
+) -> CodegenResult<TypedCallArgPass> {
+    if matches!(
+        boundary,
+        TypedCallBoundary::Source(Some(
+            ParamBoundaryMode::RejectUnprovenRepresentationMutation
+        ))
+    ) {
+        return Err(CodegenError::FailClosed(format!(
+            "parameter {param_idx} of `{callee}` has rejected representation-mutation \
+             authority but reached direct-call codegen"
+        )));
+    }
+
+    let aliasable_loan = matches!(
+        boundary,
+        TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowRepresentationLoan {
+            storage: ParamLoanStorage::Aliasable,
+            ..
+        }))
+    );
+    if aliasable_loan {
+        if !matches!(resolved_ty, ResolvedTy::Bytes)
+            || !matches!(storage_ty, BasicTypeEnum::StructType(_))
+            || !matches!(declared_ty, BasicMetadataTypeEnum::PointerType(_))
+        {
+            return Err(CodegenError::FailClosed(format!(
+                "aliasable representation-loan parameter {param_idx} of `{callee}` must \
+                 marshal a checker-resolved bytes triple from struct storage to a pointer \
+                 declaration; got resolved type `{resolved_ty}`, storage {storage_ty:?}, \
+                 declaration {declared_ty:?}"
+            )));
+        }
+        return Ok(TypedCallArgPass::StorageAddress);
+    }
+
+    // Runtime and user-authored extern declarations use one unconditional
+    // bytes-parameter ABI: the address of the caller's inline triple.
+    if boundary == TypedCallBoundary::ExternFfi
+        && matches!(resolved_ty, ResolvedTy::Bytes)
+        && matches!(storage_ty, BasicTypeEnum::StructType(_))
+        && matches!(declared_ty, BasicMetadataTypeEnum::PointerType(_))
+    {
+        return Ok(TypedCallArgPass::StorageAddress);
+    }
+
+    let storage_metadata = metadata_type_from_basic(storage_ty);
+    if storage_metadata == declared_ty
+        || matches!(
+            (storage_ty, declared_ty),
+            (BasicTypeEnum::IntType(_), BasicMetadataTypeEnum::IntType(_))
+        )
+    {
+        return Ok(TypedCallArgPass::LoadedValue);
+    }
+
+    Err(CodegenError::FailClosed(format!(
+        "typed argument {param_idx} of `{callee}` has no coherent direct-call ABI: \
+         resolved type `{resolved_ty}`, boundary {boundary:?}, storage {storage_ty:?}, \
+         declaration {declared_ty:?}"
+    )))
 }
 
 /// Decode a setup ABI whose i32 return is zero on success and otherwise one
@@ -3836,8 +3943,17 @@ pub(crate) fn lower_call_runtime_abi(
         | F::TaskSetResult
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecAppend
+        | F::VecClear
+        | F::VecClone
         | F::VecContainsLayout
         | F::VecContainsOwned
+        | F::VecContainsScalar(_)
+        // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
+        // never an `Instr::CallRuntimeAbi`.
+        | F::VecGet(VecGetElem::Clone)
+        | F::VecIsEmpty
+        | F::VecJoinStr
         | F::VecNew
         | F::VecPopBool
         | F::VecPopLayout
@@ -3846,11 +3962,14 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecPushLayout
         | F::VecPushOwned
         | F::VecPushOwnedMove
+        // Scalar Vec operations are authorized at `Terminator::Call` and
+        // deliberately use the ordinary typed function path. They must never
+        // appear in the runtime-ABI instruction carrier.
+        | F::VecScalar { .. }
         | F::VecRemoveAtBool
         | F::VecRemoveAtLayout
         | F::VecRemoveAtOwned
         | F::VecSetBool
-        | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
         | F::VecSetOwnedMove
@@ -4027,6 +4146,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_observe_scrape" => ptr_ty.fn_type(&[], false),
         "hew_observe_series" => ptr_ty.fn_type(&[], false),
         "hew_observe_barrier" => i64_ty.fn_type(&[], false),
+        // Process-unique positive identity for std::arena::Arena<T>. Zero is
+        // the fail-closed exhaustion sentinel.
+        "hew_arena_instance_id_new" => i64_ty.fn_type(&[], false),
         // User-metric scalar emit path (#1862). Bodies in
         // `hew-runtime/src/metrics.rs`. A name comes in as `*const c_char` and
         // the slot handle goes out as `i64` (>= 0 valid, -1 on failure); the
@@ -4167,6 +4289,14 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // generator companions allocate through it so their drop free is the
         // symmetric `hew_cont_frame_free` partner.
         "hew_cont_frame_alloc" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_cont_frame_alloc_tracked(size: u64) -> ptr. Coroutine ramps use
+        // this sibling so synchronous crash recovery has positive allocation
+        // provenance; companions/environments stay on the untracked allocator.
+        "hew_cont_frame_alloc_tracked" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_cont_frame_handoff(handle: ptr) -> void. Emitted immediately
+        // before every normal coroutine-ramp return to transfer the frame out
+        // of the active TLS stack and into its caller's ownership.
+        "hew_cont_frame_handoff" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_gen_coro_destroy(companion: *mut c_void) -> void (cont.rs). Single
         // teardown owner of a generator value: destroys the coro frame (handle at
         // companion offset 0) then frees the companion. Null-safe.
@@ -4213,6 +4343,51 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // ambient actor channel, AND the child's consumed-bit flip is isolated
         // from the outer dispatch's fallback/orphan-reply routing.
         "hew_context_reply_channel_swap_push" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_cont_crash_cleanup_arm(
+        //     token: u64, slot: ptr, size: u64, align: u64, thunk: ptr,
+        //     storage: u32, relocation: u32
+        // ) -> u64 (`hew-runtime/src/cont.rs`). Zero creates a stable token on
+        // the active tracked frame (or remains zero when no frame is active);
+        // an existing inactive token reactivates without changing its LIFO
+        // order. UINT64_MAX is the hard-failure sentinel.
+        "hew_cont_crash_cleanup_arm" => ctx.i64_type().fn_type(
+            &[
+                i64_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+                i64_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                i32_ty.into(),
+            ],
+            false,
+        ),
+        // Temporary ownership-transfer boundary and permanent lexical-end
+        // retirement for stable crash-cleanup tokens.
+        "hew_cont_crash_cleanup_deactivate" | "hew_cont_crash_cleanup_retire" => {
+            ctx.bool_type().fn_type(&[i64_ty.into()], false)
+        }
+        // Per-field actor-state escrow validity. `clear` neutralizes a field
+        // for a non-store mutation. Store lowering uses `begin_replace` before
+        // old-value release, then prepares the exact replacement before the
+        // live store.
+        "hew_dispatch_state_cleanup_clear" | "hew_dispatch_state_cleanup_begin_replace" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "hew_dispatch_state_cleanup_prepare" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+        "hew_dispatch_state_cleanup_abort_invariant" => ctx.void_type().fn_type(&[], false),
+        "hew_dispatch_state_cleanup_prepare_transfer" => ctx.bool_type().fn_type(
+            &[
+                i64_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+            ],
+            false,
+        ),
         // hew_context_reply_channel_swap_pop() -> void
         // (`hew-runtime/src/execution_context.rs`). Closes the innermost swap on
         // the NORMAL-return edge: restores the outer reply-channel pointer +
@@ -4709,6 +4884,15 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_duplex_payload_free" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // Channel endpoint close consumes one endpoint owner.
+        // (`hew-runtime/src/channel.rs`). Both are void(ptr).
+        "hew_channel_sender_close" | "hew_channel_receiver_close" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        // hew_lambda_actor_clone(actor: *mut HewLambdaActorHandle)
+        //     -> *mut HewLambdaActorHandle
+        // Used when a nested lambda actor takes an independent strong capture.
+        "hew_lambda_actor_clone" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
@@ -5456,6 +5640,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
             enum_layouts: self.enum_layouts,
             machine_layouts: self.machine_layouts,
             record_field_resolved_tys: self.record_field_resolved_tys,
+            lifecycle_registry: self.lifecycle_registry,
         }
     }
 
@@ -6253,17 +6438,24 @@ pub(crate) fn emit_extern_record_return_call<'ctx>(
     }
     for (idx, arg) in args.iter().enumerate() {
         let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-        // By-pointer bytes param (e.g. `hew_tls_write_result`'s `data: bytes`):
-        // the callee declares this parameter as `ptr` while the Hew argument is a
-        // `bytes` value (a `{ptr, i32, i32}` alloca). Pass the alloca ADDRESS so
-        // the runtime reads the triple through the pointer — the same branch as
-        // the generic arm, read at the SHIFTED declared index. Every `bytes`
-        // param is `ptr`-declared, so this branch fires for all of them.
-        if matches!(
-            declared_param_tys.get(idx + param_index_shift),
-            Some(BasicMetadataTypeEnum::PointerType(_))
-        ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
-            && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
+        let declared_ty = declared_param_tys
+            .get(idx + param_index_shift)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "record-returning extern `{callee}` has no declared parameter for \
+                     Hew argument {idx}"
+                ))
+            })?;
+        let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
+        if classify_typed_call_arg_pass(
+            arg_resolved_ty,
+            arg_ty,
+            declared_ty,
+            TypedCallBoundary::ExternFfi,
+            callee,
+            idx,
+        )? == TypedCallArgPass::StorageAddress
         {
             arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
             continue;
@@ -6276,17 +6468,14 @@ pub(crate) fn emit_extern_record_return_call<'ctx>(
         // parameter type at the SHIFTED index — same rule as the generic arm
         // (a Hew i64 local feeding a declared i32 param must narrow, signed
         // for signed operands).
-        let reconciled = match declared_param_tys.get(idx + param_index_shift) {
-            Some(BasicMetadataTypeEnum::IntType(param_int)) => {
-                let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
-                reconcile_int_width(
-                    fn_ctx,
-                    loaded,
-                    (*param_int).into(),
-                    !is_unsigned_integer_ty(arg_resolved_ty),
-                    "argument",
-                )?
-            }
+        let reconciled = match declared_ty {
+            BasicMetadataTypeEnum::IntType(param_int) => reconcile_int_width(
+                fn_ctx,
+                loaded,
+                param_int.into(),
+                !is_unsigned_integer_ty(arg_resolved_ty),
+                "argument",
+            )?,
             _ => loaded,
         };
         arg_vals.push(metadata_value_from_basic(reconciled));
@@ -6505,6 +6694,168 @@ pub(crate) fn predeclare_extern_decls<'ctx>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_mir::{ParamCrashCleanupKind, ParamRepresentationEffect};
+
+    #[test]
+    fn direct_call_argument_marshalling_is_type_and_boundary_driven() {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i64_ty = ctx.i64_type();
+        let bytes_ty = crate::llvm::bytes_triple_llvm_ty(&ctx);
+        let pair_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+
+        let cases = [
+            (
+                "runtime FFI bytes",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::ExternFfi,
+                TypedCallArgPass::StorageAddress,
+            ),
+            (
+                "read-only source bytes",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                bytes_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowReadOnly)),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "aliasable source bytes loan",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowRepresentationLoan {
+                    storage: ParamLoanStorage::Aliasable,
+                    effect: ParamRepresentationEffect::MayReplaceRepresentation,
+                    crash_cleanup: ParamCrashCleanupKind::Bytes,
+                })),
+                TypedCallArgPass::StorageAddress,
+            ),
+            (
+                "frame-snapshot bytes loan",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                bytes_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowRepresentationLoan {
+                    storage: ParamLoanStorage::OwnedFrameSnapshot,
+                    effect: ParamRepresentationEffect::MayReplaceRepresentation,
+                    crash_cleanup: ParamCrashCleanupKind::Bytes,
+                })),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "transferred resource handle",
+                ResolvedTy::String,
+                ptr_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::TransferResource)),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "owned message handle",
+                ResolvedTy::String,
+                ptr_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::OwnedMessage)),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "owned aggregate carrier",
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                pair_ty.into(),
+                pair_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::OwnedCarrier)),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "legacy unstamped source with an already-coherent value shape",
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                pair_ty.into(),
+                pair_ty.into(),
+                TypedCallBoundary::Source(None),
+                TypedCallArgPass::LoadedValue,
+            ),
+            (
+                "integer width reconciliation",
+                ResolvedTy::I64,
+                i64_ty.into(),
+                ctx.i32_type().into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowReadOnly)),
+                TypedCallArgPass::LoadedValue,
+            ),
+        ];
+
+        for (name, resolved, storage, declared, boundary, expected) in cases {
+            assert_eq!(
+                classify_typed_call_arg_pass(&resolved, storage, declared, boundary, "callee", 0)
+                    .unwrap_or_else(|err| panic!("{name}: {err}")),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_call_argument_marshalling_fails_closed_on_unproven_shapes() {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let bytes_ty = crate::llvm::bytes_triple_llvm_ty(&ctx);
+        let pair_ty = ctx.struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+
+        let rejected = [
+            (
+                "rejected boundary",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                bytes_ty.into(),
+                TypedCallBoundary::Source(Some(
+                    ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+                )),
+            ),
+            (
+                "ordinary source bytes cannot silently take the FFI pointer ABI",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowReadOnly)),
+            ),
+            (
+                "unstamped source bytes cannot silently take the FFI pointer ABI",
+                ResolvedTy::Bytes,
+                bytes_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(None),
+            ),
+            (
+                "non-bytes aggregate cannot silently take the bytes pointer ABI",
+                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+                pair_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::ExternFfi,
+            ),
+            (
+                "representation loans are typed bytes-only",
+                ResolvedTy::String,
+                ptr_ty.into(),
+                ptr_ty.into(),
+                TypedCallBoundary::Source(Some(ParamBoundaryMode::BorrowRepresentationLoan {
+                    storage: ParamLoanStorage::Aliasable,
+                    effect: ParamRepresentationEffect::MayReplaceRepresentation,
+                    crash_cleanup: ParamCrashCleanupKind::Bytes,
+                })),
+            ),
+        ];
+
+        for (name, resolved, storage, declared, boundary) in rejected {
+            assert!(
+                classify_typed_call_arg_pass(&resolved, storage, declared, boundary, "callee", 0)
+                    .is_err(),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn stamped_vec_element_ignores_user_name_collision() {

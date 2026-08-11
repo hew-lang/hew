@@ -1,0 +1,21 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let a = Tok { id: 1 };
+    let b = Tok { id: 2 };
+    let v: Vec<Tok> = Vec::new();
+    v.push(a);
+    v.push(b);
+    let e = v[0];
+    let e_i = e.id;
+    println(f"tok {e_i}");
+}

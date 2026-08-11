@@ -1,0 +1,36 @@
+// Depth-2 projection over a `#[linear]` leaf. Exactly one diagnostic: the
+// intermediate `outer.inner` is read only to project further into it, so the
+// partially-moved-root rule must not stack a second error on every ancestor
+// of the consumed place.
+#[linear]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consuming self) {}
+    fn redeem(consuming self) -> i64 {
+        self.id
+    }
+}
+
+type Inner {
+    ticket: Ticket;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+actor Gate {
+    receive fn accept(t: Ticket) -> i64 {
+        return t.redeem();
+    }
+}
+
+fn main() -> i64 {
+    let gate = spawn Gate;
+    let outer = Outer { inner: Inner { ticket: Ticket { id: 1 } } };
+    let _ = await gate.accept(outer.inner.ticket);
+    return outer.inner.ticket.redeem();
+}

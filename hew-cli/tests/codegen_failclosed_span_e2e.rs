@@ -19,9 +19,12 @@
 //! (d) black-hole regression: a root fail-closed carries a source location,
 //!     never a bare location-free message.
 //! (e) generated impl DEFAULT-METHOD from a file-imported trait: the default
-//!     body is synthesised at the root impl site but its span indexes the
-//!     imported trait's source → bare, no false root caret. This is the exact
-//!     producer an absence-from-a-foreign-set proxy misclassified.
+//!     body is synthesised at the root impl site, so its unsupported-type
+//!     signature reaches the codegen-legality check and fails closed — but
+//!     its span belongs to the imported trait's source, so the diagnostic
+//!     must stay bare rather than carting a caret against the root file. A
+//!     sibling test pins the same fail-closed for a default that is actually
+//!     called.
 //!
 //! Each false-caret case (b, c, e) is a revert-repro: it fails (a false root
 //! caret appears) if origin-carrying is disabled by making
@@ -291,9 +294,13 @@ fn regression_failclosed_carries_location_not_blackhole() {
 /// ids from `root_item_ids`, so it resolves away from `RootUnit` and its span is
 /// stripped. Revert-repro: fails if origin-carrying is disabled.
 #[test]
-fn file_imported_trait_default_method_no_false_root_caret() {
+fn file_imported_trait_default_method_unsupported_type_no_false_root_caret() {
     // Imported trait: `make` is a DEFAULT method whose signature/body use an
     // array type the codegen boundary rejects. `tag` is required (no default).
+    // The impl does not override `make`, so the default body is materialised
+    // onto `RootThing` and its signature reaches the codegen-legality check —
+    // exactly as it does for a same-file trait. The assertion here is about
+    // WHERE that diagnostic points, not whether it fires.
     let trait_lib = concat!(
         "trait Emit {\n",
         "    fn tag(self) -> i64;\n",
@@ -334,6 +341,71 @@ fn file_imported_trait_default_method_no_false_root_caret() {
     let fixture = write_fixture(&[("main.hew", root_source), ("trait_lib.hew", trait_lib)]);
     let main_path = fixture.path().join("main.hew");
 
+    let check_output = Command::new(hew_binary())
+        .args(["check", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !check_output.status.success(),
+        "the materialised default's unsupported array type must fail closed at the \
+         codegen boundary; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&check_output.stdout),
+        String::from_utf8_lossy(&check_output.stderr),
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&check_output.stderr));
+    assert!(
+        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED")
+            && stderr.contains("Array type — composite lowering is Cluster 2"),
+        "the imported default's illegal type must surface as the codegen-front \
+         diagnostic; got:\n{stderr}"
+    );
+    // CRITICAL: the generated body's span indexes trait_lib.hew, so it must NOT
+    // render a caret against main.hew even though the offset is in bounds there.
+    assert!(
+        !has_root_error_caret(&stderr),
+        "generated default-method span must NOT produce a main.hew: error: caret; got:\n{stderr}"
+    );
+}
+
+/// Sibling to the acceptance case above: when the illegal default method IS
+/// reachable (actually called), the codegen-legality check must still fire.
+/// Dead-code elimination only excuses UNUSED code from codegen-legality —
+/// reachable code is still bound by it. Uses a same-file trait (rather than
+/// the file-imported trait above) so the assertion isolates the
+/// codegen-legality check from the unrelated file-imported-trait
+/// default-method call-resolution gap.
+#[test]
+fn trait_default_method_unsupported_type_called_fails_closed() {
+    let source = concat!(
+        "trait Emit {\n",
+        "    fn tag(self) -> i64;\n",
+        "    fn make(self, a: [i64; 2]) -> [i64; 2] {\n",
+        "        return a;\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "type RootThing { x: i64 }\n",
+        "\n",
+        "impl Emit for RootThing {\n",
+        "    fn tag(self) -> i64 {\n",
+        "        return self.x;\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "fn main() {\n",
+        "    let v = RootThing { x: 1 };\n",
+        "    println(v.tag());\n",
+        "    let arr = v.make([1, 2]);\n",
+        "    println(arr[0]);\n",
+        "}\n",
+    );
+
+    let fixture = write_fixture(&[("main.hew", source)]);
+    let main_path = fixture.path().join("main.hew");
+
     let output = Command::new(hew_binary())
         .args(["check", main_path.to_str().unwrap()])
         .current_dir(fixture.path())
@@ -342,21 +414,13 @@ fn file_imported_trait_default_method_no_false_root_caret() {
 
     assert!(
         !output.status.success(),
-        "hew check must fail on the generated default-method's unsupported array type"
+        "hew check must fail closed when the illegal default method is actually called"
     );
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    // The fail-closed error must appear (the generated default-method reaches
-    // codegen and fails closed).
     assert!(
-        stderr.contains("unsupported construct") || stderr.contains("fail-closed"),
-        "generated default-method error must still appear; got:\n{stderr}"
-    );
-    // CRITICAL: the generated default-method's trait-indexed span must NOT be
-    // rendered as a caret against the root file.
-    assert!(
-        !has_root_error_caret(&stderr),
-        "file-imported trait default-method must NOT produce a main.hew: error: caret; got:\n{stderr}"
+        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED")
+            && stderr.contains("Array type — composite lowering is Cluster 2"),
+        "reachable illegal default method should fail at the codegen boundary; got:\n{stderr}"
     );
 }

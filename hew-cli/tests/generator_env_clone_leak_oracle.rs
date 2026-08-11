@@ -8,7 +8,8 @@ use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{
-    compile_to_native, measure_leaks, require_leaks_tool, run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, require_leaks_tool,
+    run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -277,6 +278,62 @@ fn main() {
 }
 "#;
 
+const CLOSURE_COUNTERFACTUALS: &str = r#"
+type Label {
+    text: string,
+}
+
+fn ordinary_factory(label: Label) -> fn() -> i64 {
+    || label.text.len()
+}
+
+fn noncapturing_generator_factory() -> fn() -> Generator<i64, ()> {
+    || {
+        gen {
+            yield 1;
+            yield 2;
+        }
+    }
+}
+
+fn ordinary_capture(i: i64) {
+    let label = Label { text: "ordinary-" + f"{i}" };
+    let read = ordinary_factory(label);
+    if read() <= 0 {
+        panic("ordinary capture");
+    }
+}
+
+fn noncapturing_generator() {
+    let make = noncapturing_generator_factory();
+    let g = make();
+    var total: i64 = 0;
+    loop {
+        match g.next() {
+            Some(value) => { total = total + value; },
+            None => { break; },
+        }
+    }
+    if total != 3 {
+        panic("noncapturing generator");
+    }
+}
+
+fn main() {
+    var ordinary: i64 = 0;
+    var noncapturing: i64 = 0;
+    var i: i64 = 0;
+    while i < __FRAMES__ {
+        ordinary_capture(i);
+        ordinary = ordinary + 1;
+        noncapturing_generator();
+        noncapturing = noncapturing + 1;
+        i = i + 1;
+    }
+    print(f"{ordinary}:{noncapturing}:OK");
+}
+"#;
+
 const BITCOPY_CONTROL: &str = r#"
 type Capture {
     label_len: i64,
@@ -369,6 +426,173 @@ fn main() {
 }
 "#;
 
+fn actor_param_source(frames: usize) -> String {
+    r#"
+actor Streamer {
+    receive gen fn emit(label: string, n: i64) -> i64 {
+        var i: i64 = 0;
+        while i < n {
+            yield i + label.len();
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < __FRAMES__ {
+        for await value in streamer.emit("streamlabel".to_upper(), 3) {
+            total = total + value;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}
+"#
+    .replace("__FRAMES__", &frames.to_string())
+}
+
+fn actor_record_param_source(frames: usize) -> String {
+    r#"
+record Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    var state: string;
+    receive gen fn emit(payload: Payload, tree: Tree, n: i64) -> i64 {
+        var i: i64 = 0;
+        if n > 0 {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len();
+            i = 1;
+        }
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        while i < n {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer(state: "actor-state".to_upper());
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < __FRAMES__ {
+        let payload = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let tree = Node(Leaf(frame), Leaf(frame + 1));
+        for await value in streamer.emit(payload, tree, 3) {
+            total = total + value;
+        }
+        let cancelled = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let cancelled_tree = Node(Leaf(frame), Leaf(frame + 1));
+        for await value in streamer.endless(cancelled, cancelled_tree) {
+            total = total + value;
+            break;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}
+"#
+    .replace("__FRAMES__", &frames.to_string())
+}
+
+const ACTOR_RECORD_PARAM_SUSPEND: &str = r#"
+record Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    var state: string;
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+record AppConfig { label: string }
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child streamer: Streamer(state: config.label);
+}
+
+fn main() {
+    let config = AppConfig { label: "actor-state".to_upper() };
+    let sup = spawn App(config: config);
+    let streamer = sup.streamer;
+    let payload = Payload {
+        label: "record-param".to_upper(),
+        data: "bytes-param".to_bytes(),
+        pair: ("tuple-param".to_upper(), 0),
+    };
+    let tree = Node(Leaf(0), Leaf(1));
+    let stream = streamer.endless(payload, tree);
+    let first = await stream.recv();
+    match first {
+        Some(value) => print(f"{value}:"),
+        None => print("missing:"),
+    }
+    supervisor_stop(sup);
+    print("OK");
+}
+"#;
+
 fn run_exact(bin: &Path, expected: &str) {
     let output = Command::new(bin).output().expect("run compiled oracle");
     assert!(
@@ -437,6 +661,26 @@ fn generator_closure_env_clone_has_zero_leaks() {
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
+fn generator_closure_counterfactuals_have_zero_leaks() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("generator-env-clone-counterfactuals-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        &with_frames(CLOSURE_COUNTERFACTUALS, 128),
+        dir.path(),
+        "generator_closure_counterfactuals",
+    );
+    run_exact(&bin, "128:128:OK");
+    assert_zero_leaks(&bin, "generator-closure-counterfactuals");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
 fn generator_actor_state_env_clone_has_zero_leaks() {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -450,6 +694,47 @@ fn generator_actor_state_env_clone_has_zero_leaks() {
     );
     run_exact(&bin, "32:OK");
     assert_zero_leaks(&bin, "generator-actor-state-env-clone");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn generator_actor_param_transfer_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance("generator_actor_param_transfer", actor_param_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn generator_actor_record_param_transfer_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "generator_actor_record_param_transfer",
+        actor_record_param_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn generator_actor_record_param_suspended_teardown_has_zero_leaks() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("generator-env-record-param-suspend-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        ACTOR_RECORD_PARAM_SUSPEND,
+        dir.path(),
+        "generator_actor_record_param_suspend",
+    );
+    run_exact(&bin, "45:OK");
+    assert_zero_leaks(&bin, "generator-actor-record-param-suspend");
 }
 
 #[cfg_attr(
@@ -473,6 +758,21 @@ fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
             "generator_closure_env_clone_scribble",
             with_frames(CLOSURE_SOURCE, 8),
             "8:8:8:8:OK",
+        ),
+        (
+            "generator_actor_param_transfer_scribble",
+            actor_param_source(8),
+            "8:288:OK",
+        ),
+        (
+            "generator_actor_record_param_transfer_scribble",
+            actor_record_param_source(8),
+            "8:1496:OK",
+        ),
+        (
+            "generator_actor_record_param_suspend_scribble",
+            ACTOR_RECORD_PARAM_SUSPEND.to_string(),
+            "45:OK",
         ),
     ] {
         let bin = compile_to_native(&source, dir.path(), name);

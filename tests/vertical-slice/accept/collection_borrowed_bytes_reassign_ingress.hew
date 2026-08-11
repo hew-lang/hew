@@ -1,0 +1,44 @@
+// Accept fixture (carrier-general borrowed ingress + generation boundary):
+//
+// 1. A by-value `bytes` parameter is caller-borrowed exactly like `string`
+//    (both are excluded from `param_summary_owned`); a `bytes` value/element
+//    reaching a `HashMap`/`HashSet` MOVE ingress through such a parameter is
+//    retained (`+1`) before the move. Without the retain the collection's
+//    teardown and the caller's scope exit released the same buffer — this
+//    fixture aborted at teardown before printing its final line.
+//
+// 2. Reassignment is a GENERATION boundary: `key = <fresh>` binds a
+//    frame-owned value into the parameter slot, so the ingress must consume
+//    (transfer) it rather than retain — a retain on the fresh generation is a
+//    count nothing ever releases (one leaked string per call, caught by the
+//    leak oracle's slope).
+
+fn ingest_value(store: HashMap<string, bytes>, payload: bytes) -> i64 {
+    store.insert("k" + "-heap", payload);
+    return store.len();
+}
+
+// `HashSet<bytes>` / `bytes`-keyed maps stay fail-closed at codegen (no
+// layout-managed drop-thunk path for a bytes key/element yet), so the
+// reachable borrowed-`bytes` ingress surface is the `HashMap` VALUE seam.
+
+fn put_reassigned(counts: HashMap<string, i64>, var key: string) -> i64 {
+    key = ("fresh" + "-key").to_upper();
+    counts.insert(key, 1);
+    return counts.len();
+}
+
+fn main() {
+    var value_total = 0;
+    var reassign_total = 0;
+    for i in 0..40 {
+        let store: HashMap<string, bytes> = HashMap::new();
+        let payload = b"0123456789abcdef0123456789abcdef";
+        value_total = value_total + ingest_value(store, payload);
+
+        let counts: HashMap<string, i64> = HashMap::new();
+        reassign_total = reassign_total + put_reassigned(counts, "caller" + "-key");
+    }
+    println(f"value={value_total} reassign={reassign_total}");
+    println("borrowed-ingress-ok");
+}

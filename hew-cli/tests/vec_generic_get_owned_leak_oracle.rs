@@ -42,10 +42,12 @@
 
 mod support;
 
+use std::process::Command;
+
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -159,6 +161,46 @@ fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
         "vec_generic_get_single_roundtrip",
         GENERIC_GET_SINGLE_ROUNDTRIP_SOURCE,
         GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED,
+    );
+}
+
+/// The fresh `Option<Name>` clone-out transfers its selected payload into the
+/// match binder. The enum shell no longer releases that active payload, so the
+/// resulting `Name` must retain one recursive record drop; projection-alias
+/// taint must not suppress it.
+#[test]
+fn vec_generic_get_owned_element_emits_selected_payload_drop() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("vec-generic-get-owned-mir-")
+        .tempdir()
+        .expect("tempdir");
+    let source = dir.path().join("payload_drop.hew");
+    std::fs::write(&source, generic_get_loop_source(3)).expect("write Hew source");
+    let output = Command::new(hew_binary())
+        .args(["compile", "--dump-mir", "elab"])
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile --dump-mir elab");
+    assert!(
+        output.status.success(),
+        "elaborated MIR dump must succeed:\n{}",
+        describe_output(&output)
+    );
+    let dump = String::from_utf8_lossy(&output.stdout);
+    let run_cycle = dump
+        .split("fn ")
+        .find(|section| section.starts_with("run_cycle"))
+        .expect("run_cycle section present");
+    assert!(
+        run_cycle.contains("ty=Name kind=record_in_place"),
+        "the selected fresh payload must keep one recursive Name release after \
+         it moves out of the Option shell:\n{run_cycle}"
+    );
+    assert!(
+        run_cycle.contains("kind=cow_heap(hew_vec_free_owned)"),
+        "payload transfer must not suppress the independent source Vec release:\n{run_cycle}"
     );
 }
 

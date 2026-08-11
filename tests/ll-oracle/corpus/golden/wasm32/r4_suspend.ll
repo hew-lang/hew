@@ -4,9 +4,8 @@ target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-n
 target triple = "wasm32-unknown-unknown"
 
 %Adder = type { i64 }
-%"Result$$i64$AskError" = type { i8, [1 x i64] }
-%AskError = type { i8, [1 x i8] }
-%CrashInfo = type { i64, ptr }
+%"Result$$i64$std$mbuiltins$mAskError" = type { i8, [1 x i64] }
+%std.builtins.AskError = type { i8, [1 x i8] }
 
 @str_actor_meta_name_Adder = private unnamed_addr constant [6 x i8] c"Adder\00", align 1
 @str_actor_meta_handler_Adder_0_set_base = private unnamed_addr constant [9 x i8] c"set_base\00", align 1
@@ -312,6 +311,7 @@ entry:
   %return_slot = alloca i8, align 1
   %local_0 = alloca i64, align 8
   store i64 %1, ptr %local_0, align 8
+  %state_f0_replacement = alloca i64, align 8
   br label %bb0
 
 bb0:                                              ; preds = %entry
@@ -320,9 +320,20 @@ bb0:                                              ; preds = %entry
   %actor_state_slot = getelementptr i8, ptr %ctx_actor_ptr, i64 16
   %actor_state_ptr = load ptr, ptr %actor_state_slot, align 4
   %actor_state_field_0_ptr = getelementptr inbounds nuw %Adder, ptr %actor_state_ptr, i32 0, i32 0
+  %state_f0_crash_begin_replace_call = call i1 @hew_dispatch_state_cleanup_begin_replace(ptr %actor_state_field_0_ptr, i64 8)
+  br i1 %state_f0_crash_begin_replace_call, label %state_f0_crash_begin_replace_accepted, label %state_f0_crash_begin_replace_rejected
+
+state_f0_crash_begin_replace_accepted:            ; preds = %bb0
   %actor_state_field_0_src = load i64, ptr %local_0, align 8
+  store i64 %actor_state_field_0_src, ptr %state_f0_replacement, align 8
+  call void @hew_dispatch_state_cleanup_prepare(ptr %state_f0_replacement, ptr %actor_state_field_0_ptr, i64 8)
   store i64 %actor_state_field_0_src, ptr %actor_state_field_0_ptr, align 8
   ret i8 0
+
+state_f0_crash_begin_replace_rejected:            ; preds = %bb0
+  call void @hew_trap_with_code(i32 206)
+  call void @llvm.trap()
+  unreachable
 }
 
 define internal i64 @Adder__recv__add(ptr %0, i64 %1, i32 %2) {
@@ -375,10 +386,10 @@ entry:
   %local_2 = alloca ptr, align 4
   %local_3 = alloca i64, align 8
   %local_4 = alloca i64, align 8
-  %local_5 = alloca %"Result$$i64$AskError", align 8
+  %local_5 = alloca %"Result$$i64$std$mbuiltins$mAskError", align 8
   %local_6 = alloca i64, align 8
-  %local_7 = alloca %AskError, align 8
-  %local_8 = alloca %"Result$$i64$AskError", align 8
+  %local_7 = alloca %std.builtins.AskError, align 8
+  %local_8 = alloca %"Result$$i64$std$mbuiltins$mAskError", align 8
   %local_9 = alloca i8, align 1
   %local_10 = alloca i64, align 8
   %local_11 = alloca i64, align 8
@@ -456,9 +467,9 @@ bb1:                                              ; preds = %bb0
   br i1 %actor_ask_reply_is_null, label %actor_ask_reply_err, label %actor_ask_reply_ok
 
 bb2:                                              ; preds = %actor_ask_reply_err, %actor_ask_reply_ok
-  %move_load = load %"Result$$i64$AskError", ptr %local_5, align 8
-  store %"Result$$i64$AskError" %move_load, ptr %local_8, align 8
-  %machine_tag_ptr5 = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_8, i32 0, i32 0
+  %move_load = load %"Result$$i64$std$mbuiltins$mAskError", ptr %local_5, align 8
+  store %"Result$$i64$std$mbuiltins$mAskError" %move_load, ptr %local_8, align 8
+  %machine_tag_ptr5 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_8, i32 0, i32 0
   %move_iN_load = load i8, ptr %machine_tag_ptr5, align 1
   %move_iN_zext = zext i8 %move_iN_load to i64
   store i64 %move_iN_zext, ptr %local_10, align 8
@@ -479,7 +490,7 @@ bb3:                                              ; preds = %after_cooperate20, 
   ret i8 0
 
 bb4:                                              ; preds = %bb2
-  %machine_payload_ptr7 = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_8, i32 0, i32 1
+  %machine_payload_ptr7 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_8, i32 0, i32 1
   %machine_variant_field_ptr8 = getelementptr inbounds nuw { i64 }, ptr %machine_payload_ptr7, i32 0, i32 0
   %move_load9 = load i64, ptr %machine_variant_field_ptr8, align 8
   store i64 %move_load9, ptr %local_15, align 8
@@ -527,9 +538,9 @@ actor_send_fail:                                  ; preds = %bb0
 actor_ask_reply_ok:                               ; preds = %bb1
   %actor_ask_reply_value = load i64, ptr %hew_actor_ask_call, align 8
   store i64 %actor_ask_reply_value, ptr %local_6, align 8
-  %machine_tag_ptr = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_5, i32 0, i32 0
+  %machine_tag_ptr = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_5, i32 0, i32 0
   store i8 0, ptr %machine_tag_ptr, align 1
-  %machine_payload_ptr = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_5, i32 0, i32 1
+  %machine_payload_ptr = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_5, i32 0, i32 1
   %machine_variant_field_ptr = getelementptr inbounds nuw { i64 }, ptr %machine_payload_ptr, i32 0, i32 0
   %emit_result_ok_v0_f0_src = load i64, ptr %local_6, align 8
   store i64 %emit_result_ok_v0_f0_src, ptr %machine_variant_field_ptr, align 8
@@ -538,15 +549,15 @@ actor_ask_reply_ok:                               ; preds = %bb1
 
 actor_ask_reply_err:                              ; preds = %bb1
   %hew_actor_ask_take_last_error_call = call i32 @hew_actor_ask_take_last_error()
-  %machine_tag_ptr1 = getelementptr inbounds nuw %AskError, ptr %local_7, i32 0, i32 0
+  %machine_tag_ptr1 = getelementptr inbounds nuw %std.builtins.AskError, ptr %local_7, i32 0, i32 0
   %ask_err_trunc = trunc i32 %hew_actor_ask_take_last_error_call to i8
   store i8 %ask_err_trunc, ptr %machine_tag_ptr1, align 1
-  %machine_tag_ptr2 = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_5, i32 0, i32 0
+  %machine_tag_ptr2 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_5, i32 0, i32 0
   store i8 1, ptr %machine_tag_ptr2, align 1
-  %machine_payload_ptr3 = getelementptr inbounds nuw %"Result$$i64$AskError", ptr %local_5, i32 0, i32 1
-  %machine_variant_field_ptr4 = getelementptr inbounds nuw { %AskError }, ptr %machine_payload_ptr3, i32 0, i32 0
-  %emit_result_err_v1_f0_src = load %AskError, ptr %local_7, align 1
-  store %AskError %emit_result_err_v1_f0_src, ptr %machine_variant_field_ptr4, align 1
+  %machine_payload_ptr3 = getelementptr inbounds nuw %"Result$$i64$std$mbuiltins$mAskError", ptr %local_5, i32 0, i32 1
+  %machine_variant_field_ptr4 = getelementptr inbounds nuw { %std.builtins.AskError }, ptr %machine_payload_ptr3, i32 0, i32 0
+  %emit_result_err_v1_f0_src = load %std.builtins.AskError, ptr %local_7, align 1
+  store %std.builtins.AskError %emit_result_err_v1_f0_src, ptr %machine_variant_field_ptr4, align 1
   br label %bb2
 
 cancel_exit:                                      ; preds = %bb8
@@ -1163,15 +1174,18 @@ entry:
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
-  %hew_duration_nanos = load i64, ptr %local_0, align 8
-  %hew_duration_nanos_call = call i64 @hew_duration_nanos(i64 %hew_duration_nanos)
-  store i64 %hew_duration_nanos_call, ptr %local_1, align 8
-  %call_arg = load i64, ptr %local_1, align 8
-  %call_result = call ptr @hew_i64_to_string(i64 %call_arg)
-  store ptr %call_result, ptr %local_2, align 4
+  %call_arg = load i64, ptr %local_0, align 8
+  %call_result = call i64 @hew_duration_nanos(i64 %call_arg)
+  store i64 %call_result, ptr %local_1, align 8
   br label %bb1
 
 bb1:                                              ; preds = %bb0
+  %call_arg1 = load i64, ptr %local_1, align 8
+  %call_result2 = call ptr @hew_i64_to_string(i64 %call_arg1)
+  store ptr %call_result2, ptr %local_2, align 4
+  br label %bb2
+
+bb2:                                              ; preds = %bb1
   store ptr @str_lit, ptr %local_3, align 4
   %"hew_string_concat arg0" = load ptr, ptr %local_2, align 4
   %"hew_string_concat arg1" = load ptr, ptr %local_3, align 4
@@ -1198,12 +1212,19 @@ entry:
   ret i8 %__original_main_call
 }
 
+define i32 @__hew_wasi_main() {
+entry:
+  %hew_source_main_call = call i8 @__original_main()
+  ret i32 0
+}
+
 define internal ptr @__hew_actor_dispatch_Adder(ptr %0, ptr %1, i32 %2, ptr %3, i32 %4, i32 %5) {
 entry:
   %dispatch_is_borrow = icmp ne i32 %5, 0
   br i1 %dispatch_is_borrow, label %borrow_src, label %copy_src
 
 unknown_msg_type:                                 ; preds = %payload_src
+  call void @hew_trap_with_code(i32 208)
   call void @llvm.trap()
   unreachable
 
@@ -1255,6 +1276,8 @@ declare void @hew_panic()
 declare ptr @hew_get_reply_channel()
 
 declare i1 @hew_reply(ptr, ptr, i32)
+
+declare void @hew_trap_with_code(i32)
 
 ; Function Attrs: cold noreturn nounwind memory(inaccessiblemem: write)
 declare void @llvm.trap() #0
@@ -1338,62 +1361,6 @@ done:                                             ; preds = %do_drop, %entry
   ret void
 }
 
-define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
-entry:
-  br label %step_0_clone
-
-success:                                          ; preds = %step_0_store
-  ret i32 0
-
-fail:                                             ; preds = %rb_step_0
-  ret i32 1
-
-rb_step_0:                                        ; preds = %step_0_clone
-  br label %fail
-
-step_0_store:                                     ; preds = %step_0_clone
-  %dst_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  store ptr %clone_helper_f1, ptr %dst_f1_ptr, align 4
-  br label %success
-
-step_0_clone:                                     ; preds = %entry
-  %src_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %src_f1 = load ptr, ptr %src_f1_ptr, align 4
-  %clone_helper_f1 = call ptr @hew_string_clone(ptr %src_f1)
-  %cloned_f1_int = ptrtoint ptr %clone_helper_f1 to i64
-  %cloned_f1_null = icmp eq i64 %cloned_f1_int, 0
-  br i1 %cloned_f1_null, label %rb_step_0, label %step_0_store
-}
-
-define internal void @__hew_record_drop_inplace_CrashInfo(ptr %0) {
-entry:
-  %rec_int = ptrtoint ptr %0 to i64
-  %rec_is_null = icmp eq i64 %rec_int, 0
-  br i1 %rec_is_null, label %done, label %do_drop
-
-do_drop:                                          ; preds = %entry
-  %drop_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %drop_f1 = load ptr, ptr %drop_f1_ptr, align 4
-  call void @hew_string_drop(ptr %drop_f1)
-  br label %done
-
-done:                                             ; preds = %do_drop, %entry
-  ret void
-}
-
-declare void @hew_string_drop(ptr)
-
-define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
-entry:
-  %ow_slot_0 = alloca ptr, align 4
-  store ptr null, ptr %ow_slot_0, align 4
-  %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
-  %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
-  store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
-  call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
-  ret void
-}
-
 define ptr @__hew_state_clone_Adder(ptr %0) {
 entry:
   %src_as_int = ptrtoint ptr %0 to i64
@@ -1435,10 +1402,12 @@ done:                                             ; preds = %do_drop, %entry
   ret void
 }
 
+declare i1 @hew_dispatch_state_cleanup_begin_replace(ptr, i64)
+
+declare void @hew_dispatch_state_cleanup_prepare(ptr, ptr, i64)
+
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64) #2
-
-declare void @hew_trap_with_code(i32)
 
 declare i32 @hew_sched_init()
 
@@ -1472,6 +1441,8 @@ declare i32 @hew_actor_cooperate()
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64) #2
+
+declare void @hew_string_drop(ptr)
 
 define internal ptr @__hew_cbor_serialize_i64(ptr %0, ptr %1) {
 entry:

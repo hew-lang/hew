@@ -1,0 +1,7 @@
+fn main() {
+    let s: string = "a,b";
+    let parts = s.split(",");
+    for p in parts {
+        println(p);
+    }
+}

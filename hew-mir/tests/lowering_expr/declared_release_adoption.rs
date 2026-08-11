@@ -9,7 +9,7 @@
 //! field.
 //!
 //! That premise is FALSE for a `#[resource]` record with a declared `close`.
-//! `IrPipeline::resource_record_close` makes codegen's
+//! `IrPipeline::lifecycle_registry` makes codegen's
 //! `__hew_record_drop_inplace_<R>` thunk call `<R>::close(self)` FIRST and only
 //! then tear the fields down field-wise. The declared destructor is exactly the
 //! per-value drop plan the composite rule assumed did not exist, so the answer
@@ -136,6 +136,36 @@ fn a_declared_release_payload_over_a_direct_extern_mints_once_and_releases_once(
         LOOP_EXIT_RELEASES,
         "and EXACTLY one release balances it — zero is the leak this fixes, two \
          is the double close over-correcting produces"
+    );
+}
+
+/// The CONSUME polarity of the admission: an arm that closes the payload
+/// itself (`Loaded(h) => h.close()`) hands the payload off through a
+/// `NeutralizePayloadSlot`, after which the shell's `EnumInPlace` drop would
+/// run the record close a SECOND time over the zeroed slot (a record close is
+/// user code behind the still-set tag — it is not null-safe the way a
+/// string/bytes/opaque drop step is). The neutralize scan must exclude the
+/// whole candidate: the arm's close is the sole release, the shell drops
+/// nothing, and the `Failed(string)` sibling leaks fail-closed.
+#[test]
+fn a_consuming_arm_keeps_the_arm_as_the_sole_close_authority() {
+    let p = pipeline_with_tc(&format!(
+        "{PRELUDE}#[resource]\n\
+         type Handle {{ raw: Dq; }}\n\
+         impl Handle {{ fn close(self) {{ unsafe {{ host_free(self.raw) }}; }} }}\n\
+         enum Outcome {{ Loaded(Handle); Failed(string); }}\n\
+         fn make() -> Outcome {{ Outcome::Loaded(Handle {{ raw: unsafe {{ host_new() }} }}) }}\n\
+         fn main() -> i64 {{\n    var i: i64 = 0;\n    \
+         while i < 2 {{\n        \
+         match make() {{ Outcome::Loaded(h) => {{ h.close(); }} \
+         Outcome::Failed(n) => {{ println(n); }} }}\n        \
+         i = i + 1;\n    }}\n    0\n}}\n"
+    ));
+    assert_eq!(
+        enum_in_place_drops(&p, "main"),
+        0,
+        "the arm's explicit close consumed the payload; a shell drop here \
+         would close the neutralized slot a second time (the S2200 class)"
     );
 }
 

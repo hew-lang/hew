@@ -82,14 +82,11 @@ fn cancellation_token_intrinsic_and_release_drop_reach_mir() {
     );
 }
 
-/// Defect 1 (hard double-free), CancellationToken-in-tuple variant: a token
-/// extracted out of a live tuple via `let tok = pair.0` must release its ref
-/// EXACTLY ONCE. The extracted binding's standalone `hew_cancel_token_release`
-/// is the sole owner; the tuple's `TupleInPlace` member-drop MUST be excluded so
-/// it does not release the same aliased token a second time (a refcount
-/// underflow / premature free). `CancellationToken` is the same non-refcounted-
-/// at-the-drop-spine heap-owning class as `Generator`, so it is covered by the
-/// same tuple sole-owner exclusion.
+/// CancellationToken-in-tuple transfer: extracting `pair.0` writes down a
+/// root-relative neutralization before the standalone binding becomes the sole
+/// owner. The token binding and tuple may then both keep their drops: the
+/// tuple's cleared token slot is a null-safe no-op, while any owned siblings
+/// remain covered by its structural drop.
 #[test]
 fn cancellation_token_extracted_from_tuple_releases_exactly_once() {
     let pipeline = pipeline_with_tc(
@@ -114,22 +111,40 @@ fn cancellation_token_extracted_from_tuple_releases_exactly_once() {
         .iter()
         .find(|func| func.name == "run")
         .expect("run elaborated MIR should exist");
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|func| func.name == "run")
+        .expect("run checked MIR should exist");
+    assert!(
+        checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::AggregateProjectionNeutralize { fields, .. }
+                    if fields.as_slice() == [0]
+            )),
+        "the tuple's token slot must be cleared before its ownership transfers: {checked:#?}"
+    );
     let all_drops: Vec<_> = run
         .drop_plans
         .iter()
         .flat_map(|(_, plan)| &plan.drops)
         .collect();
-    // The tuple must NOT earn a TupleInPlace member-drop: the extracted `tok`
-    // owns the token now, so a tuple member-drop would double-release it.
+    // The transfer marker makes the two drops disjoint: `tok` releases the
+    // token, while TupleInPlace sees a null token slot and retains coverage for
+    // every unmoved tuple sibling.
     assert!(
         all_drops
             .iter()
-            .all(|drop| drop.kind != DropKind::TupleInPlace),
-        "the (CancellationToken, i64) tuple must be EXCLUDED from the \
-         TupleInPlace spine once its token element is extracted into a \
-         standalone owned binding; drops={all_drops:#?}"
+            .any(|drop| drop.kind == DropKind::TupleInPlace),
+        "the neutralized (CancellationToken, i64) tuple must keep its \
+         TupleInPlace drop for unmoved sibling coverage; drops={all_drops:#?}"
     );
-    // Exactly one token release fires (the extracted `tok`'s standalone drop).
+    // Exactly one standalone token release fires (the extracted `tok`'s drop);
+    // the tuple's generated in-place helper receives a null token slot.
     let releases = all_drops
         .iter()
         .filter(|drop| {
@@ -141,7 +156,7 @@ fn cancellation_token_extracted_from_tuple_releases_exactly_once() {
         .count();
     assert_eq!(
         releases, 1,
-        "the extracted token must be released exactly once (no tuple \
-         member-drop double-release); drops={all_drops:#?}"
+        "the extracted token must have exactly one standalone release; \
+         drops={all_drops:#?}"
     );
 }

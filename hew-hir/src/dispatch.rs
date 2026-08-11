@@ -1,13 +1,13 @@
 //! Structured static-trait-dispatch lookup.
 //!
-//! `CallTraitMethodStatic` carries `(receiver_type_param, declaring_trait,
-//! method_name)`. Monomorphisation and MIR lowering need to resolve that
-//! triple into the concrete impl method symbol (`<Self>::<method>`) plus
+//! `CallTraitMethodStatic` carries a checker-selected `CallTarget` containing
+//! the declaring trait and method identities. Monomorphisation needs to
+//! resolve that identity into the concrete impl method symbol (`<Self>::<method>`) plus
 //! the impl-level type-parameter names — without reverse-parsing the
 //! flattened symbol or inferring impl identity from display-name strings.
 //!
-//! The lookup is keyed on `(declaring_trait, self_type_name, method_name)`,
-//! all of which come straight from `HirImplBlock` / `CallTraitMethodStatic`
+//! The lookup is keyed on `(declaring_trait, self_type, method)`, all of which
+//! come straight from `HirImplBlock` declaration IDs / `CallTraitMethodStatic`
 //! fields. The final `<Self>::<method>` symbol comes back from the
 //! `HirImplBlock` (where it was emitted via `HirImplBlock::method_symbol`)
 //! so the canonical encoding lives in exactly one place.
@@ -18,11 +18,13 @@
 use std::collections::HashMap;
 
 use crate::node::HirItem;
-use hew_types::ResolvedTy;
+use hew_types::{DefId, NominalId, NominalInstance, ResolvedTy};
 
 /// One impl-method entry in the structured static-dispatch registry.
 #[derive(Debug, Clone)]
 pub struct TraitImplMethodEntry {
+    /// Canonical identity of the emitted impl method.
+    pub method: DefId,
     /// Canonical `<Self>::<method>` symbol that the corresponding
     /// `HirItem::Function` was emitted under. Treat as an opaque
     /// identifier produced by `HirImplBlock::method_symbol`.
@@ -34,11 +36,16 @@ pub struct TraitImplMethodEntry {
 }
 
 /// Key into the static-dispatch registry. Every field is structured —
-/// `declaring_trait` and `method_name` come straight from the call site's
-/// `CallTraitMethodStatic` node, `self_type_name` from `HirImplBlock`.
-pub type TraitImplKey = (String, String, String);
+/// `declaring_trait` and `method` come straight from declaration/call-site
+/// IDs, and `self_type` from `HirImplBlock`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitImplKey {
+    pub declaring_trait: DefId,
+    pub self_type: NominalInstance,
+    pub method: DefId,
+}
 
-/// Build `(declaring_trait, self_type_name, method_name) → TraitImplMethodEntry`
+/// Build `(declaring_trait, self_type, method) → TraitImplMethodEntry`
 /// from the module's `HirItem::Impl` entries.
 ///
 /// Iterates trait-bearing impl blocks (`HirImplBlock::trait_name == Some(_)`)
@@ -62,33 +69,45 @@ pub fn build_trait_impl_method_index(
         if block.trait_name.is_none() {
             continue;
         }
-        // Key self-type name: bare for generic impls (type_params non-empty)
-        // or impls with no target type args; mangled for concrete specialised
-        // impls (`impl Trait for Wrapper<i64>` → `"Wrapper$$i64"`).
-        let key_self_type =
-            if block.type_params.is_empty() && !block.self_type_concrete_args.is_empty() {
-                crate::monomorph::mangle(&block.self_type_name, &block.self_type_concrete_args)
+        // Generic impls are registered under their declaration nominal with no
+        // concrete instance args. A specialised impl retains the concrete args
+        // structurally instead of encoding them into a mangled string key.
+        let self_type = NominalInstance {
+            nominal: NominalId::new(block.self_type_name.clone()),
+            args: if block.type_params.is_empty() {
+                block.self_type_concrete_args.clone()
             } else {
-                block.self_type_name.clone()
-            };
+                Vec::new()
+            },
+        };
         // `method_names` and `method_symbols` are produced together in
         // `lower_impl_block` and MUST be parallel. Defensive zip: any
         // length mismatch indicates upstream HIR construction drift and
         // produces no entries for the extra slots.
-        for ((method_name, method_symbol), declaring_trait) in block
-            .method_names
+        for (((method_symbol, declaring_trait), trait_method_id), impl_method_id) in block
+            .method_symbols
             .iter()
-            .zip(block.method_symbols.iter())
-            .zip(block.method_declaring_traits.iter())
+            .zip(block.method_declaring_trait_ids.iter())
+            .zip(block.method_trait_method_ids.iter())
+            .zip(block.method_ids.iter())
         {
-            let key = (
-                declaring_trait.clone(),
-                key_self_type.clone(),
-                method_name.clone(),
-            );
+            let (Some(declaring_trait), Some(trait_method_id), Some(impl_method_id)) =
+                (declaring_trait, trait_method_id, impl_method_id)
+            else {
+                continue;
+            };
+            let key = TraitImplKey {
+                // Static calls carry the trait declaration identity.  The
+                // emitted method has a separate implementation declaration
+                // identity, retained in the entry for direct-call projection.
+                method: trait_method_id.clone(),
+                declaring_trait: declaring_trait.clone(),
+                self_type: self_type.clone(),
+            };
             index.insert(
                 key,
                 TraitImplMethodEntry {
+                    method: impl_method_id.clone(),
                     method_symbol: method_symbol.clone(),
                     impl_type_params: block.type_params.clone(),
                 },
@@ -98,79 +117,64 @@ pub fn build_trait_impl_method_index(
     index
 }
 
-/// Resolve a `(declaring_trait, self_type_name, method_name)` key against the
-/// static-dispatch index, tolerating a module-qualified `self_type_name`.
-///
-/// The index is keyed on the impl block's bare `self_type_name` (`Map`), but a
-/// receiver observed at a cross-module call site carries its module-qualified
-/// spelling (`iter.Map`). The qualifier is an outer-identity concern
-/// (`per-module-type-identity`): two adapters of the same bare name in different
-/// modules are distinct user types, but the impl-method dispatch key is the bare
-/// nominal the impl block declared. Look up the key as given first, then retry
-/// with the bare leaf so an imported generic adapter resolves the same way it
-/// does in its defining module.
-///
-/// `self_type_concrete_args` carries the resolved type arguments of the receiver
-/// at the call site (e.g. `[ResolvedTy::I64]` for a `Wrapper<i64>` receiver).
-/// When non-empty, the lookup first tries the mangled self-type key
-/// (`"Wrapper$$i64"`) to find a concrete specialised impl, then falls back to
-/// the bare name for a generic impl (`impl<U> Trait for Wrapper<U>`). This
-/// ensures two concrete instantiations with distinct args resolve to their own
-/// impl entries rather than colliding on the bare name.
+/// Build the exact declaration-ID → emitted-symbol projection for every impl
+/// method in a HIR module.  This is a linker-layout projection only: the
+/// checker owns the `DefId`, and MIR uses this table to avoid reverse-parsing a
+/// `Type::method` presentation string when lowering `CallTarget::ImplMethod`.
 #[must_use]
-pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
-    index: &'a HashMap<TraitImplKey, TraitImplMethodEntry, S>,
-    declaring_trait: &str,
-    self_type_name: &str,
-    method_name: &str,
-    self_type_concrete_args: &[hew_types::ResolvedTy],
-) -> Option<&'a TraitImplMethodEntry> {
-    // 1. When the receiver has concrete type args, try the mangled concrete key
-    //    first — this matches `impl Describe for Wrapper<i64>` over
-    //    `impl<U> Describe for Wrapper<U>` when both are present.
-    if !self_type_concrete_args.is_empty() {
-        let mangled = crate::monomorph::mangle(self_type_name, self_type_concrete_args);
-        let concrete_key = (
-            declaring_trait.to_string(),
-            mangled.clone(),
-            method_name.to_string(),
-        );
-        if let Some(entry) = index.get(&concrete_key) {
-            return Some(entry);
-        }
-        // Also try bare-leaf of the mangled name for module-qualified receivers.
-        let bare_mangled = hew_types::short_name(&mangled);
-        if bare_mangled != mangled {
-            let bare_concrete_key = (
-                declaring_trait.to_string(),
-                bare_mangled.to_string(),
-                method_name.to_string(),
-            );
-            if let Some(entry) = index.get(&bare_concrete_key) {
-                return Some(entry);
+pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, String> {
+    let mut index = HashMap::new();
+    for item in items {
+        match item {
+            HirItem::Function(function) => {
+                index.insert(function.declaration.clone(), function.name.clone());
             }
+            HirItem::Impl(block) => {
+                for (method_id, method_symbol) in block.method_ids.iter().zip(&block.method_symbols)
+                {
+                    if let Some(method_id) = method_id {
+                        index.insert(method_id.clone(), method_symbol.clone());
+                    }
+                }
+            }
+            HirItem::ExternFn(extern_fn) => {
+                index.insert(extern_fn.declaration.clone(), extern_fn.name.clone());
+            }
+            _ => {}
         }
     }
-    // 2. Fall back to bare self_type_name (generic impls and impls without
-    //    target type args — the common case prior to this fix).
-    let key = (
-        declaring_trait.to_string(),
-        self_type_name.to_string(),
-        method_name.to_string(),
-    );
+    index
+}
+
+/// Resolve canonical trait, nominal-instance, and method identities against
+/// the static-dispatch index. Concrete specialisations are tried first; the
+/// only permitted fallback is the exact same nominal's generic impl entry.
+#[must_use]
+pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
+    index: &'a HashMap<TraitImplKey, TraitImplMethodEntry, S>,
+    declaring_trait: &DefId,
+    self_type: &NominalInstance,
+    method: &DefId,
+) -> Option<&'a TraitImplMethodEntry> {
+    let key = TraitImplKey {
+        declaring_trait: declaring_trait.clone(),
+        self_type: self_type.clone(),
+        method: method.clone(),
+    };
     if let Some(entry) = index.get(&key) {
         return Some(entry);
     }
-    let bare = hew_types::short_name(self_type_name);
-    if bare == self_type_name {
+    if self_type.args.is_empty() {
         return None;
     }
-    let bare_key = (
-        declaring_trait.to_string(),
-        bare.to_string(),
-        method_name.to_string(),
-    );
-    index.get(&bare_key)
+    index.get(&TraitImplKey {
+        declaring_trait: declaring_trait.clone(),
+        self_type: NominalInstance {
+            nominal: self_type.nominal.clone(),
+            args: Vec::new(),
+        },
+        method: method.clone(),
+    })
 }
 
 /// Canonical impl-self-type-name + type-arg vector for a substituted
@@ -186,25 +190,251 @@ pub fn lookup_trait_impl_entry<'a, S: std::hash::BuildHasher>(
 /// the parser; this helper maps `ResolvedTy::I64` to `"i64"` etc. so the
 /// same registry serves builtin-receiver static dispatch.
 #[must_use]
-pub fn receiver_self_type_for_impl_lookup(ty: &ResolvedTy) -> Option<(String, Vec<ResolvedTy>)> {
+pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<NominalInstance> {
     match ty {
-        ResolvedTy::Named { name, args, .. } => Some((name.clone(), args.clone())),
-        ResolvedTy::I8 => Some(("i8".to_string(), Vec::new())),
-        ResolvedTy::I16 => Some(("i16".to_string(), Vec::new())),
-        ResolvedTy::I32 => Some(("i32".to_string(), Vec::new())),
-        ResolvedTy::I64 => Some(("i64".to_string(), Vec::new())),
-        ResolvedTy::U8 => Some(("u8".to_string(), Vec::new())),
-        ResolvedTy::U16 => Some(("u16".to_string(), Vec::new())),
-        ResolvedTy::U32 => Some(("u32".to_string(), Vec::new())),
-        ResolvedTy::U64 => Some(("u64".to_string(), Vec::new())),
-        ResolvedTy::Isize => Some(("isize".to_string(), Vec::new())),
-        ResolvedTy::Usize => Some(("usize".to_string(), Vec::new())),
-        ResolvedTy::F32 => Some(("f32".to_string(), Vec::new())),
-        ResolvedTy::F64 => Some(("f64".to_string(), Vec::new())),
-        ResolvedTy::Bool => Some(("bool".to_string(), Vec::new())),
-        ResolvedTy::Char => Some(("char".to_string(), Vec::new())),
-        ResolvedTy::String => Some(("string".to_string(), Vec::new())),
-        ResolvedTy::Bytes => Some(("bytes".to_string(), Vec::new())),
+        ResolvedTy::Named {
+            args,
+            builtin: Some(builtin),
+            ..
+        } => {
+            // Builtin trait impls are registered from `std/builtins.hew`
+            // under checker-owned nominal identities. Select those identities
+            // from the closed builtin discriminator, never from the source
+            // leaf: a user `type HashMapIter` carries `builtin: None` and stays
+            // on the ordinary user-nominal arm below.
+            let nominal = match builtin {
+                hew_types::BuiltinType::VecIter => "std.builtins.VecIter",
+                hew_types::BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+                hew_types::BuiltinType::Generator => "Generator",
+                hew_types::BuiltinType::AsyncGenerator => "AsyncGenerator",
+                hew_types::BuiltinType::Vec => "Vec",
+                hew_types::BuiltinType::HashMap => "HashMap",
+                hew_types::BuiltinType::LocalPid => "LocalPid",
+                hew_types::BuiltinType::RemotePid => "RemotePid",
+                hew_types::BuiltinType::NodeId => "NodeId",
+                hew_types::BuiltinType::Location => "Location",
+                _ => return None,
+            };
+            Some(NominalInstance {
+                nominal: NominalId::new(nominal),
+                args: args.clone(),
+            })
+        }
+        ResolvedTy::Named { .. } => ty.nominal_instance(),
+        ResolvedTy::I8 => Some(NominalInstance {
+            nominal: NominalId::new("i8"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::I16 => Some(NominalInstance {
+            nominal: NominalId::new("i16"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::I32 => Some(NominalInstance {
+            nominal: NominalId::new("i32"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::I64 => Some(NominalInstance {
+            nominal: NominalId::new("i64"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::U8 => Some(NominalInstance {
+            nominal: NominalId::new("u8"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::U16 => Some(NominalInstance {
+            nominal: NominalId::new("u16"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::U32 => Some(NominalInstance {
+            nominal: NominalId::new("u32"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::U64 => Some(NominalInstance {
+            nominal: NominalId::new("u64"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::Isize => Some(NominalInstance {
+            nominal: NominalId::new("isize"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::Usize => Some(NominalInstance {
+            nominal: NominalId::new("usize"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::F32 => Some(NominalInstance {
+            nominal: NominalId::new("f32"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::F64 => Some(NominalInstance {
+            nominal: NominalId::new("f64"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::Bool => Some(NominalInstance {
+            nominal: NominalId::new("bool"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::Char => Some(NominalInstance {
+            nominal: NominalId::new("char"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::String => Some(NominalInstance {
+            nominal: NominalId::new("string"),
+            args: Vec::new(),
+        }),
+        ResolvedTy::Bytes => Some(NominalInstance {
+            nominal: NominalId::new("bytes"),
+            args: Vec::new(),
+        }),
         _ => None,
+    }
+}
+
+/// Compatibility projection for MIR's legacy string-shaped static-dispatch
+/// consumer. New HIR lowering uses
+/// [`receiver_self_type_for_impl_lookup_instance`] instead.
+#[must_use]
+pub fn receiver_self_type_for_impl_lookup(ty: &ResolvedTy) -> Option<(String, Vec<ResolvedTy>)> {
+    receiver_self_type_for_impl_lookup_instance(ty).map(|instance| {
+        (
+            instance.nominal.declaration().full_path().to_string(),
+            instance.args,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        lookup_trait_impl_entry_by_id, receiver_self_type_for_impl_lookup_instance, TraitImplKey,
+        TraitImplMethodEntry,
+    };
+    use hew_types::{BuiltinType, DefId, NominalId, NominalInstance, ResolvedTy};
+    use std::collections::HashMap;
+
+    fn entry(method: &DefId, symbol: &str) -> TraitImplMethodEntry {
+        TraitImplMethodEntry {
+            method: method.clone(),
+            method_symbol: symbol.to_string(),
+            impl_type_params: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn canonical_static_dispatch_keeps_same_leaf_declarations_distinct() {
+        let alpha_trait = DefId::new("alpha.Render");
+        let alpha_method = DefId::new("alpha.Render::show");
+        let beta_trait = DefId::new("beta.Render");
+        let beta_method = DefId::new("beta.Render::show");
+        let alpha_thing = NominalInstance {
+            nominal: NominalId::new("alpha.Thing"),
+            args: Vec::new(),
+        };
+        let beta_thing = NominalInstance {
+            nominal: NominalId::new("beta.Thing"),
+            args: Vec::new(),
+        };
+        let mut index = HashMap::new();
+        index.insert(
+            TraitImplKey {
+                declaring_trait: alpha_trait.clone(),
+                self_type: alpha_thing.clone(),
+                method: alpha_method.clone(),
+            },
+            entry(&alpha_method, "Thing::show__alpha"),
+        );
+        index.insert(
+            TraitImplKey {
+                declaring_trait: beta_trait.clone(),
+                self_type: beta_thing.clone(),
+                method: beta_method.clone(),
+            },
+            entry(&beta_method, "Thing::show__beta"),
+        );
+
+        assert_eq!(
+            lookup_trait_impl_entry_by_id(&index, &alpha_trait, &alpha_thing, &alpha_method)
+                .map(|entry| entry.method_symbol.as_str()),
+            Some("Thing::show__alpha")
+        );
+        assert_eq!(
+            lookup_trait_impl_entry_by_id(&index, &beta_trait, &beta_thing, &beta_method)
+                .map(|entry| entry.method_symbol.as_str()),
+            Some("Thing::show__beta")
+        );
+        assert!(
+            lookup_trait_impl_entry_by_id(&index, &alpha_trait, &beta_thing, &alpha_method)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn canonical_static_dispatch_prefers_specialized_instance_then_exact_generic() {
+        let trait_id = DefId::new("render.Render");
+        let method_id = DefId::new("render.Render::show");
+        let generic = NominalInstance {
+            nominal: NominalId::new("pkg.Box"),
+            args: Vec::new(),
+        };
+        let i64_instance = NominalInstance {
+            nominal: NominalId::new("pkg.Box"),
+            args: vec![ResolvedTy::I64],
+        };
+        let string_instance = NominalInstance {
+            nominal: NominalId::new("pkg.Box"),
+            args: vec![ResolvedTy::String],
+        };
+        let mut index = HashMap::new();
+        index.insert(
+            TraitImplKey {
+                declaring_trait: trait_id.clone(),
+                self_type: generic,
+                method: method_id.clone(),
+            },
+            entry(&method_id, "Box::show__generic"),
+        );
+        index.insert(
+            TraitImplKey {
+                declaring_trait: trait_id.clone(),
+                self_type: i64_instance.clone(),
+                method: method_id.clone(),
+            },
+            entry(&method_id, "Box::show__i64"),
+        );
+
+        assert_eq!(
+            lookup_trait_impl_entry_by_id(&index, &trait_id, &i64_instance, &method_id)
+                .map(|entry| entry.method_symbol.as_str()),
+            Some("Box::show__i64")
+        );
+        assert_eq!(
+            lookup_trait_impl_entry_by_id(&index, &trait_id, &string_instance, &method_id)
+                .map(|entry| entry.method_symbol.as_str()),
+            Some("Box::show__generic")
+        );
+    }
+
+    #[test]
+    fn builtin_impl_receiver_identity_requires_the_typed_discriminator() {
+        let builtin = ResolvedTy::named_builtin(
+            "HashMapIter",
+            BuiltinType::HashMapIter,
+            vec![ResolvedTy::I64, ResolvedTy::String],
+        );
+        let user = ResolvedTy::named_user("HashMapIter", vec![ResolvedTy::I64, ResolvedTy::String]);
+
+        let builtin_instance = receiver_self_type_for_impl_lookup_instance(&builtin)
+            .expect("the compiler cursor has an exact std impl identity");
+        assert_eq!(
+            builtin_instance.nominal.full_path(),
+            "std.builtins.HashMapIter"
+        );
+        assert_eq!(
+            receiver_self_type_for_impl_lookup_instance(&user)
+                .expect("the user nominal remains independently dispatchable")
+                .nominal
+                .full_path(),
+            "HashMapIter"
+        );
+        assert_ne!(builtin_instance.nominal.full_path(), "HashMapIter");
     }
 }

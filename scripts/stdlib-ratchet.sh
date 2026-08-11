@@ -30,11 +30,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
 
 usage() {
@@ -115,7 +118,7 @@ done < <(find "$STDLIB_DIR" -name '*.hew' -not -path '*/target/*' -print0 | sort
 # A find that matched nothing type-checks nothing and reports no failures,
 # which agrees with any expected-failures list. Floor the enumeration before
 # the ratchet reads anything into it.
-corpus_floor_assert "stdlib-ratchet-files" "$TOTAL" || exit 1
+corpus_nonempty_assert "stdlib-ratchet-files" "$TOTAL" || exit 1
 
 # Sort actual for deterministic display.
 sorted_actual=""

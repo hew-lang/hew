@@ -1,10 +1,13 @@
 # Hew WASM capability manifest.
 #
-# Parallel transcription of docs/wasm-capability-matrix.md. As follow-up
-# changes generate the checker `WasmUnsupportedFeature` enum, the CMake
-# `_WASM_EXCLUSIONS` list, the playground `WASI_CAPABILITY` block, and a
-# rendered copy of the markdown doc from this file, this TOML becomes the
-# single source of truth enforced by a CI drift gate.
+# The [[feature]] rows are the sole editable authority for checker reject/warn
+# identity and native-only stdlib module classification. [[backlog]] ids own
+# every actionable WASM-TODO(<id>): marker. [[playground_wasi]] owns only
+# non-runnable curated-example decisions; runnable examples remain proven by
+# the real WASI E2E loop. `hew-capability-gen` validates this typed schema and
+# generates the Rust checker carrier, playground decision input, and the full
+# feature-policy and current WASI summary tables in
+# docs/wasm-capability-matrix.md.
 #
 # Schema:
 #
@@ -13,13 +16,21 @@
 #   [[tier]]            one per WASM compilation target tier.
 #   [[feature]]         one per row of the "Feature disposition table".
 #   [[backlog]]         one per row of the "WASM-TODO backlog" table.
+#     marker_disposition = "source" (default) requires at least one actionable
+#       source marker. "non-source" requires a non_source_reason and rejects
+#       actionable source markers for that row.
+#   [[playground_wasi]] non-runnable curated-example decisions only; optional
+#       capability must resolve to a reject/warn feature or backlog identity.
 #
-# Feature invariants (to be enforced by the generator binary):
+# Feature invariants (enforced by the generator binary):
 #   checker = "pass" | "warn" | "reject" | "todo"
 #   - reject / warn rows MUST have enum_variant, label, reason.
 #   - pass rows MUST NOT have enum_variant.
 #   - todo rows MAY have label, MUST have note and tracking.
 #   - enum_variant values are unique and stable.
+#   - native_only_modules/native_only_functions are unique and belong only to
+#     reject rows. Function entries use canonical qualified `module.function`
+#     identity (for example `std.fs.try_read`).
 
 manifest_version = 1
 
@@ -67,7 +78,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (30 rows; mirror of the markdown table).
+# Feature disposition table (32 rows; mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -78,6 +89,17 @@ checker = "pass"
 runtime = "implemented"
 runtime_status = "Implemented"
 categories = ["runtime", "actors"]
+
+[[feature]]
+id = "actor-crash-containment"
+label = "Actor-local panic/trap containment and restart"
+checker = "todo"
+runtime = "unavailable"
+runtime_status = "Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor"
+categories = ["runtime", "actors", "failure"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(actor-crash-containment):"
+note = "Tier 2 basic actor dispatch remains supported, but panic/trap containment is a separate capability. Host-side native parity tests may unwind to exercise bookkeeping; they are not evidence that the production WASI artifact can recover."
 
 [[feature]]
 id = "generators"
@@ -114,6 +136,7 @@ runtime = "implemented"
 runtime_status = "Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime"
 categories = ["stdlib", "collections"]
 tracking = "#1820"
+tracking_label = "#1820"
 
 [[feature]]
 id = "actor-ask-reply"
@@ -131,6 +154,7 @@ runtime = "host-dependent"
 runtime_status = "Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(wasi-sockets):"
 note = """\
 Some WASI hosts may expose socket APIs, but Hew does not yet provide a stable \
 socket abstraction that spans browser Tier 1, WASI Tier 2, and native builds. \
@@ -154,50 +178,50 @@ prose_label = "Supervision trees (`supervisor`, `supervisor_child`, `supervisor_
 reason = "they require OS threads for restart strategies and child supervision"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native-only runtime module"
+runtime_status = "Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated"
 categories = ["runtime", "supervision"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: supervision"
+tracking_label = "WASM-TODO(supervision):"
 
 [[feature]]
 id = "link-monitor"
 enum_variant = "LinkMonitor"
-label = "Actor link/monitor fault propagation"
+label = "Link/monitor operations"
 prose_label = "Actor `link` / `unlink` / `monitor` / `demonitor`"
-reason = "they require OS-thread-backed exit propagation that the cooperative wasm32 scheduler cannot provide"
+reason = "they rely on OS threads to watch linked actors and propagate exits"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native-only runtime module"
+runtime_status = "Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated"
 categories = ["runtime", "actors"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: link-monitor"
+tracking_label = "WASM-TODO(link-monitor):"
 
 [[feature]]
 id = "structured-concurrency"
 enum_variant = "StructuredConcurrency"
 label = "Structured concurrency scopes"
 prose_label = "Structured concurrency (`scope {}`, `scope.launch`, `scope.await`)"
-reason = "the LLVM task path emits hew_task_spawn_thread_with_inherited_context, while wasm32 has no cooperative task work queue or non-blocking scope join"
+reason = "the wasm32 scheduler has no cooperative task executor or non-blocking scope join"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join"
 categories = ["runtime", "scope"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: scope"
+tracking_label = "WASM-TODO(scope):"
 note = "Deferred from v0.6.0-rc1 to a later v0.6.x. A synchronous shim would erase concurrency and can deadlock task/actor coordination; parity requires scheduler-owned task work, completion wakeups, and non-blocking joins."
 
 [[feature]]
 id = "tasks"
 enum_variant = "Tasks"
-label = "Scope-spawned task handles"
+label = "Task handles spawned from scopes"
 prose_label = "Scope-spawned `Task` handles"
 reason = "task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native task completion/read-slot wakeup path only"
+runtime_status = "Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32"
 categories = ["runtime", "scope"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: scope"
+tracking_label = "WASM-TODO(scope):"
 
 [[feature]]
 id = "channel-non-blocking"
@@ -213,13 +237,13 @@ id = "channel-blocking-recv"
 enum_variant = "BlockingChannelRecv"
 label = "Blocking channel receive operations"
 prose_label = "`Receiver<T>::recv`, `for await item in rx` over `Receiver<T>`"
-reason = "the cooperative scheduler does not yet yield and resume on an empty-but-live channel"
+reason = "Receiver<T>::recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead"
 checker = "reject"
 runtime = "trap"
 runtime_status = "`unreachable!()` trap"
 categories = ["runtime", "channels"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: channels"
+tracking_label = "WASM-TODO(channels):"
 
 [[feature]]
 id = "semaphore-non-blocking"
@@ -234,148 +258,182 @@ id = "semaphore-blocking-acquire"
 enum_variant = "BlockingSemaphoreAcquire"
 label = "Blocking semaphore acquire operations"
 prose_label = "`Semaphore::acquire`, `Semaphore::acquire_timeout`"
-reason = "no cooperative blocking wait implementation for semaphore permits on wasm32"
+reason = "Semaphore::acquire and Semaphore::acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead"
 checker = "reject"
 runtime = "unimplemented"
 runtime_status = "No cooperative blocking wait implementation"
 categories = ["runtime", "semaphore"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: semaphore"
+tracking_label = "WASM-TODO(semaphore):"
 
 [[feature]]
 id = "timers-sleep"
 enum_variant = "Timers"
 label = "Timer operations"
 prose_label = "`sleep_ms`, `sleep`"
-reason = "timers are cooperative on wasm32: sleep parks at the message boundary, so code after `sleep_ms` in the same receive handler still runs before the actor parks"
+reason = "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue"
 checker = "warn"
 runtime = "cooperative"
 runtime_status = "Cooperative park at message boundary"
 categories = ["runtime", "scheduler"]
 tracking_label = "Implemented"
-shared_enum_variant = true
 
 [[feature]]
 id = "timers-every"
-enum_variant = "Timers"
+enum_variant = "PeriodicTimers"
 label = "Timer operations"
 prose_label = "`#[every(duration)]` periodic handlers"
-reason = "periodic dispatch on wasm32 fires only when the host drives `hew_wasm_timer_tick` / `hew_wasm_sched_tick`"
+reason = "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue"
 checker = "warn"
 runtime = "cooperative"
 runtime_status = "Cooperative periodic dispatch via host-driven timer queue"
 categories = ["runtime", "scheduler"]
 tracking_label = "Implemented"
-shared_enum_variant = true
 
 [[feature]]
 id = "streams"
 enum_variant = "Streams"
 label = "Stream operations"
 prose_label = "`stream.*` constructors, `Stream<T>::*` methods"
-reason = "the `stream` runtime module is gated out on wasm32 and has no WASI-backed I/O adapter yet"
+reason = "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "Module not compiled"
 categories = ["runtime", "streams"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: streams"
+tracking_label = "WASM-TODO(streams):"
+native_only_modules = ["stream"]
+
+[[feature]]
+id = "filesystem-streams"
+enum_variant = "FilesystemStreams"
+label = "File-backed stream operations"
+prose_label = "`std::fs::try_read` (file-stream ownership path)"
+reason = "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols"
+checker = "reject"
+runtime = "unavailable"
+runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
+categories = ["stdlib", "filesystem"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(filesystem-streams):"
+native_only_functions = ["std.fs.try_read"]
 
 [[feature]]
 id = "http-client"
 enum_variant = "HttpClient"
-label = "`std::net::http::http_client` operations"
+label = "std::net::http::http_client operations"
 prose_label = "`std::net::http::http_client.*`, `http_client.Response.*`"
-reason = "the HTTP client stdlib wrapper is native-only; wasm32 would fail at link time"
+reason = "the std::net::http::http_client wrappers are still native-only; no wasm32 networking bridge exists yet"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only wrapper module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: wasi-sockets"
+tracking_label = "WASM-TODO(http-client):"
+native_only_modules = ["http_client"]
 
 [[feature]]
 id = "smtp"
 enum_variant = "Smtp"
-label = "`std::net::smtp` operations"
+label = "std::net::smtp operations"
 prose_label = "`std::net::smtp.*`, `smtp.Conn.*`"
-reason = "the SMTP transport wrapper is native-only; wasm32 would fail at link time"
+reason = "the std::net::smtp transport is still native-only; no wasm32 SMTP bridge exists yet"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only transport wrapper"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: wasi-sockets"
+tracking_label = "WASM-TODO(smtp):"
+native_only_modules = ["smtp"]
+
+[[feature]]
+id = "websocket"
+enum_variant = "WebSocket"
+label = "std::net::websocket operations"
+prose_label = "`std::net::websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
+reason = "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only socket and reader-thread transport"
+categories = ["stdlib", "networking"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(websocket):"
+native_only_modules = ["websocket"]
 
 [[feature]]
 id = "http-server"
 enum_variant = "HttpServer"
 label = "HTTP server operations"
 prose_label = "`http.listen`, `http.Server.*`, `http.Request.*`"
-reason = "the HTTP server is backed by native sockets and `tiny_http`, which are unavailable on wasm32"
+reason = "the std::net::http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: http-server"
+tracking_label = "WASM-TODO(http-server):"
+native_only_modules = ["http"]
 
 [[feature]]
 id = "tcp-networking"
 enum_variant = "TcpNetworking"
 label = "TCP networking operations"
 prose_label = "`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`"
-reason = "the `std::net` listener/connection runtime is native-only and has no WASI socket adapter yet"
+reason = "hew_tcp_listen / hew_tcp_connect require the native OS socket layer; the transport runtime module is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: tcp-networking"
+tracking_label = "WASM-TODO(tcp-networking):"
+native_only_modules = ["net"]
 
 [[feature]]
 id = "process-execution"
 enum_variant = "ProcessExecution"
 label = "Process execution operations"
 prose_label = "`process.run`, `process.start`, `process.*`, `process.Child.*`"
-reason = "the `std::process` module depends on the host OS process model and is not compiled for wasm32"
+reason = "hew_process_run / hew_process_spawn require the native OS process model; the process runtime module is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only runtime module"
 categories = ["stdlib", "process"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: process-execution"
+tracking_label = "WASM-TODO(process-execution):"
+native_only_modules = ["process"]
 
 [[feature]]
 id = "tls"
 enum_variant = "Tls"
-label = "`std::net::tls.connect/read/write/close`, `tls.TlsStream.*`"
+label = "std::net::tls operations"
 prose_label = "`std::net::tls.connect/read/write/close`, `tls.TlsStream.*`"
 reason = "the std::net::tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native TLS-over-TCP stack; not compiled for wasm32"
+runtime_status = "Native TLS-over-TCP stack today; no documented wasm32 path"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: tls"
+tracking_label = "WASM-TODO(tls):"
+native_only_modules = ["tls"]
 
 [[feature]]
 id = "quic"
 enum_variant = "Quic"
-label = "`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
+label = "std::net::quic operations"
 prose_label = "`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
 reason = "the std::net::quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "`quic_transport` feature-gated; not compiled for wasm32"
+runtime_status = "`quic_transport` is feature-gated and not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: quic"
+tracking_label = "WASM-TODO(quic):"
+native_only_modules = ["quic"]
 
 [[feature]]
 id = "dns"
 enum_variant = "Dns"
-label = "`std::net::dns.resolve`, `dns.lookup_host`"
+label = "std::net::dns resolver operations"
 prose_label = "`std::net::dns.resolve`, `dns.lookup_host`"
 reason = "the std::net::dns resolver uses the native OS resolver; no wasm32 implementation exists yet"
 checker = "reject"
@@ -383,143 +441,381 @@ runtime = "native-only"
 runtime_status = "Native OS resolver; not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: dns"
+tracking_label = "WASM-TODO(dns):"
+native_only_modules = ["dns"]
 
 [[feature]]
 id = "std-os"
 enum_variant = "OsEnv"
-label = "`std::os.*`"
+label = "std::os environment and path operations"
 prose_label = "`std::os.*` (args, env, cwd, home, hostname, pid, temp-dir)"
 reason = "the std::os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native POSIX helpers; not compiled for wasm32"
+runtime_status = "Hew OS/env helpers are native-only today even where WASI may offer host data"
 categories = ["stdlib", "os"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: os"
+tracking_label = "WASM-TODO(os):"
+native_only_modules = ["os"]
 
 [[feature]]
 id = "distributed"
 enum_variant = "Distributed"
-label = "`Node::*`, remote messaging, and cross-node lifecycle"
+label = "Distributed node and remote-actor operations"
 prose_label = "`Node::*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `RemotePid<T>::send` / `::ask`, and remote monitor/link operations"
-reason = "key-derived node identity, durable sessions, authenticated peer admission, registry gossip, SWIM, RemotePid routing, and cross-node monitor/link delivery require the native mesh runtime, which is not compiled for wasm32"
+reason = "the Node:: cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_send), which is not compiled for wasm32; no wasm32 distributed runtime exists yet"
 checker = "reject"
 runtime = "native-only"
-runtime_status = "Native authenticated mesh, full-Location routing, and distributed lifecycle runtime; not compiled for wasm32"
+runtime_status = "Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only"
 categories = ["stdlib", "distributed", "actor"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: distributed"
+tracking_label = "WASM-TODO(distributed):"
 
 [[feature]]
 id = "crypto-random"
 enum_variant = "CryptoRandom"
-label = "`std::crypto::crypto.random_bytes`"
+label = "std::crypto::crypto.random_bytes operations"
 prose_label = "`std::crypto::crypto.random_bytes`"
-reason = "on wasm32 crypto.random_bytes falls back to a seeded PRNG without host entropy and is not cryptographically secure; the result is suitable for test data but not for key material"
-checker = "warn"
-runtime = "degraded"
-runtime_status = "Seeded PRNG fallback on wasm32; not cryptographically secure"
+reason = "the std::crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists"
 categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
-tracking_label = "WASM-TODO: crypto-random"
+tracking_label = "WASM-TODO(crypto-random):"
+
+[[feature]]
+id = "crypto-encrypt"
+enum_variant = "CryptoEncrypt"
+label = "std::crypto::encrypt operations"
+prose_label = "`std::crypto::encrypt.*`"
+reason = "the std::crypto::encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only AES-256-GCM companion crate; not linked for wasm32"
+categories = ["stdlib", "crypto"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(crypto-encrypt):"
+native_only_modules = ["encrypt"]
+
+[[feature]]
+id = "crypto-sign"
+enum_variant = "CryptoSign"
+label = "std::crypto::sign operations"
+prose_label = "`std::crypto::sign.*`"
+reason = "the std::crypto::sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only Ed25519 companion crate; not linked for wasm32"
+categories = ["stdlib", "crypto"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(crypto-sign):"
+native_only_modules = ["sign"]
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (16 rows; mirror of the backlog table).
+# WASM-TODO backlog (40 rows; mirror of the backlog table).
 # ---------------------------------------------------------------------------
 
 [[backlog]]
 id = "channels"
 gap = "Blocking channel recv / full-queue backpressure parity"
 blocker = "Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs`"
-tracking_label = "WASM-TODO: channels"
+tracking_label = "WASM-TODO(channels):"
+
+[[backlog]]
+id = "actor-crash-containment"
+gap = "Actor-local panic/trap containment and restart on production WASI"
+blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
+tracking_label = "WASM-TODO(actor-crash-containment):"
 
 [[backlog]]
 id = "semaphore"
 gap = "Blocking semaphore acquire parity"
 blocker = "Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32"
-tracking_label = "WASM-TODO: semaphore"
+tracking_label = "WASM-TODO(semaphore):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "wasi-sockets"
 gap = "Raw socket-backed Hew networking surface"
 blocker = "Stable cross-host socket abstraction above host-provided WASI sockets"
-tracking_label = "WASM-TODO: wasi-sockets"
+tracking_label = "WASM-TODO(wasi-sockets):"
+marker_disposition = "non-source"
+non_source_reason = "Raw WASI sockets have no supported Hew source surface; this row tracks host-capability API design only."
+
+[[backlog]]
+id = "websocket"
+gap = "WebSocket transport parity"
+blocker = "Browser/WASI WebSocket bridge for the native socket- and thread-backed stdlib transport"
+tracking_label = "WASM-TODO(websocket):"
 
 [[backlog]]
 id = "streams"
 gap = "I/O stream adapters"
 blocker = "WASI fd/socket APIs"
-tracking_label = "WASM-TODO: streams"
+tracking_label = "WASM-TODO(streams):"
 
 [[backlog]]
 id = "http-server"
 gap = "HTTP server parity"
 blocker = "Cooperative WASI-hosted request accept/respond runtime"
-tracking_label = "WASM-TODO: http-server"
+tracking_label = "WASM-TODO(http-server):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "tcp-networking"
 gap = "TCP listener / connection parity"
 blocker = "WASI socket-backed accept/read/write abstractions"
-tracking_label = "WASM-TODO: tcp-networking"
+tracking_label = "WASM-TODO(tcp-networking):"
 
 [[backlog]]
 id = "tls"
 gap = "TLS client parity"
 blocker = "wasm-capable TLS-over-sockets design plus checker/runtime classification"
-tracking_label = "WASM-TODO: tls"
+tracking_label = "WASM-TODO(tls):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "quic"
 gap = "QUIC parity"
 blocker = "wasm-capable UDP/QUIC transport plus feature-gated runtime support"
-tracking_label = "WASM-TODO: quic"
+tracking_label = "WASM-TODO(quic):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "dns"
 gap = "DNS resolver parity"
 blocker = "WASI-backed resolver shim; current native OS resolver is not compiled for wasm32"
-tracking_label = "WASM-TODO: dns"
+tracking_label = "WASM-TODO(dns):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "os"
 gap = "`std::os` parity"
 blocker = "WASI-backed args/env/path/system shims for the current stdlib surface"
-tracking_label = "WASM-TODO: os"
+tracking_label = "WASM-TODO(os):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "crypto-random"
 gap = "`crypto.random_bytes` parity"
 blocker = "Secure wasm32 entropy source and explicit capability classification"
-tracking_label = "WASM-TODO: crypto-random"
+tracking_label = "WASM-TODO(crypto-random):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "process-execution"
 gap = "Process execution parity"
 blocker = "Explicit host capability model for subprocesses"
-tracking_label = "WASM-TODO: process-execution"
+tracking_label = "WASM-TODO(process-execution):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "distributed"
 gap = "Key-backed distributed identity, remote-actor messaging, and lifecycle parity"
 blocker = "wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities"
-tracking_label = "WASM-TODO: distributed"
+tracking_label = "WASM-TODO(distributed):"
 
 [[backlog]]
 id = "supervision"
 gap = "Supervision tree restart strategies"
 blocker = "OS-thread-free supervision design"
-tracking_label = "WASM-TODO: supervision"
+tracking_label = "WASM-TODO(supervision):"
 
 [[backlog]]
 id = "link-monitor"
 gap = "Actor link/monitor fault propagation"
 blocker = "OS-thread-free exit propagation"
-tracking_label = "WASM-TODO: link-monitor"
+tracking_label = "WASM-TODO(link-monitor):"
 
 [[backlog]]
 id = "scope"
 gap = "Structured concurrency scopes"
 blocker = "Cooperative task work queue integrated with hew_sched_run, TaskEntry continuation/resume, completion wakeups, and non-blocking scope joins"
-tracking_label = "WASM-TODO: scope"
+tracking_label = "WASM-TODO(scope):"
+
+[[backlog]]
+id = "actor-drain"
+gap = "Actor-set drain parity"
+blocker = "WASM scheduler integration for observing and quiescing a requested actor set"
+tracking_label = "WASM-TODO(actor-drain):"
+
+[[backlog]]
+id = "actor-heap-limits"
+gap = "Per-actor heap-limit crash parity"
+blocker = "A wasm32 heap-exceeded trap path that reports the actor crash without native signal recovery"
+tracking_label = "WASM-TODO(actor-heap-limits):"
+
+[[backlog]]
+id = "alias-messaging"
+gap = "Aliased actor-message delivery parity"
+blocker = "Envelope-mode send and receive routing in the cooperative WASM scheduler"
+tracking_label = "WASM-TODO(alias-messaging):"
+
+[[backlog]]
+id = "blocking-pool"
+gap = "Deadline-bounded blocking-call parity"
+blocker = "A wasm32-compatible async deadline primitive in place of native worker threads"
+tracking_label = "WASM-TODO(blocking-pool):"
+
+[[backlog]]
+id = "compression"
+gap = "Compression runtime verification on wasm32-wasip1"
+blocker = "Compiled-and-run gzip and deflate parity coverage for the WASI target"
+tracking_label = "WASM-TODO(compression):"
+
+[[backlog]]
+id = "cooperative-yield"
+gap = "Stack-safe cooperative actor yielding"
+blocker = "A non-recursive WASM scheduler driver that cannot suppress progress at the nesting cap"
+tracking_label = "WASM-TODO(cooperative-yield):"
+
+[[backlog]]
+id = "crypto-encrypt"
+gap = "AES-256-GCM encryption parity"
+blocker = "A wasm32-compatible authenticated-encryption implementation and ecosystem-FFI link path"
+tracking_label = "WASM-TODO(crypto-encrypt):"
+
+[[backlog]]
+id = "crypto-sign"
+gap = "Ed25519 signing parity"
+blocker = "A wasm32-compatible key generation, signing, and verification implementation"
+tracking_label = "WASM-TODO(crypto-sign):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
+
+[[backlog]]
+id = "diagnostic-source-map"
+gap = "Imported-module diagnostic source loading without native filesystem access"
+blocker = "A host-provided source map for WASM and no-filesystem diagnostic rendering"
+tracking_label = "WASM-TODO(diagnostic-source-map):"
+
+[[backlog]]
+id = "duplex"
+gap = "Duplex channel parity"
+blocker = "A cooperative WASM implementation of the native dual-queue Duplex runtime"
+tracking_label = "WASM-TODO(duplex):"
+
+[[backlog]]
+id = "dyn-trait-returns"
+gap = "Returned dynamic trait objects across function boundaries"
+blocker = "Heap-promotion of coercion-site concrete storage before the fat pointer escapes its defining frame; return signatures fail closed until that lowering exists"
+tracking_label = "WASM-TODO(dyn-trait-returns):"
+
+[[backlog]]
+id = "http-client"
+gap = "Outbound HTTP client parity"
+blocker = "A browser/WASI request bridge for the native-only HTTP client wrapper"
+tracking_label = "WASM-TODO(http-client):"
+
+[[backlog]]
+id = "lambda-actors"
+gap = "Lambda-actor construction parity"
+blocker = "A cooperative WASM implementation of the native lambda-actor runtime"
+tracking_label = "WASM-TODO(lambda-actors):"
+
+[[backlog]]
+id = "profiler"
+gap = "Runtime profiler parity"
+blocker = "A WASM sampling and dashboard design without native OS threads or an embedded HTTP server"
+tracking_label = "WASM-TODO(profiler):"
+
+[[backlog]]
+id = "runtime-substrate-classification"
+gap = "Structured classification for newly encountered native-only runtime symbols"
+blocker = "An explicit capability-family mapping before a new excluded symbol can use the generic diagnostic branch"
+tracking_label = "WASM-TODO(runtime-substrate-classification):"
+
+[[backlog]]
+id = "runtime-traps"
+gap = "WASM actor-trap reporting parity"
+blocker = "Per-kind trap reporting and actor-crash recovery without native POSIX or SEH signal recovery"
+tracking_label = "WASM-TODO(runtime-traps):"
+
+[[backlog]]
+id = "smtp"
+gap = "SMTP client parity"
+blocker = "A wasm32 transport bridge for the native-only SMTP wrapper"
+tracking_label = "WASM-TODO(smtp):"
+
+[[backlog]]
+id = "suspending-receive"
+gap = "Shared suspending receive carrier parity"
+blocker = "WASM continuation routing for for-await over channel and stream receive operations"
+tracking_label = "WASM-TODO(suspending-receive):"
+
+[[backlog]]
+id = "suspending-select"
+gap = "Execution-context select suspension parity"
+blocker = "A WASM readiness waitset and non-recursive resume path for suspending select"
+tracking_label = "WASM-TODO(suspending-select):"
+
+[[backlog]]
+id = "suspension-deadline"
+gap = "Shared suspension-deadline runtime parity"
+blocker = "A WASM deadline scheduler for select, sleep, and scope continuations"
+tracking_label = "WASM-TODO(suspension-deadline):"
+
+[[backlog]]
+id = "timer-suspension"
+gap = "Mid-handler timer suspension parity"
+blocker = "A WASM timer continuation that resumes within a handler instead of parking only at the message boundary"
+tracking_label = "WASM-TODO(timer-suspension):"
+
+[[backlog]]
+id = "wasi-errno"
+gap = "WASI error-code classification"
+blocker = "Target-aware filesystem and network error mapping for WASI errno values"
+tracking_label = "WASM-TODO(wasi-errno):"
+
+# ---------------------------------------------------------------------------
+# Curated playground WASI exclusions.
+#
+# Only non-runnable decisions belong here. Every omitted example is exercised
+# by `curated_playground_examples_run_under_wasi`; omission is not evidence of
+# pass by itself.
+# ---------------------------------------------------------------------------
+
+[[playground_wasi]]
+id = "concurrency/actor_pipeline"
+status = "unsupported"
+reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+
+[[playground_wasi]]
+id = "concurrency/async_await"
+status = "unsupported"
+reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+
+[[playground_wasi]]
+id = "concurrency/counter_actor"
+status = "unsupported"
+reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+
+[[playground_wasi]]
+id = "concurrency/supervisor"
+status = "unsupported"
+capability = "supervision-trees"
+reason = "Uses the manifest-owned supervision-trees reject capability"
+
+[[playground_wasi]]
+id = "machines/traffic_light"
+status = "unsupported"
+reason = "Machine runtime is not yet wired into the WASI/LLVM path"
+
+[[playground_wasi]]
+id = "language/string_slicing"
+status = "unsupported"
+reason = "hew_string_slice currently has a wasm32-wasi linker signature mismatch"
+
+[[playground_wasi]]
+id = "types/method_clone"
+status = "unsupported"
+reason = "The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example"

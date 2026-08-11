@@ -2,9 +2,25 @@
 //
 // This must compile: the move-checker consumes the source binding at insert,
 // but no later use observes the consumed binding.
+// `add_member` pins the caller-BORROWED parameter ingress: a by-value string
+// parameter keeps its count with the caller, so the MOVE ingress mints a
+// `string.retain` instead of a consume. `add_renamed` pins the generation
+// boundary: the parameter slot is reassigned to a fresh frame-owned string
+// first, so its ingress consumes (no retain).
+fn add_member(words: HashSet<string>, member: string) {
+    words.insert(member);
+}
+
+fn add_renamed(words: HashSet<string>, var member: string) {
+    member = member.to_upper();
+    words.insert(member);
+}
+
 fn main() {
     let words: HashSet<string> = HashSet::new();
     let word = "behaviour";
     words.insert(word);
+    add_member(words, "colour");
+    add_renamed(words, "flavour");
     println(words.len());
 }

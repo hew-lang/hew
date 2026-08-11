@@ -1,0 +1,38 @@
+[
+  {
+    "id": "concurrency/actor_pipeline",
+    "status": "unsupported",
+    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+  },
+  {
+    "id": "concurrency/async_await",
+    "status": "unsupported",
+    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+  },
+  {
+    "id": "concurrency/counter_actor",
+    "status": "unsupported",
+    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
+  },
+  {
+    "id": "concurrency/supervisor",
+    "status": "unsupported",
+    "capability": "supervision-trees",
+    "reason": "Uses the manifest-owned supervision-trees reject capability"
+  },
+  {
+    "id": "machines/traffic_light",
+    "status": "unsupported",
+    "reason": "Machine runtime is not yet wired into the WASI/LLVM path"
+  },
+  {
+    "id": "language/string_slicing",
+    "status": "unsupported",
+    "reason": "hew_string_slice currently has a wasm32-wasi linker signature mismatch"
+  },
+  {
+    "id": "types/method_clone",
+    "status": "unsupported",
+    "reason": "The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example"
+  }
+]

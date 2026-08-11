@@ -686,14 +686,12 @@ fn tuple_build_and_return_without_post_move_use_is_accepted() {
 // path; HIR lowers the receiver with `IntentKind::Consume`; MIR transitions the
 // binding to `Consumed` and excludes it from the function-exit drop set.
 
-/// Reading the receiver after a `#[resource]` inherent `close()` is a
-/// use-after-close: the explicit close moved the binding, so the trailing read
-/// must surface `UseAfterConsume`. This is the verified #1295 double-close
-/// safety bug — before the fix the binding stayed live and `hew check` admitted
-/// the read.
+/// Reading the receiver after a `#[resource]` inherent `close()` is rejected at
+/// the earliest ownership boundary: the checker reports `UseAfterMove`, before
+/// invalid source can reach HIR/MIR.
 #[test]
 fn checked_mir_rejects_use_after_resource_close() {
-    let p = lower_source(
+    let parsed = hew_parser::parse(
         r"
         #[resource]
         type Conn { id: i64 }
@@ -705,14 +703,16 @@ fn checked_mir_rejects_use_after_resource_close() {
         }
     ",
     );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
     assert!(
-        p.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
-        )),
-        "reading `c.id` after `c.close()` on a `#[resource]` type must surface \
-         UseAfterConsume: {:?}",
-        p.diagnostics
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == hew_types::error::TypeErrorKind::UseAfterMove),
+        "reading `c.id` after `c.close()` must fail at checker boundary: {:?}",
+        output.errors
     );
 }
 
@@ -720,7 +720,7 @@ fn checked_mir_rejects_use_after_resource_close() {
 /// consumed the receiver.
 #[test]
 fn checked_mir_rejects_second_resource_close() {
-    let p = lower_source(
+    let parsed = hew_parser::parse(
         r"
         #[resource]
         type Conn { id: i64 }
@@ -732,14 +732,16 @@ fn checked_mir_rejects_second_resource_close() {
         }
     ",
     );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
     assert!(
-        p.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
-        )),
-        "a second `c.close()` on a `#[resource]` type must surface \
-         UseAfterConsume: {:?}",
-        p.diagnostics
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == hew_types::error::TypeErrorKind::UseAfterMove),
+        "a second `c.close()` must fail at checker boundary: {:?}",
+        output.errors
     );
 }
 
@@ -866,6 +868,46 @@ fn monitor_registration_resource_close_elaborates_scope_exit_drop() {
         }),
         "monitor registration scope-exit drop must dispatch its close method: {:?}",
         serve.drop_plans
+    );
+}
+
+/// A generator extracted from a returned tuple is a transferred projection:
+/// the tuple slot is neutralized before the handle is re-packed and consumed.
+/// The MIR obligation model must count that as one owner moving through the
+/// chain, never as a retained second owner.
+#[test]
+fn generator_projection_transfer_repack_stays_one_owner() {
+    let pipeline = lower_source(
+        r"
+        gen fn count() -> i64 { yield 1; yield 2; yield 3 }
+
+        fn make() -> (Generator<i64, ()>, i64) {
+            let g = count();
+            return (g, 0);
+        }
+
+        fn main() {
+            let pair = make();
+            let g = pair.0;
+            let repacked = (g, 99);
+            var total = 0;
+            for n in repacked.0 {
+                total = total + n;
+            }
+            println(total);
+        }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::ObligationUnderReleased { .. }
+                | MirDiagnosticKind::ObligationOverReleased { .. }
+                | MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
+        )),
+        "a neutralized generator projection/repack is one transferred owner:\n{}\ndiagnostics: {:#?}",
+        hew_mir::dump_mir(&pipeline, hew_mir::DumpStage::Raw),
+        pipeline.diagnostics
     );
 }
 
@@ -1486,7 +1528,7 @@ fn cross_function_call_types_lower_via_call_terminator() {
     // calls to module functions. The pipeline() helper asserts HIR is clean;
     // this test pins the MIR acceptance shape: both functions appear in
     // `raw_mir` and the diagnostic stream is clean.
-    let pipeline = pipeline(
+    let pipeline = lower_source(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
     );
@@ -1548,10 +1590,9 @@ fn unknown_user_type_rejected_at_mir_boundary() {
 }
 
 #[test]
-fn registered_fieldless_user_type_still_requires_codegen_readiness() {
-    // A fieldless declared type is present in HIR type_classes but has no record
-    // layout for codegen to resolve. The MIR gate must not treat checker knownness
-    // alone as readiness.
+fn registered_fieldless_user_type_has_zero_field_layout() {
+    // A fieldless declared type is a concrete zero-field record. Its layout is
+    // sufficient for MIR and codegen readiness.
     let parsed = hew_parser::parse(
         r"
         #[linear]
@@ -1574,11 +1615,17 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
     let pipeline = lower_hir_module(&output.module);
 
     assert!(
-        pipeline.diagnostics.iter().any(|d| {
-            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Token")
-        }),
-        "fieldless registered Token must fail MIR readiness: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "{:?}",
         pipeline.diagnostics
+    );
+    assert!(
+        pipeline
+            .record_layouts
+            .iter()
+            .any(|layout| layout.name == "Token" && layout.field_tys.is_empty()),
+        "fieldless Token must carry a concrete zero-field record layout: {:?}",
+        pipeline.record_layouts
     );
 }
 
@@ -1926,7 +1973,8 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
                     instr,
                     Instr::ActorStateFieldStore {
                         field_offset: hew_mir::FieldOffset(1),
-                        src: Place::Local(0)
+                        src: Place::Local(0),
+                        ..
                     }
                 )
             })
@@ -1965,6 +2013,192 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
         "the retained read branch and armed handoff branch must converge on one \
          guarded source drop: {:?}",
         handler.drop_plans
+    );
+}
+
+/// A projected record is a byte-copy alias even though its nested string is not
+/// directly visible to the string share scanner. Before the alias enters a new
+/// owning record, MIR must carry one recursive retain authority.
+#[test]
+fn actor_state_nested_record_alias_ingress_retains_recursive_string_leaves() {
+    let pipeline = lower_source(
+        r"
+        record Leaf { text: string }
+        record Wrap { leaf: Leaf }
+        actor Keeper {
+            var cur: Wrap;
+            receive fn rewrite() {
+                cur = Wrap { leaf: cur.leaf };
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("nested record alias handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { value, condition } => Some((*value, condition)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conditions,
+        vec![(
+            Place::Local(1),
+            &hew_mir::StringRetainCondition::AggregateBorrowedIngress
+        )],
+        "the projected Leaf alias needs exactly one recursive owner mint: {:?}",
+        handler.blocks
+    );
+}
+
+/// The recursive retain authority must tag-dispatch an inline enum and descend
+/// through a record payload rather than treating the enum carrier as leafless.
+#[test]
+fn actor_state_enum_payload_alias_ingress_retains_recursive_string_leaves() {
+    let pipeline = lower_source(
+        r"
+        record Leaf { text: string }
+        enum Payload { Empty; Hold(Leaf); }
+        record Wrap { payload: Payload }
+        actor Keeper {
+            var cur: Wrap;
+            receive fn rewrite() {
+                cur = Wrap { payload: cur.payload };
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("enum payload alias handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { value, condition } => Some((*value, condition)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conditions,
+        vec![(
+            Place::Local(1),
+            &hew_mir::StringRetainCondition::AggregateBorrowedIngress
+        )],
+        "the projected Payload alias needs exactly one recursive owner mint: {:?}",
+        handler.blocks
+    );
+}
+
+/// A whole-value actor-state load is already deep-cloned by its `Owned` load
+/// mode. Its one proven store escape must consume that clone without an
+/// additional aggregate-ingress retain.
+#[test]
+fn actor_state_owned_record_self_store_does_not_double_retain_strings() {
+    let pipeline = lower_source(
+        r"
+        record Profile { name: string }
+        actor Keeper {
+            var prof: Profile;
+            receive fn rewrite() {
+                prof = prof;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("record self-store handler raw MIR present");
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ActorStateFieldLoad {
+                    mode: hew_mir::ActorStateLoadMode::Owned,
+                    ..
+                }
+            )),
+        "whole-record self-store must retain through its Owned load: {:?}",
+        handler.blocks
+    );
+    assert!(
+        !handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::AggregateBorrowedIngress,
+                    ..
+                }
+            )),
+        "the Owned load already minted the recursive owner; a second aggregate \
+         retain would leak: {:?}",
+        handler.blocks
+    );
+}
+
+/// A string state field read only as a by-value argument to an analyzed Hew
+/// function is a borrow: the callee never frees a string parameter (the
+/// caller-releases convention), so the load must classify `Borrowed` and skip
+/// the retain. The `Owned` clone this shape used to mint had no balancing
+/// release anywhere — not in the caller (no temp owner is adopted for a
+/// state-field argument) and not in the callee — leaking one node per
+/// dispatch (`net.connect(addr)` with `addr: string` state was the reported
+/// case; any user fn taking the field by value reproduces it).
+#[test]
+fn actor_state_string_arg_to_hew_fn_borrows_without_retain() {
+    let pipeline = lower_source(
+        r"
+        fn probe(value: string) -> i64 { value.len() }
+        actor Holder {
+            let addr: string;
+            receive fn show() -> i64 {
+                probe(addr)
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Holder__recv__show")
+        .expect("state-string-arg handler raw MIR present");
+    let modes = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ActorStateFieldLoad { mode, .. } => Some(*mode),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        modes,
+        vec![hew_mir::ActorStateLoadMode::Borrowed],
+        "a state string read only by a borrowing Hew callee must not mint an \
+         unbalanced clone: {:?}",
+        handler.blocks
     );
 }
 
@@ -2551,6 +2785,124 @@ fn recv_handler_record_ingress_with_non_store_exit_retains_unconditionally() {
         )),
         "a state-ingress owner is unsound when another path drops the local record: \
          {conditions:?}"
+    );
+}
+
+/// True when the named function earns a top-level `bytes` release.
+fn fn_has_bytes_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> bool {
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in elaborated_mir"))
+        .drop_plans
+        .iter()
+        .any(|(_, plan)| {
+            plan.drops.iter().any(|drop| {
+                matches!(
+                    drop.kind,
+                    hew_mir::DropKind::CowHeap {
+                        release: hew_mir::CowHeapRelease::Bytes
+                    }
+                )
+            })
+        })
+}
+
+/// A copy-mode mailbox transfers the sole `bytes` refcount into the receive
+/// handler. A borrow-only handler is the terminal owner and must release it.
+/// This is the compiler half of active-mode socket delivery: the reactor sends
+/// the same ordinary mailbox payload as any Hew actor sender.
+#[test]
+fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
+    let pipeline = lower_source(
+        r"
+        actor Sink {
+            var seen: i64;
+            receive fn take(data: bytes) {
+                seen = seen + data.len();
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        fn_has_bytes_drop(&pipeline, "Sink__recv__take"),
+        "a borrow-only receive-handler bytes param must earn the balancing \
+         CowHeap(Bytes) drop: {:?}",
+        pipeline.elaborated_mir
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Sink__recv__take")
+        .expect("Sink__recv__take must be present");
+    assert!(
+        handler.drop_plans.iter().all(|(_, plan)| {
+            plan.drops
+                .iter()
+                .filter(|drop| {
+                    matches!(
+                        drop.kind,
+                        hew_mir::DropKind::CowHeap {
+                            release: hew_mir::CowHeapRelease::Bytes
+                        }
+                    )
+                })
+                .count()
+                <= 1
+        }),
+        "one mailbox reference must never produce duplicate Bytes drops in a \
+         single exit plan: {:#?}",
+        handler.drop_plans
+    );
+}
+
+/// Counterfactual: ordinary by-value Hew calls borrow `bytes`; the caller keeps
+/// the refcount. The actor-ingress rule must not widen into free functions.
+#[test]
+fn ordinary_borrow_only_bytes_param_does_not_earn_bytes_drop() {
+    let pipeline = lower_source(
+        r"
+        fn observe(data: bytes) -> i64 { data.len() }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        !fn_has_bytes_drop(&pipeline, "observe"),
+        "an ordinary by-value bytes parameter is caller-owned and must not be \
+         dropped by the callee: {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
+/// Counterfactual: forwarding the mailbox-owned triple into another actor
+/// transfers its one refcount again. The first handler must suppress its drop;
+/// the final recipient becomes the terminal owner.
+#[test]
+fn recv_handler_forwarded_bytes_param_transfers_drop_to_recipient() {
+    let pipeline = lower_source(
+        r"
+        actor Recipient {
+            receive fn take(data: bytes) { let _ = data.len(); }
+        }
+        actor Forwarder {
+            let recipient: LocalPid<Recipient>;
+            receive fn forward(data: bytes) { recipient.take(data); }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        !fn_has_bytes_drop(&pipeline, "Forwarder__recv__forward"),
+        "the forwarding handler transferred its only bytes refcount and must \
+         not drop it again: {:?}",
+        pipeline.elaborated_mir
+    );
+    assert!(
+        fn_has_bytes_drop(&pipeline, "Recipient__recv__take"),
+        "the terminal recipient must own and drop the forwarded bytes: {:?}",
+        pipeline.elaborated_mir
     );
 }
 
@@ -3932,6 +4284,65 @@ fn linear_consumed_in_both_branches_accepted() {
         !has_must_consume,
         "@linear binding consumed on every path must NOT fire MustConsume: {:?}",
         func.checks
+    );
+}
+
+#[test]
+fn linear_consuming_method_retires_initializer_publication_owner() {
+    let pipeline = lower_source_checked_verified(
+        r"
+        #[linear]
+        type Tx { id: i64 }
+        impl Tx {
+            fn commit(consuming self) {}
+        }
+        fn main() {
+            let tx = Tx { id: 1 };
+            tx.commit();
+        }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::MustConsume { name, .. } if name == "__hew_produced_value"
+        )),
+        "the initializer publication transfers into `tx`; it must not leave a synthetic linear owner: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn generic_loop_accumulator_keeps_its_pre_loop_initialisation() {
+    let pipeline = lower_source(
+        r"
+        enum Step { More(i64); Done; }
+        fn next() -> Step { Step::Done }
+        fn fold<B>(init: B, f: fn(B, i64) -> B) -> B {
+            var acc = init;
+            loop {
+                match next() {
+                    Step::More(item) => {
+                        acc = f(acc, item);
+                    },
+                    Step::Done => {
+                        break;
+                    },
+                }
+            }
+            acc
+        }
+        fn step(value: i64, item: i64) -> i64 { value + item }
+        fn main() -> i64 { fold(1, step) }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::InitialisedBeforeUse { name, .. } if name == "acc"
+        )),
+        "a pre-loop initializer dominates the loop exit: {:?}",
+        pipeline.diagnostics
     );
 }
 

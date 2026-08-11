@@ -1,0 +1,9 @@
+fn use_it(v: (i64, string)) {
+    let (v_a, v_b) = v;
+    println(f"{v_a} {v_b}");
+}
+
+fn main() {
+    let x: (i64, string) = (1, "x0");
+    use_it(x);
+}

@@ -1,0 +1,107 @@
+// Accept fixture (borrowed-string collection ingress, exactly-once release):
+// `HashMap`/`HashSet` ingress is a MOVE, but a by-value `string` parameter is
+// BORROWED — the caller keeps the count and drops it at its own scope exit. A
+// key/value/element reaching the ingress through such a parameter is therefore
+// retained (+1) before the move, so the collection owns the new count and the
+// caller still owns its own. Without the retain both the collection's teardown
+// and the caller's scope exit released the same buffer and the program aborted
+// at teardown with a `free_cstring` sentinel failure after printing correct
+// output.
+//
+// Every key here is a HEAP string (`"a" + "b"`, `.trim()`, `.to_upper()`): a
+// static literal drops as a no-op and would make the probe vacuous.
+//
+// Shapes covered: get-then-insert through a parameter (the reported repro),
+// get alone, insert alone, get in a loop over many keys, a repeated key (the
+// overwrite path, where the runtime keeps the stored key and codegen releases
+// the caller's duplicate), literal vs local-variable vs parameter operands,
+// and the `HashMap` value and `HashSet` element siblings.
+
+fn bump(counts: HashMap<string, i64>, category: string) {
+    let next = match counts.get(category) { Some(old) => old + 1, None => 1 };
+    counts.insert(category, next);
+}
+
+fn insert_only(counts: HashMap<string, i64>, category: string, amount: i64) {
+    counts.insert(category, amount);
+}
+
+fn lookup_only(counts: HashMap<string, i64>, category: string) -> i64 {
+    match counts.get(category) { Some(found) => found, None => -1 }
+}
+
+fn store_value(labels: HashMap<i64, string>, id: i64, label: string) {
+    labels.insert(id, label);
+}
+
+fn add_member(members: HashSet<string>, name: string) {
+    members.insert(name);
+}
+
+// Repro shape: a helper takes a `string` parameter, looks it up, then inserts
+// it. Repeated categories drive the overwrite path; distinct ones the vacant
+// path. Every category is built on the heap by `.trim()`.
+fn tally() -> i64 {
+    let counts: HashMap<string, i64> = HashMap::new();
+    for raw in " coffee , rent , coffee , transit , coffee ".split(",") {
+        bump(counts, raw.trim());
+    }
+    let coffee = lookup_only(counts, "coffee ".trim());
+    let rent = lookup_only(counts, " rent".trim());
+    let missing = lookup_only(counts, "utilities ".trim());
+    println(f"tally keys={counts.len()} coffee={coffee} rent={rent} missing={missing}");
+    coffee
+}
+
+// Insert alone through a parameter, over many distinct heap keys, plus one
+// overwrite of an already-present key.
+fn fill() -> i64 {
+    let counts: HashMap<string, i64> = HashMap::new();
+    for i in 0..64 {
+        insert_only(counts, f"key-{i}".to_upper(), i);
+    }
+    insert_only(counts, "key-7".to_upper(), 700);
+    let seven = lookup_only(counts, "key-7".to_upper());
+    println(f"fill keys={counts.len()} seven={seven}");
+    seven
+}
+
+// Operand-provenance matrix: a static literal, a local heap variable, and a
+// parameter must each release exactly once at the same ingress.
+fn provenance() -> i64 {
+    let counts: HashMap<string, i64> = HashMap::new();
+    counts.insert("literal", 1);
+    let local = "loc" + "al";
+    counts.insert(local, 2);
+    insert_only(counts, "para" + "meter", 3);
+    let literal = lookup_only(counts, "literal");
+    let from_local = lookup_only(counts, "loc" + "al");
+    let from_param = lookup_only(counts, "para" + "meter");
+    println(f"provenance keys={counts.len()} literal={literal} local={from_local} param={from_param}");
+    literal + from_local + from_param
+}
+
+// Siblings: a `HashMap` VALUE and a `HashSet` ELEMENT reaching the same MOVE
+// ingress through a borrowed `string` parameter.
+fn siblings() -> i64 {
+    let labels: HashMap<i64, string> = HashMap::new();
+    let members: HashSet<string> = HashSet::new();
+    for i in 0..32 {
+        store_value(labels, i, f"label-{i}".to_upper());
+        add_member(members, f"member-{i}".to_upper());
+    }
+    // Overwrite an existing value key and re-add an existing set element.
+    store_value(labels, 5, "REPLACED".to_lower());
+    add_member(members, "member-5".to_upper());
+    let five = match labels.get(5) { Some(found) => found, None => "absent" };
+    println(f"siblings labels={labels.len()} members={members.len()} five={five}");
+    labels.len() + members.len()
+}
+
+fn main() -> i64 {
+    if tally() != 3 { return 40; }
+    if fill() != 700 { return 41; }
+    if provenance() != 6 { return 42; }
+    if siblings() != 64 { return 43; }
+    0
+}

@@ -30,7 +30,7 @@ pub struct CompileOptions {
     pub no_typecheck: bool,
     pub werror: bool,
     pub target: Option<String>,
-    /// Override the package search directory (default: `.adze/packages/`).
+    /// Override the package search directory (default: `.hew/packages/`).
     pub pkg_path: Option<PathBuf>,
     /// Anchor an in-memory compile to a specific project directory so that
     /// manifest-aware import resolution matches `compile_file` behaviour.
@@ -74,6 +74,57 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         project_dir: options.project_dir.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+    }
+}
+
+fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_types::TypeError) {
+    let (Some(source), Some(filename)) =
+        (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
+    else {
+        let level = match error.severity {
+            hew_types::error::Severity::Warning => "warning",
+            hew_types::error::Severity::Error => "error",
+        };
+        crate::diagnostic::emit_plain_diagnostic_line(&format!("{level}: {}", error.message));
+        return;
+    };
+    let notes = error
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(index, (span, message, _))| {
+            let (note_source, note_filename) = diagnostic
+                .note_sources
+                .get(index)
+                .and_then(Option::as_ref)
+                .map_or((source, filename), |(source, filename)| {
+                    (source.as_str(), filename.as_str())
+                });
+            crate::diagnostic::DiagnosticNote {
+                source: note_source,
+                filename: note_filename,
+                span,
+                message,
+            }
+        })
+        .collect::<Vec<_>>();
+    match error.severity {
+        hew_types::error::Severity::Warning => crate::diagnostic::render_warning(
+            source,
+            filename,
+            &error.span,
+            &error.message,
+            &notes,
+            &error.suggestions,
+        ),
+        hew_types::error::Severity::Error => crate::diagnostic::render_diagnostic(
+            source,
+            filename,
+            &error.span,
+            &error.message,
+            &notes,
+            &error.suggestions,
+        ),
     }
 }
 
@@ -122,41 +173,7 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                 }
             }
             FrontendDiagnosticKind::Type(error) => {
-                if let (Some(source), Some(filename)) =
-                    (diagnostic.source.as_deref(), diagnostic.filename.as_deref())
-                {
-                    match error.severity {
-                        hew_types::error::Severity::Warning => {
-                            crate::diagnostic::render_warning_with_raw_notes(
-                                source,
-                                filename,
-                                &error.span,
-                                &error.message,
-                                &error.notes,
-                                &error.suggestions,
-                            );
-                        }
-                        hew_types::error::Severity::Error => {
-                            crate::diagnostic::render_diagnostic_with_raw_notes(
-                                source,
-                                filename,
-                                &error.span,
-                                &error.message,
-                                &error.notes,
-                                &error.suggestions,
-                            );
-                        }
-                    }
-                } else {
-                    let level = match error.severity {
-                        hew_types::error::Severity::Warning => "warning",
-                        hew_types::error::Severity::Error => "error",
-                    };
-                    crate::diagnostic::emit_plain_diagnostic_line(&format!(
-                        "{level}: {}",
-                        error.message
-                    ));
-                }
+                render_frontend_type_diagnostic(diagnostic, error);
             }
             FrontendDiagnosticKind::Hir(error) => {
                 crate::diagnostic::render_hir_diagnostic(
@@ -360,7 +377,7 @@ mod tests {
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("mylib::utils"));
-        assert!(errs[0].contains("adze add"));
+        assert!(errs[0].contains("hew add"));
     }
 
     #[test]

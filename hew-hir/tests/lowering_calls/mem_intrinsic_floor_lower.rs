@@ -53,7 +53,15 @@ fn build_program_with_floor_module(module_path: &[&str], floor_src: &str) -> Pro
         id: floor_id.clone(),
         items: floor_items,
         imports: Vec::new(),
-        source_paths: Vec::new(),
+        source_paths: vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-hir has a workspace parent")
+            .join("std")
+            .join(module_path.iter().skip(1).collect::<std::path::PathBuf>())
+            .join(format!(
+                "{}.hew",
+                module_path.last().expect("floor module leaf")
+            ))],
         doc: None,
     };
     let root_module = Module {
@@ -118,21 +126,28 @@ fn imported_mem_intrinsic_is_emitted_and_tagged_with_catalog_id() {
         tco.intrinsic_declarations
     );
 
-    // D343 regression: `mem$alloc` must STILL be emitted as a function (so its
-    // symbol stays in MIR's module_fn_names and calls dispatch to it) …
-    let alloc = function_by_name(&output, "mem$alloc")
-        .expect("mem$alloc must be emitted as a HirItem::Function");
+    // D343 regression: the callable floor remains emitted under its complete
+    // source-module identity so same-leaf `mem` modules cannot collide in MIR's
+    // module_fn_names.
+    let alloc = function_by_name(&output, "std$mem$alloc")
+        .expect("std$mem$alloc must be emitted as a HirItem::Function");
     // … and it must be TAGGED so codegen synthesizes the body rather than
     // lowering the bodyless placeholder into a fail-OPEN empty function.
     assert_eq!(
         alloc.intrinsic_id.as_deref(),
         Some("mem.alloc"),
-        "mem$alloc must carry intrinsic_id = Some(\"mem.alloc\")"
+        "std$mem$alloc must carry intrinsic_id = Some(\"mem.alloc\")"
     );
 
-    let dealloc = function_by_name(&output, "mem$dealloc")
-        .expect("mem$dealloc must be emitted as a HirItem::Function");
+    let dealloc = function_by_name(&output, "std$mem$dealloc")
+        .expect("std$mem$dealloc must be emitted as a HirItem::Function");
     assert_eq!(dealloc.intrinsic_id.as_deref(), Some("mem.dealloc"));
+
+    assert!(
+        function_by_name(&output, "mem$alloc").is_none()
+            && function_by_name(&output, "mem$dealloc").is_none(),
+        "callable floor intrinsics must not be emitted under leaf-only module symbols"
+    );
 }
 
 #[test]

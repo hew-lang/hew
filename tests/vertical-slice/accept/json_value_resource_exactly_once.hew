@@ -1,0 +1,55 @@
+// Fluent calls preserve one JSON root owner, child Values transfer, and
+// navigation results are independent deep owners.
+import std::encoding::json;
+
+fn early_exit(flag: bool) {
+    let value = json.object();
+    value.with("n", json.from_int(11));
+    let child = value.get_field("n");
+    if flag {
+        return;
+    }
+    println(child.get_int());
+}
+
+fn _panic_exit() {
+    let value = json.object();
+    value.with("n", json.from_int(12));
+    let _child = value.get_field("n");
+    panic("json value panic probe");
+}
+
+fn cancel_exit() {
+    let value = json.object();
+    value.with("n", json.from_int(13));
+    let _child = value.get_field("n");
+    var i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+    }
+}
+
+actor JsonCancelDriver {
+    receive fn drive() {
+        scope {
+            cancel_exit();
+        };
+    }
+}
+
+fn main() {
+    let value = json.object();
+    value.with("n", json.from_int(7));
+    value.with_bool("flag", true);
+    let child = value.get_field("n");
+    let keys = value.keys();
+    value.close();
+    println(child.get_int());
+    println(keys.array_len());
+
+    // An invalid parent still consumes the child transfer.
+    let invalid = json.parse("{");
+    invalid.with("child", json.from_int(1));
+    invalid.free();
+    early_exit(true);
+}

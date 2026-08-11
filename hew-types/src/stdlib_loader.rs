@@ -4,10 +4,10 @@
 //! clean name mappings, handle types, and handle method mappings.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{
-    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, ResourceMarker, Stmt, TypeBodyItem,
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, ResourceMarker, Spanned, Stmt, TypeBodyItem,
     TypeDeclKind, TypeExpr,
 };
 use hew_parser::parse;
@@ -63,6 +63,15 @@ pub struct HandleMethod {
 /// All type information extracted from a single `.hew` module file.
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
+    /// Exact file selected by module resolution. Consumers that grant
+    /// compiler-only stdlib authority must use this provenance rather than a
+    /// lexical module name.
+    pub source_path: Option<PathBuf>,
+    /// Parsed source declarations selected alongside this registry entry.
+    /// Keeping the source surface lets checker registration retain declaration
+    /// metadata (notably compiler-intrinsic identities) instead of reducing a
+    /// Hew module to only its legacy ABI signature summary.
+    pub source_items: Vec<Spanned<Item>>,
     /// C function signatures from `extern` blocks.
     pub functions: Vec<CFunction>,
     /// Clean name mappings: (`user_name`, `c_symbol`).
@@ -135,7 +144,10 @@ pub(crate) fn load_module_checked(
     }
 
     let module_short = module_short_name(module_path);
-    Ok(Some(extract_module_info(&result.program, &module_short)))
+    let mut info = extract_module_info(&result.program, &module_short);
+    info.source_path = Some(hew_path);
+    info.source_items = result.program.items;
+    Ok(Some(info))
 }
 
 /// Resolve a module path to a `.hew` file on disk.
@@ -227,6 +239,8 @@ fn collect_extern_fn_names(program: &hew_parser::ast::Program) -> HashSet<String
 /// Extract all type information from a parsed `.hew` program.
 fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -> ModuleInfo {
     let mut info = ModuleInfo {
+        source_path: None,
+        source_items: Vec::new(),
         functions: Vec::new(),
         clean_names: Vec::new(),
         handle_types: Vec::new(),
@@ -1201,17 +1215,17 @@ fn extract_handle_methods(
     let wrapper_simple_name = crate::short_name(&type_name);
 
     for method in &impl_decl.methods {
-        // A fieldless `#[resource]` handle (e.g. process.Child) IS a handle
-        // type, so its inherent `close` stays out of the handle-method table —
-        // registering it would trip the `is_handle_type`-gated rewrite. A
-        // fielded wrapper's `close` is rewrite-safe and must register so the
-        // importer's impl-less registry path can resolve `x.close()`.
-        if method.name == "close"
+        // A fieldless `#[resource]` handle's inherent `close` must be visible
+        // for imported signature resolution. It deliberately dispatches
+        // through that authored impl below rather than rewriting straight to
+        // the extracted C symbol: the inherent body is the one exact close
+        // ritual HIR/MIR registers for scope, crash, cancel and suspend drops.
+        // Sending it through the raw handle rewrite would lose the resource
+        // consume intent and create a second, disconnected close authority.
+        let inherent_resource_close = method.name == "close"
             && resource_type_names.contains(&type_name)
             && !is_resource_wrapper
-        {
-            continue;
-        }
+            && impl_decl.trait_bound.is_none();
         // A trivial C shim forwards `self` directly (`hew_foo(self, ...)`). A
         // `#[resource] T { handle: H }` wrapper cannot: a borrowing method may
         // not pass the resource itself across the FFI boundary
@@ -1295,7 +1309,7 @@ fn extract_handle_methods(
                 c_symbol,
                 params,
                 return_type,
-                dispatch_through_impl,
+                dispatch_through_impl: dispatch_through_impl || inherent_resource_close,
             });
         }
     }
@@ -1305,7 +1319,6 @@ fn extract_handle_methods(
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> PathBuf {
@@ -1380,13 +1393,16 @@ mod tests {
             "json module should declare json.Value handle type"
         );
         assert!(
-            !info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should not be a drop type after impl Drop removal"
+            info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value is a `#[resource]` handle and must be a drop type"
         );
-        assert!(
-            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
-            "json.Value should not have a drop func, got: {:?}",
+        assert_eq!(
             info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "json.Value")
+                .map(|(_, drop_fn)| drop_fn.as_str()),
+            Some("hew_json_free"),
+            "json.Value.close must register its sole raw disposer"
         );
 
         // Should have clean name mapping for "parse"
@@ -1618,6 +1634,22 @@ mod tests {
         assert_eq!(close.c_symbol, "hew_tcp_listener_close");
         assert_eq!(close.params, Vec::<Ty>::new());
         assert_eq!(close.return_type, Ty::Unit);
+        assert!(
+            close.dispatch_through_impl,
+            "net.Listener.close must retain its authored inherent resource ritual; \
+             importing its signature must not create a second raw-release path"
+        );
+
+        let connection_close = net_info
+            .handle_methods
+            .iter()
+            .find(|m| m.type_name == "net.Connection" && m.method_name == "close")
+            .expect("net.Connection.close should be extracted");
+        assert_eq!(connection_close.c_symbol, "hew_tcp_close");
+        assert!(
+            connection_close.dispatch_through_impl,
+            "net.Connection.close must dispatch through the sole inherent close ritual"
+        );
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");
@@ -1834,8 +1866,8 @@ mod tests {
         );
 
         assert!(
-            !info.drop_types.contains(&"http.Server".to_string()),
-            "http.Server should not be a drop type, got: {:?}",
+            info.drop_types.contains(&"http.Server".to_string()),
+            "http.Server should be a closeable opaque drop type: {:?}",
             info.drop_types
         );
     }
@@ -1852,26 +1884,33 @@ mod tests {
         );
 
         let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
-        assert!(
-            server_drop.is_none(),
-            "http.Server should not have a drop func, got: {:?}",
+        assert_eq!(
+            server_drop,
+            Some(&(
+                "http.Server".to_string(),
+                "hew_http_server_close".to_string()
+            )),
+            "http.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
         );
     }
 
     #[test]
-    fn json_module_no_drop_type_without_impl_drop() {
+    fn json_module_resource_registers_close_disposer() {
         let info = load_module("std::encoding::json", &test_root()).unwrap();
 
         assert!(
-            !info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should not be a drop type, got: {:?}",
+            info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value should be a drop type, got: {:?}",
             info.drop_types
         );
-        assert!(
-            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
-            "json.Value should not have a drop func, got: {:?}",
+        assert_eq!(
             info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "json.Value")
+                .map(|(_, drop_fn)| drop_fn.as_str()),
+            Some("hew_json_free"),
+            "json.Value should register its direct close disposer"
         );
     }
 

@@ -1,0 +1,15 @@
+fn use_it(v: Generator<i64, ()>) {
+    var v_sum = 0;
+    for v_y in v {
+        v_sum = v_sum + v_y;
+    }
+    println(f"sum {v_sum}");
+}
+
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    use_it(x);
+}

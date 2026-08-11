@@ -1,0 +1,20 @@
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn use_it(v: Tok) {
+    let v_i = v.id;
+    println(f"tok {v_i}");
+}
+
+fn main() {
+    let x = Tok { id: 1 };
+    use_it(x);
+}

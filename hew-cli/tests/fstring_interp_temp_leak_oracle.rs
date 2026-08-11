@@ -230,6 +230,117 @@ fn fstring_user_call_bound_interp_loop_source(frames: usize) -> String {
     )
 }
 
+/// A user function forwards a by-value string parameter through its return.
+/// The returned pointer aliases the argument, but the callee retains one share
+/// before writing the return slot, so the anonymous call result is a real
+/// caller-owned carrier. Direct interpolation must release that share once.
+///
+/// The payload length intentionally keeps every leaked allocation in the
+/// 48-byte size class: at 20 iterations the unfixed compiler reports the exact
+/// 20-allocation / 960-byte baseline.
+fn fstring_forwarded_return_interp_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    format!(
+        "fn passthru(value: string) -> string {{ value }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       println(f\"value={{passthru(f\"owned-carrier-token-{{i}}\")}}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 83; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Bound positive-path control for
+/// [`fstring_forwarded_return_interp_loop_source`]. The binding already
+/// anchors the returned share's ordinary scope-exit drop; the direct-consumer
+/// repair must not add a second owner.
+fn fstring_forwarded_return_bound_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    format!(
+        "fn passthru(value: string) -> string {{ value }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let returned = passthru(f\"owned-carrier-token-{{i}}\");\n\
+         \x20       println(f\"value={{returned}}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 82; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Every return path yields one releasable share, through two distinct
+/// mechanisms: `holder.value` is retained by the record-field load and
+/// `fallback` is retained before the return-slot move. The precise provenance
+/// summary is `ParamsOnly`, not fresh, but the one-share postcondition is
+/// uniform across the branch.
+///
+/// Both payload spellings stay in the 32-byte size class: at 20 iterations the
+/// unfixed compiler reports the exact 20-allocation / 640-byte baseline.
+fn fstring_mixed_projection_forward_return_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    format!(
+        "record Holder {{ value: string }}\n\
+         fn choose(holder: Holder, fallback: string, project: bool) -> string {{\n\
+         \x20   if project {{ holder.value }} else {{ fallback }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let holder = Holder {{ value: f\"a-{{i}}\" }};\n\
+         \x20       let fallback = f\"b-{{i}}\";\n\
+         \x20       println(f\"value={{choose(holder, fallback, i % 2 == 0)}}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 81; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// A mutable string parameter has an implicit borrowed entry definition plus
+/// the explicit owned reassignment definition. The false branch returns the
+/// entry alias, so the callee must retain it even though the MIR writer scan
+/// also sees the sibling owned `Move`.
+///
+/// Before the fail-closed coverage check, the caller released an unretained
+/// alias and then the still-live `owned` binding released the same buffer:
+/// allocator poisoning reported a missing C-string header sentinel.
+fn fstring_conditional_var_param_return_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum::<usize>() * 2;
+    format!(
+        "fn pick(var value: string, replace: bool) -> string {{\n\
+         \x20   if replace {{ value = \"replacement\"; }}\n\
+         \x20   value\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let owned = f\"live-token-{{i}}\";\n\
+         \x20       println(f\"carrier={{pick(owned, false)}}\");\n\
+         \x20       if owned.len() < 12 {{ return 80; }}\n\
+         \x20       total = total + i + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 79; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// Match-payload variant: an `Option<string>` payload binder interpolated
 /// directly. `f"v={s}"` lowers the binder through the stdlib `impl Display
 /// for string` (`string::fmt`), a Hew-bodied callee — which the enum
@@ -601,6 +712,93 @@ fn fstring_user_call_result_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
         "fstring_user_call_result_df",
         &fstring_user_call_result_interp_loop_source(200),
+    );
+}
+
+/// A forwarded return carrier consumed directly by interpolation must have a
+/// flat allocation slope. The unfixed 20-frame authority is exactly
+/// 20 allocations / 960 bytes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_forwarded_return_carrier_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_forwarded_return_carrier",
+        fstring_forwarded_return_interp_loop_source,
+    );
+}
+
+/// The projection/forward mixed return must also remain flat. The unfixed
+/// 20-frame authority is exactly 20 allocations / 640 bytes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_mixed_projection_forward_return_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_mixed_projection_forward_return",
+        fstring_mixed_projection_forward_return_loop_source,
+    );
+}
+
+/// Binding the forwarded carrier is the positive-path control: it keeps its
+/// pre-existing single scope-exit owner.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_forwarded_return_bound_control_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_forwarded_return_bound",
+        fstring_forwarded_return_bound_loop_source,
+    );
+}
+
+/// Missing-release counterfactual: the direct forwarded carrier used to leak
+/// once per iteration. Extra-release counterfactual: a second owner aborts or
+/// scribbles the live payload under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_forwarded_return_carrier_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_forwarded_return_carrier_df",
+        &fstring_forwarded_return_interp_loop_source(200),
+    );
+}
+
+/// Both branches of the mixed carrier release exactly once under allocator
+/// poisoning; the alternating predicate exercises each path 100 times.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_mixed_projection_forward_return_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_mixed_projection_forward_return_df",
+        &fstring_mixed_projection_forward_return_loop_source(200),
+    );
+}
+
+/// Regression for the borrowed parameter entry definition that has no MIR
+/// writer. The false branch must return a retained share; otherwise the direct
+/// consumer frees `owned` and its later read/drop trips the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_conditional_var_param_return_survives_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_conditional_var_param_return_df",
+        &fstring_conditional_var_param_return_loop_source(200),
     );
 }
 

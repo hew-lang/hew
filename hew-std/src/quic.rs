@@ -1774,6 +1774,11 @@ pub unsafe extern "C" fn hew_quic_event_free(event: *mut HewQuicEvent) {
     drop(unsafe { Box::from_raw(event) });
 }
 
+// Producer-specific R1/R2/R3 ownership proofs for the six handle-scoped QUIC
+// string results admitted by the ownership table.
+#[cfg(test)]
+mod string_result_retention;
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

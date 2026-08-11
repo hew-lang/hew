@@ -1,0 +1,35 @@
+// HashSet for-in over a nested record projection. The synthetic to_vec call
+// must retain the real `outer.inner.s` span/type on its receiver while its own
+// zero-width span carries the fresh Vec result.
+type Inner {
+    s: HashSet<i64>;
+}
+
+type Outer {
+    inner: Inner;
+}
+
+fn make_outer() -> Outer {
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(10);
+    s.insert(20);
+    s.insert(30);
+    Outer { inner: Inner { s: s } }
+}
+
+pub fn main() -> i64 {
+    let outer = make_outer();
+    var total = 0;
+    var count = 0;
+    for x in outer.inner.s {
+        total = total + x;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    if outer.inner.s.len() != 3 {
+        return 99;
+    }
+    total
+}

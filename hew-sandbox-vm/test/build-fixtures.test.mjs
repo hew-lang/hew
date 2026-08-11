@@ -13,6 +13,18 @@ const deferred = readDeferredManifest();
 const workspaceVersion = readWorkspaceVersion();
 const canonicalCompilerVersion = `hew-sandbox-wasm-${workspaceVersion}`;
 
+test("sandbox VM package and fixtures track the workspace release version", () => {
+  const packageVersion = readJson(path.join(root, "package.json")).version;
+  assert.equal(packageVersion, workspaceVersion);
+
+  for (const fixture of fs.readdirSync(fixturesRoot, { withFileTypes: true })) {
+    if (!fixture.isDirectory()) continue;
+    const bytecodePath = path.join(fixturesRoot, fixture.name, "bytecode.json");
+    if (!fs.existsSync(bytecodePath)) continue;
+    assert.equal(readJson(bytecodePath).hew_version, workspaceVersion, `${fixture.name} bytecode version drifted`);
+  }
+});
+
 test("fixture bytecode provenance is compiled or explicitly deferred", () => {
   const fixtureDirs = fs
     .readdirSync(fixturesRoot, { withFileTypes: true })

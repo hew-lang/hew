@@ -95,6 +95,7 @@ pub fn sqrt(x: f64) -> f64 {}
 // path used by `sqrt`, `exp`, `log`, `sin`, and `cos`. The `0.0` body is
 // never executed; it satisfies the type-checker only.
 /// Raise `base` to the power `exp`.
+#[intrinsic("math.pow")]
 pub fn pow(base: f64, exp: f64) -> f64 {
     0.0
 }
@@ -102,6 +103,7 @@ pub fn pow(base: f64, exp: f64) -> f64 {
 // WHY the stub body: typed call-site interception emits `llvm.floor.f64`.
 // See comment on `pow` above for the full explanation.
 /// Return the largest integer value less than or equal to `x`.
+#[intrinsic("math.floor")]
 pub fn floor(x: f64) -> f64 {
     0.0
 }
@@ -109,6 +111,7 @@ pub fn floor(x: f64) -> f64 {
 // WHY the stub body: typed call-site interception emits `llvm.ceil.f64`.
 // See comment on `pow` above for the full explanation.
 /// Return the smallest integer value greater than or equal to `x`.
+#[intrinsic("math.ceil")]
 pub fn ceil(x: f64) -> f64 {
     0.0
 }
@@ -116,6 +119,7 @@ pub fn ceil(x: f64) -> f64 {
 // WHY the stub body: typed call-site interception emits `llvm.round.f64`.
 // See comment on `pow` above for the full explanation.
 /// Round to the nearest integer, with ties rounding away from zero.
+#[intrinsic("math.round")]
 pub fn round(x: f64) -> f64 {
     0.0
 }

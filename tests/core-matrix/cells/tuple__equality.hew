@@ -1,0 +1,8 @@
+fn main() {
+    let a: (i64, string) = (1, "x0");
+    let b: (i64, string) = (1, "x0");
+    let c: (i64, string) = (2, "x1");
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

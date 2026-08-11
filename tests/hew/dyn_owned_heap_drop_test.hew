@@ -27,11 +27,11 @@
 //! out of band with `leaks --atExit` (record String/Vec/enum-payload
 //! buffers all reach 0 leaked bytes).
 //!
-//! WASM-TODO(#1451): the dyn trait-object ABI (vtable size/align prefix,
-//! `hew_dyn_box_*`) is native-64-bit only today — `emit_dyn_trait_*`
-//! sources size/align as host-pointer-width and the WASM32 width path is
-//! unbuilt (see `emit_dyn_trait_vtable_definitions`). Add an
-//! `add_wasm_file_test()` entry once the wasm32 dyn lowering lands.
+//! The local dyn-object ABI is target-width: codegen derives the vtable
+//! size/align slots from the active target data, and the runtime uses target
+//! `usize`. Returned dyn objects are a separate ownership boundary and remain
+//! fail-closed until their concrete storage is promoted before leaving the
+//! callee frame.
 
 import std::string;
 
@@ -58,6 +58,10 @@ impl Person {
     fn name(val: Person) -> string {
         val.tag
     }
+}
+
+fn inspect_named(value: dyn Named) -> i64 {
+    value.name().len()
 }
 
 // Record with an owned-heap `Vec` field (D2 Mode A).
@@ -94,6 +98,16 @@ fn test_dyn_string_field_record_drops_clean() {
     let p = Person { tag: heaped };
     let _d: dyn Named = p;
     testing.assert_true(true);
+}
+
+/// A coercion used directly as a BORROWING call argument still owns a fresh
+/// dyn box. The anonymous caller temporary must run the same HeapBoxed drop as
+/// a named dyn local after `inspect_named` returns; the callee parameter is a
+/// borrow and must not acquire a competing drop.
+#[test]
+fn test_borrowed_dyn_argument_temporary_drops_clean() {
+    let n = inspect_named(Person { tag: string.repeat("b", 64) });
+    testing.assert_eq(n, 64);
 }
 
 /// Mode A — record with a populated `Vec<i64>` field coerced to `dyn` and

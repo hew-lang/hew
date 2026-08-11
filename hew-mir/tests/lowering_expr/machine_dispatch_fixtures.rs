@@ -11,7 +11,11 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, Instr, Place, Terminator, TrapKind};
-use hew_types::TypeCheckOutput;
+use hew_types::{module_registry::ModuleRegistry, Checker};
+
+fn machine_step_symbol(name: &str) -> String {
+    format!("{}__step", hew_hir::machine_layout_key(name, &[]))
+}
 
 fn pipeline_for(path: &str) -> hew_mir::IrPipeline {
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -21,9 +25,16 @@ fn pipeline_for(path: &str) -> hew_mir::IrPipeline {
         "parse errors for {path}: {:?}",
         parsed.errors
     );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let typecheck = checker.check_program(&parsed.program);
+    assert!(
+        typecheck.errors.is_empty(),
+        "type errors for {path}: {:#?}",
+        typecheck.errors
+    );
     let output = lower_program(
         &parsed.program,
-        &TypeCheckOutput::default(),
+        &typecheck,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
@@ -36,8 +47,8 @@ fn traffic_light_step_fn_has_real_dispatch_tree() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
-        .expect("TrafficLight__step synthesised");
+        .find(|f| f.name == machine_step_symbol("TrafficLight"))
+        .expect("TrafficLight machine step synthesised");
 
     // Multi-block CFG (entry + per-state checks + per-arm checks + bodies + trap).
     assert!(
@@ -127,8 +138,8 @@ fn tcp_handshake_step_fn_has_real_dispatch_tree_with_payload_and_wildcards() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TcpHandshake__step")
-        .expect("TcpHandshake__step synthesised");
+        .find(|f| f.name == machine_step_symbol("TcpHandshake"))
+        .expect("TcpHandshake machine step synthesised");
 
     // Multi-block CFG.
     assert!(
@@ -215,8 +226,8 @@ fn default_machine_step_fn_falls_through_to_stay_return_not_trap() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "Tank__step")
-        .expect("Tank__step synthesised");
+        .find(|f| f.name == machine_step_symbol("Tank"))
+        .expect("Tank machine step synthesised");
 
     // No block may trap with MachineDispatchUnreachable: the default arm
     // replaces the fail-closed trap with a stay-return.

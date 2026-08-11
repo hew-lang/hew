@@ -3,14 +3,15 @@
 //! Records every concrete instantiation of a generic top-level user function
 //! observed at a call site, derived from the checker's authoritative
 //! `call_type_args` side-table (`hew-types/src/check/calls.rs:76`). Each
-//! distinct `(origin_fn_id, Vec<ResolvedTy>)` pair becomes one
+//! distinct `(origin_fn_id, declaration_id, Vec<ResolvedTy>)` tuple becomes one
 //! `MonomorphizedFn` entry; downstream MIR (G-1.b) and LLVM (G-1.c) consume
 //! these to emit one specialised function per instantiation.
 //!
 //! This slice (G-1.a) is the producer-bridge wakeup that takes the
 //! `LowerCtx.call_type_args` field out of `#[expect(dead_code)]`. The
-//! registry shape it emits is intentionally minimal — it stores the origin
-//! identity, the concrete type args, and a mangled name — because actual
+//! registry shape it emits is intentionally minimal — it stores the source
+//! declaration identity, its linker-symbol payload, the concrete type args,
+//! and a mangled name — because actual
 //! substitution into bodies is G-1.b's responsibility (per
 //! `.tmp/plans/g1-generics-monomorphization.md`).
 //!
@@ -30,7 +31,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use hew_types::resolved_ty::{mangle_resolved_ty_segment, TypeParamMangle};
-use hew_types::ResolvedTy;
+use hew_types::{DefId, ResolvedTy};
 
 use crate::ids::ItemId;
 
@@ -59,16 +60,29 @@ pub struct MonoKey {
     /// on `name` defends against module-qualified shadowing (two
     /// imported `describe` symbols would be distinct `ItemId`s).
     pub origin: ItemId,
-    /// Origin function name as written in source. Retained for
-    /// diagnostics and the mangled-name scheme; not part of identity
-    /// when paired with `origin` (the two move together).
-    pub origin_name: String,
+    /// Checker-owned source declaration identity for the generic body. This
+    /// remains distinct from the linker symbol: implementations of a trait
+    /// method must not become identified by a `Type::method` presentation.
+    pub declaration: DefId,
+    /// Emitted generic body symbol, retained solely for the symbol-mangling
+    /// scheme. It is payload, never the semantic monomorphisation authority.
+    pub linker_symbol: String,
     /// Concrete type arguments in source-declared order. Always
     /// `ResolvedTy` (not `Ty`) because the boundary conversion
     /// `ResolvedTy::from_ty` rejects any leaked `Var`/`Error`/
     /// `IntLiteral`/`FloatLiteral` — the registry is therefore
     /// fail-closed at the side-table seam.
     pub type_args: Vec<ResolvedTy>,
+}
+
+impl MonoKey {
+    /// The one emitted-symbol projection for a function instantiation.  The
+    /// declaration is semantic authority; only the separately-carried linker
+    /// payload participates in the emitted label.
+    #[must_use]
+    pub fn emitted_symbol(&self) -> String {
+        function_monomorph_symbol(&self.linker_symbol, &self.type_args)
+    }
 }
 
 /// One specialised function the downstream MIR/LLVM stages must emit.
@@ -81,7 +95,7 @@ pub struct MonomorphizedFn {
     /// Identity of this monomorphisation.
     pub key: MonoKey,
     /// Symbol name downstream codegen will emit. Built by
-    /// [`mangle`] from `key.origin_name` and `key.type_args`.
+    /// [`mangle`] from `key.linker_symbol` and `key.type_args`.
     pub mangled_name: String,
 }
 
@@ -112,9 +126,121 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
     )
 }
 
-/// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
-/// short (unqualified) name, stripping a leading `"module."` prefix, while
-/// preserving the surrounding type structure.
+/// Project an already-selected generic function linker symbol and concrete
+/// type arguments to the emitted monomorph symbol.
+///
+/// This is intentionally distinct from [`mangle_layout_key`]: function
+/// linkage consumes the exact HIR body symbol, while record/enum layouts have
+/// their own nominal-layout key policy. HIR's [`MonoRegistry`] and every MIR
+/// generic-call consumer use this one projection, so a call site cannot invent
+/// a second spelling for the same monomorphisation.
+#[must_use]
+pub fn function_monomorph_symbol(linker_symbol: &str, type_args: &[ResolvedTy]) -> String {
+    mangle(linker_symbol, type_args)
+}
+
+/// Build the canonical registry key for a user record or enum layout.
+///
+/// Layout identity is a nominal identity: both the declaration owner and every
+/// named type in its argument spine are significant.  Keep this authority next
+/// to the shared mangler so HIR registration, MIR lowering, and codegen lookup
+/// cannot independently decide whether to encode a dotted owner or transform a
+/// nested payload type.  The compatibility normaliser preserves canonical
+/// paths; it only removes `Closure` captures, which are not represented by the
+/// type mangle either.
+#[must_use]
+pub fn mangle_layout_key(origin_name: &str, type_args: &[ResolvedTy]) -> String {
+    let canonical_args: Vec<ResolvedTy> = type_args
+        .iter()
+        .cloned()
+        .map(shorten_named_arg_qualifiers)
+        .collect();
+    mangle(&crate::mangle_dotted_name(origin_name), &canonical_args)
+}
+
+/// Build the class-discriminated registry key for a compiler-synthesised
+/// cursor record. The builtin discriminator is the authority; a user nominal
+/// named `VecIter` or `HashMapIter` cannot call this path.
+#[must_use]
+pub fn synthetic_cursor_layout_key(
+    builtin: hew_types::BuiltinType,
+    type_args: &[ResolvedTy],
+) -> Option<String> {
+    if !matches!(
+        builtin,
+        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
+    ) {
+        return None;
+    }
+    let canonical_args: Vec<ResolvedTy> = type_args
+        .iter()
+        .cloned()
+        .map(shorten_named_arg_qualifiers)
+        .collect();
+    Some(crate::mono::mangle_instantiation(
+        crate::mono::SymbolClass::SyntheticRecord,
+        builtin.canonical_name(),
+        &canonical_args,
+        &[],
+    ))
+}
+
+/// Build the class-discriminated registry key for any compiler-owned record
+/// layout. Synthetic iterator cursors and fixed-shape builtin structs share
+/// the compiler record namespace, while their distinct builtin discriminants
+/// keep each nominal disjoint. A user `type MonitorRef { .. }` therefore
+/// cannot collide with the runtime `MonitorRef` layout even though both retain
+/// the same source-facing leaf.
+#[must_use]
+pub fn compiler_record_layout_key(
+    builtin: hew_types::BuiltinType,
+    type_args: &[ResolvedTy],
+) -> Option<String> {
+    if matches!(
+        builtin,
+        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
+    ) {
+        return synthetic_cursor_layout_key(builtin, type_args);
+    }
+    let registration = crate::builtin_type_classes::compiler_record_layout_registration(builtin)?;
+    if !type_args.is_empty()
+        || !matches!(
+            registration.shape,
+            crate::builtin_type_classes::BuiltinTypeShape::Struct(_)
+        )
+    {
+        return None;
+    }
+    Some(crate::mono::mangle_instantiation(
+        crate::mono::SymbolClass::SyntheticRecord,
+        builtin.canonical_name(),
+        &[],
+        &[],
+    ))
+}
+
+/// Resolve a named type to the one layout-registry key its semantic carrier
+/// permits.  Generic user nominals use the ordinary layout mangle; compiler
+/// cursor records use their disjoint synthetic namespace selected by the
+/// builtin discriminator.  Keeping the discriminator in this API prevents a
+/// user `type VecIter<T>` from selecting the cursor layout by spelling alone.
+#[must_use]
+pub fn layout_key_for_named(
+    name: &str,
+    type_args: &[ResolvedTy],
+    builtin: Option<hew_types::BuiltinType>,
+) -> Option<String> {
+    if let Some(key) = builtin.and_then(|kind| compiler_record_layout_key(kind, type_args)) {
+        return Some(key);
+    }
+    if type_args.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(mangle_layout_key(name, type_args))
+    }
+}
+
+/// Recursively preserve canonical named identities throughout a type spine.
 ///
 /// This is the single canonical type-arg-spine normaliser shared by every
 /// layout-key producer: the enum layout-registration side
@@ -125,21 +251,16 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
 /// registration key and every lookup key for the same instantiated type are
 /// byte-identical by construction and cannot drift.
 ///
-/// C1 stamps an authoritative module-qualified name onto `ResolvedTy::Named`
-/// for imported type references. That qualifier is meaningful for the OUTER
-/// user-type identity (the struct-layout collision scan dedupes by distinct
-/// qualified identity) but must NOT leak into a mangle key's type-arg spine:
-/// one payload type reached via two import paths (`fs.IoError` vs `IoError`)
-/// denotes one type and must collapse to one layout entry. Codegen always
-/// normalises its spine to bare before mangling, so every key producer does
-/// the same here.
+/// Module qualification is declaration identity, not decoration. The old
+/// normaliser stripped it before later lookup stages, which made same-leaf
+/// nominals collide. The compatibility function name remains while callers
+/// migrate, but it now preserves every canonical path exactly.
 ///
 /// Recurses into every compound `ResolvedTy` shape that `mangle_resolved_ty`
 /// descends into (Tuple/Array/Slice/Named-args, plus Function/Closure/
 /// Pointer/Borrow/TraitObject/Task), so a NESTED qualified payload
-/// (`Result<Vec<fs.Foo>, _>`, `Option<x.T>`) is shortened at every depth —
-/// not just the top-level args — and no shape can carry a qualified name into
-/// the key. Leaf variants and `TypeParam` (which carries only a parameter
+/// (`Result<Vec<fs.Foo>, _>`, `Option<x.T>`) retains its declaration path at
+/// every depth. Leaf variants and `TypeParam` (which carries only a parameter
 /// name, never a qualifier-bearing nested type) pass through unchanged.
 /// Closure captures are not part of the call-type identity (see
 /// `mangle_resolved_ty`) and are dropped here exactly as they are dropped from
@@ -156,7 +277,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             builtin,
             is_opaque,
         } => ResolvedTy::Named {
-            name: hew_types::short_name(&name).to_string(),
+            name,
             args: args.into_iter().map(shorten_named_arg_qualifiers).collect(),
             builtin,
             is_opaque,
@@ -201,7 +322,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             traits: traits
                 .into_iter()
                 .map(|b| hew_types::ResolvedTraitBound {
-                    trait_name: hew_types::short_name(&b.trait_name).to_string(),
+                    trait_name: b.trait_name,
                     args: b
                         .args
                         .into_iter()
@@ -274,7 +395,7 @@ impl MonoRegistry {
         if self.order.len() >= self.cap {
             return Err(());
         }
-        let mangled_name = mangle(&key.origin_name, &key.type_args);
+        let mangled_name = key.emitted_symbol();
         let idx = self.order.len();
         self.order.push(MonomorphizedFn {
             key: key.clone(),
@@ -325,6 +446,9 @@ pub struct RecordMonoKey {
     /// rejects any leaked `Var`/`Error`/`IntLiteral`/`FloatLiteral` — the
     /// registry is fail-closed at the side-table seam.
     pub type_args: Vec<ResolvedTy>,
+    /// Symbol namespace for this layout. User records retain the legacy
+    /// function-class key; synthetic cursors use `SyntheticRecord`.
+    pub symbol_class: crate::mono::SymbolClass,
 }
 
 /// One specialised record layout the downstream MIR/LLVM stages must
@@ -372,18 +496,10 @@ impl RecordLayoutRegistry {
     /// entry landed, `Ok(false)` if the key was already present, and
     /// `Err(())` if the cap was exceeded.
     ///
-    /// The dedup key and mangled name are computed from the type-arg spine with
-    /// module qualifiers stripped from every `Named` payload name — identical
-    /// discipline to `EnumLayoutRegistry::insert`. A generic record instantiated
-    /// through an import-use site (`Holder<fs.IoError>`, with C1's authoritative
-    /// qualified `Named.name`) would otherwise register under
-    /// `Holder$$fs.IoError` while every codegen / MIR lookup probes the bare
-    /// `Holder$$IoError`, the miss falling through the fail-closed gate. This
-    /// also keeps the `layout_mono` dedup seed (`seen_records`, populated from
-    /// these keys) congruent with `layout_mono`'s own shortened keys so a record
-    /// already registered here dedups against the post-mono discovery. The outer
-    /// `origin_name` is kept verbatim (codegen keeps the outer name and only
-    /// shortens the args).
+    /// The dedup key and mangled name retain every canonical nominal path in
+    /// the type-argument spine. This keeps same-leaf declarations from
+    /// different modules distinct and is congruent with the shared mangle used
+    /// by all lookup sites. The outer `origin_name` is likewise preserved.
     pub(crate) fn insert(
         &mut self,
         key: RecordMonoKey,
@@ -406,7 +522,17 @@ impl RecordLayoutRegistry {
         if self.order.len() >= self.cap {
             return Err(());
         }
-        let mangled_name = mangle(&key.origin_name, &key.type_args);
+        let mangled_name = if matches!(key.symbol_class, crate::mono::SymbolClass::SyntheticRecord)
+        {
+            crate::mono::mangle_instantiation(
+                key.symbol_class,
+                &key.origin_name,
+                &key.type_args,
+                &[],
+            )
+        } else {
+            mangle_layout_key(&key.origin_name, &key.type_args)
+        };
         let idx = self.order.len();
         self.order.push(RecordLayout {
             key: key.clone(),
@@ -637,19 +763,10 @@ impl EnumLayoutRegistry {
     /// landed, `Ok(false)` if the key was already present, and `Err(())` if
     /// the cap was exceeded (uniform with `RecordLayoutRegistry`).
     ///
-    /// The dedup key and mangled name are computed from the type-arg spine
-    /// with module qualifiers stripped from every `Named` payload name. The
-    /// codegen enum-layout lookup (`hew-codegen-rs/src/llvm.rs` `resolve_ty`)
-    /// shortens its type-arg spine to bare names before mangling, so the
-    /// registration key MUST do the same or the keys diverge: a generic enum
-    /// instantiated through an import-use site (`Result<_, fs.IoError>`, with
-    /// C1's authoritative qualified `Named.name`) would register under
-    /// `Result$$_$fs.IoError` while the lookup probes `Result$$_$IoError`,
-    /// the miss falling through to the D10 fail-closed gate. Normalising here
-    /// also collapses the qualified and bare spellings of the same payload
-    /// type to one layout entry (they denote one type reached via two import
-    /// paths). The outer `origin_name` is kept verbatim — codegen keeps the
-    /// outer enum name and only shortens the args.
+    /// The dedup key and mangled name retain every canonical nominal path in
+    /// the type-argument spine. This keeps same-leaf declarations from
+    /// different modules distinct and is congruent with the shared mangle used
+    /// by all lookup sites. The outer `origin_name` is likewise preserved.
     pub(crate) fn insert(
         &mut self,
         key: EnumMonoKey,
@@ -671,7 +788,7 @@ impl EnumLayoutRegistry {
         if self.order.len() >= self.cap {
             return Err(());
         }
-        let mangled_name = mangle(&key.origin_name, &key.type_args);
+        let mangled_name = mangle_layout_key(&key.origin_name, &key.type_args);
         let idx = self.order.len();
         self.order.push(EnumLayout {
             key: key.clone(),
@@ -853,7 +970,8 @@ mod tests {
         let mut reg = MonoRegistry::with_cap(8);
         let key = MonoKey {
             origin: ItemId(0),
-            origin_name: "id".into(),
+            declaration: DefId::new("id"),
+            linker_symbol: "id".into(),
             type_args: vec![ResolvedTy::I64],
         };
         assert_eq!(reg.insert(key.clone()), Ok(true));
@@ -930,6 +1048,7 @@ mod tests {
             origin: ItemId(0),
             origin_name: "Box".into(),
             type_args: vec![ResolvedTy::I64],
+            symbol_class: crate::mono::SymbolClass::Function,
         };
         let fields = vec![("value".to_string(), ResolvedTy::I64)];
         assert_eq!(reg.insert(key.clone(), fields.clone(), 0..0), Ok(true));
@@ -950,6 +1069,42 @@ mod tests {
             mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]),
             "Pair$$i64$string"
         );
+    }
+
+    #[test]
+    fn synthetic_cursor_layout_keys_do_not_collide_with_user_same_leaf_records() {
+        let vec_args = vec![ResolvedTy::String];
+        let synthetic_vec = synthetic_cursor_layout_key(hew_types::BuiltinType::VecIter, &vec_args)
+            .expect("VecIter is a synthetic cursor");
+        assert_ne!(synthetic_vec, mangle_layout_key("VecIter", &vec_args));
+
+        let map_args = vec![ResolvedTy::String, ResolvedTy::I64];
+        let synthetic_map =
+            synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &map_args)
+                .expect("HashMapIter is a synthetic cursor");
+        assert_ne!(synthetic_map, mangle_layout_key("HashMapIter", &map_args));
+    }
+
+    #[test]
+    fn compiler_struct_layout_keys_do_not_collide_with_user_same_leaf_records() {
+        for builtin in [
+            hew_types::BuiltinType::MonitorRef,
+            hew_types::BuiltinType::CrashInfo,
+            hew_types::BuiltinType::CrashNotification,
+            hew_types::BuiltinType::NodeId,
+        ] {
+            let compiler = compiler_record_layout_key(builtin, &[])
+                .expect("catalog Struct builtin has a compiler record layout");
+            assert_ne!(compiler, builtin.canonical_name());
+            assert_eq!(
+                layout_key_for_named(builtin.canonical_name(), &[], Some(builtin)),
+                Some(compiler)
+            );
+            assert_eq!(
+                layout_key_for_named(builtin.canonical_name(), &[], None),
+                Some(builtin.canonical_name().to_string())
+            );
+        }
     }
 
     #[test]
@@ -1059,7 +1214,8 @@ mod tests {
         for i in 0..3 {
             let key = MonoKey {
                 origin: ItemId(0),
-                origin_name: "id".into(),
+                declaration: DefId::new("id"),
+                linker_symbol: "id".into(),
                 type_args: vec![ResolvedTy::named_user(format!("T{i}"), vec![])],
             };
             if reg.insert(key).is_err() {
@@ -1134,54 +1290,47 @@ mod tests {
     }
 
     #[test]
-    fn enum_layout_registry_collapses_qualified_and_bare_payload() {
-        // C1 stamps an authoritative module qualifier onto imported type
-        // references, so the SAME generic enum instantiation reached through
-        // an import-use site (`Result<string, fs.IoError>`) and through the
-        // declaring module (`Result<string, IoError>`) arrive with divergent
-        // payload spellings of one type. The registry must normalise the
-        // type-arg spine to bare names — exactly as the codegen layout lookup
-        // does — so both collapse to one entry under one mangled key. Without
-        // this, the qualified spelling registers `Result$$string$fs.IoError`
-        // while codegen probes `Result$$string$IoError`, the miss falling
-        // through to the D10 fail-closed gate.
+    fn enum_layout_registry_keeps_qualified_and_bare_payload_distinct() {
+        // Module qualification is declaration identity: `fs.IoError` and a
+        // root `IoError` must produce distinct generic enum monomorphs.
         let mut reg = EnumLayoutRegistry::with_cap(8);
         let bare_err = ResolvedTy::named_user("IoError", vec![]);
         let qualified_err = ResolvedTy::named_user("fs.IoError", vec![]);
         assert_eq!(
             reg.insert(
-                result_key(qualified_err),
+                result_key(qualified_err.clone()),
                 vec![some_variant(ResolvedTy::String), none_variant()],
             ),
             Ok(true)
         );
-        // Second insert with the bare spelling is recognised as the same key.
+        // The bare spelling is a different declaration identity.
         assert_eq!(
             reg.insert(
-                result_key(bare_err),
+                result_key(bare_err.clone()),
                 vec![some_variant(ResolvedTy::String), none_variant()],
             ),
-            Ok(false)
+            Ok(true)
         );
         let entries = reg.into_vec();
-        assert_eq!(entries.len(), 1);
-        // The surviving entry is keyed by the bare-normalised mangle, the same
-        // key the codegen enum-layout lookup produces.
-        assert_eq!(entries[0].mangled_name, "Result$$string$IoError");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].mangled_name,
+            mangle("Result", &[ResolvedTy::String, qualified_err])
+        );
         assert_eq!(
             entries[0].key.type_args[1],
-            ResolvedTy::named_user("IoError", vec![])
+            ResolvedTy::named_user("fs.IoError", vec![])
+        );
+        assert_eq!(
+            entries[1].mangled_name,
+            mangle("Result", &[ResolvedTy::String, bare_err])
         );
     }
 
     #[test]
-    fn shorten_named_arg_qualifiers_strips_nested_qualified_payload() {
-        // A NESTED qualified payload must be shortened at every depth, not just
-        // at the top-level type args. `Result<Vec<fs.Foo>, _>` registered under
-        // a bare key but probed under a qualified key was the second asymmetry
-        // C1 introduced: a `Named`-only shortener that did not recurse the
-        // Array/Slice/Tuple/Vec-arg spine would leave the inner `fs.Foo`
-        // qualified and the keys would diverge.
+    fn shorten_named_arg_qualifiers_preserves_nested_qualified_payload() {
+        // The compatibility helper recursively preserves identity through
+        // every nested payload shape.
         let nested = ResolvedTy::named_user(
             "Result",
             vec![
@@ -1192,33 +1341,19 @@ mod tests {
                 ]),
             ],
         );
-        let shortened = shorten_named_arg_qualifiers(nested);
-        let expected = ResolvedTy::named_user(
-            "Result",
-            vec![
-                ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("Foo", vec![])]),
-                ResolvedTy::Tuple(vec![
-                    ResolvedTy::Slice(Box::new(ResolvedTy::named_user("Conn", vec![]))),
-                    ResolvedTy::Array(Box::new(ResolvedTy::named_user("Buf", vec![])), 4),
-                ]),
-            ],
-        );
-        assert_eq!(shortened, expected);
-        // The mangle of the shortened spine carries no module qualifier — the
-        // byte form every codegen lookup probes.
+        let canonical = shorten_named_arg_qualifiers(nested.clone());
+        assert_eq!(canonical, nested);
+        // The canonical mangle carries every nested module qualifier.
         assert_eq!(
-            mangle("Result", &[shortened]),
-            "Result$$Result$lVec$lFoo$g$ctuple$xslice$xConn$g$carray$xBuf$c4$g$g$g",
+            mangle("Result", &[canonical]),
+            "Result$$Result$lVec$lfs$mFoo$g$ctuple$xslice$xnet$mConn$g$carray$xio$mBuf$c4$g$g$g",
         );
     }
 
     #[test]
-    fn enum_layout_registry_collapses_nested_qualified_payload() {
-        // The registry collapse must also hold when the qualified `Named` is
-        // NESTED inside another generic arg (`Option<Vec<fs.Foo>>`). The same
-        // instantiation reached via the declaring module (`Vec<Foo>`) and via
-        // an import-use site (`Vec<fs.Foo>`) must land on one entry under the
-        // bare-normalised mangled key, matching the codegen lookup spine.
+    fn enum_layout_registry_keeps_nested_qualified_payload_distinct() {
+        // Nested module qualification remains part of the generic instance
+        // identity just like a top-level nominal qualifier.
         fn option_vec_key(elem: ResolvedTy) -> EnumMonoKey {
             EnumMonoKey {
                 origin: ItemId(12),
@@ -1231,21 +1366,28 @@ mod tests {
         let bare = ResolvedTy::named_user("Foo", vec![]);
         assert_eq!(
             reg.insert(
-                option_vec_key(qualified),
+                option_vec_key(qualified.clone()),
                 vec![some_variant(ResolvedTy::I64), none_variant()],
             ),
             Ok(true)
         );
         assert_eq!(
             reg.insert(
-                option_vec_key(bare),
+                option_vec_key(bare.clone()),
                 vec![some_variant(ResolvedTy::I64), none_variant()],
             ),
-            Ok(false)
+            Ok(true)
         );
         let entries = reg.into_vec();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].mangled_name, "Option$$Vec$lFoo$g");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].mangled_name,
+            mangle("Option", &[ResolvedTy::named_user("Vec", vec![qualified])])
+        );
+        assert_eq!(
+            entries[1].mangled_name,
+            mangle("Option", &[ResolvedTy::named_user("Vec", vec![bare])])
+        );
     }
 
     #[test]

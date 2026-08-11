@@ -15,8 +15,9 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    terminator_source_places, DropKind, GeneratorEnvFieldPlan, Instr, IrPipeline,
-    MirDiagnosticKind, Place, RawMirFunction, StateFieldCloneKind, Terminator,
+    terminator_source_places, DropFnSpec, DropKind, ExitPath, GeneratorEnvFieldPlan,
+    InPlaceReleaseKind, Instr, IrPipeline, MirDiagnosticKind, Place, RawMirFunction,
+    StateFieldCloneKind, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -138,6 +139,97 @@ fn gen_block_with_two_yields_emits_two_terminator_yield() {
     assert!(
         matches!(last_terminator, Terminator::Return),
         "gen-body's last block must terminate with Return; got {last_terminator:?}"
+    );
+}
+
+/// Generator bodies inherit the module's enum layouts through the same child-
+/// builder constructor as closures, tasks, and lambda actors. The layout is the
+/// ownership authority for both release sites in this shape:
+///
+/// * abandoning the generator at `yield` drops the live `Box::Full` payload;
+/// * resuming and assigning `Box::Empty` drops the old payload before overwrite.
+///
+/// A byte-identical ordinary function is the differential control. Before the
+/// regression fix only the control emitted its tagged release: the generator's
+/// hand-built child table omitted `enum_layouts`, leaving both its inline
+/// overwrite release and its elaborated drop plans empty.
+#[test]
+fn gen_body_enum_payload_overwrite_and_abandonment_keep_release_authority() {
+    let pipeline = lower_checked(
+        r#"
+        enum Box { Full(string); Empty; }
+
+        fn control() {
+            var value: Box = Box::Full(string_concat("control-", "payload"));
+            value = Box::Empty;
+        }
+
+        fn main() {
+            let g = gen {
+                var value: Box = Box::Full(string_concat("generator-", "payload"));
+                yield 1;
+                value = Box::Empty;
+            };
+            for n in g { let _seen = n; }
+            control();
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "enum overwrite in generator and control must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let body = find_gen_body(&pipeline, "main");
+    let control = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "control")
+        .expect("ordinary control function must exist");
+    let has_enum_overwrite_release = |function: &RawMirFunction| {
+        function.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Drop {
+                        ty: hew_types::ResolvedTy::Named { name, .. },
+                        drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Enum)),
+                        ..
+                    } if name == "Box"
+                )
+            })
+        })
+    };
+    assert!(
+        has_enum_overwrite_release(control),
+        "ordinary control must emit a tagged release before overwriting Box"
+    );
+    assert!(
+        has_enum_overwrite_release(body),
+        "generator body must emit the same tagged release before overwriting Box"
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == body.name)
+        .expect("elaborated generator body must exist");
+    assert!(
+        elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, ExitPath::Yield { .. })
+                && plan.drops.iter().any(|drop| {
+                    matches!(
+                        (&drop.ty, drop.kind),
+                        (
+                            hew_types::ResolvedTy::Named { name, .. },
+                            DropKind::EnumInPlace
+                        ) if name == "Box"
+                    )
+                })
+        }),
+        "abandoning the generator at yield must release the live Box payload: {:?}",
+        elaborated.drop_plans
     );
 }
 
@@ -549,6 +641,288 @@ fn gen_fn_owned_capture_carries_clone_plan_without_stack_env_drop() {
             .all(|drop| drop.place != env.place),
         "the synthetic stack env shell must be consumed without a recursive drop"
     );
+}
+
+#[test]
+fn actor_receive_gen_owned_param_moves_into_environment() {
+    let pipeline = lower_checked(
+        r#"
+        actor Streamer {
+            receive gen fn emit(label: string, n: i64) -> i64 {
+                yield label.len() + n;
+            }
+        }
+        fn main() {
+            let streamer = spawn Streamer();
+            let _stream = streamer.emit("mailbox", 2);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let shell = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("receive-generator shell must exist");
+    let env = shell
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("receive-generator parameter captures must carry an env plan");
+    assert!(
+        matches!(
+            env.fields.as_slice(),
+            [
+                GeneratorEnvFieldPlan::OwnedMove(plan),
+                GeneratorEnvFieldPlan::TrivialCopy
+            ] if matches!(plan.root(), StateFieldCloneKind::String)
+        ),
+        "the mailbox-owned string must transfer while the scalar copies: {:?}",
+        env.fields
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ownership-boundary test pins the env plan and both raw and elaborated shell drop forms"
+)]
+fn actor_receive_gen_owned_record_param_relinquishes_shell_drop() {
+    let pipeline = lower_checked(
+        r#"
+        record Payload { label: string, data: bytes }
+        actor Streamer {
+            var state: string;
+            receive gen fn emit(payload: Payload, n: i64) -> i64 {
+                yield payload.label.len() + payload.data.len() + state.len() + n;
+            }
+        }
+        fn main() {
+            let streamer = spawn Streamer(state: "actor-state");
+            let payload = Payload {
+                label: "mailbox",
+                data: "bytes".to_bytes(),
+            };
+            let _stream = streamer.emit(payload, 2);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator record capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("receive-generator shell must exist");
+    let env = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("receive-generator record capture must carry an env plan");
+    assert_eq!(
+        env.fields
+            .iter()
+            .filter(|plan| matches!(plan, GeneratorEnvFieldPlan::TrivialCopy))
+            .count(),
+        1,
+        "the scalar capture must remain a bit-copy: {:?}",
+        env.fields
+    );
+    assert!(
+        env.fields.iter().any(|field| {
+            matches!(
+                field,
+                GeneratorEnvFieldPlan::OwnedMove(plan)
+                    if matches!(
+                        plan.root(),
+                        StateFieldCloneKind::UserRecord { name } if name == "Payload"
+                    )
+            )
+        }),
+        "the mailbox-owned record must transfer into the environment: {:?}",
+        env.fields
+    );
+    assert!(
+        env.fields.iter().any(|field| {
+            matches!(
+                field,
+                GeneratorEnvFieldPlan::Owned(plan)
+                    if matches!(plan.root(), StateFieldCloneKind::String)
+            )
+        }),
+        "the actor-state string must remain an independent clone snapshot: {:?}",
+        env.fields
+    );
+    assert!(
+        raw.blocks.iter().all(|block| {
+            block.instructions.iter().all(|instr| {
+                !matches!(
+                    instr,
+                    Instr::ValueSnapshotDrop {
+                        ty: hew_types::ResolvedTy::Named { name, .. },
+                        ..
+                    } if name == "Payload"
+                )
+            })
+        }),
+        "the moved record must not retain a prepared-carrier snapshot drop in the shell"
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("elaborated receive-generator shell must exist");
+    assert!(
+        elaborated
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| {
+                !(matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Payload")
+                    && matches!(drop.kind, DropKind::RecordInPlace))
+            }),
+        "the environment owns the moved record; the shell must not retain a \
+         competing RecordInPlace drop: {:?}",
+        elaborated.drop_plans
+    );
+}
+
+#[test]
+fn actor_receive_gen_indirect_enum_param_relinquishes_shell_drop() {
+    let pipeline = lower_checked(
+        r#"
+        indirect enum Tree { Leaf(string); Node(Tree, Tree); }
+        actor Streamer {
+            receive gen fn emit(tree: Tree) -> i64 {
+                match tree {
+                    Leaf(label) => yield label.len(),
+                    Node(_, _) => yield 2,
+                }
+            }
+        }
+        fn main() {
+            let streamer = spawn Streamer();
+            let tree = Node(Leaf("left"), Leaf("right"));
+            let _stream = streamer.emit(tree);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator indirect-enum capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("receive-generator shell must exist");
+    let env = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("receive-generator indirect enum must carry an env plan");
+    assert!(
+        matches!(
+            env.fields.as_slice(),
+            [GeneratorEnvFieldPlan::OwnedMove(plan)]
+                if matches!(plan.root(), StateFieldCloneKind::Enum { name } if name == "Tree")
+        ),
+        "the mailbox-owned indirect enum must transfer into the environment: {:?}",
+        env.fields
+    );
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("elaborated receive-generator shell must exist");
+    assert!(
+        elaborated
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| {
+                !(matches!(&drop.ty, hew_types::ResolvedTy::Named { name, .. } if name == "Tree")
+                    && matches!(drop.kind, DropKind::IndirectEnum))
+            }),
+        "the environment owns the moved indirect enum; the shell must not retain \
+         a competing drop: {:?}",
+        elaborated.drop_plans
+    );
+}
+
+#[test]
+fn cloned_indirect_enum_generator_capture_fails_closed() {
+    for source in [
+        r"
+        indirect enum Tree { Leaf(i64); Node(Tree, Tree); }
+        gen fn walk(tree: Tree) -> i64 {
+            yield 1;
+            match tree {
+                Leaf(value) => yield value,
+                Node(_, _) => yield 2,
+            }
+        }
+        fn main() {
+            let tree = Node(Leaf(1), Leaf(2));
+            let _stream = walk(tree);
+        }
+        ",
+        r"
+        indirect enum Tree { Leaf(i64); Node(Tree, Tree); }
+        fn main() {
+            let tree = Node(Leaf(1), Leaf(2));
+            let _stream = gen {
+                yield 1;
+                match tree {
+                    Leaf(value) => yield value,
+                    Node(_, _) => yield 2,
+                }
+            };
+        }
+        ",
+    ] {
+        let pipeline = lower_checked(source);
+        assert_eq!(
+            pipeline.diagnostics.len(),
+            1,
+            "an indirect-enum snapshot capture must emit one root diagnostic: {:#?}",
+            pipeline.diagnostics
+        );
+        assert!(
+            matches!(
+                &pipeline.diagnostics[0].kind,
+                MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct.contains("cloned capture of indirect enum")
+            ),
+            "an indirect-enum snapshot must fail closed before codegen: {:#?}",
+            pipeline.diagnostics
+        );
+        assert!(
+            pipeline.diagnostics[0]
+                .note
+                .contains("no total pointer-backed indirect-enum clone helper"),
+            "the diagnostic must identify the missing clone capability: {:#?}",
+            pipeline.diagnostics[0]
+        );
+    }
 }
 
 #[test]

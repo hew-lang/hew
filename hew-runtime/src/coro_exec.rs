@@ -365,10 +365,11 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
 /// `hew_await_cancel_complete` + `hew_await_cancel_free`; re-running the abandon
 /// cleanup would double-free that registration (surfaced under
 /// `MallocGuardEdges` + the `await cancel release on released registration`
-/// debug-assert). Frame-owned Hew heap values are arena-backed and reclaimed by
-/// the crash path's `hew_arena_reset`, so freeing only the frame box is the
-/// complete, crash-correct reclamation — matching the fresh-dispatch crash
-/// branch, which likewise abandons in-flight frame state and resets the arena.
+/// debug-assert). Before this raw free, reply-swap crash unwind invokes the
+/// resumed root's registered typed field drops exactly once; the later
+/// `hew_arena_reset` reclaims remaining arena-backed state. This function
+/// therefore owns only the frame allocation, matching the fresh-dispatch
+/// branch's typed-unwind → raw-drain ordering.
 ///
 /// This is DISTINCT from [`destroy_parked`], which REFUSES a `Resuming` tag to
 /// protect a LIVE concurrent resume (FG2 — see
@@ -483,7 +484,10 @@ pub(crate) mod test_support {
     //! `MallocScribble`/`MallocGuardEdges` surface as a fault. An atomic
     //! increment on a stack counter would never catch this class of regression.
 
+    use crate::cont;
     use std::ffi::c_void;
+    use std::ops::{Deref, DerefMut};
+    use std::ptr::NonNull;
     use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
     /// `#[repr(C)]` prefix matching the `CoroFramePrefix` `cont.rs` drives:
@@ -564,12 +568,129 @@ pub(crate) mod test_support {
         f.destroyed.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Owning test handle for a scratch continuation frame.
+    ///
+    /// The executor's continuation ABI may inspect the private allocator
+    /// header before the public frame pointer. A plain `Box<ScratchFrame>` is
+    /// therefore not a valid handle: cross-worker resume would read outside
+    /// that allocation before calling the outline. This owner routes every
+    /// synthetic frame through the same tracked, 16-byte-aligned allocator and
+    /// ramp handoff as generated coroutines, while retaining the payload for
+    /// post-destroy accounting assertions.
+    pub struct ScratchFrameOwner {
+        frame: NonNull<ScratchFrame>,
+    }
+
+    impl ScratchFrameOwner {
+        pub fn new(suspends_before_done: u32) -> Self {
+            // SAFETY: the tracked allocator accepts the exact payload size and
+            // returns storage released by this owner's Drop implementation.
+            let raw = unsafe {
+                cont::hew_cont_frame_alloc_tracked(std::mem::size_of::<ScratchFrame>() as u64)
+            }
+            .cast::<ScratchFrame>();
+            let frame = NonNull::new(raw).expect("scratch continuation frame allocation");
+            // SAFETY: frame points to aligned, writable ScratchFrame-sized
+            // storage and is not yet initialized.
+            unsafe {
+                frame
+                    .as_ptr()
+                    .write(ScratchFrame::new(suspends_before_done));
+            }
+            // Model the generated ramp's normal return: ownership leaves this
+            // thread's active-ramp stack and is parked for any worker to resume.
+            cont::hew_cont_frame_handoff(frame.as_ptr().cast::<c_void>());
+            Self { frame }
+        }
+
+        pub fn handle(&self) -> *mut c_void {
+            self.frame.as_ptr().cast::<c_void>()
+        }
+
+        /// Transfer the tracked allocation to an actor/executor while keeping
+        /// the inspection-only scratch destroy outline (which does not free the
+        /// outer frame). The test must later reconstruct exactly one owner with
+        /// [`Self::from_handle`].
+        pub fn into_handle(self) -> *mut c_void {
+            let handle = self.handle();
+            std::mem::forget(self);
+            handle
+        }
+
+        /// Reclaim ownership previously transferred by [`Self::into_handle`].
+        ///
+        /// # Safety
+        ///
+        /// `handle` must come from `ScratchFrameOwner::into_handle`, must still
+        /// name the live outer frame allocation, and must have no other owner.
+        pub unsafe fn from_handle(handle: *mut c_void) -> Self {
+            Self {
+                frame: NonNull::new(handle.cast::<ScratchFrame>())
+                    .expect("non-null scratch continuation handle"),
+            }
+        }
+    }
+
+    impl Deref for ScratchFrameOwner {
+        type Target = ScratchFrame;
+
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: the owner keeps the allocator payload live until Drop.
+            unsafe { self.frame.as_ref() }
+        }
+    }
+
+    impl DerefMut for ScratchFrameOwner {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            // SAFETY: the test owner has unique mutable access before handoff
+            // to any worker thread.
+            unsafe { self.frame.as_mut() }
+        }
+    }
+
+    impl Drop for ScratchFrameOwner {
+        fn drop(&mut self) {
+            // SAFETY: this owner is the sole allocation owner after all test
+            // worker threads join. Run the Rust safety-net Drop, then release
+            // the exact tracked frame allocation.
+            unsafe {
+                self.frame.as_ptr().drop_in_place();
+                cont::hew_cont_frame_free(self.handle());
+            }
+        }
+    }
+
+    /// Destroy outline for a scratch frame whose raw handle is owned by the
+    /// executor rather than by a `Box<ScratchFrame>` retained in the test.
+    ///
+    /// Real `CoroSplit` destroy outlines run their cleanup and then free the
+    /// coroutine frame allocation. Most executor unit tests retain a
+    /// [`ScratchFrameOwner`] so they can inspect `destroyed` after cleanup, and
+    /// therefore use [`scratch_destroy`] directly. Dispatch tests cannot retain
+    /// that owner:
+    /// their trampoline hands the raw handle to the scheduler exactly as
+    /// production code does. Those handles use this outline so the mock also
+    /// models `CoroSplit`'s final frame-free edge instead of leaking the outer
+    /// `ScratchFrame` allocation.
+    unsafe extern "C" fn scratch_destroy_and_free(frame: *mut c_void) {
+        // SAFETY: `frame` is the live executor-owned ScratchFrame and this is
+        // its sole destroy call under the executor's FG1 transition.
+        unsafe { scratch_destroy(frame) };
+        // SAFETY: `into_executor_owned_handle` initialized a ScratchFrame in an
+        // exact tracked allocator payload. Run its now-no-op safety-net Drop,
+        // then symmetrically free the frame allocation.
+        unsafe {
+            frame.cast::<ScratchFrame>().drop_in_place();
+            cont::hew_cont_frame_free(frame);
+        }
+    }
+
     impl ScratchFrame {
         /// A scratch frame that completes after `suspends_before_done` resumes.
         ///
-        /// The caller boxes this so the handle pointer has a stable heap
-        /// address across resumes (the resume outline mutates the frame's
-        /// resume slot through the raw handle).
+        /// The caller initializes this in a [`ScratchFrameOwner`] so the handle
+        /// has the allocator header, alignment, and stable address required by
+        /// the continuation ABI.
         pub fn new(suspends_before_done: u32) -> Self {
             ScratchFrame {
                 resume: Some(scratch_resume),
@@ -579,6 +700,30 @@ pub(crate) mod test_support {
                 destroyed: AtomicU32::new(0),
                 heap_guard: AtomicPtr::new(Box::into_raw(Box::new(0u64))),
             }
+        }
+
+        /// Allocate a scratch frame whose raw handle is transferred to the
+        /// continuation executor.
+        ///
+        /// Unlike a [`ScratchFrameOwner`] retained by a unit test for
+        /// post-destroy assertions, this handle has no outside owner. Its destroy outline
+        /// therefore frees both the frame-owned guard and the outer frame,
+        /// matching the ownership contract of a real `CoroSplit` frame.
+        pub fn into_executor_owned_handle(suspends_before_done: u32) -> *mut c_void {
+            // SAFETY: allocate the exact frame payload through the tracked
+            // coroutine allocator used by generated ramps.
+            let frame =
+                unsafe { cont::hew_cont_frame_alloc_tracked(std::mem::size_of::<Self>() as u64) }
+                    .cast::<Self>();
+            assert!(!frame.is_null(), "scratch continuation frame allocation");
+            // SAFETY: frame is aligned, writable, and exactly Self-sized.
+            unsafe {
+                frame.write(Self::new(suspends_before_done));
+                (*frame).destroy = Some(scratch_destroy_and_free);
+            }
+            let handle = frame.cast::<c_void>();
+            cont::hew_cont_frame_handoff(handle);
+            handle
         }
     }
 
@@ -600,7 +745,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::ScratchFrame;
+    use super::test_support::ScratchFrameOwner;
     use super::*;
     use crate::internal::types::HewActorState;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
@@ -652,6 +797,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         })
     }
 
@@ -663,8 +810,8 @@ mod tests {
     #[test]
     fn park_carries_resume_discriminator() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(1);
+        let handle = frame.handle();
 
         // Before park: discriminator absent.
         assert!(a.suspended_cont.load(Ordering::Acquire).is_null());
@@ -699,8 +846,8 @@ mod tests {
     #[test]
     fn resume_round_trip_pending_then_ready_then_destroy_once() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(2)); // done on the 2nd resume
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(2); // done on the 2nd resume
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -739,8 +886,8 @@ mod tests {
     #[test]
     fn fg1_destroy_after_destroy_refuses() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(1);
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -770,8 +917,8 @@ mod tests {
     #[test]
     fn fg2_resume_after_ready_refuses() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(1);
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -801,8 +948,8 @@ mod tests {
     #[test]
     fn fg2_destroy_refused_while_resuming() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -836,8 +983,8 @@ mod tests {
     #[test]
     fn fg3_wake_in_park_window_is_not_lost() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(1);
+        let handle = frame.handle();
 
         // Begin park (phase 1) — wake fires HERE, before finish_park.
         assert!(begin_park(&a).is_ok());
@@ -864,8 +1011,8 @@ mod tests {
     #[test]
     fn fg4_resume_after_destroy_reads_null_slot_and_refuses() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(1);
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -900,8 +1047,8 @@ mod tests {
         let a = exec_test_actor();
 
         // ── First await lifecycle: park → resume(Ready) → destroy. ──
-        let mut frame1 = Box::new(ScratchFrame::new(1));
-        let handle1 = (&raw mut *frame1).cast::<c_void>();
+        let frame1 = ScratchFrameOwner::new(1);
+        let handle1 = frame1.handle();
         assert!(begin_park(&a).is_ok());
         // SAFETY: frame1 outlives this scope.
         unsafe { finish_park(&a, handle1) };
@@ -922,8 +1069,8 @@ mod tests {
         assert!(!has_live_parked_cont(&a));
 
         // ── Second await lifecycle: park → resume(Ready) → destroy. ──
-        let mut frame2 = Box::new(ScratchFrame::new(1));
-        let handle2 = (&raw mut *frame2).cast::<c_void>();
+        let frame2 = ScratchFrameOwner::new(1);
+        let handle2 = frame2.handle();
         assert!(
             begin_park(&a).is_ok(),
             "after re_arm the actor must park a SECOND continuation"
@@ -953,8 +1100,8 @@ mod tests {
     #[test]
     fn p1b_re_arm_refuses_with_a_live_parked_handle() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: frame outlives this scope.
@@ -994,8 +1141,8 @@ mod tests {
     #[test]
     fn fg1_abandon_parked_continuation_destroys_once() {
         let a = exec_test_actor();
-        let mut frame = Box::new(ScratchFrame::new(5)); // never completes here
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = ScratchFrameOwner::new(5); // never completes here
+        let handle = frame.handle();
 
         assert!(begin_park(&a).is_ok());
         // SAFETY: scratch frame outlives this scope.
@@ -1030,7 +1177,7 @@ mod tests {
 /// different worker than the one that parked it.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod forced_ordering_probe {
-    use super::test_support::ScratchFrame;
+    use super::test_support::ScratchFrameOwner;
     use super::*;
     use crate::internal::types::HewActorState;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
@@ -1091,6 +1238,8 @@ mod forced_ordering_probe {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         })
     }
 
@@ -1104,8 +1253,8 @@ mod forced_ordering_probe {
         const ROUNDS: usize = 500;
         for _ in 0..ROUNDS {
             let actor = probe_actor();
-            let mut frame = Box::new(ScratchFrame::new(3)); // stays Pending
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = ScratchFrameOwner::new(3); // stays Pending
+            let handle = frame.handle();
 
             assert!(begin_park(&actor).is_ok());
             // SAFETY: scratch frame outlives both threads (joined below).
@@ -1185,8 +1334,17 @@ mod forced_ordering_probe {
         const ROUNDS: usize = 500;
         for _ in 0..ROUNDS {
             let actor = probe_actor();
-            let mut frame = Box::new(ScratchFrame::new(1)); // Ready on resume #1
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = ScratchFrameOwner::new(1); // Ready on resume #1
+            let handle = frame.handle();
+            assert!(
+                cont::frame_has_tracked_header_for_test(handle),
+                "forced-ordering handles must carry the header hew_cont_resume probes"
+            );
+            assert_eq!(
+                handle as usize % cont::frame_alignment_for_test(),
+                0,
+                "forced-ordering handles must match production frame alignment"
+            );
 
             // Park on THIS thread.
             assert!(begin_park(&actor).is_ok());
@@ -1225,8 +1383,8 @@ mod forced_ordering_probe {
         let mut observed = 0usize;
         for _ in 0..ROUNDS {
             let actor = probe_actor();
-            let mut frame = Box::new(ScratchFrame::new(2));
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = ScratchFrameOwner::new(2);
+            let handle = frame.handle();
 
             // Phase 1.
             assert!(begin_park(&actor).is_ok());
@@ -1300,8 +1458,8 @@ mod forced_ordering_probe {
             // suspends_before_done = 5: the frame never reaches Done in the
             // race window, so the resume always settles back to Parked (Pending)
             // and the destroy must find the tag NOT Resuming when it finally wins.
-            let mut frame = Box::new(ScratchFrame::new(5));
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = ScratchFrameOwner::new(5);
+            let handle = frame.handle();
 
             assert!(begin_park(&actor).is_ok());
             // SAFETY: scratch frame outlives both threads (joined below).

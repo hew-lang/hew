@@ -12,10 +12,6 @@
 // no actor exit -> main fallback 99.
 import std::net::{Listener};
 
-extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
-}
-
 actor Connector {
     receive fn go(port: i32) {
         sleep(100ms);
@@ -28,9 +24,7 @@ actor Acceptor {
     let connector: LocalPid<Connector>;
     receive fn run() -> i64 {
         let ln = net.listen("127.0.0.1:0");
-        let port = unsafe {
-            hew_tcp_listener_local_port(ln)
-        };
+        let port = ln.local_port() as i32;
         connector.go(port);
         let code = match await ln.accept() | after 5s {
             Ok(_conn) => 42,

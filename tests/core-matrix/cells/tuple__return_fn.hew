@@ -1,0 +1,10 @@
+fn make() -> (i64, string) {
+    let m: (i64, string) = (1, "x0");
+    m
+}
+
+fn main() {
+    let x = make();
+    let (x_a, x_b) = x;
+    println(f"{x_a} {x_b}");
+}

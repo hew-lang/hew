@@ -7,6 +7,7 @@
 
 pub mod closure_env;
 pub mod dataflow;
+pub mod drop_obligation;
 pub mod dump;
 pub mod dyn_vtable_registry;
 pub mod faint;
@@ -55,26 +56,30 @@ pub use hew_types::short_name;
 pub use model::{
     classify_extern_string_ownership, container_ingress_is_copy_in, is_indirect_enum,
     machine_enum_view, machine_enum_views, mangle_dyn_drop_in_place_symbol,
-    mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, ty_contains_closure_value,
-    ty_contains_heap_owning, ty_contains_unclonable_opaque,
-    ty_contains_unclonable_opaque_with_names, ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir,
-    validate_context_markers, ActorHandlerKind, ActorHandlerLayout, ActorLayout,
-    ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind, BorrowKind, CaptureKind,
-    CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
-    ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, CooperateKind, CooperateSite,
-    CoroutineFacts, CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan,
+    mangle_dyn_thunk_symbol, mangle_dyn_vtable_symbol, ty_carries_drop_obligation,
+    ty_carries_drop_obligation_mir, ty_contains_closure_value, ty_contains_heap_owning,
+    ty_contains_unclonable_opaque, ty_contains_unclonable_opaque_with_names, ty_drop_obligation,
+    ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir, validate_context_markers, ActorHandlerKind,
+    ActorHandlerLayout, ActorLayout, ActorStateLoadMode, ActorStateStoreHandoff, AggregateOwner,
+    BasicBlock, BlockKind, BorrowKind, CallAuthority, CaptureKind, CheckedMirFunction,
+    ChildInitArg, CloseObligationRegistry, ClosureEnvAllocation, ClosureEnvFieldInit,
+    ClosureEnvFieldOwnership, ClosureEnvMode, ClosurePairVecKind, CmpPred,
+    CollectionLayoutProbeKind, CompilerCallKind, CooperateKind, CooperateSite, CoroutineFacts,
+    CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropObligation, DropPlan,
     DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
     ExternDecl, ExternStringOwnership, FieldAddr, FieldOffset, FloatWidth, FunctionCallConv,
-    GeneratorEnvFieldPlan, GeneratorEnvPlan, HeapOwnership, HeapOwnershipLayouts, Instr,
-    IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture,
-    LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue,
-    MirDiagnostic, MirDiagnosticKind, MirHeapLayouts, MirLint, MirScope, MirStatement,
-    ModuleCapabilities, Place, PointerWidth, PolymorphicMirFunction, PoolCount,
-    PreparedCarrierBoundary, ProjectedPayloadRejectReason, RawMirFunction, RecordLayout,
-    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
-    SpawnEnvFieldOwnership, StableActorRole, Strategy, StringRetainCondition,
-    SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator,
-    ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
+    GeneratorEnvFieldPlan, GeneratorEnvPlan, HeapOwnership, HeapOwnershipLayouts,
+    IdentityAggregateKind, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
+    LambdaActorShape, LambdaCapture, LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout,
+    MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirHeapLayouts, MirLint,
+    MirScope, MirStatement, ModuleCapabilities, ParamBoundaryFact, ParamBoundaryMode,
+    ParamCrashCleanupKind, ParamLoanStorage, ParamRepresentationEffect, Place, PointerWidth,
+    PolymorphicMirFunction, PoolCount, PreparedCarrierBoundary, ProjectedPayloadRejectReason,
+    RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind,
+    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy,
+    StringRetainCondition, SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    GEN_BODY_PREFIX,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,
@@ -83,11 +88,9 @@ pub use ownership::{
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
-    classify_actor_state_fields, classify_actor_state_fields_with_enum_layouts,
-    classify_actor_state_fields_with_opaque_handles,
-    classify_actor_state_fields_with_resource_handles, classify_owned_string_record_fields,
-    classify_state_field, classify_state_field_full, classify_state_field_with_enum_layouts,
-    classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
-    mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, StateFieldCloneKind,
+    classify_actor_state_fields_with_lifecycle_registry, classify_owned_string_record_fields,
+    classify_state_field_with_lifecycle_registry, mangle_actor_state_clone_fn,
+    mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, ResourceCloseAuthority,
+    StateFieldCloneKind,
 };
 pub use thunk_requirements::ThunkSynthesisRequirements;

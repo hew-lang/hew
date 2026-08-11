@@ -1,17 +1,32 @@
 # hew-capability-gen
 
-Generator scaffolding for the Hew WASM capability manifest.
+Typed generator for the repository-root
+`wasm-capability-manifest.toml` authority.
 
-Reads `wasm-capability-manifest.toml` at the repository root — the source of
-truth for which Hew features are supported on each WASM target tier — and is
-intended to emit, in subsequent stages:
+The manifest is the sole editable source of checker Reject/Warn feature
+identity, native-only stdlib module classification, stable Reject/Warn and
+backlog capability IDs, and curated playground WASI exclusions. The generator emits:
 
-- the `WasmUnsupportedFeature` enum consumed by the type checker,
-- the `_WASM_CAPABILITY_*` CMake lists consumed by the codegen e2e harness,
-- the `WASI_CAPABILITY` block consumed by the playground manifest generator,
-- a rendered copy of `docs/wasm-capability-matrix.md`.
+- `hew-types/src/wasm_capabilities_generated.rs`, consumed by the checker,
+  sandbox module gate, and codegen exclusion diagnostics;
+- `examples/playground/wasm-capabilities.json`, consumed by
+  `scripts/gen-playground-manifest.py`;
+- the feature-policy and current WASI summary tables in
+  `docs/wasm-capability-matrix.md`. The latter combines typed unsupported rows
+  with runnable truth from `examples/playground/manifest.json`.
 
-This initial revision only exposes the manifest shape and a row-count
-integration test that locks the TOML and the prose matrix into cardinality
-lock-step. Byte-exact rendering and the drift gate follow in subsequent
-changes; until then, every edit to either file must keep both in step.
+Generate or verify the checked-in consumers with:
+
+```sh
+cargo run -p hew-capability-gen
+cargo run -p hew-capability-gen -- --check
+```
+
+`--check` is byte-exact. The generator tests mutate every output plus omitted,
+unknown, duplicate, and disposition-mismatched checker variants to prove the
+green gate can fail.
+
+Only non-runnable playground decisions are declarative. An example absent from
+`[[playground_wasi]]` is not accepted merely because the manifest says pass;
+`hew-cli/tests/wasi_run_e2e.rs` must compile it, execute it under WASI, and
+compare its real output.

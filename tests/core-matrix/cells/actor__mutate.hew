@@ -1,0 +1,20 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+fn main() {
+    let e = spawn Echo(seen: 0);
+    match await e.take(5) {
+        Ok(v) => println(f"echo {v}"),
+        Err(_) => println("err"),
+    }
+    match await e.take(5) {
+        Ok(v) => println(f"echo {v}"),
+        Err(_) => println("err"),
+    }
+}

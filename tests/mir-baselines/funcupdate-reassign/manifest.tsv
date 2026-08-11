@@ -1,6 +1,8 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: 82a23b19b1a824a592c739a685c527d2c7efdab1
+# generating-revision: faaa17012
+# generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
+#   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
 #   regenerated to carry the A240 string copy-on-write drop plan — string shares
 #   are now Read/retain, so the source binding keeps a scope-exit drop and every
@@ -52,13 +54,52 @@
 #   funcupdate_owned_field_drop_test.elab.mir shifted, purely additively: 13
 #   `(none)`/terminal slots gain the already-declared record owner drop; no CFG,
 #   terminator, statement, value, or other fixture changes.
+#   Refreshed at the RC1 composed semantic tip for VecIter's corrected `next`
+#   contract. Only var_record_reassign_ownership_test.elab.mir changed: the
+#   `for x in values` checksum now preserves the `Option<i64>` produced by
+#   `hew_vec_get_clone`, consumes it at the match boundary, and carries the
+#   resulting explicit success/none CFG. The former baseline's `eval` nodes
+#   treated that call as unit/direct-i64, so it could not prove the iterator
+#   value path. This is a lowering/type-resolution correction, not an ownership
+#   relaxation: the changed chunk still has no release entries, and the
+#   fixture's reassign/actor Vec exactness tests retain the live owner proof.
+#   The follow-up guarded VecIter cleanup completes that same correction:
+#   `VecAcc__recv__checksum` now releases its `_7` iterator cursor on each of
+#   nine panic/cancel exits through the shared `_6` ownership guard. Its normal
+#   exhausted/return path keeps the existing iterator-consume handoff. No other
+#   function in var_record_reassign_ownership_test.elab.mir changed.
+#   Refreshed after projected-carrier borrowing forwards restored the leaf
+#   release authority. Only the imported `string$join` chunk in
+#   funcupdate_owned_field_drop_test.elab.mir changed: its `result = parts[0]`
+#   binder is forwarded through borrowing `hew_string_concat` calls, while the
+#   Vec carrier slot is neutralized. Five panic/cancel exit plans now release
+#   that binder. The successful overwrite already releases the old generation
+#   inline, and the successful return moves the live generation without a drop,
+#   so these additions are mutually exclusive rather than competing releases.
+#   `vec_string_projection_forward_has_one_release_per_exit` pins exactly one
+#   release per exceptional edge, one inline overwrite release, and none on the
+#   return edge.
+#   Refreshed at the rc1 identity-substrate stage E, together with the ll-oracle
+#   and checked-mir goldens (the RC branch's committed goldens had gone stale
+#   under the whole RC stack; every lane since gated capture-vs-capture, and
+#   this is the one regen window). The delta here is a single class: a
+#   producing call now publishes `bind __hew_produced_value` at the call site
+#   rather than only where a release was already scheduled, so `(none)`
+#   scope-exit slots become named produced-value binds. Measured, not asserted:
+#   the four baselines are byte-identical under this harness's own
+#   normalization between the stage-E base and tip, so no part of this refresh
+#   comes from the identity work — it is pre-existing RC drift the stale
+#   baselines were hiding.
+#
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
-# normalization: two run-variance normalizations — (1) the dump's function
+# normalization: three run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both
 #   sides into per-function chunks (column-0 `fn ` lines) and sorts by
 #   signature line; (2) within each chunk, BindingId/SiteId values are
-#   renumbered in first-occurrence order. Within-chunk content order is
-#   preserved, so a reordered drop inside a chunk remains detectable.
+#   renumbered in first-occurrence order; (3) trailing newline bytes are
+#   discarded because the emitter may append one final blank line. Within-chunk
+#   content order is preserved, so a reordered drop inside a chunk remains
+#   detectable.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

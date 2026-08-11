@@ -21,6 +21,8 @@
 //! malformed phi would fail verify here.
 
 use std::path::Path;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_hir::{lower_program, ResolutionCtx};
@@ -358,6 +360,203 @@ fn main() -> i64 {
     }
 }
 
+#[cfg(unix)]
+static GENERATED_STRING_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(unix)]
+unsafe extern "C" fn count_generated_string_drop(value: *mut std::ffi::c_char) {
+    GENERATED_STRING_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: the generated message callback passes the live Hew String owner
+    // embedded in the queued payload. This shim observes, then delegates to,
+    // the production destructor the callback was generated to invoke.
+    unsafe { hew_runtime::string::hew_string_drop(value) };
+}
+
+#[cfg(unix)]
+fn generated_string_drop_count() -> usize {
+    GENERATED_STRING_DROP_COUNT.load(Ordering::SeqCst)
+}
+
+/// Composition oracle for generated owning-message cleanup on terminal ask.
+///
+/// The runtime half deliberately owns no worker: a real ask node containing a
+/// heap-owning Hew `string` is queued while its actor is `Idle`, then the
+/// production stop path wins `Idle -> Stopped` before dispatch. The callback
+/// installed on that actor is not a hand-written stand-in: MCJIT executes
+/// codegen's actual `__hew_message_drop_Inbox` function. Its call to
+/// `hew_string_drop` is forwarded through a counted shim, making a leak (zero
+/// calls) and a double-drop (two calls, normally also allocator failure)
+/// independently visible.
+#[test]
+#[cfg(unix)]
+fn terminal_ask_runs_generated_owning_payload_drop_once_and_wakes_waiter() {
+    use hew_runtime::internal::types::{HewActorState, HewError, HEW_REPLY_FAIL_ACTOR_STOPPED};
+    use inkwell::context::Context;
+    use inkwell::memory_buffer::MemoryBuffer;
+    use inkwell::targets::{InitializationConfig, Target};
+    use inkwell::OptimizationLevel;
+
+    GENERATED_STRING_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    let source = r#"
+actor Inbox {
+    receive fn hold(value: string) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let pipeline = pipeline_from_source(source);
+    let msg_type = pipeline
+        .actor_layouts
+        .iter()
+        .find(|layout| layout.name == "Inbox")
+        .and_then(|layout| {
+            layout
+                .handlers
+                .iter()
+                .find(|handler| handler.name == "hold")
+        })
+        .map(|handler| handler.msg_type)
+        .expect("Inbox.hold must have a protocol-issued message id");
+    let tmp = tempfile::tempdir().expect("create terminal-ask composition scratch dir");
+    let options = EmitOptions {
+        module_name: "terminal_ask_owning_payload",
+        out_dir: tmp.path(),
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: None,
+    };
+    let artefacts = emit_module(&pipeline, &options).expect("emit composition module");
+    let ll_path = artefacts
+        .ll_path
+        .as_deref()
+        .expect("composition module must emit LLVM IR");
+
+    Target::initialize_native(&InitializationConfig::default()).expect("initialize native target");
+    let context = Context::create();
+    let buffer = MemoryBuffer::create_from_file(ll_path).expect("read composition LLVM IR");
+    let module = context
+        .create_module_from_ir(buffer)
+        .expect("parse composition LLVM IR");
+    if let Some(constructors) = module.get_global("llvm.global_ctors") {
+        // This oracle executes one internal callback, not module startup.
+        // Removing the constructor keeps unrelated codec-registration runtime
+        // symbols outside the deliberately minimal MCJIT mapping surface.
+        // SAFETY: the parsed module is exclusively owned here, before JIT
+        // engine creation, and no instruction refers to this appending global.
+        unsafe { constructors.delete() };
+    }
+    let string_drop_decl = module
+        .get_function("hew_string_drop")
+        .expect("generated callback must declare hew_string_drop");
+    // Turn the callback's runtime declaration into a JIT-local forwarding
+    // definition. Embedding the host address avoids relying on the process
+    // dynamic-symbol table (Rust test binaries do not export this shim), while
+    // preserving the generated callback's exact call and payload walk.
+    let string_drop_entry = context.append_basic_block(string_drop_decl, "host_observer");
+    let builder = context.create_builder();
+    builder.position_at_end(string_drop_entry);
+    let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+    let shim_address = context
+        .i64_type()
+        .const_int(
+            count_generated_string_drop as *const () as usize as u64,
+            false,
+        )
+        .const_to_pointer(ptr_ty);
+    let string_drop_ty = string_drop_decl.get_type();
+    builder
+        .build_indirect_call(
+            string_drop_ty,
+            shim_address,
+            &[string_drop_decl
+                .get_first_param()
+                .expect("string drop parameter")
+                .into()],
+            "observe_string_drop",
+        )
+        .expect("build string drop observer call");
+    builder
+        .build_return(None)
+        .expect("return from string drop observer");
+    module
+        .verify()
+        .expect("composition module must remain valid after installing the observer");
+    let generated_drop_fn = module
+        .get_function("__hew_message_drop_Inbox")
+        .expect("actor codegen must emit the typed message drop callback");
+    generated_drop_fn.set_linkage(inkwell::module::Linkage::External);
+    let generated_drop_helper = module
+        .get_function(&format!("__hew_message_drop_Inbox_{msg_type}"))
+        .expect("actor codegen must emit the typed payload drop helper");
+    generated_drop_helper.set_linkage(inkwell::module::Linkage::External);
+
+    let engine = module
+        .create_jit_execution_engine(OptimizationLevel::None)
+        .expect("create composition JIT");
+    let callback = unsafe {
+        engine.get_function::<hew_runtime::mailbox::HewMessageDropFn>("__hew_message_drop_Inbox")
+    }
+    .expect("resolve generated message drop callback");
+    // SAFETY: codegen emits this named function with the HewMessageDropFn ABI,
+    // and `engine` remains live through the runtime call.
+    let generated_drop = unsafe { callback.as_raw() };
+
+    // A header-aware, heap-owning Hew String. The payload is its one-field
+    // generated carrier; successful ask submission transfers that owner.
+    let owned = unsafe { hew_runtime::string::hew_string_from_char(i32::from(b'x')) };
+    assert!(!owned.is_null(), "allocate owning String payload");
+    let mut payload = owned;
+
+    // SAFETY: `payload` exactly matches `Inbox.hold(string)`'s generated
+    // one-pointer message layout. Successful submission transfers `owned`.
+    let report = unsafe {
+        hew_runtime::actor::composition_test_support::terminalize_queued_ask(
+            generated_drop,
+            msg_type,
+            (&raw mut payload).cast(),
+            std::mem::size_of_val(&payload),
+            generated_string_drop_count,
+        )
+    };
+
+    assert_eq!(report.send_result, HewError::Ok as i32);
+    assert_eq!(report.queued_before_stop, 1, "ask must be queued");
+    assert_eq!(
+        report.payload_drops_before_stop, 0,
+        "submission must transfer, not prematurely destroy, the payload owner"
+    );
+    assert_eq!(
+        report.actor_state,
+        HewActorState::Stopped as i32,
+        "terminalization must win before dispatch"
+    );
+    assert!(
+        report.wait_returned_null,
+        "terminal reclaim must wake the ask waiter"
+    );
+    assert_eq!(
+        report.failure_kind, HEW_REPLY_FAIL_ACTOR_STOPPED,
+        "waiter must classify the terminal wake as ActorStopped"
+    );
+    assert_eq!(
+        report.queued_after_stop, 0,
+        "terminal reclaim must retire the exact ask node"
+    );
+    assert_eq!(
+        GENERATED_STRING_DROP_COUNT.load(Ordering::SeqCst),
+        1,
+        "generated payload callback must release the owning String exactly once"
+    );
+}
+
 /// A non-String live-borrow payload cannot yet be retained for re-send.
 ///
 /// Copy mode still owns the Vec and may transfer it to the next mailbox, but a
@@ -471,6 +670,80 @@ fn main() -> i64 {
         body.contains("declare ptr @hew_string_clone(ptr)")
             || ll.contains("declare ptr @hew_string_clone(ptr)"),
         "missing extern declaration of hew_string_clone; IR:\n{ll}"
+    );
+
+    let begin = body
+        .find("call i1 @hew_dispatch_state_cleanup_begin_replace")
+        .unwrap_or_else(|| panic!("state replacement must enter its fatal phase; Body:\n{body}"));
+    let clone = body
+        .find("call ptr @hew_string_clone")
+        .expect("borrow-gated replacement clone");
+    let materialize = body
+        .find("store ptr %field_store_owner, ptr %state_f0_replacement")
+        .expect("actual replacement materialization");
+    let old_release = body
+        .find("call void @hew_string_drop")
+        .expect("old actor-state String release");
+    let no_source_prepare = body
+        .find("call void @hew_dispatch_state_cleanup_prepare")
+        .expect("no-source preparation branch");
+    let live_store = body
+        .lines()
+        .find(|line| line.contains("store ptr %field_store_owner, ptr %actor_state_field_0_ptr"))
+        .and_then(|line| body.find(line))
+        .unwrap_or_else(|| panic!("missing final live state store; Body:\n{body}"));
+    assert!(
+        begin < clone
+            && clone < materialize
+            && materialize < old_release
+            && old_release < no_source_prepare
+            && no_source_prepare < live_store,
+        "state replacement ordering must be begin < clone/materialize < old release < no-source prepare < live store; Body:\n{body}"
+    );
+}
+
+#[test]
+fn looped_state_store_reuses_one_entry_replacement_scratch() {
+    let source = r#"
+actor LoopWriter {
+    var value: i64;
+
+    init() {
+        value = 0;
+    }
+
+    receive fn write(n: i64) {
+        var i: i64 = 0;
+        while i < 2 {
+            value = n;
+            i += 1;
+        }
+    }
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let ll = emit_ll_text(
+        &pipeline_from_source(source),
+        "loop_state_replacement_scratch",
+    );
+    let body = define_body(&ll, "LoopWriter__recv__write").join("\n");
+    assert_eq!(
+        body.matches("%state_f0_replacement = alloca i64").count(),
+        1,
+        "a looped state assignment must reuse one scratch alloca; Body:\n{body}"
+    );
+    let alloca = body
+        .find("%state_f0_replacement = alloca i64")
+        .expect("replacement scratch alloca");
+    let first_loop_block = body
+        .find("\nbb0:")
+        .unwrap_or_else(|| panic!("loop control flow must be present; Body:\n{body}"));
+    assert!(
+        alloca < first_loop_block,
+        "replacement scratch must live in the entry/alloca prologue, never the loop body; Body:\n{body}"
     );
 }
 
@@ -832,8 +1105,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

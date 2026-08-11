@@ -1,0 +1,20 @@
+// Explicitly closing a borrowed collection element mints a second close
+// authority over one context: the collection still closes it at scope exit.
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let v: Vec<Tok> = Vec::new();
+    v.push(Tok { id: 1 });
+    let e = v[0];
+    e.close();
+    println("body");
+}

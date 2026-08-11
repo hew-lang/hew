@@ -1,0 +1,38 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type P {
+    n: string;
+}
+
+impl Named for P {
+    fn name(val: P) -> string {
+        val.n
+    }
+}
+
+type Q {
+    n: string;
+}
+
+impl Named for Q {
+    fn name(val: Q) -> string {
+        val.n
+    }
+}
+
+fn show_named(v: dyn Named) {
+    let s = v.name();
+    println(s);
+}
+
+fn make() -> dyn Named {
+    let m: dyn Named = P { n: "p0" };
+    m
+}
+
+fn main() {
+    let x = make();
+    show_named(x);
+}

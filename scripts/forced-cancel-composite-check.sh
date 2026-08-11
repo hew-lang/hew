@@ -26,8 +26,9 @@
 # 2. Compile the probe fixture to a relocatable object (`hew build
 #    --emit-obj`), then link with clang against the feature-enabled
 #    `libhew.a` (mirrors `asan-fixture-check.sh`'s manual-link pattern).
-# 3. Run the binary; assert stdout is exactly `x=0 y=0` (the fixed
-#    zero-initialized composite) and exit 0.
+# 3. Run the binary; assert the cancelled value task publishes `x=0 y=0`
+#    (the fixed zero-initialized composite) and the separately paused
+#    heap-string task has a real cancellation release in the emitted IR.
 #
 # WHEN OBSOLETE: if a future construct needs a general deterministic
 # actor-cancellation test harness, this narrow gate is superseded by that —
@@ -68,6 +69,7 @@ echo "  libhew.a   : ${GATE_LIBHEW}"
 
 PROBE_SRC="${ROOT}/scripts/fixtures/forced-cancel-gate/forced_cancel_composite_probe.hew"
 PROBE_OBJ="${WORK_DIR}/forced_cancel_composite_probe.o"
+PROBE_LL="${WORK_DIR}/forced_cancel_composite_probe.ll"
 PROBE_BIN="${WORK_DIR}/forced_cancel_composite_probe"
 
 echo ""
@@ -76,6 +78,33 @@ echo "=== forced-cancel-composite-check: compiling probe ==="
 
 if [[ ! -f "${PROBE_OBJ}" ]]; then
   echo "forced-cancel-composite-check: expected object ${PROBE_OBJ} not found after --emit-obj" >&2
+  exit 1
+fi
+
+if [[ ! -f "${PROBE_LL}" ]]; then
+  echo "forced-cancel-composite-check: expected LLVM IR ${PROBE_LL} not found after --emit-obj" >&2
+  exit 1
+fi
+
+# The unit task's entry cooperate check sees cancellation BEFORE it loads the
+# string out of its fork environment. The actual owner is therefore the
+# task-attached environment Rc destructor, not a normal lexical Drop in the
+# skipped shim body. Prove both halves of that cancellation cleanup contract:
+# the task installs the exact destructor at `hew_rc_new`, and that destructor
+# releases the one string field.
+if ! grep -Eq \
+  'hew_rc_new\(.*ptr @__hew_spawn_env_rc_drop___hew_fork_entry_.*\)' \
+  "${PROBE_LL}"; then
+  echo "FAIL forced-cancel-composite-check: fork environment is not wired to its string cleanup destructor" >&2
+  exit 1
+fi
+if ! awk '
+  /define private void @__hew_spawn_env_rc_drop___hew_fork_entry_/ { in_drop = 1 }
+  in_drop && /call void @hew_string_drop\(/ { released = 1 }
+  in_drop && /^}/ { in_drop = 0 }
+  END { exit released ? 0 : 1 }
+' "${PROBE_LL}"; then
+  echo "FAIL forced-cancel-composite-check: cancelled fork environment destructor does not release its heap string" >&2
   exit 1
 fi
 
@@ -100,9 +129,9 @@ echo "=== forced-cancel-composite-check: running gate ==="
 actual_exit=0
 actual_stdout="$("${PROBE_BIN}")" || actual_exit=$?
 
-# The fixed adapter zero-initializes the WHOLE composite return, so both
-# fields read as their type's zero value.
-expected_stdout="x=0 y=0"
+# The cancelled TaskEntry adapter must publish a zeroed Point before its body
+# starts. The independently paused string task releases silently.
+expected_stdout='x=0 y=0'
 
 if [[ "${actual_exit}" -ne 0 ]]; then
   echo "FAIL forced-cancel-composite-check: expected exit 0, got ${actual_exit}" >&2
@@ -116,4 +145,17 @@ if [[ "${actual_stdout}" != "${expected_stdout}" ]]; then
   exit 1
 fi
 
-echo "PASS forced-cancel-composite-check: '${actual_stdout}', exit ${actual_exit}"
+if [[ "$(uname -s)" == "Darwin" ]] && command -v leaks >/dev/null 2>&1; then
+  leaks_output="$(leaks --atExit -- "${PROBE_BIN}" 2>&1)" || {
+    echo "FAIL forced-cancel-composite-check: leaks --atExit failed" >&2
+    echo "${leaks_output}" >&2
+    exit 1
+  }
+  if ! grep -Eq '0 leaks for 0 total leaked bytes\.' <<<"${leaks_output}"; then
+    echo "FAIL forced-cancel-composite-check: forced cancellation leaked the fork-owned string" >&2
+    echo "${leaks_output}" >&2
+    exit 1
+  fi
+fi
+
+echo "PASS forced-cancel-composite-check: fork-env string cleanup wired; zero composite observed; exit ${actual_exit}"

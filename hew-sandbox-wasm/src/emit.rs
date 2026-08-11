@@ -22,6 +22,12 @@ use crate::CompileError;
 const SCHEMA_VERSION: &str = "hew.sandbox.bytecode.v0";
 const ROOT_SOURCE_ID: &str = "src:main";
 const ROOT_MODULE_ID: &str = "mod:main";
+/// Canonical owner-qualified identity of the sandbox regex handle.
+///
+/// The emitter synthesizes this type for regex literals and `regex.new`. It
+/// must not use the presentation-only leaf `Regex`: a user record with that
+/// name is an unrelated nominal and may coexist with the stdlib handle.
+const REGEX_HANDLE_TYPE: &str = "std.text.regex.Pattern";
 
 type MatchBlock = (usize, String);
 type MatchGuardBlock = Option<MatchBlock>;
@@ -842,7 +848,7 @@ impl<'a> PackageEmitter<'a> {
                 let named_id = self.type_id_for_named(name, args);
                 let kind = if name == "Vec" {
                     "vector"
-                } else if name.eq_ignore_ascii_case("Regex") || name.ends_with(".Regex") {
+                } else if name == REGEX_HANDLE_TYPE {
                     "regex"
                 } else if self.enum_layouts.contains_key(&named_id) {
                     "enum"
@@ -1642,7 +1648,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 let regex_local = self.temp_local(
                     &Ty::Named {
-                        name: "Regex".to_string(),
+                        name: REGEX_HANDLE_TYPE.to_string(),
                         args: Vec::new(),
                         builtin: None,
                     },
@@ -1984,8 +1990,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 let index_local = self.lower_expr(index)?;
                 let ty = self.ty_for_expr(expr);
                 let dst = self.temp_local(&ty, Some(span.clone()));
+                // Indexing has the native bounds-trap contract.  Keep it
+                // distinct from `Vec::get`, whose `vector.get` opcode
+                // materializes an Option and therefore needs the destination
+                // enum layout at runtime.
                 self.emit_instruction(
-                    "vector.get",
+                    "vector.index",
                     Some(dst.clone()),
                     vec![Operand::local(object_local), Operand::local(index_local)],
                     Some(span.clone()),
@@ -2920,7 +2930,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         });
                         let dst = self.temp_local(
                             &Ty::Named {
-                                name: "Regex".to_string(),
+                                name: REGEX_HANDLE_TYPE.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -3206,7 +3216,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 });
             let dst = self.temp_local(
                 &Ty::Named {
-                    name: "Regex".to_string(),
+                    name: REGEX_HANDLE_TYPE.to_string(),
                     args: Vec::new(),
                     builtin: None,
                 },

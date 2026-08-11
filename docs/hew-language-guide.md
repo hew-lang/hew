@@ -1375,6 +1375,8 @@ Put post-spawn initialization in `#[on(start)]` and teardown in `#[on(stop)]`. B
 ### #[on(crash)] hook
 
 ```hew
+import std::failure::{ CrashInfo, CrashAction };
+
 actor Risky {
     var n: i64 = 0;
     #[on(start)] fn boot() { n = 1; }
@@ -1593,7 +1595,7 @@ actor Server {
         let listener = net.listen(addr);
         loop {
             let conn = await listener.accept();
-            let data = await conn.read();
+            let _data = await conn.read();
             // ...
         }
     }
@@ -2289,7 +2291,9 @@ fn main() {
 }
 ```
 
-Use Go-style named receivers: the first parameter whose type matches the impl target is the receiver (no `self` keyword). The receiver is consumed by value. Every trait method must be explicitly implemented per impl — there are no usable default bodies.
+Use Go-style named receivers: the first parameter whose type matches the impl target is the receiver (no `self` keyword required — the parameter can be named anything, including `self`). The receiver is consumed by value.
+
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the *trait* comes from a directory module (`import mymod::{ Greet };`) and the implementing type is local. They do not yet resolve when the implementing type is ALSO imported from a directory module (e.g. `import gm::{ Dog };` where `Dog` and its `impl Greet for Dog` both live in `gm`) — calling an inherited default on that receiver fails with `no method 'greet' on 'gm.Dog'` rather than falling back to the trait's default body; that gap is tracked separately.
 
 ### Display trait (fmt) for f-string interpolation
 

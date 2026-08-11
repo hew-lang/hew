@@ -1,0 +1,4 @@
+// Entry file of the `zoo` directory module.
+pub trait Speaker {
+    fn speak(val: Self) -> string;
+}

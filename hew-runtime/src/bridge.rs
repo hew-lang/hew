@@ -152,8 +152,6 @@ struct MetaState {
     /// last-registered wins.  This is a pre-existing ambiguity in the bridge
     /// model for AOT programs; collision is a codegen concern tracked
     /// separately.  See [`resolve_handler_name`] for the lookup path.
-    // WASM-TODO(#1451): full WASI task-scope parity remains separate; trace
-    // actor metadata is produced by hew_wasm_register_actor_meta.
     handler_names: HashMap<i32, String>,
     cache_all: Option<String>,
 }

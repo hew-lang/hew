@@ -1,0 +1,21 @@
+// Pushing a borrowed collection element into a second collection transfers a
+// value the source collection still owns: both collections would close it.
+#[resource]
+type Tok {
+    id: i64
+}
+
+impl Tok {
+    fn close(self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let v: Vec<Tok> = Vec::new();
+    v.push(Tok { id: 1 });
+    let w: Vec<Tok> = Vec::new();
+    let e = v[0];
+    w.push(e);
+    println("body");
+}

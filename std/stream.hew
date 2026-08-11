@@ -236,7 +236,7 @@ pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
 /// let body = req.respond_stream(200, "text/plain")?;
 /// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```
-pub fn forward(source: Stream<string>, dest: Sink<string>) {
+pub fn forward(consume source: Stream<string>, consume dest: Sink<string>) {
     unsafe {
         hew_stream_pipe(source, dest)
     };
@@ -244,8 +244,17 @@ pub fn forward(source: Stream<string>, dest: Sink<string>) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 /// Internal paired channel handle.
+#[resource]
 #[opaque]
 pub type StreamPair {
+}
+
+impl StreamPair {
+    fn close(consuming self) {
+        unsafe {
+            hew_stream_pair_free(self)
+        };
+    }
 }
 
 extern "C" {
@@ -253,7 +262,7 @@ extern "C" {
     fn hew_stream_pair_is_valid(pair: StreamPair) -> bool;
     fn hew_stream_pair_sink(pair: StreamPair) -> Sink<string>;
     fn hew_stream_pair_stream(pair: StreamPair) -> Stream<string>;
-    fn hew_stream_pair_free(pair: StreamPair);
+    fn hew_stream_pair_free(consume pair: StreamPair);
     fn hew_stream_from_file_read(path: string) -> Stream<string>;
     fn hew_stream_from_file_write(path: string) -> Sink<string>;
     fn hew_stream_is_valid(stream: Stream<string>) -> bool;
@@ -261,20 +270,20 @@ extern "C" {
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
-    fn hew_stream_close(stream: Stream<string>);
+    fn hew_stream_close(consume stream: Stream<string>);
     fn hew_stream_lines(stream: Stream<string>) -> Stream<string>;
     fn hew_stream_chunks(stream: Stream<string>, size: i64) -> Stream<string>;
-    fn hew_stream_pipe(source: Stream<string>, dest: Sink<string>);
+    fn hew_stream_pipe(consume source: Stream<string>, consume dest: Sink<string>);
     fn hew_stream_take(stream: Stream<string>, n: i64) -> Stream<string>;
     fn hew_sink_flush(sink: Sink<string>);
-    fn hew_sink_close(sink: Sink<string>);
+    fn hew_sink_close(consume sink: Sink<string>);
 
     // Element-type-specific runtime functions used by enricher dispatch.
     // string element operations
     // hew_stream_next_layout / hew_stream_try_next_layout carry an
     // out-parameter + element-layout witness ABI and are declared by
     // codegen with the correct calling convention.
-    fn hew_stream_collect_string(stream: Stream<string>) -> string;
+    fn hew_stream_collect_string(consume stream: Stream<string>) -> string;
     fn hew_sink_write_string(sink: Sink<string>, data: string);
 
     // Bytes element operations

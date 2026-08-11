@@ -1,4 +1,4 @@
-//! Per-block move-checker dataflow over the four-state binding lattice.
+//! Per-block move-checker dataflow over the binding-state lattice.
 //!
 //! Replaces the pre-CFG flat-stream forward-scan that worked correctly
 //! only while `HirExprKind::If` lowered its arms inline (single basic
@@ -16,6 +16,7 @@
 //! ```text
 //!     Uninit  ⊔ X         = Uninit          (most-conservative)
 //!     Live    ⊔ Live      = Live
+//!     Live    ⊔ Disch     = MaybeConsumed
 //!     Live    ⊔ Consumed  = MaybeConsumed
 //!     Live    ⊔ MaybeC    = MaybeConsumed
 //!     Cons(a) ⊔ Cons(b)   = Consumed(min(a,b))
@@ -38,11 +39,16 @@
 //! On `Use`:
 //!  - `Uninit`     → emit `InitialisedBeforeUse`.
 //!  - `Consumed(s)` → emit `UseAfterConsume{consumed_at: s, used_at}`.
+//!  - `Discharged(s)` → permit non-consuming reads, but emit
+//!    `UseAfterConsume` for another consume/discharge.
 //!  - `MaybeConsumed(s)` → emit `UseAfterConsume{consumed_at: s,
 //!    used_at}` (the diagnostic surface is the same; a future polish
 //!    cluster may add the "consumed on some paths" annotation).
 //!  - If the use is `IntentKind::Consume` on a non-`BitCopy` type,
 //!    transition to `Consumed(use_site)` after the read-check.
+//!  - If the use is `IntentKind::Discharge`, transition to
+//!    `Discharged(use_site)` so exit cleanup is suppressed while later
+//!    non-consuming closed-handle probes remain valid.
 //!  - `BitCopy` uses do not transition the state.
 //!
 //! On `Return`: anchor — per-`@linear`-binding `MustConsume` check
@@ -86,6 +92,10 @@ pub enum BindingState {
     /// `Bind` observed on every predecessor path; the binding has
     /// not been consumed.
     Live,
+    /// The binding's affine release obligation was explicitly discharged on
+    /// every predecessor path. Its closed handle bits remain available to
+    /// non-consuming reads, but no later consume or discharge is legal.
+    Discharged(SiteId),
     /// Consumed on every predecessor path; the carried site is the
     /// minimum (earliest) consume site over predecessors, for
     /// diagnostic anchoring.
@@ -110,7 +120,7 @@ pub enum BindingState {
 #[must_use]
 pub fn meet(a: BindingState, b: BindingState) -> BindingState {
     use BindingState::AliasedIntoAggregate as Aliased;
-    use BindingState::{Consumed, Live, MaybeConsumed, Uninit};
+    use BindingState::{Consumed, Discharged, Live, MaybeConsumed, Uninit};
     // Order operands so the match table is half-size: handle (a, b)
     // and (b, a) via canonical ordering on the discriminant.
     let (lo, hi) = canonical_order(a, b);
@@ -127,8 +137,12 @@ pub fn meet(a: BindingState, b: BindingState) -> BindingState {
     match (lo, hi) {
         (Uninit, _) => Uninit,
         (Live, Live) => Live,
+        (Live, Discharged(s)) => MaybeConsumed(s),
         (Live, Consumed(s)) => MaybeConsumed(s),
         (Live, MaybeConsumed(s)) => MaybeConsumed(s),
+        (Discharged(sa), Discharged(sb)) => Discharged(min_site(sa, sb)),
+        (Discharged(sa), Consumed(sb)) => Consumed(min_site(sa, sb)),
+        (Discharged(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
         (Consumed(sa), Consumed(sb)) => Consumed(min_site(sa, sb)),
         (Consumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
         (MaybeConsumed(sa), MaybeConsumed(sb)) => MaybeConsumed(min_site(sa, sb)),
@@ -141,6 +155,7 @@ pub fn meet(a: BindingState, b: BindingState) -> BindingState {
         // resulting `MaybeConsumed` still flags a post-join use.
         (Aliased(sa), Aliased(sb)) => Aliased(min_site(sa, sb)),
         (Live, Aliased(s)) => Aliased(s),
+        (Discharged(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         (Consumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         (MaybeConsumed(sa), Aliased(sb)) => MaybeConsumed(min_site(sa, sb)),
         // The canonical ordering ensures `lo` ≤ `hi`; the remaining
@@ -161,9 +176,10 @@ fn discriminant_rank(s: BindingState) -> u8 {
     match s {
         BindingState::Uninit => 0,
         BindingState::Live => 1,
-        BindingState::Consumed(_) => 2,
-        BindingState::MaybeConsumed(_) => 3,
-        BindingState::AliasedIntoAggregate(_) => 4,
+        BindingState::Discharged(_) => 2,
+        BindingState::Consumed(_) => 3,
+        BindingState::MaybeConsumed(_) => 4,
+        BindingState::AliasedIntoAggregate(_) => 5,
     }
 }
 
@@ -199,10 +215,16 @@ fn is_channel_handle_ty(ty: &ResolvedTy) -> bool {
 /// Forward-scan transfer function over one block's statements.
 /// Emits `InitialisedBeforeUse` / `UseAfterConsume` checks as it
 /// goes; returns the exit state for this block's terminator.
-fn transfer_block(
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the transfer carries the shared checker sinks and covers every statement plus exact tail-return ownership"
+)]
+fn transfer_block<S: std::hash::BuildHasher>(
     entry: BTreeMap<BindingId, BindingState>,
     block: &BasicBlock,
     type_classes: &TypeClassTable,
+    binding_locals: &HashMap<BindingId, Place, S>,
     linear_bindings: &mut BTreeMap<BindingId, (String, ResolvedTy, SiteId)>,
     checks: &mut Vec<MirCheck>,
     use_after_consume_seen: &mut HashSet<(BindingId, SiteId)>,
@@ -244,6 +266,18 @@ fn transfer_block(
                         }
                     }
                     BindingState::Live => {}
+                    BindingState::Discharged(discharged_at) => {
+                        if matches!(intent, IntentKind::Consume | IntentKind::Discharge)
+                            && use_after_consume_seen.insert((*binding, *site))
+                        {
+                            checks.push(MirCheck::UseAfterConsume {
+                                binding: *binding,
+                                name: name.clone(),
+                                consumed_at: discharged_at,
+                                used_at: *site,
+                            });
+                        }
+                    }
                     BindingState::Consumed(consumed_at)
                     | BindingState::MaybeConsumed(consumed_at)
                     | BindingState::AliasedIntoAggregate(consumed_at) => {
@@ -262,7 +296,11 @@ fn transfer_block(
                 // (the very breakage `AliasedIntoAggregate` exists to avoid),
                 // and the use was already flagged. For any other prior state a
                 // genuine `Consume` use transitions to `Consumed` as usual.
-                if *intent == IntentKind::Consume
+                if *intent == IntentKind::Discharge {
+                    if matches!(state.get(binding), Some(BindingState::Live)) {
+                        state.insert(*binding, BindingState::Discharged(*site));
+                    }
+                } else if *intent == IntentKind::Consume
                     && (ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
                         || is_channel_handle_ty(ty))
                     && !matches!(
@@ -314,6 +352,7 @@ fn transfer_block(
                     }
                     Some(
                         BindingState::Uninit
+                        | BindingState::Discharged(_)
                         | BindingState::Consumed(_)
                         | BindingState::MaybeConsumed(_),
                     ) => {}
@@ -322,6 +361,42 @@ fn transfer_block(
             MirStatement::Return { .. }
             | MirStatement::Evaluate { .. }
             | MirStatement::Drop { .. } => {}
+        }
+    }
+
+    // Tail expressions lower their physical hand-off directly into the return
+    // slot.  Unlike an explicit consuming use, that move has no corresponding
+    // `MirStatement::Use { intent: Consume }`, so mirror the exact machine
+    // transfer in the binding-state authority.  Only accept an unambiguous
+    // named backing local: stale/synthetic aliases must be rekeyed by lowering
+    // before they can affect exit cleanup.
+    if matches!(block.terminator, Terminator::Return) {
+        let return_site = block
+            .statements
+            .iter()
+            .rev()
+            .find_map(|statement| match statement {
+                MirStatement::Return { site, .. } => Some(site.unwrap_or(SiteId(0))),
+                _ => None,
+            })
+            .unwrap_or(SiteId(0));
+        for instruction in &block.instructions {
+            let Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(local),
+            } = instruction
+            else {
+                continue;
+            };
+            let mut owners = binding_locals.iter().filter_map(|(binding, place)| {
+                (*place == Place::Local(*local)).then_some(*binding)
+            });
+            let Some(binding) = owners.next() else {
+                continue;
+            };
+            if owners.next().is_none() {
+                state.insert(binding, BindingState::Consumed(return_site));
+            }
         }
     }
     state
@@ -447,6 +522,79 @@ pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     visited
 }
 
+/// Runtime C-ABI symbols whose Hew-level return type is `Never` — the
+/// `panic()` / `exit()` shims. Derived from the stdlib catalog's
+/// `BuiltinTy::Never` rows so this set cannot drift from the checker's own
+/// divergence authority: a new never-returning shim added to the catalog is
+/// picked up here without a second registration site.
+fn diverging_runtime_symbols() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SYMBOLS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SYMBOLS.get_or_init(|| {
+        hew_hir::stdlib_catalog::entries()
+            .iter()
+            .filter(|entry| matches!(entry.return_ty, hew_hir::stdlib_catalog::BuiltinTy::Never))
+            .filter_map(|entry| match entry.linkage {
+                hew_hir::stdlib_catalog::BuiltinLinkage::RuntimeFfiShim { symbol } => Some(symbol),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Block IDs that can actually EXECUTE at runtime: reachable from the entry
+/// block along terminator edges, never crossing the continuation edge of a
+/// call whose callee diverges (`hew_panic_msg` / `hew_exit`, the catalog's
+/// `Never`-typed runtime shims — see [`diverging_runtime_symbols`]).
+///
+/// A `Terminator::Call` structurally requires a `next` block, so lowering a
+/// `Never`-typed call still emits a continuation (opened as a dead cursor,
+/// often materialising a poison result and a `Goto` to the enclosing join).
+/// That deadness is a lowering-time cursor flag and does not survive into
+/// `BasicBlock`, so the plain structural [`reachable_from_entry`] view treats
+/// the poison path as executable. Letting such a path contribute to a join
+/// block's `meet_predecessors` kills — to `Uninit` — every binding that is
+/// Live on all EXECUTABLE paths into the join. For a match whose sibling arm
+/// panics (`let e = match f() { Ok(x) => x, Err(_) => panic(...) }`), that
+/// false `Uninit` meet (a) moved the payload binder's admitted composite
+/// release from the function exit to the arm's scope-close `Goto` — BEFORE
+/// the join's field loads read the record, a use-after-free that turned into
+/// a double-free abort on every `net.connect_timeout` call — and (b) starved
+/// the return exits of the balancing drop, leaking one heap block per call in
+/// the shapes where (a) did not fire. Excluding the never-executing poison
+/// predecessors makes the meet agree with runtime reality: the binder stays
+/// Live through the join and its single release fires at the true exits,
+/// after every read.
+///
+/// Diagnostics and the RPO worklist deliberately keep the structural
+/// [`reachable_from_entry`] view: post-panic code is still swept for
+/// diagnostics, and every block still receives an exit-state entry.
+pub(crate) fn execution_reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = Vec::new();
+    if by_id.contains_key(&0) {
+        stack.push(0);
+        visited.insert(0);
+    }
+    while let Some(cur) = stack.pop() {
+        if let Some(block) = by_id.get(&cur) {
+            if let Terminator::Call { callee, .. } = &block.terminator {
+                if diverging_runtime_symbols().contains(callee.as_str()) {
+                    // The call never returns; its continuation edge is dead.
+                    continue;
+                }
+            }
+            for s in block.successors() {
+                if visited.insert(s) {
+                    stack.push(s);
+                }
+            }
+        }
+    }
+    visited
+}
+
 pub(crate) fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
@@ -519,9 +667,11 @@ impl ContextFlowState {
               Move and EnumTagLoad both surface src→dest dataflow); merging arms by \
               pattern would obscure their distinct producer semantics"
 )]
-pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
+pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
-        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => (vec![], vec![]),
+        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => {
+            (vec![], vec![], vec![])
+        }
         Instr::ContextField { dest, .. }
         | Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
@@ -531,7 +681,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::CharLit { dest, .. }
         | Instr::UnitLit { dest }
         | Instr::DurationLit { dest, .. }
-        | Instr::ActorStateFieldLoad { dest, .. } => (vec![], vec![*dest]),
+        | Instr::ActorStateFieldLoad { dest, .. } => (vec![], vec![*dest], vec![]),
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
@@ -551,8 +701,8 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatSub { dest, lhs, rhs, .. }
         | Instr::FloatMul { dest, lhs, rhs, .. }
         | Instr::FloatDiv { dest, lhs, rhs, .. }
-        | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
-        Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
+        | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest], vec![]),
+        Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest], vec![]),
         Instr::RcIntrinsic {
             dest,
             receiver,
@@ -561,46 +711,70 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         } => (
             receiver.iter().chain(value.iter()).copied().collect(),
             vec![*dest],
+            vec![],
         ),
-        Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest]),
-        Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest]),
-        Instr::RecordCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::EnumCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::ValueSnapshotClone { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::ValueSnapshotDrop { value, .. } => (vec![*value], vec![]),
+        Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest], vec![]),
+        Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest], vec![]),
+        Instr::RecordCloneInplace { dest, src, .. }
+        | Instr::EnumCloneInplace { dest, src, .. }
+        | Instr::ValueSnapshotClone { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
+        Instr::ValueSnapshotDrop { value, guard, .. } => {
+            let mut reads = vec![*value];
+            reads.extend(*guard);
+            (reads, vec![], vec![*value])
+        }
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
-        | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),
+        | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest], vec![]),
         Instr::NumericCast { dest, src, .. }
         | Instr::SaturatingWidthCast { dest, src, .. }
-        | Instr::TryWidthCast { dest, src, .. } => (vec![*src], vec![*dest]),
+        | Instr::TryWidthCast { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
         Instr::IntNegChecked {
             dest,
             operand,
             overflow_flag,
             ..
-        } => (vec![*operand], vec![*dest, *overflow_flag]),
+        } => (vec![*operand], vec![*dest, *overflow_flag], vec![]),
         Instr::IntArithChecked {
             dest,
             lhs,
             rhs,
             overflow_flag,
             ..
-        } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag]),
-        Instr::Move { dest, src } => (vec![*src], vec![*dest]),
+        } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag], vec![]),
+        Instr::Move { dest, src } => (vec![*src], vec![*dest], vec![]),
         // Refcount metadata only: reads the existing bytes triple and does not
         // move or overwrite the MIR place.
-        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => (vec![*value], vec![]),
+        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => {
+            (vec![*value], vec![], vec![])
+        }
         Instr::CallRuntimeAbi(call) => {
             let reads = call.args().to_vec();
             let writes = call.dest().into_iter().collect();
-            (reads, writes)
+            // `bytes` is a stack-resident owned triple, and its mutating
+            // runtime ABI receives arg[0] by address so it can release/replace
+            // the backing buffer and write the updated triple back in place.
+            // Move-state still sees a borrowed receiver, but helper crash
+            // cleanup stores a byte Snapshot and must refresh that escrow
+            // around the call. Other runtime handles mutate their pointees;
+            // their MIR slot bytes do not change.
+            let interior = match call.family() {
+                hew_types::runtime_call::RuntimeCallFamily::BytesAppend
+                | hew_types::runtime_call::RuntimeCallFamily::BytesClear
+                | hew_types::runtime_call::RuntimeCallFamily::BytesPop
+                | hew_types::runtime_call::RuntimeCallFamily::BytesPush
+                | hew_types::runtime_call::RuntimeCallFamily::BytesSet => {
+                    call.args().first().copied().into_iter().collect()
+                }
+                _ => vec![],
+            };
+            (reads, writes, interior)
         }
         Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => {
             // The lock pointer is read (its address is passed to the
             // runtime FFI). No place is written — the FFI mutates the
             // pointee, which is opaque to the MIR dataflow.
-            (vec![*lock], vec![])
+            (vec![*lock], vec![], vec![])
         }
         Instr::CallClosure {
             callee, args, dest, ..
@@ -608,28 +782,37 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let mut reads = args.clone();
             reads.insert(0, *callee);
             let writes = dest.iter().copied().collect();
-            (reads, writes)
+            (reads, writes, vec![])
         }
         Instr::MakeClosure { env, dest, .. } | Instr::ClosureEnvFieldLoad { env, dest, .. } => {
-            (vec![*env], vec![*dest])
+            (vec![*env], vec![*dest], vec![])
         }
-        Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![]),
-        Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![]),
-        Instr::Drop { place, .. } => (vec![*place], vec![]),
+        Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![], vec![]),
+        Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![], vec![]),
+        Instr::Drop { place, .. } => {
+            let interior = matches!(
+                place,
+                Place::MachineVariant { .. } | Place::EnumVariant { .. }
+            )
+            .then_some(*place)
+            .into_iter()
+            .collect();
+            (vec![*place], vec![], interior)
+        }
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => {
-            (vec![], vec![*dest])
+            (vec![], vec![*dest], vec![])
         }
-        Instr::WitnessDropGlue { place, .. } => (vec![*place], vec![]),
-        Instr::WitnessMove { dest, src, .. } => (vec![*src], vec![*dest]),
+        Instr::WitnessDropGlue { place, .. } => (vec![*place], vec![], vec![]),
+        Instr::WitnessMove { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
         Instr::RecordInit { fields, dest, .. } => {
             let reads = fields.iter().map(|(_, place)| *place).collect();
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
         Instr::ClosureEnvInit { fields, dest, .. } => {
             let reads = fields.iter().map(|field| field.src).collect();
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
-        Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest], vec![]),
         Instr::RecordFieldDrop { record, .. } => {
             // RecordFieldDrop GEPs into `record` (the functional-update BASE
             // aggregate) to release the OLD value of an overridden owned field
@@ -640,7 +823,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // NOT the record `RecordInit` builds — `RecordInit` constructs a
             // distinct new aggregate from the carried/override sources; this op
             // only neutralises the orphaned old field value on the consumed base.
-            (vec![*record], vec![])
+            (vec![*record], vec![], vec![*record])
         }
         Instr::FieldDropInPlace { base, .. } => {
             // FieldDropInPlace GEPs into `base` to release ONE owned field
@@ -649,7 +832,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // move-state is governed by its own consume marks — and it
             // defines no place (interior field op: uses base, no dest, no
             // alias). Mirrors `RecordFieldDrop` above.
-            (vec![*base], vec![])
+            (vec![*base], vec![], vec![*base])
         }
         Instr::RecordFieldStore { record, src, .. } => {
             // Field-store reads both the aggregate (to GEP into it) and
@@ -660,20 +843,20 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // it after the store. See `Iterator::next(var self)` in
             // `std/builtins.hew` for the load-bearing consumer (the
             // mutable-receiver substrate).
-            (vec![*record, *src], vec![])
+            (vec![*record, *src], vec![], vec![*record])
         }
-        Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
+        Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![], vec![]),
         // The neutralize references the scrutinee's payload slot (keeping the
         // base local live through the null store) and defines no new SSA value.
-        Instr::NeutralizePayloadSlot { place, .. } => (vec![*place], vec![]),
-        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![]),
+        Instr::NeutralizePayloadSlot { place, .. } => (vec![*place], vec![], vec![*place]),
+        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![], vec![*root]),
         // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
         // and the stored value. The env stays Live — only the field bytes are
         // overwritten through the pointer, opaque to the MIR lattice — so the
         // env is a read, not a write, exactly like `RecordFieldStore`.
-        Instr::ClosureEnvFieldStore { env, src, .. } => (vec![*env, *src], vec![]),
-        Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
-        Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest]),
+        Instr::ClosureEnvFieldStore { env, src, .. } => (vec![*env, *src], vec![], vec![]),
+        Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest], vec![]),
+        Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest], vec![]),
         Instr::SpawnActor {
             state,
             init_args,
@@ -682,9 +865,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         } => {
             let mut reads: Vec<_> = state.iter().copied().collect();
             reads.extend(init_args.iter().copied());
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
-        Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest]),
+        Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest], vec![]),
         Instr::CallTraitMethod {
             fat_pointer,
             args,
@@ -695,21 +878,45 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             reads.push(*fat_pointer);
             reads.extend(args.iter().copied());
             let writes = dest.iter().copied().collect();
-            (reads, writes)
+            (reads, writes, vec![])
         }
         Instr::MachineEmitPlaceholder { payload, .. } => {
             // The placeholder reads all payload places; no write destination
             // (emit is void — the result is dispatched to the event queue).
-            (payload.clone(), vec![])
+            (payload.clone(), vec![], vec![])
         }
-        Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest]),
+        Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest], vec![]),
         Instr::MachineStateName {
             src_local, dest, ..
-        } => (vec![Place::Local(*src_local)], vec![*dest]),
+        } => (vec![Place::Local(*src_local)], vec![*dest], vec![]),
         Instr::MachineEmitTake {
             event_tag, dest, ..
-        } => (vec![*event_tag], vec![*dest]),
+        } => (vec![*event_tag], vec![*dest], vec![]),
     }
+}
+
+/// The exact whole-place writes performed by `instr`.
+///
+/// This is the narrow public authority for consumers that need to bracket
+/// initialized destination writes without duplicating the exhaustive
+/// instruction classification above. Interior mutations deliberately remain
+/// reads in [`instr_reads_writes`], so they do not appear here.
+#[must_use]
+pub fn instr_write_places(instr: &Instr) -> Vec<Place> {
+    instr_reads_writes(instr).1
+}
+
+/// Roots whose initialized bytes are mutated in place without defining a new
+/// MIR value.
+///
+/// This is distinct from [`instr_write_places`]: move-state dataflow must keep
+/// these roots live, while byte snapshots used by crash cleanup must refresh
+/// after the mutation. The classification is part of the same exhaustive
+/// [`Instr`] match as reads and whole-place writes, so a new instruction cannot
+/// silently bypass either authority.
+#[must_use]
+pub fn instr_interior_write_places(instr: &Instr) -> Vec<Place> {
+    instr_reads_writes(instr).2
 }
 
 /// The backing MIR local a write `Place` addresses, or `None` for the return
@@ -717,7 +924,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
 /// (fail-closed): a new `Place` variant forces a decision here rather than
 /// silently escaping the write-set model. Mirrors `liveness::place_local`,
 /// kept local to avoid widening that helper's module-private visibility.
-fn write_place_local(place: Place) -> Option<u32> {
+pub(crate) fn write_place_local(place: Place) -> Option<u32> {
     match place {
         Place::Local(n)
         | Place::DuplexHandle(n)
@@ -748,7 +955,8 @@ fn write_place_local(place: Place) -> Option<u32> {
 /// ([`local_is_written_in_body`], consumed by codegen's `bytes` aliasing
 /// decision) gates coroutine functions out before consulting this, so the
 /// empty set returned for the suspend carriers is sound for that use.
-pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
+#[must_use]
+pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Return
         | Terminator::Goto { .. }
@@ -777,14 +985,75 @@ pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
         Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
             arms.iter().filter_map(|arm| arm.binding).collect()
         }
-        Terminator::Join {
-            branches, result, ..
+        // The join emitter stages raw reply buffers until every branch has
+        // succeeded, then publishes only the final result tuple. `reply_dest`
+        // remains type authority for each branch's reply ABI; it is not a MIR
+        // definition and must not mint a phantom owner.
+        Terminator::Join { result, .. } => vec![*result],
+    }
+}
+
+/// Exact result slots written by a collapsed suspension emitter when its
+/// parked operation becomes ready. This is separate from
+/// [`terminator_write_places`] because the carrier `Terminator::Suspend` stores
+/// its operation-specific destinations in [`crate::SuspendKind`].
+///
+/// Exhaustive by construction: adding a suspend kind requires deciding whether
+/// its emitter initializes a result on the ready/resume edge. `RestartWait`
+/// deliberately writes nothing here; its handle is re-fetched by a regular MIR
+/// instruction in the resume block and is covered by [`instr_write_places`].
+#[must_use]
+pub fn suspend_kind_write_places(kind: &crate::SuspendKind) -> Vec<Place> {
+    match kind {
+        crate::SuspendKind::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        crate::SuspendKind::Read {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::Accept {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::StreamNext {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::ChannelRecv {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
         } => {
-            let mut places = Vec::with_capacity(branches.len() + 1);
-            places.push(*result);
-            places.extend(branches.iter().map(|branch| branch.reply_dest));
+            let mut places = vec![*result_dest];
+            places.extend(deadline_result_dest);
+            places.extend(error_dest);
             places
         }
+        crate::SuspendKind::CallClosure { result_dest, .. }
+        | crate::SuspendKind::TaskAwait { result_dest, .. } => {
+            result_dest.iter().copied().collect()
+        }
+        crate::SuspendKind::StreamSend { .. }
+        | crate::SuspendKind::RestartWait { .. }
+        | crate::SuspendKind::Sleep { .. }
+        | crate::SuspendKind::SleepUntil { .. } => Vec::new(),
     }
 }
 
@@ -850,7 +1119,7 @@ fn transfer_context_flow(
                 state.derived.insert(*dest);
             }
             _ => {
-                let (reads, writes) = instr_reads_writes(instr);
+                let (reads, writes, _) = instr_reads_writes(instr);
                 let reads_context = reads.iter().any(|place| state.derived.contains(place));
                 if state.after_exit && reads_context {
                     if let Some(place) = reads
@@ -967,6 +1236,23 @@ pub fn analyze(
     type_classes: &TypeClassTable,
     param_bindings: &[BindingId],
 ) -> DataflowResult {
+    analyze_with_binding_locals(blocks, type_classes, param_bindings, &HashMap::new())
+}
+
+/// Run [`analyze`] with the lowering authority that maps source bindings to
+/// their concrete backing places.  The additional mapping lets tail moves into
+/// `ReturnSlot` participate in the same consume state as explicit uses.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase dataflow (fixpoint + diagnostic sweep); splitting would require shared mutable state across functions"
+)]
+pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
+    blocks: &[BasicBlock],
+    type_classes: &TypeClassTable,
+    param_bindings: &[BindingId],
+    binding_locals: &HashMap<BindingId, Place, S>,
+) -> DataflowResult {
     if blocks.is_empty() {
         return DataflowResult::default();
     }
@@ -981,6 +1267,24 @@ pub fn analyze(
     // every live binding (params included) as `Uninit`, producing a
     // false-positive `InitialisedBeforeUse` at the join.
     let reachable = reachable_from_entry(blocks);
+    // Executable blocks only, for the predecessor meets of blocks that can
+    // themselves execute: a post-panic poison continuation is structurally
+    // reachable but never runs, and its `Uninit` contribution at a join must
+    // not kill bindings Live on every executable path (see
+    // `execution_reachable_from_entry`). Blocks INSIDE the dead region keep
+    // the structural view: their states still chain through the diverging
+    // call's continuation, so code after an unconditional `panic(...)` carries
+    // its parameter and binding states and is diagnosed exactly as before —
+    // a closure parameter read after the panic must not regress into a false
+    // `InitialisedBeforeUse` merely because its whole region is dead.
+    let execution_reachable = execution_reachable_from_entry(blocks);
+    let meet_filter = |block_id: u32| -> &HashSet<u32> {
+        if execution_reachable.contains(&block_id) {
+            &execution_reachable
+        } else {
+            &reachable
+        }
+    };
 
     // The function's entry block is id 0 by construction (see
     // `lower::Builder::finalize_blocks`).
@@ -1038,7 +1342,7 @@ pub fn analyze(
             let preds_of_bb = preds.get(&cur_id).unwrap_or(&empty);
             // Phase 1 uses the visited-only meet so back-edges don't
             // contribute `Uninit` before they are processed.
-            meet_predecessors(preds_of_bb, &exit_states, &reachable)
+            meet_predecessors(preds_of_bb, &exit_states, meet_filter(cur_id))
         };
         // In Phase 1 we only propagate state — diagnostics are discarded.
         let mut phase1_checks: Vec<MirCheck> = Vec::new();
@@ -1048,6 +1352,7 @@ pub fn analyze(
             entry,
             block,
             type_classes,
+            binding_locals,
             &mut linear_bindings,
             &mut phase1_checks,
             &mut phase1_use_seen,
@@ -1087,6 +1392,16 @@ pub fn analyze(
 
     for block in blocks {
         let blk_id = block.id;
+        // `finalize_blocks` preserves a structurally valid home for source
+        // after a failed/never-returning sub-lowering (for example, the loop
+        // exit following a match whose scrutinee could not lower).  Such a
+        // block has no path from entry, so it must not diagnose its implicit
+        // `Uninit` state as though user code could execute there.  The
+        // predecessor meet already excludes these blocks; keep the diagnostic
+        // sweep aligned with that same reachability boundary.
+        if !reachable.contains(&blk_id) {
+            continue;
+        }
         let entry = if blk_id == entry_id {
             let mut entry_state: BTreeMap<BindingId, BindingState> = BTreeMap::new();
             for &id in param_bindings {
@@ -1097,13 +1412,14 @@ pub fn analyze(
             let empty = Vec::new();
             let preds_of_bb = preds.get(&blk_id).unwrap_or(&empty);
             // Phase 2 uses ALL predecessors (all are now in exit_states).
-            meet_predecessors(preds_of_bb, &exit_states, &reachable)
+            meet_predecessors(preds_of_bb, &exit_states, meet_filter(blk_id))
         };
         entry_states.insert(blk_id, entry.clone());
         transfer_block(
             entry,
             block,
             type_classes,
+            binding_locals,
             &mut linear_bindings,
             &mut checks,
             &mut use_after_consume_seen,
@@ -1132,6 +1448,9 @@ pub fn analyze(
     //                          Live on that block's path. Defensive.
     let mut must_consume_seen: HashSet<(BindingId, u32)> = HashSet::new();
     for block in blocks {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
         let Terminator::Return = &block.terminator else {
             continue;
         };
@@ -1377,11 +1696,175 @@ pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{
+        CallAuthority, DropFnSpec, FieldAddr, FieldOffset, NeutralizeAuthority,
+        PreparedCarrierBoundary, RuntimeCall,
+    };
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive table keeps every snapshot-mutating Instr class and \
+                  its non-mutating controls auditable together"
+    )]
+    fn interior_write_authority_covers_every_snapshot_mutation_class() {
+        let snapshot_plan =
+            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                &ResolvedTy::String,
+                &[],
+                &[],
+                &[],
+                &hew_hir::LifecycleRegistry::default(),
+            )
+            .expect("string snapshot plan");
+        let enum_projection = Place::EnumVariant {
+            local: 6,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let machine_projection = Place::MachineVariant {
+            local: 2,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let cases = [
+            (
+                "prepared snapshot drop",
+                Instr::ValueSnapshotDrop {
+                    value: Place::Local(1),
+                    ty: ResolvedTy::String,
+                    plan: snapshot_plan,
+                    boundary: PreparedCarrierBoundary::LocalCall,
+                    guard: None,
+                },
+                vec![Place::Local(1)],
+            ),
+            (
+                "projected inline drop",
+                Instr::Drop {
+                    place: machine_projection,
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                },
+                vec![machine_projection],
+            ),
+            (
+                "record field drop",
+                Instr::RecordFieldDrop {
+                    record: Place::Local(3),
+                    field_offset: FieldOffset(0),
+                    ty: ResolvedTy::String,
+                    drop_fn: DropFnSpec::Release("hew_string_drop"),
+                },
+                vec![Place::Local(3)],
+            ),
+            (
+                "type-directed field drop",
+                Instr::FieldDropInPlace {
+                    base: Place::Local(4),
+                    field: FieldAddr::Tuple(0),
+                    ty: ResolvedTy::String,
+                },
+                vec![Place::Local(4)],
+            ),
+            (
+                "record field store",
+                Instr::RecordFieldStore {
+                    record: Place::Local(5),
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(50),
+                },
+                vec![Place::Local(5)],
+            ),
+            (
+                "variant payload neutralize",
+                Instr::NeutralizePayloadSlot {
+                    place: enum_projection,
+                    transferee: Some(Place::Local(60)),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                },
+                vec![enum_projection],
+            ),
+            (
+                "aggregate projection neutralize",
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(7),
+                    fields: vec![0, 1],
+                    transferee: Place::Local(70),
+                    scope_exit_owner: None,
+                },
+                vec![Place::Local(7)],
+            ),
+        ];
+
+        for (label, instr, expected) in cases {
+            assert_eq!(
+                instr_interior_write_places(&instr),
+                expected,
+                "{label} must refresh a helper Snapshot owner"
+            );
+            assert!(
+                instr_write_places(&instr).is_empty(),
+                "{label} remains an interior mutation for move-state dataflow"
+            );
+        }
+
+        for symbol in [
+            "hew_bytes_append",
+            "hew_bytes_clear",
+            "hew_bytes_pop",
+            "hew_bytes_push",
+            "hew_bytes_set",
+        ] {
+            let call = RuntimeCall::new(symbol, vec![Place::Local(8)], None)
+                .expect("bytes mutator is an admitted runtime family");
+            let instr = Instr::CallRuntimeAbi(call);
+            assert_eq!(
+                instr_interior_write_places(&instr),
+                vec![Place::Local(8)],
+                "{symbol} mutates the owned bytes triple through arg[0]"
+            );
+            assert!(
+                instr_write_places(&instr).is_empty(),
+                "{symbol} keeps the receiver live for move-state dataflow"
+            );
+        }
+        let bytes_len = Instr::CallRuntimeAbi(
+            RuntimeCall::new("hew_vec_len", vec![Place::Local(8)], Some(Place::Local(80)))
+                .expect("bytes/Vec len is an admitted runtime family"),
+        );
+        assert!(
+            instr_interior_write_places(&bytes_len).is_empty(),
+            "read-only runtime receivers never churn crash-cleanup snapshots"
+        );
+
+        assert!(
+            instr_interior_write_places(&Instr::Drop {
+                place: Place::Local(10),
+                ty: ResolvedTy::String,
+                drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+            })
+            .is_empty(),
+            "whole-local Drop retires its token instead of refreshing it"
+        );
+        assert!(
+            instr_interior_write_places(&Instr::ClosureEnvFieldStore {
+                env: Place::Local(9),
+                env_ty: ResolvedTy::named_user("Env", vec![]),
+                field_offset: FieldOffset(0),
+                src: Place::Local(90),
+            })
+            .is_empty(),
+            "pointee mutation leaves the closure pointer bytes unchanged"
+        );
+    }
 
     fn states() -> Vec<BindingState> {
         vec![
             BindingState::Uninit,
             BindingState::Live,
+            BindingState::Discharged(SiteId(3)),
+            BindingState::Discharged(SiteId(7)),
             BindingState::Consumed(SiteId(3)),
             BindingState::Consumed(SiteId(7)),
             BindingState::MaybeConsumed(SiteId(3)),
@@ -1392,16 +1875,18 @@ mod tests {
     /// Wider exhaustive state-space for the M2 substrate's drop-plan
     /// invariants. Includes multiple consume sites with non-trivial
     /// ordering (1, 3, 7, 11) so the min-site rule for
-    /// Consumed/MaybeConsumed meets is exercised at every pair.
+    /// Discharged/Consumed/MaybeConsumed meets is exercised at every pair.
     /// Property tests below sample every (state × state) and every
-    /// (state × state × state) tuple — the lattice has 9 elements
-    /// (Uninit + Live + 4×Consumed + 4×MaybeConsumed = 1+1+4+4 = 10),
-    /// so the exhaustive cube is 1000 tuples; fast enough to keep in
-    /// CI per the existing pattern.
+    /// (state × state × state) tuple — the lattice has 14 elements, so the
+    /// exhaustive cube remains fast enough to keep in CI.
     fn states_wide() -> Vec<BindingState> {
         vec![
             BindingState::Uninit,
             BindingState::Live,
+            BindingState::Discharged(SiteId(1)),
+            BindingState::Discharged(SiteId(3)),
+            BindingState::Discharged(SiteId(7)),
+            BindingState::Discharged(SiteId(11)),
             BindingState::Consumed(SiteId(1)),
             BindingState::Consumed(SiteId(3)),
             BindingState::Consumed(SiteId(7)),
@@ -1643,6 +2128,257 @@ mod tests {
             instructions: vec![],
             terminator,
         }
+    }
+
+    #[test]
+    fn unreachable_post_loop_cursor_does_not_report_uninitialised_reads() {
+        // A failed sub-lowering can leave a loop with no `break` edge while
+        // preserving its post-loop cursor as a structural CFG home.  The
+        // cursor is unreachable; it must not turn a pre-loop binding into a
+        // spurious source diagnostic merely because its entry state is empty.
+        let acc = BindingId(33);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![MirStatement::Bind {
+                    binding: acc,
+                    name: "acc".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::I64,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            bb(1, Terminator::Goto { target: 1 }),
+            BasicBlock {
+                id: 2,
+                statements: vec![MirStatement::Use {
+                    binding: acc,
+                    name: "acc".to_string(),
+                    site: SiteId(20),
+                    ty: ResolvedTy::I64,
+                    intent: IntentKind::Read,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::InitialisedBeforeUse { binding, .. } if *binding == acc
+            )),
+            "unreachable post-loop cursor must not diagnose a read: {:?}",
+            result.checks
+        );
+        assert!(
+            !result.entry_states.contains_key(&2),
+            "the diagnostic dataflow pass must not materialise unreachable cursor state"
+        );
+    }
+
+    /// Build the two-arm join CFG both diverging-continuation tests share:
+    /// bb0 branches to an ok arm (bb1, binds `b`, goto join) and a failing
+    /// arm (bb2, calls `callee` whose continuation bb4 gotos the join bb3).
+    fn panic_join_blocks(binding: BindingId, callee: &str) -> Vec<BasicBlock> {
+        vec![
+            bb(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            BasicBlock {
+                id: 1,
+                statements: vec![MirStatement::Bind {
+                    binding,
+                    name: "payload".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::String,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            bb(
+                2,
+                Terminator::Call {
+                    callee: callee.to_string(),
+                    authority: CallAuthority::Direct,
+                    args: vec![],
+                    dest: None,
+                    next: 4,
+                },
+            ),
+            bb(3, Terminator::Return),
+            bb(4, Terminator::Goto { target: 3 }),
+        ]
+    }
+
+    #[test]
+    fn diverging_call_continuation_does_not_kill_join_liveness() {
+        // The Err-arm-panics match shape: `Ok(x)` binds on one arm, the
+        // sibling arm calls the never-returning panic shim and its poison
+        // continuation gotos the join. The continuation never executes, so
+        // its Uninit contribution must not kill the ok-arm binding at the
+        // join — that false meet moved the binding's composite release from
+        // the function exit to the arm edge, freeing the record before the
+        // join's field loads read it (the net.connect_timeout double-free).
+        let b = BindingId(40);
+        let blocks = panic_join_blocks(b, "hew_panic_msg");
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
+            Some(BindingState::Live),
+            "a never-executing panic continuation must not poison the join meet"
+        );
+    }
+
+    #[test]
+    fn param_use_inside_dead_post_panic_region_is_not_uninitialised() {
+        // Dead-region scoping: a block that only runs after an unconditional
+        // panic still inherits its predecessor states through the diverging
+        // continuation, so a parameter (or binding) read there is diagnosed
+        // exactly as before the executable-join exclusion — never as a false
+        // `InitialisedBeforeUse`. The nested-suspending-closure shape
+        // (`panic(...)` first, parameter read after) compiles because of this.
+        let p = BindingId(50);
+        let blocks = vec![
+            bb(
+                0,
+                Terminator::Call {
+                    callee: "hew_panic_msg".to_string(),
+                    authority: CallAuthority::Direct,
+                    args: vec![],
+                    dest: None,
+                    next: 1,
+                },
+            ),
+            BasicBlock {
+                id: 1,
+                statements: vec![MirStatement::Use {
+                    binding: p,
+                    name: "inner_value".to_string(),
+                    site: SiteId(20),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Read,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let result = analyze(&blocks, &TypeClassTable::default(), &[p]);
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::InitialisedBeforeUse { binding, .. } if *binding == p
+            )),
+            "a parameter read in the dead post-panic region must not diagnose \
+             InitialisedBeforeUse: {:?}",
+            result.checks
+        );
+    }
+
+    #[test]
+    fn ordinary_call_continuation_still_contributes_uninit_at_join() {
+        // Control: a continuation of a NORMAL call really executes, so the
+        // one-arm-only binding is genuinely absent on that path and the meet
+        // must stay Uninit — dropping it at the join would read a slot the
+        // other path never initialised.
+        let b = BindingId(41);
+        let blocks = panic_join_blocks(b, "hew_string_concat");
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.entry_states.get(&3).and_then(|m| m.get(&b)).copied(),
+            None,
+            "an executable continuation path must keep the binding Uninit at the join"
+        );
+    }
+
+    #[test]
+    fn tail_move_to_return_slot_consumes_the_named_backing_binding() {
+        // Tail returns do not emit a consuming `Use`; the physical move is the
+        // authority.  Keep this small counterexample here so return cleanup
+        // cannot silently regress to treating the escaped owner as live.
+        let binding = BindingId(34);
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![
+                MirStatement::Bind {
+                    binding,
+                    name: "value".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::I64,
+                },
+                MirStatement::Return {
+                    site: Some(SiteId(11)),
+                    ty: ResolvedTy::I64,
+                },
+            ],
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(9),
+            }],
+            terminator: Terminator::Return,
+        }];
+        let binding_locals = HashMap::from([(binding, Place::Local(9))]);
+
+        let result =
+            analyze_with_binding_locals(&blocks, &TypeClassTable::default(), &[], &binding_locals);
+        assert_eq!(
+            result.exit_states[&0][&binding],
+            BindingState::Consumed(SiteId(11))
+        );
+    }
+
+    #[test]
+    fn affine_discharge_suppresses_exit_drop_but_permits_closed_handle_read() {
+        let binding = BindingId(35);
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![
+                MirStatement::Bind {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::String,
+                },
+                MirStatement::Use {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(11),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Discharge,
+                },
+                MirStatement::Use {
+                    binding,
+                    name: "socket".to_string(),
+                    site: SiteId(12),
+                    ty: ResolvedTy::String,
+                    intent: IntentKind::Read,
+                },
+            ],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }];
+
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert_eq!(
+            result.exit_states[&0][&binding],
+            BindingState::Discharged(SiteId(11))
+        );
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::UseAfterConsume { binding: used, used_at, .. }
+                    if *used == binding && *used_at == SiteId(12)
+            )),
+            "a non-consuming closed-handle probe must stay legal: {:?}",
+            result.checks
+        );
     }
 
     /// A simple leaf function: two blocks, no loops, no calls, fewer than

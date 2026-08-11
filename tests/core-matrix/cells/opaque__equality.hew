@@ -1,0 +1,31 @@
+#[opaque]
+type DqH {
+}
+
+#[resource]
+type Dq {
+    handle: DqH;
+    tag: i64;
+}
+
+impl Dq {
+    fn close(self) {
+        unsafe { hew_deque_free(self.handle) };
+        println(f"close {self.tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> DqH;
+    fn hew_deque_free(dq: DqH);
+    fn hew_deque_len(dq: DqH) -> i64;
+}
+
+fn main() {
+    let a = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
+    let b = Dq { handle: unsafe { hew_deque_new() }, tag: 1 };
+    let c = Dq { handle: unsafe { hew_deque_new() }, tag: 2 };
+    let same = a == b;
+    let diff = a == c;
+    println(f"{same} {diff}");
+}

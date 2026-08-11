@@ -1,0 +1,11 @@
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    var x_sum = 0;
+    for x_y in x {
+        x_sum = x_sum + x_y;
+    }
+    println(f"sum {x_sum}");
+}

@@ -1,0 +1,17 @@
+fn main() {
+    let x = gen {
+        yield 1;
+        yield 2;
+    };
+    let y = clone x;
+    var y_sum = 0;
+    for y_y in y {
+        y_sum = y_sum + y_y;
+    }
+    println(f"sum {y_sum}");
+    var x_sum = 0;
+    for x_y in x {
+        x_sum = x_sum + x_y;
+    }
+    println(f"sum {x_sum}");
+}

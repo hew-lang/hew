@@ -1,0 +1,30 @@
+import std::channel::channel;
+
+// Sender is a cloneable Vec element. The first Vec takes tx by move, the
+// second one is a descriptor-backed clone, and both must drop exactly one
+// sender reference. The paired Receiver is closed explicitly. ASan catches
+// an under-retained clone or duplicate close; LSan catches a missing Vec-slot
+// close across this repeated lifecycle.
+fn exercise_sender_vec_clone_drop() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let senders: Vec<channel.Sender<i64>> = [tx];
+    let senders_copy = senders.clone();
+    if senders.len() != 1 {
+        panic("sender Vec source clone failed");
+    }
+    if senders_copy.len() != 1 {
+        panic("sender Vec cloned clone failed");
+    }
+    rx.close();
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 256 {
+        exercise_sender_vec_clone_drop();
+        i = i + 1;
+    }
+    if i != 256 {
+        panic("sender Vec clone/drop loop did not complete");
+    }
+}

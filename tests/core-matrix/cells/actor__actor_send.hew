@@ -1,0 +1,27 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: LocalPid<Echo>) -> i64 {
+        match await v.take(1) { Ok(v_v) => println(f"echo {v_v}"), Err(_) => println("err"), }
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    let x = spawn Echo(seen: 0);
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

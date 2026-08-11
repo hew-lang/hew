@@ -1,0 +1,40 @@
+i32	drop_scope	no release obligation: the row cannot carry an owned resource
+i32	drop_early_return	no release obligation: the row cannot carry an owned resource
+i32	drop_panic	no release obligation: the row cannot carry an owned resource
+i64	drop_scope	no release obligation: the row cannot carry an owned resource
+i64	drop_early_return	no release obligation: the row cannot carry an owned resource
+i64	drop_panic	no release obligation: the row cannot carry an owned resource
+f64	drop_scope	no release obligation: the row cannot carry an owned resource
+f64	drop_early_return	no release obligation: the row cannot carry an owned resource
+f64	drop_panic	no release obligation: the row cannot carry an owned resource
+bool	drop_scope	no release obligation: the row cannot carry an owned resource
+bool	drop_early_return	no release obligation: the row cannot carry an owned resource
+bool	drop_panic	no release obligation: the row cannot carry an owned resource
+string	drop_scope	no release obligation: the row cannot carry an owned resource
+string	drop_early_return	no release obligation: the row cannot carry an owned resource
+string	drop_panic	no release obligation: the row cannot carry an owned resource
+bytes	drop_scope	no release obligation: the row cannot carry an owned resource
+bytes	drop_early_return	no release obligation: the row cannot carry an owned resource
+bytes	drop_panic	no release obligation: the row cannot carry an owned resource
+hashset	drop_scope	no release obligation: the row cannot carry an owned resource
+hashset	drop_early_return	no release obligation: the row cannot carry an owned resource
+hashset	drop_panic	no release obligation: the row cannot carry an owned resource
+enum_unit	drop_scope	no release obligation: the row cannot carry an owned resource
+enum_unit	drop_early_return	no release obligation: the row cannot carry an owned resource
+enum_unit	drop_panic	no release obligation: the row cannot carry an owned resource
+actor	clone	an actor handle is a spawned identity, not a value to duplicate
+actor	equality	actor handles have identity, not structural equality
+actor	drop_scope	actor lifetime is the runtime's, not the binding's scope
+actor	drop_early_return	actor lifetime is the runtime's, not the binding's scope
+actor	drop_panic	actor lifetime is the runtime's, not the binding's scope
+closure	drop_scope	the closure row here captures no owned value
+closure	drop_early_return	the closure row here captures no owned value
+closure	drop_panic	the closure row here captures no owned value
+generator	mutate	covered by the row-specific mutation override
+generator	drop_scope	generator state is the coroutine's, covered by the generator corpus
+generator	drop_early_return	generator state is the coroutine's, covered by the generator corpus
+generator	drop_panic	generator state is the coroutine's, covered by the generator corpus
+traitobj	index	a trait object is not an indexable container
+traitobj	drop_scope	trait-object drop is covered by dyn_owned_heap_drop_test
+traitobj	drop_early_return	trait-object drop is covered by dyn_owned_heap_drop_test
+traitobj	drop_panic	trait-object drop is covered by dyn_owned_heap_drop_test

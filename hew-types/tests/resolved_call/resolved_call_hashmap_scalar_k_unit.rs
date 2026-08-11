@@ -132,25 +132,25 @@ fn scalar_k_hashmap_resolves_to_canonical_kernel_symbols() {
             });
 
             assert_eq!(
-                resolved.target.symbol_name,
+                resolved.method_target.symbol_name,
                 expected.symbol,
                 "HashMap<{key}, i64>::{method} symbol_name drift",
                 method = expected.name,
             );
             assert_eq!(
-                resolved.target.abi,
+                resolved.method_target.abi,
                 expected.abi,
                 "HashMap<{key}, i64>::{method} abi drift",
                 method = expected.name,
             );
             assert_eq!(
-                resolved.target.call_hint,
+                resolved.method_target.call_hint,
                 CallAbiHint::RuntimeShim,
                 "HashMap<{key}, i64>::{method} call_hint must remain RuntimeShim through C0b",
                 method = expected.name,
             );
             assert!(
-                !resolved.target.consumes_receiver,
+                !resolved.method_target.consumes_receiver,
                 "HashMap kernel methods do not consume the receiver (HashMap<{key}, i64>::{method})",
                 method = expected.name,
             );
@@ -184,7 +184,7 @@ fn hashmap_insert_symbol_is_invariant_under_value_substitution() {
             resolve_method_call(&registry, "Map", "insert", &receiver, &hash_eq_satisfied)
                 .unwrap_or_else(|err| panic!("HashMap<i64, {v}>::insert rejected: {err:?}"));
         assert_eq!(
-            resolved.target.symbol_name, "hew_hashmap_insert_layout",
+            resolved.method_target.symbol_name, "hew_hashmap_insert_layout",
             "kernel symbol must be V-invariant (saw drift at V = {v})",
         );
     }
@@ -213,11 +213,11 @@ fn scalar_t_hashset_resolves_to_canonical_kernel_symbols() {
                 resolve_method_call(&registry, "Set", method, &receiver, &hash_eq_satisfied)
                     .unwrap_or_else(|err| panic!("HashSet<{t}>::{method} rejected: {err:?}"));
             assert_eq!(
-                resolved.target.symbol_name, *symbol,
+                resolved.method_target.symbol_name, *symbol,
                 "HashSet<{t}>::{method} symbol_name drift",
             );
-            assert_eq!(resolved.target.abi, *abi);
-            assert!(!resolved.target.consumes_receiver);
+            assert_eq!(resolved.method_target.abi, *abi);
+            assert!(!resolved.method_target.consumes_receiver);
         }
     }
 }

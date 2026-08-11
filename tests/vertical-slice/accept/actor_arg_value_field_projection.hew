@@ -1,0 +1,40 @@
+// Type-class control for place-level consumption. Ownership is decided by the
+// transfer predicate, not by the projection syntax: scalars are copied,
+// `string` and `Vec` are copy-on-write, so sending any of these fields to an
+// actor leaves the source record whole. Only affine leaves transfer.
+type Holder {
+    count: i64;
+    name: string;
+    items: Vec<i64>;
+}
+
+actor Sink {
+    receive fn take_scalar(v: i64) -> i64 {
+        return v;
+    }
+    receive fn take_string(v: string) -> i64 {
+        return v.len();
+    }
+    receive fn take_vec(v: Vec<i64>) -> i64 {
+        return v.len();
+    }
+}
+
+fn main() {
+    let sink = spawn Sink;
+    let items: Vec<i64> = [4, 5];
+    let holder = Holder { count: 3, name: "held", items: items };
+    match await sink.take_scalar(holder.count) {
+        Ok(v) => println(f"scalar={v}"),
+        Err(_) => println("scalar failed"),
+    }
+    match await sink.take_string(holder.name) {
+        Ok(v) => println(f"string={v}"),
+        Err(_) => println("string failed"),
+    }
+    match await sink.take_vec(holder.items) {
+        Ok(v) => println(f"vec={v}"),
+        Err(_) => println("vec failed"),
+    }
+    println(f"count={holder.count} name={holder.name} items={holder.items.len()}");
+}

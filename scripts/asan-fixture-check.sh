@@ -22,7 +22,7 @@
 #    ASan libhew.a.
 # 3. Run each binary with ASAN_OPTIONS=detect_leaks=1.
 #
-# Three fixture probes:
+# Fixture probes include:
 #   clean-probe (--emit-obj path)
 #       A compiled Hew binary exercising the previously-leaky Vec<string>
 #       index-into-compare and local drop shapes (now fixed); must produce ZERO
@@ -64,6 +64,17 @@
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
 #       leak- and double-free-clean through recursive enum/record drop thunks.
+#   drop-only Vec<channel.Receiver<T>>
+#       Repeatedly moves the sole Receiver authority into `[rx]`, closes the
+#       paired Sender, and returns through the Vec's clone-null/drop-present
+#       element descriptor. A stale source owner double-closes under ASan; a
+#       missing slot drop leaves one channel allocation family per iteration
+#       for LSan.
+#   cloneable Vec<channel.Sender<T>>
+#       Repeatedly moves the sole Sender authority into `[tx]`, clones the Vec
+#       through its descriptor clone thunk, drops both Vecs, and explicitly
+#       closes the paired Receiver. An under-retained clone or duplicate close
+#       is an ASan failure; a missing sender-slot release is an LSan failure.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -75,9 +86,41 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "${ROOT}/scripts/lib/corpus-floor.sh"
+source "${ROOT}/scripts/lib/corpus-nonempty.sh"
+
+asan_or_lsan_reported() {
+  local report="$1"
+  grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
+    <<< "${report}"
+}
+
+# The deliberate generated-code leak is the proof that this gate has a working
+# ASan/LSan observer.  Keep its verdict predicate independently executable:
+# an arbitrary non-zero process exit must never impersonate a sanitizer report.
+# This runs before the Linux/toolchain guards so every host can prove the
+# fail-closed classifier without building an instrumented compiler.
+if [[ "${1:-}" == "--selftest" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: scripts/asan-fixture-check.sh [--selftest | --llvm-version <N>]" >&2
+    exit 2
+  fi
+  if ! asan_or_lsan_reported "==42==ERROR: LeakSanitizer: detected memory leaks"; then
+    echo "asan-fixture-check selftest: failed to accept a LeakSanitizer report" >&2
+    exit 1
+  fi
+  if asan_or_lsan_reported "probe exited 137 after an unrelated trap"; then
+    echo "asan-fixture-check selftest: unmarked non-zero exit falsely passed as ASan evidence" >&2
+    exit 1
+  fi
+  if asan_or_lsan_reported ""; then
+    echo "asan-fixture-check selftest: empty report falsely passed as ASan evidence" >&2
+    exit 1
+  fi
+  echo "asan-fixture-check selftest: PASS (only a sanitizer diagnostic certifies the sentinel)"
+  exit 0
+fi
 
 # ── Platform guard ────────────────────────────────────────────────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -263,8 +306,7 @@ run_asan_fixture() {
   # Use a here-string to avoid a printf | grep -q pipeline: under set -o pipefail
   # grep -q closes stdin after the first match, sending SIGPIPE to printf, which
   # makes the pipeline exit 141 (false negative) on large reports.
-  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
-       <<< "${asan_output}"; then
+  if asan_or_lsan_reported "${asan_output}"; then
     echo "    FAIL ${label}: ASan/LSan reported findings:" >&2
     printf '%s\n' "${asan_output}" | sed 's/^/    /' >&2
     return 1
@@ -279,10 +321,10 @@ run_asan_fixture() {
 }
 
 # ── Helper: run one binary expecting an ASan/LSan finding ─────────────────
-# The inverse of run_asan_fixture.  Returns 0 (pass) if the binary's ASan/LSan
-# report contains a finding marker or the binary exits non-zero due to LSan.
-# Returns 1 (fail) if no finding is detected — indicating ASan/LSan is not
-# firing and the gate would silently miss leaks.
+# The inverse of run_asan_fixture.  Returns 0 (pass) only if the binary's
+# ASan/LSan report contains a finding marker.  Returns 1 (fail) if no finding
+# is detected — an unrelated trap/non-zero exit is not evidence that the
+# sanitizer caught the deliberate leak.
 run_asan_fixture_expect_leak() {
   local label="$1"
   local bin="$2"
@@ -317,11 +359,7 @@ run_asan_fixture_expect_leak() {
   # pipeline exits 141 instead of 0 on any large report (false negative).
   local combined_asan="${asan_output}"$'\n'"${asan_stderr}"
   local gate_fired=false
-  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
-       <<< "${combined_asan}"; then
-    gate_fired=true
-  elif [[ "${actual_exit}" -ne 0 ]]; then
-    # LSan exits non-zero when leaks are detected even without matching text
+  if asan_or_lsan_reported "${combined_asan}"; then
     gate_fired=true
   fi
 
@@ -329,7 +367,10 @@ run_asan_fixture_expect_leak() {
     echo "    PASS ${label}: gate correctly caught deliberate generated-code leak (exit ${actual_exit})"
     return 0
   else
-    echo "    FAIL ${label}: gate did NOT catch the deliberate 1 KiB malloc leak" >&2
+    echo "    FAIL ${label}: gate did NOT report the deliberate 1 KiB malloc leak" >&2
+    if [[ "${actual_exit}" -ne 0 ]]; then
+      echo "    The probe exited ${actual_exit}, but an unmarked non-zero exit is not sanitizer evidence." >&2
+    fi
     echo "    This means ASan/LSan is not firing on compiled Hew binaries." >&2
     echo "    Check: -fsanitize=address at both compile and link steps." >&2
     echo "    Binary: ${bin}" >&2
@@ -341,9 +382,10 @@ run_asan_fixture_expect_leak() {
 CLEAN_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_clean_probe.hew"
 LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # Crash+restart clean probe: an actor really traps, its #[on(crash)] hook clones
-# and reads CrashInfo.message and returns CrashAction::Restart, the supervisor
-# restarts it, and main exits 42. Exercises the emitted __on_crash on a REAL
-# crash under ASan/LSan — the crash-message clone (hew_string_clone) and the
+# and reads CrashInfo.message, mutates the child's restart template, and returns
+# CrashAction::Restart; the supervisor restarts it and main exits 43. Exercises
+# the emitted __on_crash on a REAL crash under ASan/LSan — the crash-message
+# clone (hew_string_clone) and the
 # CrashInfo drop must balance the supervisor's str_to_malloc/free_cstring with no
 # double-free, no leak, no OOB. The pre-fix move-of-borrow + headerless drop
 # would OOB-read and abort here; ASan would catch the heap-buffer-overflow even
@@ -351,18 +393,15 @@ LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 CRASH_RESTART_SRC="${ROOT}/tests/vertical-slice/accept/on_crash_action_restart_real_crash.hew"
 BYTES_COW_SRC="${ROOT}/tests/vertical-slice/accept/bytes_cow_retain_s1.hew"
 STRING_COW_SRC="${ROOT}/tests/vertical-slice/accept/string_cow_retain_share.hew"
-# Composite-drop leak-oracle shapes (#2488): three already-clean vertical-slice
+# Composite-drop leak-oracle shapes (#2488): four clean vertical-slice
 # fixtures that exercise the drop mechanisms #2439 (composite yield release via
 # in-place drop thunks) and #2462 (match-scrutinee enum payload release). Prior
 # to this the asan-fixtures corpus was blind to refcount-underflow double-frees
 # on String/Bytes in these shapes — only ASan on an instrumented runtime catches
 # that class as a heap-use-after-free (macOS `leaks` cannot see an underflow).
-# All three exit 0 and must remain ASan/LSan-clean. (receive_gen_fn_owned_record
-# _yield.hew is deliberately NOT added here: it carries a separate known 23-byte
-# residual — retained string-field reads in for-await bodies leak a per-iteration
-# temporary, called out in the #2439 merge message — so it would not be a clean
-# gate member until that residual is fixed or suppressed.)
+# All four exit 0 and must remain ASan/LSan-clean.
 ENUM_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_enum_yield.hew"
+RECORD_YIELD_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_owned_record_yield.hew"
 RECORD_STREAM_BREAK_SRC="${ROOT}/tests/vertical-slice/accept/receive_gen_fn_record_stream_break.hew"
 ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loop_release.hew"
 # Admitted fresh-producer call scrutinee (#2648): a heap-owning-enum result built
@@ -398,6 +437,18 @@ RC_WEAK_SRC="${ROOT}/tests/vertical-slice/accept/rc_weak_lifecycle.hew"
 # output slots. Every retained owner must release exactly once at pass and
 # scope teardown; LSan catches missed releases and ASan catches underflow.
 SORT_STRINGS_MERGE_SRC="${ROOT}/tests/vertical-slice/accept/sort_strings_merge_asan.hew"
+# A by-value string forwarder and a mixed retained-projection/forward return,
+# both consumed directly by f-string interpolation. Each callee establishes
+# exactly one return share on every path and the anonymous caller carrier must
+# release exactly once. LSan catches a missing release; ASan catches over-release.
+OWNED_STRING_RETURN_CARRIER_SRC="${ROOT}/tests/vertical-slice/accept/owned_string_return_carrier_asan.hew"
+# A Receiver has no semantic clone. Its Vec slot is populated only through the
+# owned-move ABI and released through a descriptor with a null clone thunk and
+# an in-place receiver-close drop thunk.
+VEC_RECEIVER_DROP_ONLY_SRC="${ROOT}/tests/vertical-slice/accept/vec_receiver_drop_only_asan.hew"
+# Sender is cloneable, so this companion fixture exercises the descriptor's
+# clone thunk plus both Vec destructors and the paired receiver close.
+VEC_SENDER_CLONE_DROP_SRC="${ROOT}/tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -428,12 +479,15 @@ STRING_COW_BIN="${WORK_DIR}/string_cow_retain_share"
 compile_asan_fixture "string retain-on-share" "${STRING_COW_SRC}" "${STRING_COW_BIN}"
 
 # ── Step 3e: compile the composite-drop leak-oracle fixtures (#2488) ──────
-# Three already-clean vertical-slice fixtures covering the #2439 composite
+# Four clean vertical-slice fixtures covering the #2439 composite
 # yield-release and #2462 match-scrutinee enum-payload-release drop shapes so
 # the ASan gate — the only oracle that sees refcount-underflow double-frees on
 # Linux — guards these mechanisms against future regressions.
 ENUM_YIELD_BIN="${WORK_DIR}/receive_gen_fn_owned_enum_yield"
 compile_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_SRC}" "${ENUM_YIELD_BIN}"
+
+RECORD_YIELD_BIN="${WORK_DIR}/receive_gen_fn_owned_record_yield"
+compile_asan_fixture "composite yield (owned record)" "${RECORD_YIELD_SRC}" "${RECORD_YIELD_BIN}"
 
 RECORD_STREAM_BREAK_BIN="${WORK_DIR}/receive_gen_fn_record_stream_break"
 compile_asan_fixture "composite yield (record stream break)" "${RECORD_STREAM_BREAK_SRC}" "${RECORD_STREAM_BREAK_BIN}"
@@ -464,6 +518,15 @@ compile_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_SRC}" "${R
 
 SORT_STRINGS_MERGE_BIN="${WORK_DIR}/sort_strings_merge_asan"
 compile_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_SRC}" "${SORT_STRINGS_MERGE_BIN}"
+
+OWNED_STRING_RETURN_CARRIER_BIN="${WORK_DIR}/owned_string_return_carrier_asan"
+compile_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_SRC}" "${OWNED_STRING_RETURN_CARRIER_BIN}"
+
+VEC_RECEIVER_DROP_ONLY_BIN="${WORK_DIR}/vec_receiver_drop_only_asan"
+compile_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_SRC}" "${VEC_RECEIVER_DROP_ONLY_BIN}"
+
+VEC_SENDER_CLONE_DROP_BIN="${WORK_DIR}/vec_sender_clone_drop_asan"
+compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_SRC}" "${VEC_SENDER_CLONE_DROP_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -523,14 +586,14 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 42 ─
+# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 43 ─
 # A real crash fires the emitted __on_crash, which clones + reads
 # CrashInfo.message and returns CrashAction::Restart. The crash-message
 # clone/drop (hew_string_clone / CrashInfo record drop) must balance the
 # supervisor's str_to_malloc/free_cstring with no double-free, no leak, no OOB.
 # Exit 42 = the restarted child's init value; any ASan/LSan finding (or a non-42
 # exit) fails the gate.
-if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 42; then
+if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 43; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))
@@ -550,16 +613,22 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gate 7–9: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
+# ── Gates 7–10: composite-drop leak-oracle shapes MUST be ASan/LSan-clean (#2488) ─
 # Each fixture exercises a merged drop mechanism that is otherwise unguarded on
 # Linux: an owned enum payload crossing the generator pump's yield send path
-# (#2439 tag-dispatched in-place drop thunk), the break-edge release of an owned
-# record on a cancelled `for await ... break` stream (#2439), and a match-arm
-# destructured call-result payload released exactly once per loop back-edge
-# (#2462/#2429). A refcount underflow in any of these would double-free a
-# String/Bytes header — invisible to macOS `leaks`, caught here by ASan. All
-# exit 0.
+# (#2439 tag-dispatched in-place drop thunk), the matching owned-record yield,
+# the break-edge release of an owned record on a cancelled
+# `for await ... break` stream (#2439), and a match-arm destructured call-result
+# payload released exactly once per loop back-edge (#2462/#2429). A refcount
+# underflow in any of these would double-free a String/Bytes header — invisible
+# to macOS `leaks`, caught here by ASan. All exit 0.
 if run_asan_fixture "composite yield (owned enum)" "${ENUM_YIELD_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "composite yield (owned record)" "${RECORD_YIELD_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))
@@ -577,7 +646,7 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gate 9: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
+# ── Gate 11: admitted fresh-producer call scrutinee MUST be ASan/LSan-clean (#2648) ─
 # The return-provenance preflight admits a fresh-through-bindings producer and
 # mints exactly one synthetic owner over the call temp. This fixture proves that
 # admit path is leak-clean under ASan; a double-mint (the #2648 double-free) would
@@ -630,6 +699,24 @@ else
   fail=$((fail + 1))
 fi
 
+if run_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "=== asan-fixture-check: ${pass} passed, ${fail} failed ==="
@@ -639,6 +726,5 @@ fi
 
 # Every verdict above is spelled out by hand, so this gate cannot enumerate an
 # empty corpus — but it CAN shrink one deleted block at a time, and "0 passed,
-# 0 failed" is a clean exit. The tracked count means dropping a leak oracle
-# takes an admission in scripts/corpus-floors.tsv rather than a quiet deletion.
-corpus_floor_assert "asan-fixture-gates" "$(( pass + fail ))"
+# 0 failed" is a clean exit, so reject an empty verdict set.
+corpus_nonempty_assert "asan-fixture-gates" "$(( pass + fail ))"

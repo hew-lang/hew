@@ -179,7 +179,7 @@ pub(crate) fn predeclare_named_layouts<'ctx>(
             &mut map,
             &mut class_owner,
             Class::Machine,
-            &format!("{}Event", layout.name),
+            &layout.event_name,
         )?;
     }
     Ok(map)
@@ -329,8 +329,10 @@ pub(crate) fn register_machine_layouts<'ctx>(
         record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
         map.insert(layout.name.clone(), machine_cg);
 
-        // The companion event enum: `<Name>Event` with event-variant payloads.
-        let event_name = format!("{}Event", layout.name);
+        // The companion event enum has its own nominal layout key.  For a
+        // generic machine this is `LifecycleEvent$$T`, not
+        // `Lifecycle$$TEvent`.
+        let event_name = layout.event_name.clone();
         let event_cg = build_tagged_union_layout(
             ctx,
             &event_name,
@@ -513,6 +515,25 @@ pub(crate) fn register_enum_layouts<'ctx>(
     Ok(())
 }
 
+/// True when `ty` is, or transitively contains (struct fields, array
+/// elements), an OPAQUE LLVM struct — a named struct whose body has not been
+/// set yet. Sizing such a type via `TargetData::get_abi_size` silently
+/// reports the opaque member as zero bytes; every consumer of this module
+/// must treat that as a hard error, never a size.
+fn basic_type_contains_opaque_struct(ty: BasicTypeEnum<'_>) -> bool {
+    match ty {
+        BasicTypeEnum::StructType(st) => {
+            st.is_opaque()
+                || st
+                    .get_field_types()
+                    .into_iter()
+                    .any(basic_type_contains_opaque_struct)
+        }
+        BasicTypeEnum::ArrayType(at) => basic_type_contains_opaque_struct(at.get_element_type()),
+        _ => false,
+    }
+}
+
 /// Shared builder for the machine-value and event-companion tagged-union
 /// LLVM types. Both share the `{ tag: iW, payload: [N x i8] }` shape
 /// described in the layout-invariants block above.
@@ -577,6 +598,23 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
                 resolve_ty(ctx, target_data, fty, record_layout_map)
             })
             .collect::<CodegenResult<Vec<_>>>()?;
+        // Fail closed on a still-opaque member ANYWHERE in this variant's
+        // field types. `get_abi_size` on a struct containing an opaque named
+        // struct reports 0 for the opaque member, silently under-sizing the
+        // payload array; the runtime then writes the member's real byte width
+        // through the undersized slot — out-of-bounds heap corruption, not a
+        // diagnostic. This is the registration-ORDER hazard the topological
+        // enum sort and the deferred machine-referencing pass exist to
+        // prevent; this guard converts any remaining (or future) ordering gap
+        // from a silent miscompile into a compile error naming the member.
+        for (fty, resolved) in field_tys.iter().zip(&variant.field_tys) {
+            if basic_type_contains_opaque_struct(*fty) {
+                return Err(CodegenError::FailClosed(format!(
+                    "tagged-union `{outer_name}` variant `{}` field of type `{resolved}`                      resolves to a still-opaque LLVM struct — its layout body is not yet                      registered, so the payload array would be under-sized (silent                      out-of-bounds corruption). Register the member's layout before this                      tagged union (dependency-ordered registration).",
+                    variant.name
+                )));
+            }
+        }
         variant_struct_tys.push(ctx.struct_type(&field_tys, false));
         variant_field_tys.push(variant.field_tys.clone());
     }
@@ -748,67 +786,30 @@ pub(crate) fn machine_layout_for_local<'a, 'ctx>(
             )));
         }
     };
-    // Generic-enum monomorphisations are registered under the mangled key
-    // (e.g. `"Option$$i64"`) by `register_enum_layouts`. When the local's
-    // type carries type args, compute the same mangled key used at
-    // registration so the lookup succeeds.
-    // WHY: bare-name lookup fails for any instantiated generic enum because
-    //   `register_enum_layouts` stores under `hir_layout.mangled_name`, not
-    //   the origin enum name. Bare lookup is correct only for monomorphic enums
-    //   (no type args) and machine/actor layouts.
-    // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
-    //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
-    let lookup_key: String = if args.is_empty() {
-        // Monomorphic enums/machines register under their bare declaration
-        // name (`register_enum_layouts` / `register_machine_layouts` key by
-        // `EnumLayout.name` = the HIR `decl.name`, which is unqualified). A
-        // Place at an IMPORTER carries the module-qualified name (`fs.IoError`)
-        // because the local's `ResolvedTy::Named` was resolved against the
-        // importing scope. Strip the `module.` prefix when the qualified key
-        // is absent but the bare name is registered, mirroring the generic-enum
-        // branch's `short_name` fallback below.
-        // WHY: without this, constructing/matching an imported enum-with-data
-        //   (e.g. `IoError` from `std::fs`/`std::net`) fails closed at codegen
-        //   even though MIR registered the layout under the bare name.
-        // WHEN-OBSOLETE: if layouts are re-keyed by `(module, name)` so the
-        //   importer's qualified lookup matches directly.
-        if fn_ctx.machine_layouts.contains_key(name) {
-            name.clone()
-        } else {
-            short_name(name).to_string()
-        }
+    // The shared tagged-union registry contains two exact, class-disjoint key
+    // families: user enums use the ordinary layout key, while executable
+    // machines (and their event companions) use the machine-class key.  Probe
+    // those two canonical projections only; neither projection shortens the
+    // nominal owner or retries by leaf name.
+    let enum_key = if args.is_empty() {
+        name.clone()
     } else {
-        // Shorten the type-arg spine for the full-outer-name key too: the
-        // registration side keys on bare args, so a raw `mangle(name, args)`
-        // carrying a qualified payload would never hit and only the short_key
-        // fallback would save it. Keying both candidates off the shortened
-        // spine removes that raw-args trap at this layout-lookup site.
-        let key = mangle_with_shortened_args(name, args);
-        if !fn_ctx.machine_layouts.contains_key(&key) {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if fn_ctx.machine_layouts.contains_key(&short_key) {
-                short_key
-            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
-                short_name(name).to_string()
-            } else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                     with type args {args:?}: mangled key `{key}` is not in \
-                     IrPipeline.machine_layouts — the monomorphisation was not registered \
-                     by `register_enum_layouts` (registration-mismatch)"
-                )));
-            }
-        } else {
-            key
-        }
+        hew_hir::mangle_layout_key(name, args)
     };
-    fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references machine `{name}` which is not \
+    fn_ctx
+        .machine_layouts
+        .get(&enum_key)
+        .or_else(|| {
+            let machine_key = hew_hir::machine_layout_key(name, args);
+            fn_ctx.machine_layouts.get(&machine_key)
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Place::MachineTag/MachineVariant references machine `{name}` which is not \
              in IrPipeline.machine_layouts — registration mismatch between MIR producer \
              and codegen"
-        ))
-    })
+            ))
+        })
 }
 
 /// Resolve the mangled `enum_layouts` registration key for a `ResolvedTy::Named`
@@ -825,6 +826,34 @@ pub(crate) fn enum_layout_key_for_ty(
     enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
 }
 
+/// The in-place drop-helper key for a tagged-union value, machines included.
+///
+/// A machine is an enum at the value-classification layer, so a machine local
+/// admitted for a scope-exit release carries the same `DropKind::EnumInPlace`
+/// as a user enum. Machines are registered in `machine_layouts` under the
+/// machine-class key rather than in `enum_layouts`, so probe that registry
+/// first — the key it yields is the same one MIR's seed scan resolves through
+/// the machine enum view, so the emitted call and the synthesised
+/// `__hew_enum_drop_inplace_<key>` body cannot drift.
+///
+/// Scoped to the in-place drop caller on purpose. The other
+/// `enum_layout_key_for_ty` consumers are indirect-enum paths gated on
+/// `is_indirect_enum`, which a machine never satisfies; keeping the machine
+/// probe here rather than in the shared resolver means those paths cannot
+/// acquire a machine key by future accident.
+pub(crate) fn inplace_drop_layout_key_for_ty(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> CodegenResult<String> {
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if fn_ctx.machine_layouts.contains_key(&machine_key) {
+            return Ok(machine_key);
+        }
+    }
+    enum_layout_key_for_ty_from(fn_ctx.enum_layouts, ty)
+}
+
 /// `enum_layout_key_for_ty` with the enum-layout slice supplied directly, for
 /// synthesis paths that resolve the key without a live `FnCtx` (e.g. the
 /// state-clone/drop synthesis pass routing an indirect-enum child field through
@@ -838,17 +867,16 @@ pub(crate) fn enum_layout_key_for_ty_from(
             "enum in-place drop: ElabDrop::ty {ty:?} is not a named enum type"
         )));
     };
-    let short = short_name(name);
     let key = if args.is_empty() {
         enum_layouts
             .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+            .find(|el| el.name == *name)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
+        let mangled = mangle_with_shortened_args(name, args);
         enum_layouts
             .iter()
-            .find(|el| el.name == mangled || el.name == *name)
+            .find(|el| el.name == mangled)
             .map(|el| el.name.clone())
     };
     key.ok_or_else(|| {
@@ -879,16 +907,11 @@ pub(crate) fn is_inline_enum_composite_shape(ty: &ResolvedTy, enum_layouts: &[En
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
-    let short = short_name(name);
     let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+        enum_layouts.iter().find(|el| el.name == *name)
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
+        let mangled = mangle_with_shortened_args(name, args);
+        enum_layouts.iter().find(|el| el.name == mangled)
     };
     let Some(layout) = layout else {
         return false;
@@ -1024,6 +1047,7 @@ pub(crate) fn collection_layout_witness(
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::Tuple { .. }
         | StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }
@@ -1050,6 +1074,10 @@ pub(crate) fn collection_layout_witness(
     })
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -1197,6 +1225,37 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     elem_llvm_ty: BasicTypeEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
+    // Exact opaque resources (including `std.net.Connection`) are affine:
+    // array-literal ingress moves the sole pointer into the Vec slot, clone is
+    // intentionally null, and the drop callback invokes the registry-carried
+    // close exactly once during `hew_vec_free_owned`'s element walk.
+    if let Some(lifecycle) = regs
+        .lifecycle_registry
+        .opaque_resource_for_ty(elem_resolved_ty)
+    {
+        return opaque_resource_vec_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            lifecycle,
+            elem_llvm_ty,
+        );
+    }
+    // `Receiver<T>` is affine and has a close protocol but no semantic clone.
+    // Its Vec descriptor is therefore clone-null/drop-present: the array
+    // literal lowering moves the sole pointer into its slot through
+    // `hew_vec_push_owned_move`, then `hew_vec_free_owned` invokes the close
+    // wrapper below. This must precede the generic thunk lookup, whose
+    // clone+drop contract is intentionally too strong for this drop-only case.
+    if matches!(
+        elem_resolved_ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Receiver),
+            ..
+        }
+    ) {
+        return receiver_vec_elem_layout_descriptor_ptr(ctx, llvm_mod, target_data, elem_llvm_ty);
+    }
     let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
@@ -1305,6 +1364,229 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    lifecycle: &hew_hir::OpaqueResourceLifecycle,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let BasicTypeEnum::PointerType(ptr_ty) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "opaque resource `{}` Vec element must lower to a pointer slot, got {elem_llvm_ty:?}",
+            lifecycle.resource_declaration.full_path()
+        )));
+    };
+    let key = hew_hir::mangle_dotted_name(lifecycle.resource_declaration.full_path());
+    let layout_name = format!("__hew_vec_elem_layout_resource_{key}_drop_only");
+    if let Some(layout) = llvm_mod.get_global(&layout_name) {
+        return Ok(layout.as_pointer_value());
+    }
+
+    let close_fn = llvm_mod
+        .get_function(&lifecycle.close_symbol)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "opaque resource `{}` Vec element has no emitted close body `{}`",
+                lifecycle.resource_declaration.full_path(),
+                lifecycle.close_symbol
+            ))
+        })?;
+    let return_ty = close_fn.get_type().get_return_type();
+    let unit_return = return_ty.is_none()
+        || return_ty.is_some_and(
+            |ty| matches!(ty, BasicTypeEnum::IntType(int_ty) if int_ty.get_bit_width() == 8),
+        );
+    if close_fn.count_params() != 1 || !unit_return {
+        return Err(CodegenError::FailClosed(format!(
+            "opaque resource `{}` Vec close `{}` must have ABI void(ptr) or Hew Unit i8(ptr), got `{}`",
+            lifecycle.resource_declaration.full_path(),
+            lifecycle.close_symbol,
+            close_fn.get_type().print_to_string().to_string()
+        )));
+    }
+
+    let drop_name = format!("__hew_vec_resource_{key}_drop_inplace");
+    let drop_fn = llvm_mod.get_function(&drop_name).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            &drop_name,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        )
+    });
+    if drop_fn.count_basic_blocks() == 0 {
+        let entry = ctx.append_basic_block(drop_fn, "entry");
+        let close_bb = ctx.append_basic_block(drop_fn, "close");
+        let done_bb = ctx.append_basic_block(drop_fn, "done");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let slot = drop_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "opaque resource Vec drop `{drop_name}` is missing its slot parameter"
+                ))
+            })?
+            .into_pointer_value();
+        let resource = builder
+            .build_load(ptr_ty, slot, "resource_slot")
+            .llvm_ctx("opaque resource Vec drop load slot")?
+            .into_pointer_value();
+        let is_null = builder
+            .build_is_null(resource, "resource_is_null")
+            .llvm_ctx("opaque resource Vec drop null guard")?;
+        builder
+            .build_conditional_branch(is_null, done_bb, close_bb)
+            .llvm_ctx("opaque resource Vec drop null branch")?;
+        builder.position_at_end(close_bb);
+        builder
+            .build_call(close_fn, &[resource.into()], "resource_close")
+            .llvm_ctx("opaque resource Vec close call")?;
+        builder
+            .build_store(slot, ptr_ty.const_null())
+            .llvm_ctx("opaque resource Vec drop clear slot")?;
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("opaque resource Vec drop join")?;
+        builder.position_at_end(done_bb);
+        builder
+            .build_return(None)
+            .llvm_ctx("opaque resource Vec drop return")?;
+    }
+
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, &layout_name);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
+}
+
+/// Emit the one clone-null descriptor shared by every
+/// `Vec<channel.Receiver<T>>` instantiation.
+///
+/// The endpoint's representation is one pointer word regardless of `T`. The
+/// runtime's move-in ABI byte-transfers that word without consulting
+/// `clone_fn`; the descriptor's drop thunk loads the slot and calls the
+/// receiver close exactly once during `hew_vec_free_owned`'s element walk.
+fn receiver_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const LAYOUT_NAME: &str = "__hew_vec_elem_layout_channel_receiver_drop_only";
+    const DROP_NAME: &str = "__hew_vec_channel_receiver_drop_inplace";
+
+    let BasicTypeEnum::PointerType(ptr_ty) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec<channel.Receiver<_>> must lower to a pointer slot, got {elem_llvm_ty:?}"
+        )));
+    };
+    if let Some(layout) = llvm_mod.get_global(LAYOUT_NAME) {
+        return Ok(layout.as_pointer_value());
+    }
+
+    let drop_fn = llvm_mod.get_function(DROP_NAME).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            DROP_NAME,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        )
+    });
+    if drop_fn.count_basic_blocks() == 0 {
+        let runtime_close = llvm_mod
+            .get_function("hew_channel_receiver_close")
+            .unwrap_or_else(|| {
+                llvm_mod.add_function(
+                    "hew_channel_receiver_close",
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(Linkage::External),
+                )
+            });
+        let entry = ctx.append_basic_block(drop_fn, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let slot = drop_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "receiver Vec drop wrapper is missing its slot parameter".to_string(),
+                )
+            })?
+            .into_pointer_value();
+        let receiver = builder
+            .build_load(ptr_ty, slot, "receiver_slot")
+            .llvm_ctx("receiver Vec drop wrapper load slot")?;
+        builder
+            .build_call(runtime_close, &[receiver.into()], "receiver_slot_close")
+            .llvm_ctx("receiver Vec drop wrapper close")?;
+        // The buffer is released immediately after the descriptor walk, but
+        // nulling preserves the close protocol's idempotent moved-from state.
+        builder
+            .build_store(slot, ptr_ty.const_null())
+            .llvm_ctx("receiver Vec drop wrapper clear slot")?;
+        builder
+            .build_return(None)
+            .llvm_ctx("receiver Vec drop wrapper return")?;
+    }
+
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, LAYOUT_NAME);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 /// Emit the release-only descriptor for boxed closure-pair Vec elements.
@@ -1503,6 +1785,10 @@ pub(crate) fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'sta
 // Byte-identical IR before and after.
 
 /// True for the W5.016 owned-element Vec runtime symbols.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2017,7 +2303,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // `LayoutManaged` (2) so the runtime's drop discipline fires; a Copy record
     // (no heap leaf) keeps Plain (0) and a null drop_fn.
     let key_drop_fn = if resolved_ty
-        .is_some_and(|rty| resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()))
+        .is_some_and(|rty| crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty))
     {
         let rty = resolved_ty.expect("heap-leaf check requires a resolved type");
         match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
@@ -2131,7 +2417,7 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
         if let Some(name) = primitive_value_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
-        if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) {
+        if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) {
             return hashmap_owned_value_layout_descriptor_ptr(fn_ctx, rty, val_ty);
         }
     }
@@ -2319,7 +2605,7 @@ fn finalize_layout_facts_against_pipeline(
     for mir_fn in &pipeline.raw_mir {
         for block in &mir_fn.blocks {
             let Terminator::Call {
-                builtin: Some(family),
+                authority: hew_mir::CallAuthority::Runtime(family),
                 args,
                 dest,
                 ..
@@ -2567,6 +2853,10 @@ pub(crate) fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) ->
 /// Recognise the two C-3a synthesis probe callees.  Distinct from the
 /// runtime-symbol predicates because they are a descriptor-synthesis seam, not
 /// a runtime ABI call.
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
@@ -2585,6 +2875,10 @@ pub(crate) fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
 /// (`hew_hashmap_get_layout` — slice-iii), or the free helpers
 /// (`*_free_layout` — actor-state drop-plan reroute handled in
 /// `drop_helper_for_kind`, slice-ii).
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -2592,6 +2886,10 @@ pub(crate) fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
         .is_some_and(|family| family.abi_shape() == RuntimeCallAbiShape::HashCollectionLayoutOp)
 }
 
+#[expect(
+    dead_code,
+    reason = "retained collection ABI classifier for the pending direct-call consolidation"
+)]
 pub(crate) fn is_hashmap_layout_get_symbol(symbol: &str) -> bool {
     use hew_types::runtime_call::{RuntimeCallAbiShape, RuntimeCallFamily};
 
@@ -3232,6 +3530,14 @@ pub(crate) fn lower_bool_vec_direct_call(
         _ => unreachable!("matched above"),
     }
 
+    // Every destination-producing arm above has now published its complete
+    // scalar or owned collection value. The caller deactivated any prior
+    // generation before entering this specialised emitter; rearm the one new
+    // generation before control reaches `next`.
+    if let Some(dest_place) = dest {
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    }
+
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
@@ -3279,11 +3585,9 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle_with_shortened_args(short_name(name), args)
+                mangle_with_shortened_args(name, args)
             };
-            if fn_ctx.record_layouts.contains_key(lookup_key.as_str())
-                || fn_ctx.record_layouts.contains_key(short_name(name))
-            {
+            if fn_ctx.record_layouts.contains_key(lookup_key.as_str()) {
                 return Ok(Some(resolve_ty(
                     fn_ctx.ctx,
                     fn_ctx.target_data,
@@ -3328,24 +3632,24 @@ fn resolved_ty_is_plain_bitcopy(
             }
             Ok(true)
         }
-        ResolvedTy::Named { name, args, .. } => {
-            if name.as_str() == "LocalPid" {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if *builtin == Some(BuiltinType::LocalPid) {
                 return Ok(true);
             }
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle_with_shortened_args(short_name(name), args)
+                mangle_with_shortened_args(name, args)
             };
-            let short_key = short_name(name);
-            let (record_key, fields) =
-                if let Some(fields) = fn_ctx.record_field_resolved_tys.get(lookup_key.as_str()) {
-                    (lookup_key.as_str(), fields)
-                } else if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short_key) {
-                    (short_key, fields)
-                } else {
-                    return Ok(false);
-                };
+            let Some(fields) = fn_ctx.record_field_resolved_tys.get(lookup_key.as_str()) else {
+                return Ok(false);
+            };
+            let record_key = lookup_key.as_str();
             if !visited_records.insert(record_key.to_string()) {
                 return Err(CodegenError::FailClosed(format!(
                     "BitCopy tuple Vec layout probe found recursive record `{record_key}`"
@@ -3399,19 +3703,14 @@ pub(crate) fn lower_vec_constructor_call(
         )
     })?;
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let ResolvedTy::Named {
-        name,
-        args: vec_args,
-        ..
-    } = dest_ty
-    else {
+    let Some(vec_args) = builtin_named_args(&dest_ty, BuiltinType::Vec) else {
         return Err(CodegenError::FailClosed(format!(
             "Vec::new dest must be Vec<T>, got {dest_ty:?}"
         )));
     };
-    if name != "Vec" || vec_args.len() != 1 {
+    if vec_args.len() != 1 {
         return Err(CodegenError::FailClosed(format!(
-            "Vec::new dest must be Vec<T>, got Named {{ name: {name:?}, args: {vec_args:?} }}"
+            "Vec::new dest must be Vec<T>, got {dest_ty:?}"
         )));
     }
     let elem_ty = &vec_args[0];
@@ -4069,7 +4368,7 @@ fn emit_insert_overwrite_key_release(
     }
     let release = match key_ty {
         ResolvedTy::String => Some(KeyRelease::StringPtr),
-        rty if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) => {
+        rty if crate::llvm::resolved_ty_carries_drop_obligation(fn_ctx, rty) => {
             match crate::thunks::owned_elem_thunk_key(fn_ctx.owned_elem_registries(), rty) {
                 Some((OwnedElemThunkKind::Record, record_key)) => Some(KeyRelease::RecordInPlace(
                     get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),
@@ -4603,6 +4902,124 @@ pub(crate) fn lower_hashmap_layout_direct_call(
     Ok(())
 }
 
+/// Compare resolved types across a layout-backed runtime ABI boundary.
+///
+/// `ResolvedTy` is the checker→HIR identity carrier: its nominal spelling has
+/// already been canonicalised to the selected declaration owner. Codegen has
+/// neither the checker import table nor lexical scope needed to decide whether
+/// a bare `Key<T>` aliases `arena.Key<T>` or is a distinct root declaration.
+/// It must therefore require exact nominal identities here. Re-applying the
+/// checker's permissive suffix rule would let malformed MIR select a layout
+/// descriptor for a same-leaf foreign owner.
+fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy) -> bool {
+    if expected == actual {
+        return true;
+    }
+    match (expected, actual) {
+        (
+            ResolvedTy::Named {
+                name: expected_name,
+                args: expected_args,
+                builtin: expected_builtin,
+                is_opaque: expected_opaque,
+            },
+            ResolvedTy::Named {
+                name: actual_name,
+                args: actual_args,
+                builtin: actual_builtin,
+                is_opaque: actual_opaque,
+            },
+        ) => {
+            expected_builtin == actual_builtin
+                && expected_opaque == actual_opaque
+                && expected_name == actual_name
+                && expected_args.len() == actual_args.len()
+                && expected_args
+                    .iter()
+                    .zip(actual_args)
+                    .all(|(left, right)| resolved_ty_matches_checked_alias(left, right))
+        }
+        (ResolvedTy::Tuple(expected), ResolvedTy::Tuple(actual)) => {
+            expected.len() == actual.len()
+                && expected
+                    .iter()
+                    .zip(actual)
+                    .all(|(left, right)| resolved_ty_matches_checked_alias(left, right))
+        }
+        (ResolvedTy::Array(expected, expected_len), ResolvedTy::Array(actual, actual_len)) => {
+            expected_len == actual_len && resolved_ty_matches_checked_alias(expected, actual)
+        }
+        (ResolvedTy::Slice(expected), ResolvedTy::Slice(actual))
+        | (ResolvedTy::Task(expected), ResolvedTy::Task(actual))
+        | (ResolvedTy::Borrow { pointee: expected }, ResolvedTy::Borrow { pointee: actual }) => {
+            resolved_ty_matches_checked_alias(expected, actual)
+        }
+        (
+            ResolvedTy::Pointer {
+                is_mutable: expected_mutable,
+                pointee: expected,
+            },
+            ResolvedTy::Pointer {
+                is_mutable: actual_mutable,
+                pointee: actual,
+            },
+        ) => {
+            expected_mutable == actual_mutable
+                && resolved_ty_matches_checked_alias(expected, actual)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod checked_alias_tests {
+    use super::*;
+
+    fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args,
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn rejects_bare_and_qualified_same_leaf_without_checker_owner_proof() {
+        let bare = ResolvedTy::Tuple(vec![
+            named("Key", vec![ResolvedTy::String]),
+            ResolvedTy::I64,
+        ]);
+        let qualified = ResolvedTy::Tuple(vec![
+            named("arena.Key", vec![ResolvedTy::String]),
+            ResolvedTy::I64,
+        ]);
+        assert!(
+            !resolved_ty_matches_checked_alias(&bare, &qualified),
+            "codegen must not reconstruct checker-only bare/qualified aliases: \
+             a root `Key` and `arena.Key` can have incompatible layouts"
+        );
+    }
+
+    #[test]
+    fn rejects_distinct_qualified_nominal_owners() {
+        let arena_key = named("arena.Key", vec![ResolvedTy::String]);
+        let other_key = named("other.Key", vec![ResolvedTy::String]);
+        assert!(!resolved_ty_matches_checked_alias(&arena_key, &other_key));
+    }
+
+    #[test]
+    fn rejects_builtin_and_user_named_collisions() {
+        let builtin = ResolvedTy::named_builtin(
+            BuiltinType::Vec.canonical_name(),
+            BuiltinType::Vec,
+            vec![ResolvedTy::I64],
+        );
+        let user = named("Vec", vec![ResolvedTy::I64]);
+        assert!(!resolved_ty_matches_checked_alias(&builtin, &user));
+    }
+}
+
 pub(crate) fn lower_hashmap_get_layout_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -4639,14 +5056,13 @@ pub(crate) fn lower_hashmap_get_layout_call(
         ResolvedTy::Named { args: ty_args, .. }
             if dest_ty.is_builtin(BuiltinType::Option)
                 && ty_args.len() == 1
-                && ty_args[0] == val_resolved => {}
+                && resolved_ty_matches_checked_alias(&val_resolved, &ty_args[0]) => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_get_layout dest must be Option<{val_resolved:?}>, got {other:?}"
             )));
         }
     }
-
     let val_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,
@@ -4665,6 +5081,9 @@ pub(crate) fn lower_hashmap_get_layout_call(
         })?;
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_get_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_get_some");
+    let initialized_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "hashmap_get_initialized");
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
@@ -4717,7 +5136,7 @@ pub(crate) fn lower_hashmap_get_layout_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_get_layout none br")?;
 
     // Some = variant 0. The runtime already cloned into the payload slot.
@@ -4725,8 +5144,15 @@ pub(crate) fn lower_hashmap_get_layout_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_get_layout some br")?;
+
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_get_layout initialized br")?;
     Ok(())
 }
 
@@ -4773,7 +5199,7 @@ pub(crate) fn lower_hashmap_remove_take_call(
         ResolvedTy::Named { args: ty_args, .. }
             if dest_ty.is_builtin(BuiltinType::Option)
                 && ty_args.len() == 1
-                && ty_args[0] == val_resolved => {}
+                && resolved_ty_matches_checked_alias(&val_resolved, &ty_args[0]) => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_remove_take_layout dest must be Option<{val_resolved:?}>, \
@@ -4781,7 +5207,6 @@ pub(crate) fn lower_hashmap_remove_take_call(
             )));
         }
     }
-
     let val_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,
@@ -4800,6 +5225,9 @@ pub(crate) fn lower_hashmap_remove_take_call(
         })?;
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "hashmap_remove_some");
+    let initialized_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "hashmap_remove_initialized");
     let next_bb = *fn_ctx
         .blocks
         .get(&next)
@@ -4850,7 +5278,7 @@ pub(crate) fn lower_hashmap_remove_take_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_remove_take_layout none br")?;
 
     // Some = variant 0. The runtime already MOVED the value into the payload.
@@ -4858,8 +5286,14 @@ pub(crate) fn lower_hashmap_remove_take_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_hashmap_remove_take_layout some br")?;
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_remove_take_layout initialized br")?;
     Ok(())
 }
 
@@ -5038,23 +5472,23 @@ pub(crate) fn lower_vec_get_clone_call(
         }
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let dest_is_option = match &dest_ty {
-        ResolvedTy::Named { args: ty_args, .. }
-            if dest_ty.is_builtin(BuiltinType::Option)
-                && ty_args.len() == 1
-                && ty_args[0] == elem_resolved =>
-        {
+    let dest_is_option = if let Some(ty_args) = builtin_named_args(&dest_ty, BuiltinType::Option) {
+        if ty_args.len() == 1 && resolved_ty_matches_checked_alias(&elem_resolved, &ty_args[0]) {
             true
-        }
-        ty if ty == &elem_resolved => false,
-        other => {
+        } else {
             return Err(CodegenError::FailClosed(format!(
                 "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
-                 {elem_resolved:?}, got {other:?}"
+                 {elem_resolved:?}, got {dest_ty:?}"
             )));
         }
+    } else if resolved_ty_matches_checked_alias(&elem_resolved, &dest_ty) {
+        false
+    } else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
+             {elem_resolved:?}, got {dest_ty:?}"
+        )));
     };
-
     let elem_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,
@@ -5114,10 +5548,19 @@ pub(crate) fn lower_vec_get_clone_call(
         let trap_bb = fn_ctx
             .ctx
             .append_basic_block(parent, "vec_index_clone_absent_trap");
+        let initialized_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "vec_index_clone_initialized");
         fn_ctx
             .builder
-            .build_conditional_branch(is_some, next_bb, trap_bb)
+            .build_conditional_branch(is_some, initialized_bb, trap_bb)
             .llvm_ctx("hew_vec_get_clone bare condbr")?;
+        fn_ctx.builder.position_at_end(initialized_bb);
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(next_bb)
+            .llvm_ctx("hew_vec_get_clone bare initialized br")?;
         fn_ctx.builder.position_at_end(trap_bb);
         emit_trap_with_code(
             fn_ctx,
@@ -5129,6 +5572,7 @@ pub(crate) fn lower_vec_get_clone_call(
 
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_some");
+    let initialized_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_initialized");
     fn_ctx
         .builder
         .build_conditional_branch(is_some, some_bb, none_bb)
@@ -5139,7 +5583,7 @@ pub(crate) fn lower_vec_get_clone_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_vec_get_clone none br")?;
 
     // Some = variant 0. The runtime already cloned into the payload slot.
@@ -5147,8 +5591,15 @@ pub(crate) fn lower_vec_get_clone_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_vec_get_clone some br")?;
+
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_vec_get_clone initialized br")?;
     Ok(())
 }
 
@@ -5165,9 +5616,10 @@ pub(crate) fn lower_vec_get_clone_call(
 ///   none_bb: tag := 1 (None); br next
 /// ```
 ///
-/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `buf`
-/// keeps its scope-exit drop. `u8` is a scalar (Copy): the `Some` payload is a
-/// by-value load — no owned clone, no drop obligation on the payload.
+/// The receiver is classified as `ReceiverOwnership::Borrows` by
+/// `callee_ownership_contract`, so `buf` keeps its scope-exit drop. `u8` is a
+/// scalar (Copy): the `Some` payload is a by-value load — no owned clone, no
+/// drop obligation on the payload.
 pub(crate) fn lower_bytes_get_option_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -5190,15 +5642,11 @@ pub(crate) fn lower_bytes_get_option_call(
         )));
     }
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::U8 => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([ResolvedTy::U8]) => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_bytes_get dest must be Option<u8>, got {other:?}"
+                "hew_bytes_get dest must be Option<u8>, got {dest_ty:?}"
             )));
         }
     }
@@ -5342,12 +5790,13 @@ pub(crate) fn lower_bytes_get_option_call(
 ///   none_bb: tag := 1 (None); br next
 /// ```
 ///
-/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `s`
-/// keeps its scope-exit drop. `char` is a scalar (Copy): the `Some` payload is
-/// a by-value codepoint load — no owned clone, no drop obligation on the
-/// payload. Unlike `bytes` (a stack `BytesTriple`), a `string` value is a
-/// single heap `*const c_char` handle, so the receiver marshals through
-/// `load_duplex_handle` exactly like the trapping `hew_string_index` arm.
+/// The receiver is classified as `ReceiverOwnership::Borrows` by
+/// `callee_ownership_contract`, so `s` keeps its scope-exit drop. `char` is a
+/// scalar (Copy): the `Some` payload is a by-value codepoint load — no owned
+/// clone, no drop obligation on the payload. Unlike `bytes` (a stack
+/// `BytesTriple`), a `string` value is a single heap `*const c_char` handle, so
+/// the receiver marshals through `load_duplex_handle` exactly like the trapping
+/// `hew_string_index` arm.
 pub(crate) fn lower_string_get_option_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -5372,15 +5821,11 @@ pub(crate) fn lower_string_get_option_call(
         )));
     }
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::Char => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([ResolvedTy::Char]) => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_string_get dest must be Option<char>, got {other:?}"
+                "hew_string_get dest must be Option<char>, got {dest_ty:?}"
             )));
         }
     }
@@ -5669,15 +6114,11 @@ pub(crate) fn lower_string_sentinel_option_call(
         }
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == expected_payload => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([payload]) if *payload == expected_payload => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "{callee} dest must be Option<{expected_payload:?}>, got {other:?}"
+                "{callee} dest must be Option<{expected_payload:?}>, got {dest_ty:?}"
             )));
         }
     }
@@ -5872,26 +6313,25 @@ pub(crate) fn lower_hashmap_constructor_call(
         ))
     })?;
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let ResolvedTy::Named {
-        name,
-        args: ty_args,
-        ..
-    } = dest_ty
-    else {
+    let runtime_symbol = hashmap_constructor_runtime_symbol(callee)?;
+    let expected_builtin = match runtime_symbol {
+        "hew_hashmap_new_with_layout" => BuiltinType::HashMap,
+        "hew_hashset_new_with_layout" => BuiltinType::HashSet,
+        _ => unreachable!("guarded by hashmap_constructor_runtime_symbol"),
+    };
+    let Some(ty_args) = builtin_named_args(&dest_ty, expected_builtin) else {
         return Err(CodegenError::FailClosed(format!(
-            "{callee} dest must be a Named HashMap<K,V>/HashSet<T>, got {dest_ty:?}"
+            "{callee} dest must carry builtin {expected_builtin:?} identity, got {dest_ty:?}"
         )));
     };
-
-    let runtime_symbol = hashmap_constructor_runtime_symbol(callee)?;
     let fv = get_or_declare_hashmap_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
 
     let call = match runtime_symbol {
         "hew_hashmap_new_with_layout" => {
-            if name != "HashMap" || ty_args.len() != 2 {
+            if ty_args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_hashmap_new_with_layout dest must be HashMap<K,V>, \
-                     got Named {{ name: {name:?}, args: {ty_args:?} }}"
+                     got {dest_ty:?}"
                 )));
             }
             let key_resolved = &ty_args[0];
@@ -5922,10 +6362,10 @@ pub(crate) fn lower_hashmap_constructor_call(
                 .llvm_ctx("hew_hashmap_new_with_layout call")?
         }
         "hew_hashset_new_with_layout" => {
-            if name != "HashSet" || ty_args.len() != 1 {
+            if ty_args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_hashset_new_with_layout dest must be HashSet<T>, \
-                     got Named {{ name: {name:?}, args: {ty_args:?} }}"
+                     got {dest_ty:?}"
                 )));
             }
             let elem_resolved = &ty_args[0];

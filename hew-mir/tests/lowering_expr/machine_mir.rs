@@ -10,29 +10,91 @@ use hew_hir::ResourceMarker as HirResourceMarker;
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
-    ResolvedRef, ValueClass,
+    MachineMonoEntry, MachineMonoKey, ResolvedRef, TypeClassTable, ValueClass,
 };
 use hew_mir::{
     lower_hir_module, FunctionCallConv, Instr, Place, SourceOrigin, Terminator, TrapKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 use std::collections::{BTreeSet, HashMap};
 
 const MACHINE_SELF_BINDING: BindingId = BindingId(u32::MAX);
 
-fn empty_module(items: Vec<HirItem>) -> HirModule {
+fn machine_step_symbol(name: &str, args: &[ResolvedTy]) -> String {
+    format!("{}__step", hew_hir::machine_layout_key(name, args))
+}
+
+fn lower_checked_source(source: &str) -> (HirModule, hew_mir::IrPipeline) {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let typecheck = checker.check_program(&parsed.program);
+    assert!(
+        typecheck.errors.is_empty(),
+        "type errors: {:#?}",
+        typecheck.errors
+    );
+    let lowered = hew_hir::lower_program(
+        &parsed.program,
+        &typecheck,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let pipeline = lower_hir_module(&lowered.module);
+    (lowered.module, pipeline)
+}
+
+fn empty_module(mut items: Vec<HirItem>) -> HirModule {
+    // Hand-built HIR must carry the same complete table that production HIR
+    // emits.  Use `i64` only for the legacy generic fixture; dedicated tests
+    // below assert arbitrary concrete instance keys.
+    for (index, item) in items.iter_mut().enumerate() {
+        if let HirItem::Machine(machine) = item {
+            machine.id = hew_hir::ItemId(u32::try_from(index).expect("test item index fits u32"));
+        }
+    }
+    let machine_instantiations = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Machine(machine) => Some(MachineMonoEntry {
+                key: MachineMonoKey::new(
+                    machine.id,
+                    machine.qualified_name(),
+                    if machine.type_params.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![ResolvedTy::I64; machine.type_params.len()]
+                    },
+                ),
+                source_span: machine.span.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
     HirModule {
         items,
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),
         record_layouts: vec![],
         enum_layouts: vec![],
-        machine_instantiations: vec![],
+        machine_instantiations,
         supervisor_child_slots: HashMap::default(),
         pool_accessor_sites: HashMap::default(),
         regex_literals: vec![],
@@ -136,6 +198,65 @@ fn transition_body(machine_name: &str, target_idx: usize, emits: &[usize]) -> Hi
     }
 }
 
+/// A transition body that constructs `target_idx` while MOVING one payload
+/// field out of the source state (`Target { field: self.field }`) — the
+/// carry-through shape whose field must NOT be released by the source.
+fn transition_body_carrying_field(
+    machine_name: &str,
+    target_idx: usize,
+    emits: &[usize],
+    field: (&str, usize, usize, ResolvedTy),
+) -> HirExpr {
+    let (field_name, source_state_idx, field_idx, field_ty) = field;
+    let machine_ty = ResolvedTy::Named {
+        name: machine_name.to_string(),
+        args: vec![],
+        builtin: None,
+        is_opaque: false,
+    };
+    let read_field = HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: field_ty,
+        value_class: ValueClass::AffineResource,
+        intent: IntentKind::Consume,
+        kind: HirExprKind::MachineFieldAccess {
+            machine_name: machine_name.to_string(),
+            state_idx: source_state_idx,
+            field_idx,
+            field_name: field_name.to_string(),
+            source_anchor: None,
+        },
+        span: 0..0,
+    };
+    let ctor = HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: machine_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::MachineVariantCtor {
+            machine_name: machine_name.to_string(),
+            state_idx: target_idx,
+            payload: Some(vec![(field_name.to_string(), read_field)]),
+        },
+        span: 0..0,
+    };
+    HirExpr {
+        node: hew_hir::HirNodeId(0),
+        site: hew_hir::SiteId(0),
+        ty: machine_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Block(hir_block(
+            emits.iter().copied().map(machine_emit_stmt).collect(),
+            Some(ctor),
+            machine_ty,
+        )),
+        span: 0..0,
+    }
+}
+
 fn make_state(name: &str) -> HirMachineState {
     HirMachineState {
         name: name.to_string(),
@@ -207,6 +328,7 @@ fn traffic_light_machine() -> HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
         name: "TrafficLight".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![make_state("Red"), make_state("Green")],
@@ -225,6 +347,7 @@ fn traffic_light_with_wildcard_machine() -> HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
         name: "TrafficLight".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![make_state("Red"), make_state("Green")],
@@ -243,6 +366,7 @@ fn generic_lifecycle_machine() -> HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
         name: "Lifecycle".to_string(),
+        defining_module: None,
         type_params: vec!["T".to_string()],
         type_param_bounds: Vec::new(),
         states: vec![make_state("Idle"), make_state("Running")],
@@ -323,6 +447,7 @@ fn transition_bodies_entry_exit_reenter() {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
         name: "Lifecycle".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![idle, active],
@@ -351,8 +476,8 @@ fn transition_bodies_entry_exit_reenter() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "Lifecycle__step")
-        .expect("Lifecycle__step synthesised");
+        .find(|f| f.name == machine_step_symbol("Lifecycle", &[]))
+        .expect("Lifecycle machine step synthesised");
     assert_eq!(step_fn.return_ty, machine_ty);
 
     let block_emit_indices = |needle| {
@@ -483,6 +608,7 @@ fn resource_field_transition_out_drops() {
     const BODY_TO_IDLE: usize = 4;
     const BODY_REENTER: usize = 5;
     const BODY_FINISH: usize = 6;
+    const BODY_CARRY: usize = 7;
 
     let handle_ty = named_ty("FileHandle");
     let holding = make_state_with_fields(
@@ -511,10 +637,23 @@ fn resource_field_transition_out_drops() {
     let mut finish = make_transition("ResourceMachine", "Finish", "Idle", "Done", 2);
     finish.body = transition_body("ResourceMachine", 2, &[BODY_FINISH]);
 
+    // `on Carry: Holding => Holding reenter { Holding { handle: self.handle } }`
+    // — the carry-through shape. The body MOVES the source payload into the
+    // state it builds, so the source has nothing left to release.
+    let mut carry = make_transition("ResourceMachine", "Carry", "Holding", "Holding", 0);
+    carry.reenter = true;
+    carry.body = transition_body_carrying_field(
+        "ResourceMachine",
+        0,
+        &[BODY_CARRY],
+        ("handle", 0, 0, handle_ty.clone()),
+    );
+
     let machine = HirMachineDecl {
         id: hew_hir::ItemId(0),
         node: hew_hir::HirNodeId(0),
         name: "ResourceMachine".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![holding.clone(), idle, done],
@@ -526,8 +665,10 @@ fn resource_field_transition_out_drops() {
             make_event("BodyToIdle"),
             make_event("BodyReenter"),
             make_event("BodyFinish"),
+            make_event("BodyCarry"),
+            make_event("Carry"),
         ],
-        transitions: vec![to_idle, stay, reenter, finish],
+        transitions: vec![to_idle, stay, reenter, finish, carry],
         has_default: false,
         span: 0..0,
     };
@@ -538,6 +679,7 @@ fn resource_field_transition_out_drops() {
         name: "FileHandle".to_string(),
         defining_module: None,
         type_params: Vec::new(),
+        positional_field_tys: Vec::new(),
         fields: vec![HirField {
             name: "raw".to_string(),
             ty: ResolvedTy::I64,
@@ -565,8 +707,8 @@ fn resource_field_transition_out_drops() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "ResourceMachine__step")
-        .expect("ResourceMachine__step synthesised");
+        .find(|f| f.name == machine_step_symbol("ResourceMachine", &[]))
+        .expect("ResourceMachine machine step synthesised");
 
     let block_containing_emit = |needle| {
         step_fn
@@ -659,22 +801,34 @@ fn resource_field_transition_out_drops() {
         holding_resource_places,
         "lattice-correct: dropped places equal source variant @resource fields"
     );
+    // The transition-out drop now follows the body rather than preceding it.
+    // The body is the only thing that can move a payload field out of the
+    // source state, so the release has to be able to see what it took: a
+    // release emitted first closed the handle a carry-through body then moved
+    // into the state it built. Nothing else in the arm depends on the old
+    // order — the drop addresses the SOURCE local's payload while the tag write
+    // it now follows targets the freshly constructed value's own local.
     assert!(
-        first_drop_index(BODY_TO_IDLE) < first_tag_write_index(BODY_TO_IDLE),
-        "transition-out drop precedes target tag write"
+        first_drop_index(BODY_TO_IDLE) > first_tag_write_index(BODY_TO_IDLE),
+        "transition-out drop follows the body that could have moved the payload out"
     );
     assert_eq!(
         drops_in_block(BODY_REENTER),
         expected_source_resource_places(0),
-        "@reenter self-transition drops source variant resources"
+        "@reenter self-transition drops source variant resources the body did not take"
     );
     assert!(
-        first_drop_index(BODY_REENTER) < first_tag_write_index(BODY_REENTER),
-        "@reenter drop precedes re-construction tag write"
+        first_drop_index(BODY_REENTER) > first_tag_write_index(BODY_REENTER),
+        "@reenter drop follows the re-construction that could have moved the payload out"
     );
     assert!(
         drops_in_block(BODY_FINISH).is_empty(),
         "transition between non-resource states emits no drops"
+    );
+    assert!(
+        drops_in_block(BODY_CARRY).is_empty(),
+        "a body that carries the source payload into the state it builds emits no \
+         transition-out drop: the field moved, so the target owns it"
     );
 
     let self_persist_blocks: Vec<_> = step_fn
@@ -714,9 +868,9 @@ fn resource_field_transition_out_drops() {
         ),
         format!("Holding @resource-set: {holding_resource_places:?}"),
         format!(
-            "Holding->Idle order: drop@{} < tag@{}",
-            first_drop_index(BODY_TO_IDLE),
-            first_tag_write_index(BODY_TO_IDLE)
+            "Holding->Idle order: tag@{} < drop@{}",
+            first_tag_write_index(BODY_TO_IDLE),
+            first_drop_index(BODY_TO_IDLE)
         ),
         "Holding->Holding default { self } drops: []".to_string(),
         format!(
@@ -724,11 +878,15 @@ fn resource_field_transition_out_drops() {
             drop_summaries(BODY_REENTER)
         ),
         format!(
-            "Holding->Holding @reenter order: drop@{} < tag@{}",
-            first_drop_index(BODY_REENTER),
-            first_tag_write_index(BODY_REENTER)
+            "Holding->Holding @reenter order: tag@{} < drop@{}",
+            first_tag_write_index(BODY_REENTER),
+            first_drop_index(BODY_REENTER)
         ),
         format!("Idle->Done drops: {:?}", drop_summaries(BODY_FINISH)),
+        format!(
+            "Holding->Holding @reenter carrying self.handle drops: {:?}",
+            drop_summaries(BODY_CARRY)
+        ),
     ];
     assert_eq!(
         snapshot,
@@ -736,11 +894,12 @@ fn resource_field_transition_out_drops() {
             "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
             "Holding->Idle dropped-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
             "Holding @resource-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
-            "Holding->Idle order: drop@0 < tag@3",
+            "Holding->Idle order: tag@2 < drop@4",
             "Holding->Holding default { self } drops: []",
             "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
-            "Holding->Holding @reenter order: drop@0 < tag@3",
+            "Holding->Holding @reenter order: tag@2 < drop@4",
             "Idle->Done drops: []",
+            "Holding->Holding @reenter carrying self.handle drops: []",
         ],
         "machine transition-out resource-drop snapshot"
     );
@@ -761,16 +920,17 @@ fn machine_decl_synthesises_step_function_symbol() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
+        .find(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .expect("synthesised <Name>__step function must be present in raw_mir");
     assert_eq!(
-        step_fn.name, "TrafficLight__step",
+        step_fn.name,
+        machine_step_symbol("TrafficLight", &[]),
         "step function symbol uses double-underscore-step mangling"
     );
     assert_eq!(
         step_fn.source_origin,
         SourceOrigin::SynthesizedMachineStep {
-            machine_name: "TrafficLight".to_string(),
+            machine_name: hew_hir::machine_layout_key("TrafficLight", &[]),
         }
     );
 }
@@ -784,7 +944,7 @@ fn synthesised_step_signature_is_self_event_returning_self() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
+        .find(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .expect("synthesised step function present");
 
     let self_ty = ResolvedTy::Named {
@@ -828,7 +988,7 @@ fn synthesised_step_body_contains_dispatch_tree_with_trap_fallthrough() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
+        .find(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .expect("synthesised step function present");
 
     assert!(
@@ -863,7 +1023,7 @@ fn synthesised_step_locals_match_parameter_prologue_convention() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
+        .find(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .expect("synthesised step function present");
 
     // Parameter locals occupy the low indices in declaration order; codegen
@@ -886,7 +1046,7 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "Lifecycle__step")
+        .find(|f| f.name == machine_step_symbol("Lifecycle", &[ResolvedTy::I64]))
         .expect("synthesised step function present for generic machine");
 
     // The executable generic-machine substrate currently defaults machine
@@ -901,6 +1061,18 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
     assert_eq!(step_fn.params[0], expected_self);
     assert_eq!(step_fn.return_ty, expected_self);
 
+    let layout_key = hew_hir::machine_layout_key("Lifecycle", &[ResolvedTy::I64]);
+    let layout = pipeline
+        .machine_layouts
+        .iter()
+        .find(|layout| layout.name == layout_key)
+        .expect("one concrete Lifecycle<i64> layout");
+    assert_eq!(
+        layout.event_name,
+        hew_hir::machine_layout_key("LifecycleEvent", &[ResolvedTy::I64]),
+        "event companion uses its own canonical machine key"
+    );
+
     // The companion event enum mirrors the machine type arguments.
     assert_eq!(
         step_fn.params[1],
@@ -914,6 +1086,131 @@ fn generic_machine_preserves_type_params_in_synthesised_signature() {
 }
 
 #[test]
+fn generic_machine_record_fields_preserve_concrete_identity_through_mir() {
+    let source = r"
+machine Lifecycle<T> {
+    events { Tick; }
+    state Start;
+    state End;
+    on Tick: Start => End { End }
+    on Tick: _ => _ { state }
+}
+
+type Inner { lifecycle: Lifecycle<i64> }
+type Outer { inner: Inner }
+
+fn main() {
+    let outer = Outer { inner: Inner { lifecycle: Lifecycle::Start } };
+    println(1);
+}
+
+";
+    let (hir, pipeline) = lower_checked_source(source);
+    let expected = hew_hir::machine_layout_key("Lifecycle", &[ResolvedTy::I64]);
+    let lifecycle = hir
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Machine(machine) if machine.name == "Lifecycle" => Some(machine),
+            _ => None,
+        })
+        .expect("Lifecycle machine must be present in HIR");
+    let transition_body = &lifecycle.transitions[0].body;
+    let transition_ctor = match &transition_body.kind {
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .expect("transition block has state-constructor tail"),
+        _ => transition_body,
+    };
+    assert!(matches!(
+        &transition_ctor.ty,
+        ResolvedTy::Named { name, args, .. }
+            if name == "Lifecycle"
+                && matches!(args.as_slice(), [ResolvedTy::Named { name, args, .. }]
+                    if name == "T" && args.is_empty())
+    ), "HIR state constructors must retain the machine's symbolic generic args: {transition_ctor:#?}");
+    assert!(
+        hir.machine_instantiations
+            .iter()
+            .any(|entry| entry.key.origin_name == "Lifecycle"
+                && entry.key.type_args == [ResolvedTy::I64]),
+        "HIR machine-mono must publish the concrete Lifecycle<i64> entry: {:#?}",
+        hir.machine_instantiations
+    );
+    assert!(
+        pipeline
+            .machine_layouts
+            .iter()
+            .any(|layout| layout.name == expected),
+        "MIR must consume that entry into the exact class-keyed layout: {:#?}",
+        pipeline.machine_layouts
+    );
+    let step = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == machine_step_symbol("Lifecycle", &[ResolvedTy::I64]))
+        .expect("concrete Lifecycle<i64> step function");
+    assert!(
+        !step.locals.iter().any(|ty| matches!(
+            ty,
+            ResolvedTy::Named { name, args, .. } if name == "Lifecycle" && args.is_empty()
+        )),
+        "MIR step locals must not erase Lifecycle<i64> to bare Lifecycle: {:#?}",
+        step.locals
+    );
+    let inner = pipeline
+        .record_layouts
+        .iter()
+        .find(|layout| layout.name == "Inner")
+        .expect("Inner record layout");
+    assert!(matches!(
+        inner.field_tys.as_slice(),
+        [ResolvedTy::Named { name, args, .. }]
+            if name == "Lifecycle" && args.as_slice() == [ResolvedTy::I64]
+    ));
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "direct and nested record fields must classify without a named-type miss: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn same_leaf_generic_machines_from_distinct_modules_get_disjoint_layouts() {
+    let mut left = generic_lifecycle_machine();
+    left.defining_module = Some("left".to_string());
+    let mut right = generic_lifecycle_machine();
+    right.defining_module = Some("right".to_string());
+
+    let pipeline = lower_hir_module(&empty_module(vec![
+        HirItem::Machine(left),
+        HirItem::Machine(right),
+    ]));
+    let left_key = hew_hir::machine_layout_key("left.Lifecycle", &[ResolvedTy::I64]);
+    let right_key = hew_hir::machine_layout_key("right.Lifecycle", &[ResolvedTy::I64]);
+    assert_ne!(left_key, right_key, "qualified owners must remain distinct");
+    let keys: std::collections::HashSet<&str> = pipeline
+        .machine_layouts
+        .iter()
+        .map(|layout| layout.name.as_str())
+        .collect();
+    assert!(
+        keys.contains(left_key.as_str()),
+        "missing left instance: {keys:?}"
+    );
+    assert!(
+        keys.contains(right_key.as_str()),
+        "missing right instance: {keys:?}"
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "same-leaf machines must not collide by short name: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
 fn synthesised_step_function_emitted_once_per_machine_decl() {
     let pipeline = lower_hir_module(&empty_module(vec![
         HirItem::Machine(traffic_light_machine()),
@@ -923,12 +1220,12 @@ fn synthesised_step_function_emitted_once_per_machine_decl() {
     let traffic_step_count = pipeline
         .raw_mir
         .iter()
-        .filter(|f| f.name == "TrafficLight__step")
+        .filter(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .count();
     let lifecycle_step_count = pipeline
         .raw_mir
         .iter()
-        .filter(|f| f.name == "Lifecycle__step")
+        .filter(|f| f.name == machine_step_symbol("Lifecycle", &[ResolvedTy::I64]))
         .count();
 
     assert_eq!(traffic_step_count, 1, "exactly one step fn per machine");
@@ -959,7 +1256,7 @@ fn step_shell_signature_and_switch_shape() {
     let step_fn = pipeline
         .raw_mir
         .iter()
-        .find(|f| f.name == "TrafficLight__step")
+        .find(|f| f.name == machine_step_symbol("TrafficLight", &[]))
         .expect("step function present");
 
     let self_ty = ResolvedTy::Named {
@@ -1145,8 +1442,9 @@ fn step_shell_signature_and_switch_shape() {
     );
     let layout = &pipeline.machine_layouts[0];
     assert_eq!(
-        layout.name, "TrafficLight",
-        "layout name matches machine declaration"
+        layout.name,
+        hew_hir::machine_layout_key("TrafficLight", &[]),
+        "layout name is the machine-mono identity key"
     );
     // TrafficLight has 2 states: tag_width = max(1, ceil(log2(2))) = 1.
     assert_eq!(

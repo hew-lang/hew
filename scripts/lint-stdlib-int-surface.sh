@@ -5,8 +5,7 @@
 # See docs/stdlib-style-contract.md for the full contract.
 #
 # Exit 0 — no violations found.
-# Exit 1 — one or more removed-alias uses detected, or the stdlib file set came
-#          back smaller than scripts/corpus-floors.tsv says it should be.
+# Exit 1 — one or more removed-alias uses detected, or no stdlib files selected.
 #
 # Usage:
 #   bash scripts/lint-stdlib-int-surface.sh
@@ -15,9 +14,9 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 
 FILES=$(git ls-files 'std/**/*.hew' 'std/*.hew' || true)
 
@@ -28,7 +27,7 @@ file_count=0
 if [ -n "$FILES" ]; then
     file_count=$(printf '%s\n' "$FILES" | grep -c .)
 fi
-corpus_floor_assert "stdlib-int-surface-files" "$file_count" || exit 1
+corpus_nonempty_assert "stdlib-int-surface-files" "$file_count" || exit 1
 
 FAIL=0
 

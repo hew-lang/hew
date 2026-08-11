@@ -19,6 +19,52 @@ fn row_ty() -> ResolvedTy {
     ResolvedTy::named_user("Row", vec![])
 }
 
+fn scope(parent: Option<ScopeId>) -> ScopeInfoEntry {
+    ScopeInfoEntry {
+        parent,
+        min_start: 0,
+        max_end: 0,
+    }
+}
+
+#[test]
+fn payload_handoff_scope_order_accepts_only_same_or_lexically_nested_destinations() {
+    let root = ScopeId(10);
+    let child = ScopeId(20);
+    let grandchild = ScopeId(30);
+    let unrelated = ScopeId(40);
+    let cycle_a = ScopeId(50);
+    let cycle_b = ScopeId(60);
+    let cycle_c = ScopeId(70);
+    let scope_info = [
+        (root, scope(None)),
+        (child, scope(Some(root))),
+        (grandchild, scope(Some(child))),
+        (unrelated, scope(None)),
+        (cycle_a, scope(Some(cycle_b))),
+        (cycle_b, scope(Some(cycle_c))),
+        (cycle_c, scope(Some(cycle_a))),
+    ]
+    .into_iter()
+    .collect();
+
+    assert!(scope_is_same_or_nested(root, root, &scope_info));
+    assert!(scope_is_same_or_nested(child, root, &scope_info));
+    assert!(scope_is_same_or_nested(grandchild, root, &scope_info));
+    assert!(!scope_is_same_or_nested(root, child, &scope_info));
+    assert!(!scope_is_same_or_nested(unrelated, root, &scope_info));
+    assert!(!scope_is_same_or_nested(ScopeId(80), root, &scope_info));
+    assert!(!scope_is_same_or_nested(
+        ScopeId(80),
+        ScopeId(80),
+        &scope_info
+    ));
+    assert!(!scope_is_same_or_nested(cycle_a, root, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_a, cycle_b, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_b, cycle_a, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_a, cycle_a, &scope_info));
+}
+
 fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
     let b = BindingId(1);
     let owned = vec![(b, "o".to_string(), opt_ty())];
@@ -78,9 +124,14 @@ fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
         &binding_locals,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         &local_tys,
         &record_field_orders,
         &enum_layouts,
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
         &HashMap::new(),
         &HashSet::new(),
         &HashSet::new(),
@@ -100,6 +151,588 @@ fn payload_destructure() -> Instr {
             field_idx: 0,
         },
     }
+}
+
+fn derive_string_payload_handoff(instructions: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
+    let parent = BindingId(20);
+    let payload = BindingId(21);
+    let copy = BindingId(22);
+    let box_ty = ResolvedTy::named_user("TextBox", vec![]);
+    let binding_locals = HashMap::from([
+        (parent, Place::Local(0)),
+        (payload, Place::Local(1)),
+        (copy, Place::Local(2)),
+    ]);
+    let binding_scope = HashMap::from([
+        (parent, ScopeId(1)),
+        (payload, ScopeId(2)),
+        (copy, ScopeId(3)),
+    ]);
+    let layouts = vec![crate::model::EnumLayout {
+        name: "TextBox".to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Text".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let allowed = derive_enum_composite_drop_allowed(
+        &[BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }],
+        &HashMap::new(),
+        &[(parent, "box".to_string(), box_ty.clone())],
+        &binding_locals,
+        &binding_scope,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[box_ty, ResolvedTy::String, ResolvedTy::String],
+        &HashMap::new(),
+        &layouts,
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        &crate::return_provenance::ExternContractTable::default(),
+    );
+    (parent, allowed)
+}
+
+#[test]
+fn exact_retained_string_payload_handoff_keeps_parent_drop() {
+    let (parent, allowed) = derive_string_payload_handoff(vec![
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        },
+        Instr::StringRetain {
+            value: Place::Local(1),
+            condition: StringRetainCondition::Always,
+        },
+        Instr::Move {
+            dest: Place::Local(2),
+            src: Place::Local(1),
+        },
+    ]);
+    assert!(
+        allowed.contains(&parent),
+        "the parent still owns the original payload ref after the retained copy"
+    );
+}
+
+#[test]
+fn mismatched_string_payload_retain_stays_fail_closed() {
+    let (parent, allowed) = derive_string_payload_handoff(vec![
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        },
+        Instr::StringRetain {
+            value: Place::Local(2),
+            condition: StringRetainCondition::Always,
+        },
+        Instr::Move {
+            dest: Place::Local(2),
+            src: Place::Local(1),
+        },
+    ]);
+    assert!(
+        !allowed.contains(&parent),
+        "a mismatched retain cannot prove that the escaping payload handoff is independent"
+    );
+}
+
+#[test]
+fn proven_borrow_payload_call_keeps_the_enum_shell_owner() {
+    let parent = BindingId(20);
+    let payload = BindingId(21);
+    let box_ty = ResolvedTy::named_user("TextBox", vec![]);
+    let binding_locals = HashMap::from([(parent, Place::Local(0)), (payload, Place::Local(1))]);
+    let binding_scope = HashMap::from([(parent, ScopeId(1)), (payload, ScopeId(2))]);
+    let layouts = vec![crate::model::EnumLayout {
+        name: "TextBox".to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Text".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let blocks = [BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        }],
+        terminator: Terminator::Call {
+            callee: "inspect".to_string(),
+            authority: crate::model::CallAuthority::default(),
+            args: vec![Place::Local(1)],
+            dest: None,
+            next: 1,
+        },
+    }];
+    let derive = |proven_borrow_call_args: &HashMap<u32, HashSet<usize>>| {
+        derive_enum_composite_drop_allowed(
+            &blocks,
+            &HashMap::new(),
+            &[(parent, "box".to_string(), box_ty.clone())],
+            &binding_locals,
+            &binding_scope,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[box_ty.clone(), ResolvedTy::String],
+            &HashMap::new(),
+            &layouts,
+            &hew_hir::TypeClassTable::default(),
+            &[],
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+            proven_borrow_call_args,
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+        )
+    };
+
+    let proven = HashMap::from([(0, HashSet::from([0]))]);
+    assert!(
+        derive(&proven).contains(&parent),
+        "a proven read-only payload call leaves the enum shell as the sole owner"
+    );
+    assert!(
+        !derive(&HashMap::new()).contains(&parent),
+        "an unproven payload call must remain an ownership escape"
+    );
+}
+
+fn bytes_box_ty() -> ResolvedTy {
+    ResolvedTy::named_user("BytesBox", vec![])
+}
+
+fn bytes_box_layout() -> crate::model::EnumLayout {
+    crate::model::EnumLayout {
+        name: "BytesBox".to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Data".to_string(),
+                field_tys: vec![ResolvedTy::Bytes],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }
+}
+
+fn bytes_payload_load() -> Instr {
+    Instr::Move {
+        dest: Place::Local(1),
+        src: Place::EnumVariant {
+            local: 0,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    }
+}
+
+fn bytes_payload_handoff() -> Instr {
+    Instr::Move {
+        dest: Place::Local(2),
+        src: Place::Local(1),
+    }
+}
+
+fn test_block(instructions: Vec<Instr>, terminator: Terminator) -> BasicBlock {
+    BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions,
+        terminator,
+    }
+}
+
+fn derive_bytes_payload_parent(instructions: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
+    let parent = BindingId(20);
+    let payload = BindingId(21);
+    let copy = BindingId(22);
+    let box_ty = bytes_box_ty();
+    let binding_locals = HashMap::from([
+        (parent, Place::Local(0)),
+        (payload, Place::Local(1)),
+        (copy, Place::Local(2)),
+    ]);
+    // The destination deliberately lives in a nested lexical scope. Without a
+    // corroborated retain this is an escaping payload handoff and the parent
+    // must stay excluded.
+    let binding_scope = HashMap::from([
+        (parent, ScopeId(1)),
+        (payload, ScopeId(2)),
+        (copy, ScopeId(3)),
+    ]);
+    let allowed = derive_enum_composite_drop_allowed(
+        &[BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }],
+        &HashMap::new(),
+        &[(parent, "box".to_string(), box_ty.clone())],
+        &binding_locals,
+        &binding_scope,
+        &HashMap::new(),
+        &HashMap::new(),
+        &[box_ty, ResolvedTy::Bytes, ResolvedTy::Bytes],
+        &HashMap::new(),
+        &[bytes_box_layout()],
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        &crate::return_provenance::ExternContractTable::default(),
+    );
+    (parent, allowed)
+}
+
+#[test]
+fn exact_retained_bytes_payload_handoff_keeps_parent_drop() {
+    let (parent, allowed) = derive_bytes_payload_parent(vec![
+        bytes_payload_load(),
+        Instr::BytesRetain {
+            value: Place::Local(1),
+        },
+        bytes_payload_handoff(),
+    ]);
+    assert!(
+        allowed.contains(&parent),
+        "the parent balances the original ref while the retained destination owns its +1"
+    );
+}
+
+#[test]
+fn unretained_or_mismatched_bytes_payload_handoff_stays_fail_closed() {
+    for (label, instructions) in [
+        (
+            "unretained",
+            vec![bytes_payload_load(), bytes_payload_handoff()],
+        ),
+        (
+            "mismatched",
+            vec![
+                bytes_payload_load(),
+                Instr::BytesRetain {
+                    value: Place::Local(2),
+                },
+                bytes_payload_handoff(),
+            ],
+        ),
+    ] {
+        let (parent, allowed) = derive_bytes_payload_parent(instructions);
+        assert!(
+            !allowed.contains(&parent),
+            "{label} payload copy cannot preserve the parent's competing drop"
+        );
+    }
+}
+
+#[test]
+fn exact_bytes_payload_handoff_site_is_proven() {
+    let copy = BindingId(22);
+    let candidates = HashMap::from([(2, copy)]);
+    let bindings = HashSet::from([1, 2]);
+    let bytes_tys = vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::Bytes];
+    let exact = vec![test_block(
+        vec![bytes_payload_load(), bytes_payload_handoff()],
+        Terminator::Return,
+    )];
+    assert_eq!(
+        provable_bytes_payload_handoff_sites(&exact, &bytes_tys, &candidates, &bindings),
+        HashMap::from([(
+            (0, 1),
+            BytesPayloadHandoff {
+                source: Place::Local(1),
+                dest_local: 2,
+                dest_binding: copy,
+            },
+        )])
+    );
+}
+
+#[test]
+fn bytes_payload_handoff_proof_rejects_reuse_gap_cycle_and_wrong_type() {
+    let copy = BindingId(22);
+    let candidates = HashMap::from([(2, copy)]);
+    let bindings = HashSet::from([1, 2]);
+    let bytes_tys = vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::Bytes];
+    let cases = [
+        (
+            "nonadjacent",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    Instr::UnitLit {
+                        dest: Place::Local(3),
+                    },
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+            vec![
+                bytes_box_ty(),
+                ResolvedTy::Bytes,
+                ResolvedTy::Bytes,
+                ResolvedTy::Unit,
+            ],
+        ),
+        (
+            "multiply-written destination",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    bytes_payload_handoff(),
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+            bytes_tys.clone(),
+        ),
+        (
+            "multiply-written source",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    bytes_payload_load(),
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+            bytes_tys.clone(),
+        ),
+        (
+            "terminator overwrite",
+            vec![
+                test_block(
+                    vec![bytes_payload_load(), bytes_payload_handoff()],
+                    Terminator::Call {
+                        callee: "produce".to_string(),
+                        authority: crate::model::CallAuthority::default(),
+                        args: vec![],
+                        dest: Some(Place::Local(2)),
+                        next: 1,
+                    },
+                ),
+                BasicBlock {
+                    id: 1,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ],
+            bytes_tys.clone(),
+        ),
+        (
+            "cyclic generation",
+            vec![test_block(
+                vec![bytes_payload_load(), bytes_payload_handoff()],
+                Terminator::Goto { target: 0 },
+            )],
+            bytes_tys.clone(),
+        ),
+        (
+            "wrong destination type",
+            vec![test_block(
+                vec![bytes_payload_load(), bytes_payload_handoff()],
+                Terminator::Return,
+            )],
+            vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::String],
+        ),
+    ];
+    for (label, blocks, local_tys) in cases {
+        assert!(
+            provable_bytes_payload_handoff_sites(&blocks, &local_tys, &candidates, &bindings)
+                .is_empty(),
+            "{label} must preserve projection taint and emit no ownership proof"
+        );
+    }
+}
+
+#[test]
+fn exact_bytes_retain_move_is_corroborated() {
+    let bytes_tys = vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::Bytes];
+    let retain = Instr::BytesRetain {
+        value: Place::Local(1),
+    };
+    let exact = vec![test_block(
+        vec![
+            bytes_payload_load(),
+            retain.clone(),
+            bytes_payload_handoff(),
+        ],
+        Terminator::Return,
+    )];
+    assert_eq!(
+        corroborated_retained_bytes_move_sites(&exact, &bytes_tys),
+        HashSet::from([(0, 2)])
+    );
+}
+
+#[test]
+fn corroborated_bytes_retain_rejects_gap_mismatch_rewrite_and_cycle() {
+    let bytes_tys = vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::Bytes];
+    let retain = Instr::BytesRetain {
+        value: Place::Local(1),
+    };
+    let cases = [
+        (
+            "nonadjacent",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    retain.clone(),
+                    Instr::UnitLit {
+                        dest: Place::Local(3),
+                    },
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+        ),
+        (
+            "mismatched",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    Instr::BytesRetain {
+                        value: Place::Local(2),
+                    },
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+        ),
+        (
+            "multiply-written destination",
+            vec![test_block(
+                vec![
+                    bytes_payload_load(),
+                    retain.clone(),
+                    bytes_payload_handoff(),
+                    bytes_payload_handoff(),
+                ],
+                Terminator::Return,
+            )],
+        ),
+        (
+            "cyclic generation",
+            vec![test_block(
+                vec![bytes_payload_load(), retain, bytes_payload_handoff()],
+                Terminator::Goto { target: 0 },
+            )],
+        ),
+    ];
+    for (label, blocks) in cases {
+        assert!(
+            corroborated_retained_bytes_move_sites(&blocks, &bytes_tys).is_empty(),
+            "{label} cannot sever parent payload provenance"
+        );
+    }
+}
+
+#[test]
+fn corroborated_bytes_retain_rejects_terminator_overwrite_and_wrong_type() {
+    let bytes_tys = vec![bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::Bytes];
+    let terminator_overwrite = vec![
+        test_block(
+            vec![
+                bytes_payload_load(),
+                Instr::BytesRetain {
+                    value: Place::Local(1),
+                },
+                bytes_payload_handoff(),
+            ],
+            Terminator::Call {
+                callee: "produce".to_string(),
+                authority: crate::model::CallAuthority::default(),
+                args: vec![],
+                dest: Some(Place::Local(2)),
+                next: 1,
+            },
+        ),
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    assert!(
+        corroborated_retained_bytes_move_sites(&terminator_overwrite, &bytes_tys).is_empty(),
+        "a terminator-overwritten destination has no stable retained generation"
+    );
+
+    let wrong_type = vec![test_block(
+        vec![
+            bytes_payload_load(),
+            Instr::BytesRetain {
+                value: Place::Local(1),
+            },
+            bytes_payload_handoff(),
+        ],
+        Terminator::Return,
+    )];
+    assert!(
+        corroborated_retained_bytes_move_sites(
+            &wrong_type,
+            &[bytes_box_ty(), ResolvedTy::Bytes, ResolvedTy::String],
+        )
+        .is_empty(),
+        "a bytes opcode cannot grant ownership to a differently typed destination"
+    );
 }
 
 /// A `FieldDropInPlace` discharging one skipped field of the payload
@@ -249,6 +882,8 @@ fn nested_enum_payload_candidate_never_duplicates_its_parent_owner() {
     let consumed_parent = BindingId(5);
     let consumed = BindingId(6);
     let unsafe_forwarded = BindingId(7);
+    let arm_scope = ScopeId(10);
+    let nested_arm_scope = ScopeId(11);
     let layouts = vec![
         crate::model::EnumLayout {
             name: "Outer".to_string(),
@@ -355,8 +990,16 @@ fn nested_enum_payload_candidate_never_duplicates_its_parent_owner() {
         ]
         .into_iter()
         .collect(),
+        &[(consumed, arm_scope), (forwarded, nested_arm_scope)]
+            .into_iter()
+            .collect(),
         &HashMap::new(),
-        &HashMap::new(),
+        &[
+            (arm_scope, scope(None)),
+            (nested_arm_scope, scope(Some(arm_scope))),
+        ]
+        .into_iter()
+        .collect(),
         &[
             outer.clone(),
             inner.clone(),
@@ -368,6 +1011,10 @@ fn nested_enum_payload_candidate_never_duplicates_its_parent_owner() {
         ],
         &HashMap::new(),
         &layouts,
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
         &HashMap::new(),
         &HashSet::new(),
         &HashSet::new(),
@@ -477,9 +1124,14 @@ fn depth_two_nested_enum_payload_candidate_does_not_duplicate_outer_owner() {
             .collect(),
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         &[outer, middle, inner],
         &HashMap::new(),
         &layouts,
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
         &HashMap::new(),
         &HashSet::new(),
         &HashSet::new(),
@@ -565,6 +1217,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(2),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(4),
@@ -579,6 +1232,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
                     root: Place::Local(4),
                     fields: vec![0],
                     transferee: Place::Local(5),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -600,6 +1254,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
         .collect(),
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         &[
             outer.clone(),
             tuple.clone(),
@@ -610,6 +1265,10 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
         ],
         &HashMap::new(),
         &layouts,
+        &hew_hir::TypeClassTable::default(),
+        &[],
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
         &HashMap::new(),
         &HashSet::new(),
         &HashSet::new(),

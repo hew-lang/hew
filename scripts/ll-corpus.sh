@@ -23,9 +23,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$ROOT/scripts/lib/corpus-floor.sh"
+source "$ROOT/scripts/lib/corpus-nonempty.sh"
 CORPUS="$ROOT/tests/ll-oracle/corpus"
 GOLDEN="$CORPUS/golden"
 ORACLE="$ROOT/scripts/ll-byte-identity.sh"
@@ -51,11 +51,9 @@ if [[ ${#fixtures[@]} -eq 0 ]]; then
   exit 2
 fi
 
-# The byte-identity oracle compares whatever it is handed; a corpus that lost
-# fixtures still compares the survivors and still says OK. The tracked count is
-# what makes "OK" mean the same thing run to run — and it is also the number
-# this script hands the oracle as the minimum it must actually compare.
-corpus_floor_assert "ll-oracle-fixtures" "${#fixtures[@]}" || exit 1
+# The byte-identity oracle compares whatever it is handed. Reject an empty
+# selection and pass the selected size to the oracle as its comparison minimum.
+corpus_nonempty_assert "ll-oracle-fixtures" "${#fixtures[@]}" || exit 1
 
 # Compile one fixture to a target-specific directory, return the .ll path.
 # compile_fixture <fixture-path> <out-dir> [wasm32]

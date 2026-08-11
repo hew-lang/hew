@@ -1,0 +1,22 @@
+actor Sink {
+    var hits: i64;
+
+    receive fn take(v: bytes) -> i64 {
+        let v_l = v.len();
+        let v_0 = v[0];
+        println(f"len={v_l} b0={v_0}");
+        hits = hits + 1;
+        hits
+    }
+}
+
+fn main() {
+    let x: bytes = bytes::new();
+    x.push(65);
+    x.push(66);
+    let s = spawn Sink(hits: 0);
+    match await s.take(x) {
+        Ok(n) => println(f"hits {n}"),
+        Err(_) => println("err"),
+    }
+}

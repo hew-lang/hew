@@ -4,7 +4,7 @@
 //! exported runtime symbols; compiler/codegen magic uses distinct linkage
 //! variants so the catalog never pretends a HIR shim name is a C ABI symbol.
 
-use hew_types::{MathGenericOp, ResolvedTy};
+use hew_types::{MathGenericOp, ProducedValueAcquisition, ProducedValueOwnership, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinClass {
@@ -130,6 +130,24 @@ pub enum BuiltinLinkage {
     },
 }
 
+/// Map a compiler-synthetic identity-display callee to the runtime formatter
+/// whose ownership contract governs its result.
+///
+/// These presentation names reach MIR as [`BuiltinLinkage::CalleeNameDispatchOnly`]
+/// and are intercepted before LLVM symbol resolution, so they are not linked
+/// runtime symbols and must never receive fabricated FFI rows of their own.
+/// Codegen and MIR ownership instead share this explicit projection to the real
+/// runtime allocator. Unknown synthetic callees stay unmapped and therefore
+/// fail closed at both consumers.
+#[must_use]
+pub fn compiler_synthetic_runtime_ownership_symbol(callee: &str) -> Option<&'static str> {
+    match callee {
+        "hew_node_id_display" => Some("hew_node_id_format"),
+        "hew_location_display" | "hew_remote_pid_display" => Some("hew_location_format"),
+        _ => None,
+    }
+}
+
 /// Which descriptor flavour a `LayoutDescriptorSymbol` row names.
 ///
 /// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewMapValueLayout`) so
@@ -143,6 +161,27 @@ pub enum LayoutDescriptorRole {
 }
 
 impl BuiltinLinkage {
+    /// Return the concrete ABI symbol when this catalog row is a
+    /// compiler-selected runtime shim.
+    ///
+    /// The catalog endpoint is an unforgeable compiler identity at the call
+    /// boundary; `ToStringShim` and `StringCloneShim` therefore retain their
+    /// audited FFI authority too. User source cannot reach this result merely
+    /// by reusing an ABI spelling.
+    #[must_use]
+    pub const fn trusted_ffi_symbol(self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
+            Self::PrintIntercept { .. }
+            | Self::CompilerIntrinsic { .. }
+            | Self::CalleeNameDispatchOnly
+            | Self::NodeRegisterByPid { .. }
+            | Self::LayoutDescriptorSymbol { .. } => None,
+        }
+    }
+
     #[must_use]
     pub const fn runtime_symbol(self) -> Option<&'static str> {
         match self {
@@ -156,6 +195,66 @@ impl BuiltinLinkage {
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
+
+    /// The concrete runtime ABI symbol this row's call lowers through, if any.
+    ///
+    /// This is deliberately WIDER than [`Self::runtime_symbol`] by exactly one
+    /// variant: `PrintIntercept`.  The two answer different questions.
+    ///
+    /// * [`Self::runtime_symbol`] / [`Self::trusted_ffi_symbol`] answer "which
+    ///   ABI spelling may a call-site symbol be joined against" — the identity
+    ///   join in `stdlib_shim_emitted_symbol`.  `PrintIntercept` is excluded
+    ///   because its emitted symbol (`hew_print_value`) is never the MIR callee
+    ///   spelling; codegen synthesises the `(kind, bits, newline)` call from the
+    ///   row's `kind`/`newline`, so there is no symbol to join.
+    /// * This answers "does the call cross a compiler-owned runtime ABI whose
+    ///   parameter-ownership contract is audited".  A print row does: it lands
+    ///   in `hew_print_value`, whose `PrintKind::Str` arm borrows the operand
+    ///   for `printf("%s")` and neither frees nor replaces it.
+    ///
+    /// Rows with no runtime edge at all — `CompilerIntrinsic`,
+    /// `CalleeNameDispatchOnly`, `NodeRegisterByPid`, `LayoutDescriptorSymbol`
+    /// — stay `None` and keep their consumers' fail-closed answer.
+    #[must_use]
+    pub const fn audited_runtime_abi_symbol(self) -> Option<&'static str> {
+        match self {
+            Self::PrintIntercept { runtime_symbol, .. } => Some(runtime_symbol),
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
+            Self::CompilerIntrinsic { .. }
+            | Self::CalleeNameDispatchOnly
+            | Self::NodeRegisterByPid { .. }
+            | Self::LayoutDescriptorSymbol { .. } => None,
+        }
+    }
+}
+
+/// Whether one exact catalog endpoint's call crosses an audited runtime ABI
+/// boundary — see [`BuiltinLinkage::audited_runtime_abi_symbol`].
+///
+/// The endpoint is a checker-selected closed catalog identity, so this is an
+/// identity query and not a callee-name classification: a user declaration that
+/// happens to spell an endpoint name resolves to `CallTarget::Function` or
+/// `CallTarget::Extern` and never reaches a caller of this function.
+#[must_use]
+pub fn endpoint_crosses_audited_runtime_abi(endpoint: &str) -> bool {
+    CATALOG
+        .iter()
+        .any(|entry| entry.name == endpoint && entry.linkage.audited_runtime_abi_symbol().is_some())
+}
+
+/// Return the audited ABI symbol for one exact catalog endpoint.
+///
+/// The endpoint is a checker-selected closed catalog identity.  This lookup is
+/// therefore an identity join, not a callee-name classification: a user
+/// declaration sharing an ABI symbol never reaches this function.
+#[must_use]
+pub fn trusted_ffi_symbol_for_endpoint(endpoint: &str) -> Option<&'static str> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.name == endpoint)
+        .and_then(|entry| entry.linkage.trusted_ffi_symbol())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2204,42 +2303,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "math.tanh",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.tanh",
-        },
-    ),
-    direct(
-        "math.log2",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.log2",
-        },
-    ),
-    direct(
-        "math.log10",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.log10",
-        },
-    ),
-    direct(
-        "math.exp2",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.exp2",
-        },
-    ),
-    direct(
         "math.pow",
         BuiltinClass::ClassB,
         F64_F64,
@@ -2267,21 +2330,12 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "math.pi",
+        "math.round",
         BuiltinClass::ClassB,
-        EMPTY,
+        F64,
         BuiltinTy::F64,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.pi",
-        },
-    ),
-    direct(
-        "math.e",
-        BuiltinClass::ClassB,
-        EMPTY,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.e",
+            intrinsic: "math.round",
         },
     ),
     // Class B: random module runtime shims.
@@ -2707,6 +2761,53 @@ pub fn resolve_overload(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static B
     CATALOG.iter().find(|entry| entry.name == lowered_name)
 }
 
+/// Return an ownership contract only for catalog linkages whose result
+/// allocation semantics are intrinsic to the typed linkage variant.
+#[must_use]
+pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
+    let entry = CATALOG.iter().find(|entry| entry.name == endpoint)?;
+    match entry.linkage {
+        BuiltinLinkage::ToStringShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Fresh,
+        )),
+        BuiltinLinkage::StringCloneShim { .. } => Some(ProducedValueOwnership::owned(
+            ProducedValueAcquisition::Clone,
+        )),
+        BuiltinLinkage::RuntimeFfiShim { symbol } => {
+            let contract =
+                hew_types::ffi_contracts::extern_ownership_contract(symbol).contract()?;
+            runtime_ffi_result_ownership(contract)
+        }
+        _ => None,
+    }
+}
+
+fn runtime_ffi_result_ownership(
+    contract: &hew_types::ffi_contracts::ExternOwnershipContract,
+) -> Option<ProducedValueOwnership> {
+    use hew_types::ffi_contracts::{
+        ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    };
+
+    match contract.result {
+        ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+            if !contract.release_symbol.is_empty()
+                && contract.discharge_depth != ReleaseDischargeDepth::None
+                && contract.result_retention == ExternResultRetention::Transferred =>
+        {
+            Some(ProducedValueOwnership::owned(match contract.result {
+                ExternResultOwnership::Fresh => ProducedValueAcquisition::Fresh,
+                ExternResultOwnership::Retained => ProducedValueAcquisition::Retained,
+                ExternResultOwnership::Borrowed | ExternResultOwnership::None => unreachable!(),
+            }))
+        }
+        ExternResultOwnership::Borrowed => Some(ProducedValueOwnership::Borrowed),
+        ExternResultOwnership::Fresh
+        | ExternResultOwnership::Retained
+        | ExternResultOwnership::None => None,
+    }
+}
+
 fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static str> {
     match name {
         "println" if arg_tys.len() == 1 => {
@@ -2810,5 +2911,100 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::String => Some("len_str"),
         ResolvedTy::Named { name, .. } if name == "Vec" => Some("len_vec"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compiler_synthetic_runtime_ownership_symbol, result_ownership, runtime_ffi_result_ownership,
+    };
+    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+
+    #[test]
+    fn string_result_linkages_publish_exact_ownership() {
+        assert_eq!(
+            result_ownership("to_string_i64"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("to_string_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Clone
+            ))
+        );
+        for endpoint in ["split_str", "lines_str", "replace_str"] {
+            assert_eq!(
+                result_ownership(endpoint),
+                Some(ProducedValueOwnership::owned(
+                    ProducedValueAcquisition::Fresh
+                )),
+                "{endpoint} must publish its audited FFI result"
+            );
+        }
+        assert_eq!(result_ownership("println_i64"), None);
+        assert_eq!(result_ownership("missing"), None);
+    }
+
+    #[test]
+    fn fresh_ffi_result_without_transferred_retention_cannot_mint() {
+        use hew_types::ffi_contracts::{
+            ExternOwnershipContract, ExternResultOwnership, ExternResultRetention,
+            ReleaseDischargeDepth,
+        };
+
+        let contract = ExternOwnershipContract {
+            params: &[],
+            resource_param_types: &[],
+            resource_result_type: None,
+            result: ExternResultOwnership::Fresh,
+            release_symbol: "hew_string_drop",
+            discharge_depth: ReleaseDischargeDepth::Shallow,
+            result_retention: ExternResultRetention::Unspecified,
+        };
+        assert_eq!(runtime_ffi_result_ownership(&contract), None);
+    }
+
+    #[test]
+    fn reachable_vec_ffi_results_keep_their_owners() {
+        assert_eq!(
+            result_ownership("hew_vec_clone"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Fresh
+            ))
+        );
+        assert_eq!(
+            result_ownership("hew_vec_get_str"),
+            Some(ProducedValueOwnership::owned(
+                ProducedValueAcquisition::Retained
+            ))
+        );
+    }
+
+    #[test]
+    fn identity_display_synthetics_map_only_to_real_runtime_formatters() {
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("hew_node_id_display"),
+            Some("hew_node_id_format")
+        );
+        for callee in ["hew_location_display", "hew_remote_pid_display"] {
+            assert_eq!(
+                compiler_synthetic_runtime_ownership_symbol(callee),
+                Some("hew_location_format"),
+                "{callee} must share the location formatter ownership contract"
+            );
+        }
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("hew_node_id_format"),
+            None,
+            "the runtime symbol is not itself a compiler synthetic"
+        );
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("user_display"),
+            None,
+            "unknown display callees must remain fail-closed"
+        );
     }
 }

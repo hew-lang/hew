@@ -9,7 +9,7 @@ use crate::check::admissibility::{
 };
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
-use crate::check::types::BareActorResolution;
+use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
@@ -19,6 +19,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 /// Resolve the closed set of compiler-lowered active transport attach methods.
@@ -32,10 +33,48 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
         return None;
     }
     match receiver_name {
-        "net.Connection" => Some("hew_tcp_attach_local"),
-        "tls.TlsStream" => Some("hew_tls_attach_local"),
-        "websocket.Conn" => Some("hew_ws_attach_local"),
+        STD_NET_CONNECTION => Some("hew_tcp_attach_local"),
+        "std.net.tls.TlsStream" => Some("hew_tls_attach_local"),
+        "std.net.websocket.Conn" => Some("hew_ws_attach_local"),
         _ => None,
+    }
+}
+
+impl Checker {
+    /// Return the checker-minted trait declaration IDs for a call-site trait
+    /// spelling. Import aliases are resolved through their full source owner;
+    /// short registry keys remain compatibility-only and are never used to mint
+    /// a fresh ID here.
+    pub(super) fn trait_method_call_target_ids(
+        &self,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<(crate::DefId, crate::DefId)> {
+        self.trait_method_ids_by_binding
+            .get(&(
+                self.current_module.clone(),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ))
+            .cloned()
+            .or_else(|| {
+                self.current_module.as_ref().and_then(|module| {
+                    self.trait_method_ids
+                        .get(&format!("{module}.{trait_name}::{method_name}"))
+                        .cloned()
+                })
+            })
+            .or_else(|| {
+                let declaring_trait = self.trait_ref_lookup_key(trait_name);
+                self.trait_method_ids
+                    .get(&format!("{declaring_trait}::{method_name}"))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.trait_method_ids
+                    .get(&format!("{trait_name}::{method_name}"))
+                    .cloned()
+            })
     }
 }
 
@@ -44,24 +83,17 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
 /// type from a `from_json`/`from_yaml` `Result<Self, string>` return so the codec
 /// rewrite carries the produced wire type, not the `Result` wrapper.
 fn result_ok_payload(ty: &Ty) -> Option<Ty> {
-    if let Ty::Named { name, args, .. } = ty {
-        if name == "Result" && args.len() == 2 {
+    if let Ty::Named {
+        builtin: Some(BuiltinType::Result),
+        args,
+        ..
+    } = ty
+    {
+        if args.len() == 2 {
             return Some(args[0].clone());
         }
     }
     None
-}
-
-/// The self-recursion root set for an owned-Vec record/enum element: the
-/// element's own type name. A `Vec<Self>`/`HashMap<_, Self>`/`HashSet<Self>`
-/// field of this element is the admitted self-recursion edge whose runtime
-/// recursion happens through the inner collection's own owned descriptor
-/// (`hew_vec_{clone,free}_owned`). Keyed on the element's own name only —
-/// mutually recursive groups without a container indirection stay fail-closed.
-fn element_self_roots(name: &str) -> HashSet<String> {
-    let mut roots = HashSet::new();
-    roots.insert(name.to_string());
-    roots
 }
 
 /// Which builtin collection a [`check_collection_method`](Checker::check_collection_method)
@@ -97,6 +129,13 @@ pub(super) enum RecordCloneAdmissibility {
     /// The record can be cloned end-to-end via
     /// `__hew_record_clone_inplace_<R>`.
     Admissible,
+    /// The record itself, or a transitively reachable field/payload, carries an
+    /// affine `#[resource]` / `#[linear]` contract. Structural record clone
+    /// cannot invent a semantic duplicate for such a value.
+    AffineValue {
+        type_name: String,
+        marker: hew_parser::ast::ResourceMarker,
+    },
     /// The record (or a transitive field) contains an opaque handle; fail closed.
     OpaqueField { opaque_name: String },
     /// The record has un-substituted generic type parameters; not yet supported.
@@ -310,44 +349,6 @@ impl Checker {
             ],
         );
     }
-
-    /// Stdlib modules that have no wasm32 runtime support, together with the
-    /// [`WasmUnsupportedFeature`] variant used in the rejection diagnostic.
-    /// Any call expression or value-position reference to a function in one of
-    /// these modules is rejected with a `PlatformLimitation` error when
-    /// targeting wasm32.
-    ///
-    /// `crypto.random_bytes` is handled separately (it is a single function
-    /// within the otherwise-supported `crypto` module) and does NOT appear in
-    /// this table.
-    ///
-    /// Both the call-form guard (`check_method_call`) and the value-position
-    /// guard (`check_field_access`) iterate this slice, so neither path can
-    /// silently miss a module the other rejects.
-    ///
-    /// **The module short-names in this table must exactly match
-    /// [`crate::NATIVE_ONLY_WASM_MODULES`]** (the public API const consumed by
-    /// `hew-sandbox-wasm`'s profile gate).  The test
-    /// `wasm_rejects::native_only_wasm_modules_const_matches_rejection_table`
-    /// enforces parity between the two at test time; update both together when
-    /// the native-only module set changes.
-    pub(super) const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &'static [(
-        &'static str,
-        WasmUnsupportedFeature,
-    )] = &[
-        ("stream", WasmUnsupportedFeature::Streams),
-        ("http", WasmUnsupportedFeature::HttpServer),
-        ("net", WasmUnsupportedFeature::TcpNetworking),
-        ("process", WasmUnsupportedFeature::ProcessExecution),
-        ("tls", WasmUnsupportedFeature::Tls),
-        ("quic", WasmUnsupportedFeature::Quic),
-        ("dns", WasmUnsupportedFeature::Dns),
-        ("os", WasmUnsupportedFeature::OsEnv),
-        ("encrypt", WasmUnsupportedFeature::CryptoEncrypt),
-        ("sign", WasmUnsupportedFeature::CryptoSign),
-        ("http_client", WasmUnsupportedFeature::HttpClient),
-        ("smtp", WasmUnsupportedFeature::Smtp),
-    ];
 
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
         match ty {
@@ -707,13 +708,14 @@ impl Checker {
                                                             new_layout_facts.push((span_key, fact));
                                                         }
                                                         None => {
-                                                            let mut err = crate::error::TypeError::new(
-                                                                        TypeErrorKind::InvalidOperation,
-                                                                        check.span.clone(),
-                                                                        format!(
-                                                                            "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
-                                                                        ),
-                                                                    );
+                                                            let mut err =
+                                                                crate::error::TypeError::new(
+                                                                    TypeErrorKind::InvalidOperation,
+                                                                    check.span.clone(),
+                                                                    format!(
+                                                                        "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
+                                                                    ),
+                                                                );
                                                             if let Some(module) =
                                                                 check.source_module
                                                             {
@@ -726,12 +728,12 @@ impl Checker {
                                                 }
                                                 None => {
                                                     let mut err = crate::error::TypeError::new(
-                                                                TypeErrorKind::InvalidOperation,
-                                                                check.span.clone(),
-                                                                format!(
-                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
-                                                                ),
-                                                            );
+                                                        TypeErrorKind::InvalidOperation,
+                                                        check.span.clone(),
+                                                        format!(
+                                                            "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
+                                                        ),
+                                                    );
                                                     if let Some(module) = check.source_module {
                                                         err = err.with_source_module(module);
                                                     }
@@ -741,8 +743,8 @@ impl Checker {
                                         } else {
                                             // Should not happen: HashMapValueType::Layout implies Named.
                                             unreachable!(
-                                                        "HashMapValueType::Layout produced for non-Named value type"
-                                                    );
+                                                "HashMapValueType::Layout produced for non-Named value type"
+                                            );
                                         }
                                     }
                                     Ok(val_type) => {
@@ -757,14 +759,14 @@ impl Checker {
                                     }
                                     Err(e) => {
                                         let mut err = crate::error::TypeError::new(
-                                                    TypeErrorKind::InvalidOperation,
-                                                    check.span.clone(),
-                                                    format!(
-                                                        "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
-                                                        resolved_val.user_facing(),
-                                                        e,
-                                                    ),
-                                                );
+                                            TypeErrorKind::InvalidOperation,
+                                            check.span.clone(),
+                                            format!(
+                                                "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
+                                                resolved_val.user_facing(),
+                                                e,
+                                            ),
+                                        );
                                         if let Some(module) = check.source_module {
                                             err = err.with_source_module(module);
                                         }
@@ -1008,6 +1010,44 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
+    /// Recheck built-in value-container clones after inference has settled.
+    ///
+    /// A call can be visited while its payload is still `Ty::Var`, then become
+    /// affine through a later source branch even though that branch executes
+    /// before the clone at runtime. Inline admission alone is therefore
+    /// source-order dependent. This finalizer closes that gap using the same
+    /// transitive affine authority as the immediate clone gate.
+    pub(super) fn finalize_builtin_clone_admission(&mut self) {
+        let checks = std::mem::take(&mut self.deferred_builtin_clone_admission);
+        let mut new_errors = Vec::new();
+
+        for (_span_key, check) in checks {
+            let resolved = self
+                .subst
+                .resolve(&check.receiver_ty)
+                .materialize_literal_defaults();
+            if resolved.contains_error() || resolved.has_inference_var() {
+                continue;
+            }
+            let Some((type_name, marker)) = self
+                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
+            else {
+                continue;
+            };
+            let receiver_name = resolved.user_facing().to_string();
+            let message =
+                Self::affine_record_clone_error_message(&receiver_name, &type_name, marker);
+            let mut err =
+                crate::error::TypeError::new(TypeErrorKind::InvalidOperation, check.span, message);
+            if let Some(module) = check.source_module {
+                err = err.with_source_module(module);
+            }
+            new_errors.push(err);
+        }
+
+        self.errors.extend(new_errors);
+    }
+
     /// Drain `deferred_channel_rewrites`, resolve each inner type through the
     /// current substitution, and record the correct type-specific C symbol.
     ///
@@ -1024,7 +1064,16 @@ impl Checker {
     /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
     ///   the inline validation pass may have already emitted a diagnostic, but
     ///   deferred entries bypass that guard, so we re-check here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "deferred channel resolution validates type, ABI, and ownership together"
+    )]
     pub(super) fn finalize_channel_rewrites(&mut self) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
         let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
@@ -1102,12 +1151,54 @@ impl Checker {
                             .expect("channel close family rejects elem; substrate invariant")
                     });
                 self.method_call_rewrites.insert(
-                    span_key,
+                    span_key.clone(),
                     MethodCallRewrite::RewriteToFunction {
+                        target: descriptor.as_ref().map_or_else(
+                            || CallTarget::Unsupported {
+                                reason: format!(
+                                    "channel runtime method `{c_symbol}` has no registered family"
+                                ),
+                            },
+                            |descriptor| CallTarget::Runtime(descriptor.family()),
+                        ),
                         c_symbol: c_symbol.to_string(),
                         descriptor,
+                        extern_identity: None,
                         elem_ty: None,
                         consumes_receiver,
+                        returns_receiver_identity: false,
+                    },
+                );
+                let source_arg_count = self
+                    .produced_call_arities
+                    .get(&span_key)
+                    .map_or(0, |(_, count)| *count);
+                let ownership = match entry.method.as_str() {
+                    "recv" | "try_recv" => Ownership::owned(Acquisition::Delivery),
+                    "close" => Ownership::NoOwner,
+                    _ => Ownership::Unknown,
+                };
+                self.resolved_method_call_ownership.insert(
+                    span_key,
+                    PendingMethodCallOwnership {
+                        fact: ProducedValueFact {
+                            ownership,
+                            receiver_span: None,
+                            receiver_boundary: Some(if consumes_receiver {
+                                Boundary::Transfer
+                            } else {
+                                Boundary::Borrow
+                            }),
+                            arguments: match entry.method.as_str() {
+                                "send" => vec![Boundary::Transfer; source_arg_count],
+                                "recv" | "try_recv" | "close" => {
+                                    vec![Boundary::Borrow; source_arg_count]
+                                }
+                                _ => vec![Boundary::Unknown; source_arg_count],
+                            },
+                        },
+                        extern_identity: None,
+                        resolved_result_ty: resolved,
                     },
                 );
             } else {
@@ -1180,37 +1271,24 @@ impl Checker {
     fn named_type_inherent_close_consumes_receiver(
         &self,
         type_name: &str,
+        builtin: Option<BuiltinType>,
         method: &str,
         sig: &FnSig,
     ) -> bool {
         if method != "close" || sig.requires_mutable_receiver {
             return false;
         }
-        // The trait registry is the single authority for the `#[resource]`
-        // fact. `is_resource` matches the declared bare name and the
-        // module-qualified receiver's unqualified suffix (`mod.Conn` → `Conn`)
-        // for imported handle types.
-        self.registry.is_resource(type_name)
-    }
-
-    /// Apply the consume-receiver marker for a trait-dispatched method call:
-    /// record the per-call-site flag for codegen and mark the receiver
-    /// expression moved so subsequent uses surface `UseAfterMove`. No-op
-    /// when the resolved method does not declare `consumes_receiver`.
-    fn apply_consume_receiver_if_flagged(
-        &mut self,
-        qualified_method: &str,
-        receiver: &Spanned<Expr>,
-        receiver_ty: &Ty,
-        span: &Span,
-    ) {
-        if !self.is_consume_receiver_method(qualified_method) {
-            return;
+        // Compiler carriers such as `MonitorRef` already carry their exact,
+        // shadow-proof identity on the resolved `Ty`.  Use that discriminator
+        // instead of asking the name-indexed source registry to rediscover a
+        // prelude spelling: imported source declarations are registry-owned,
+        // while compiler carriers are catalog-owned.
+        if builtin.is_some_and(|kind| kind.close_method() == Some(method)) {
+            return true;
         }
-        self.method_call_consumes_receiver
-            .insert(SpanKey::in_module(span, self.current_module_idx));
-        let resolved_ty = self.subst.resolve(receiver_ty);
-        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
+        // The trait registry is the single authority for source-declared
+        // `#[resource]` facts, keyed by exact declaration identity.
+        self.registry.is_resource(type_name)
     }
 
     fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
@@ -1231,37 +1309,52 @@ impl Checker {
     /// a module actor, so the reply type is defined in `{module}`; if a
     /// collision-free `{module}.{Name}` registry alias exists (seeded by
     /// `register_qualified_type_alias` → `alias_type_markers`), derive `Send`
-    /// through that qualified identity. Root / flat-file actors (bare identity,
-    /// no `.`) and replies whose qualified form is not registered fall back to
-    /// the bare type unchanged.
-    fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Ty {
+    /// through that qualified identity. Root / flat-file actors retain their
+    /// bare identity. A module actor whose lexical import binding or canonical
+    /// marker row is absent returns `None`: the Send gate must reject rather
+    /// than consulting a same-name bare marker row.
+    fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Option<Ty> {
         let Ty::Named {
             name,
             args,
             builtin,
         } = resolved_reply
         else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
-        // Already qualified, or a builtin/generic — nothing to re-key.
-        if builtin.is_some() || name.contains('.') {
-            return resolved_reply.clone();
+        // Builtins carry their own marker authority. A qualified user name,
+        // by contrast, must have an exact structural marker row.
+        if builtin.is_some() {
+            return Some(resolved_reply.clone());
+        }
+        if name.contains('.') {
+            return self
+                .registry
+                .has_type_markers(name)
+                .then(|| resolved_reply.clone());
         }
         let Some((actor_identity, _method)) = method_id.rsplit_once("::") else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
         let Some((module_short, _actor)) = actor_identity.rsplit_once('.') else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
-        let qualified = format!("{module_short}.{name}");
+        // `method_id` carries the imported actor's lexical module binding;
+        // marker derivation keys on the source declaration's full owner. A
+        // missing binding is not evidence for a bare reply type — fail closed
+        // so a same-name sibling cannot lend it a Send marker.
+        let module_owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let qualified = format!("{module_owner}.{name}");
         if self.registry.has_type_markers(&qualified) {
-            Ty::Named {
+            Some(Ty::Named {
                 name: qualified,
                 args: args.clone(),
                 builtin: *builtin,
-            }
+            })
         } else {
-            resolved_reply.clone()
+            None
         }
     }
 
@@ -1316,21 +1409,33 @@ impl Checker {
             // registry key. The qualified form is used only for the marker
             // lookup and diagnostic text; the dispatch table keeps the original
             // bare `reply_ty` the rest of the pipeline expects.
-            let send_check_ty = self.send_gate_reply_ty(&method_id, &resolved_reply);
-            if !send_check_ty.has_inference_var()
-                && !send_check_ty.contains_error()
-                && !self
-                    .registry
-                    .implements_marker(&send_check_ty, MarkerTrait::Send)
-            {
-                self.report_error(
+            match self.send_gate_reply_ty(&method_id, &resolved_reply) {
+                Some(send_check_ty)
+                    if !send_check_ty.has_inference_var()
+                        && !send_check_ty.contains_error()
+                        && !self
+                            .registry
+                            .implements_marker(&send_check_ty, MarkerTrait::Send) =>
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidSend,
+                        span,
+                        format!(
+                            "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                            resolved_reply.user_facing()
+                        ),
+                    );
+                }
+                Some(_) => {}
+                None => self.report_error(
                     TypeErrorKind::InvalidSend,
                     span,
                     format!(
-                        "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                        "ask-shaped actor reply type `{}` has no exact module-owned Send proof \
+                         (E_DUPLEX_NON_SEND)",
                         resolved_reply.user_facing()
                     ),
-                );
+                ),
             }
             ActorMethodKind::Ask(method_id, reply_ty)
         };
@@ -1338,20 +1443,18 @@ impl Checker {
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
     }
 
-    fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
+    pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
         let Ty::Named { name, .. } = receiver_ty else {
             return None;
         };
-        if self.module_registry.is_handle_type(name) {
-            return Some(name.clone());
-        }
-        if name.contains('.') {
-            return Some(name.clone());
-        }
-        self.module_registry.qualify_handle_type(name)
+        self.module_registry.canonical_handle_type_identity(name)
     }
 
-    fn record_handle_method_call_receiver_kind_if_any(&mut self, receiver_ty: &Ty, span: &Span) {
+    pub(super) fn record_handle_method_call_receiver_kind_if_any(
+        &mut self,
+        receiver_ty: &Ty,
+        span: &Span,
+    ) {
         let Some(type_name) = self.canonical_handle_receiver_type_name(receiver_ty) else {
             return;
         };
@@ -1359,6 +1462,47 @@ impl Checker {
             span,
             MethodCallReceiverKind::HandleInstance { type_name },
         );
+    }
+
+    /// Return the runtime family for a canonical stdlib extern method whose
+    /// ABI is compiler-lowered.
+    ///
+    /// The endpoint spelling is deliberately insufficient here: user impls
+    /// may publish the same `#[extern_symbol]`.  This join requires the exact
+    /// registered method identity, its canonical stdlib provenance, and the
+    /// checked parameter/result shape before a runtime descriptor can cross
+    /// the checker boundary.
+    fn canonical_std_io_runtime_method_family(
+        &self,
+        signature_key: &str,
+        c_symbol: &str,
+        sig: &FnSig,
+    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let declaration = crate::runtime_call::canonical_std_io_extern_signature(
+            signature_key,
+            c_symbol,
+            &sig.params,
+            &sig.return_type,
+        )?;
+        let canonical_stdlib = self.extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| {
+                    *trusted && module.as_deref() == Some(declaration.module)
+                })
+            // Directly checking a shipped stdlib file has a root module id
+            // unrelated to its dotted import owner. `canonical_std_root_sources`
+            // is populated only for that exact root path (not for an ordinary
+            // user program that merely imports the module), so it is a safe
+            // provenance substitute for the registration origin here.
+            || self.canonical_std_root_sources.contains(declaration.module);
+        if !canonical_stdlib {
+            return None;
+        }
+        let family = declaration.family?;
+        // The descriptor is a three-way join: the source table names the only
+        // signature that may lift this family, and the typed family
+        // independently confirms that it emits the same ABI endpoint.
+        (family.c_symbol() == c_symbol).then_some(family)
     }
 
     /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
@@ -1373,8 +1517,12 @@ impl Checker {
     /// `checker-output-boundary` guarantee — a user FFI symbol that happens to
     /// collide with a catalog name must never be reclassified into a typed
     /// runtime descriptor.
-    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
-        let c_symbol = c_symbol.into();
+    fn record_runtime_method_family_rewrite(
+        &mut self,
+        span: &Span,
+        family: crate::runtime_call::RuntimeCallFamily,
+    ) {
+        let c_symbol = family.c_symbol().to_string();
         // The consume verdict is derived once, here, from the resolved runtime
         // symbol — the single rewrite-recording authority for runtime-symbol
         // method calls (close-family handle releases route through this helper).
@@ -1390,20 +1538,124 @@ impl Checker {
         // `None` only for the few builtin symbols the substrate does not yet
         // enumerate (pre-staged families); those keep `descriptor: None` and
         // consumers fall back to `c_symbol`.
-        let descriptor =
-            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map(|family| {
-                crate::runtime_call::RuntimeCallDescriptor::new(family, None)
-                    .expect("substrate variant rejects elem; runtime symbols never carry elem here")
-            });
+        let descriptor = crate::runtime_call::RuntimeCallDescriptor::new(family, None)
+            .expect("substrate variant rejects elem; runtime symbols never carry elem here");
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Runtime(descriptor.family()),
                 c_symbol,
-                descriptor,
+                descriptor: Some(descriptor),
+                extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
+    }
+
+    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
+        let c_symbol = c_symbol.into();
+        let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol) else {
+            // Some compiler-synthetic identity accessors are closed catalog
+            // endpoints but do not need a `RuntimeCallFamily`: their lowering
+            // is owned by the identity producer in MIR/codegen.  Preserve the
+            // checker-selected catalog endpoint instead of degrading a valid
+            // source method to an unsupported call just because that producer
+            // is not represented in the runtime-family enum.
+            if crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(&c_symbol)
+                .is_some()
+            {
+                self.record_method_call_rewrite(
+                    span,
+                    MethodCallRewrite::RewriteToFunction {
+                        target: CallTarget::Builtin {
+                            endpoint: c_symbol.clone(),
+                        },
+                        c_symbol,
+                        descriptor: None,
+                        extern_identity: None,
+                        elem_ty: None,
+                        consumes_receiver: false,
+                        returns_receiver_identity: false,
+                    },
+                );
+                return;
+            }
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteToFunction {
+                    target: CallTarget::Unsupported {
+                        reason: format!("unregistered runtime method `{c_symbol}`"),
+                    },
+                    c_symbol,
+                    descriptor: None,
+                    extern_identity: None,
+                    elem_ty: None,
+                    consumes_receiver: false,
+                    returns_receiver_identity: false,
+                },
+            );
+            return;
+        };
+        self.record_runtime_method_family_rewrite(span, family);
+    }
+
+    /// Record a direct opaque-handle call through the exact source extern
+    /// declaration that owns its ABI endpoint.
+    ///
+    /// Extracted registry metadata is intentionally only a signature surface:
+    /// it may use the legacy `net.Listener` presentation spelling while the
+    /// source declaration is owned by `std.net`.  A non-catalog endpoint must
+    /// therefore not be fabricated as a runtime call merely because the
+    /// registry found it.  This bridge admits it only when the canonical
+    /// receiver owner and the source extern declaration agree exactly.
+    fn record_source_extern_handle_method_rewrite(
+        &mut self,
+        span: &Span,
+        receiver_name: &str,
+        c_symbol: String,
+    ) -> bool {
+        let Some((owner_module, _)) = receiver_name.rsplit_once('.') else {
+            return false;
+        };
+        // rc1-F1 stage B: resolve through the extern table's declaration
+        // index — the receiver's canonical owner must ITSELF declare the
+        // symbol, and the published identity is THAT declaration (its own
+        // key, its own provenance), never whichever declaration happened to
+        // mint the symbol's ABI contract.
+        let Some((declaration_key, declaration)) = self
+            .extern_table
+            .declaration_by_symbol_and_module(&c_symbol, owner_module)
+        else {
+            return false;
+        };
+
+        let extern_identity = ExternMethodCallIdentity {
+            endpoint: declaration.symbol.clone(),
+            signature_key: declaration_key.full_path().to_string(),
+            declaring_module: declaration.declaring_module.clone(),
+            trusted_compiled_stdlib: self.canonical_std_module_sources.contains(owner_module),
+        };
+        let consumes_receiver =
+            crate::builtin_names::runtime_symbol_consumes_receiver(&extern_identity.endpoint);
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Extern {
+                    declaration: crate::DefId::new(extern_identity.signature_key.clone()),
+                    endpoint: extern_identity.endpoint.clone(),
+                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                },
+                c_symbol,
+                descriptor: None,
+                extern_identity: Some(extern_identity),
+                elem_ty: None,
+                consumes_receiver,
+                returns_receiver_identity: false,
+            },
+        );
+        true
     }
 
     /// Record a rewrite for an **open-set** `#[extern_symbol]` FFI method call.
@@ -1429,15 +1681,65 @@ impl Checker {
     /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
     /// allow-set does not name is borrowing, so an FFI binding that merely
     /// collides with a non-release name at worst leaks — it never double-frees.
-    fn record_extern_symbol_method_call_rewrite(&mut self, span: &Span, c_symbol: String) {
+    fn record_extern_symbol_method_call_rewrite(
+        &mut self,
+        span: &Span,
+        c_symbol: String,
+        signature_key: String,
+    ) {
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        let (declaring_module, trusted_compiled_stdlib) = self
+            .extern_method_origins
+            .get(&signature_key)
+            .cloned()
+            .unwrap_or((None, false));
+        let extern_identity = ExternMethodCallIdentity {
+            endpoint: c_symbol.clone(),
+            signature_key,
+            declaring_module,
+            trusted_compiled_stdlib,
+        };
+        // The endpoint is an ABI spelling, not a declaration identity.  In
+        // particular an imported receiver may be written through an alias at
+        // the call site, while the source impl was registered under its full
+        // owner path.  Carry the ID allocated at that registration boundary;
+        // do not manufacture one from the call-site signature key.
+        let target = crate::stdlib_catalog_identity::compiler_synthetic_identity_endpoint(
+            &extern_identity.endpoint,
+        )
+        .map_or_else(
+            || {
+                self.impl_method_declaration_ids
+                    .get(&extern_identity.signature_key)
+                    .cloned()
+                    .map_or_else(
+                        || CallTarget::Unsupported {
+                            reason: format!(
+                                "extern-symbol method `{}` has no registered declaration identity",
+                                extern_identity.signature_key
+                            ),
+                        },
+                        |declaration| CallTarget::Extern {
+                            declaration,
+                            endpoint: extern_identity.endpoint.clone(),
+                            trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                        },
+                    )
+            },
+            |endpoint| CallTarget::Builtin {
+                endpoint: endpoint.to_string(),
+            },
+        );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
+                target,
                 c_symbol,
                 descriptor: None,
+                extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
     }
@@ -1445,11 +1747,18 @@ impl Checker {
     fn record_monomorphic_extern_symbol_rewrite_if_any(
         &mut self,
         sig: &FnSig,
+        signature_key: &str,
         span: &Span,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
+        {
+            self.record_runtime_method_family_rewrite(span, family);
+            return true;
+        }
         if !spec.template.is_monomorphic() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -1462,7 +1771,11 @@ impl Checker {
             );
             return false;
         }
-        self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            spec.template.raw.clone(),
+            signature_key.to_string(),
+        );
         true
     }
 
@@ -1477,8 +1790,19 @@ impl Checker {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
+        let signature_key = format!("{receiver_type_name}::{method}");
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(&signature_key, &spec.template.raw, sig)
+        {
+            self.record_runtime_method_family_rewrite(span, family);
+            return true;
+        }
         if spec.template.is_monomorphic() {
-            self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_extern_symbol_method_call_rewrite(
+                span,
+                spec.template.raw.clone(),
+                signature_key,
+            );
             return true;
         }
         if !matches!(receiver_type_name, "Option" | "Result") {
@@ -1525,12 +1849,17 @@ impl Checker {
                 return false;
             }
         };
-        self.record_extern_symbol_method_call_rewrite(span, expanded);
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            expanded,
+            format!("{receiver_type_name}::{method}"),
+        );
         true
     }
 
     fn record_builtin_option_result_method_rewrite_if_any(
         &mut self,
+        receiver_builtin: BuiltinType,
         receiver_type_name: &str,
         type_args: &[Ty],
         method: &str,
@@ -1539,21 +1868,25 @@ impl Checker {
         use crate::check::OptionResultMethod as M;
         use MethodCallRewrite::BuiltinOptionResult;
 
-        let Some(marker) = (match (receiver_type_name, method) {
-            ("Option", "is_some") => Some(M::OptionIsSome),
-            ("Option", "is_none") => Some(M::OptionIsNone),
-            ("Option", "unwrap") => Some(M::OptionUnwrap),
-            ("Option", "unwrap_or") => Some(M::OptionUnwrapOr),
-            ("Result", "is_ok") => Some(M::ResultIsOk),
-            ("Result", "is_err") => Some(M::ResultIsErr),
-            ("Result", "unwrap") => Some(M::ResultUnwrap),
-            ("Result", "unwrap_or") => Some(M::ResultUnwrapOr),
+        let Some(marker) = (match (receiver_builtin, method) {
+            (BuiltinType::Option, "is_some") => Some(M::OptionIsSome),
+            (BuiltinType::Option, "is_none") => Some(M::OptionIsNone),
+            (BuiltinType::Option, "unwrap") => Some(M::OptionUnwrap),
+            (BuiltinType::Option, "unwrap_or") => Some(M::OptionUnwrapOr),
+            (BuiltinType::Result, "is_ok") => Some(M::ResultIsOk),
+            (BuiltinType::Result, "is_err") => Some(M::ResultIsErr),
+            (BuiltinType::Result, "unwrap") => Some(M::ResultUnwrap),
+            (BuiltinType::Result, "unwrap_or") => Some(M::ResultUnwrapOr),
             _ => None,
         }) else {
             return false;
         };
 
-        let expected_args = if receiver_type_name == "Option" { 1 } else { 2 };
+        let expected_args = if receiver_builtin == BuiltinType::Option {
+            1
+        } else {
+            2
+        };
         if type_args.len() != expected_args {
             if type_args
                 .iter()
@@ -1584,11 +1917,19 @@ impl Checker {
         true
     }
 
-    fn is_builtin_option_result_marker_method(receiver_type_name: &str, method: &str) -> bool {
+    fn is_builtin_option_result_marker_method(
+        receiver_builtin: Option<BuiltinType>,
+        method: &str,
+    ) -> bool {
         matches!(
-            (receiver_type_name, method),
-            ("Option", "is_some" | "is_none" | "unwrap" | "unwrap_or")
-                | ("Result", "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+            (receiver_builtin, method),
+            (
+                Some(BuiltinType::Option),
+                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+            ) | (
+                Some(BuiltinType::Result),
+                "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+            )
         )
     }
 
@@ -1619,7 +1960,7 @@ impl Checker {
             },
             true,
         );
-        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
         Some(applied_sig.return_type)
     }
 
@@ -1694,14 +2035,105 @@ impl Checker {
         &mut self,
         span: &Span,
         c_symbol: impl Into<String>,
+        source_declaration: impl Into<String>,
     ) {
+        let c_symbol = c_symbol.into();
+        let source_declaration = source_declaration.into();
+        let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map_or_else(
+            || CallTarget::User(crate::DefId::new(source_declaration)),
+            CallTarget::Runtime,
+        );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                c_symbol: c_symbol.into(),
+                target,
+                c_symbol,
                 elem_ty: None,
             },
         );
+    }
+
+    /// Resolve a module spelling in the current source file to the exact
+    /// imported module path.  The spelling is an input-namespace key only;
+    /// declaration IDs must use this source owner, never an alias or final
+    /// path segment.
+    pub(super) fn canonical_module_import_owner(&self, module_name: &str) -> String {
+        self.module_import_bindings
+            .get(&(self.current_module.clone(), module_name.to_string()))
+            .cloned()
+            .unwrap_or_else(|| module_name.to_string())
+    }
+
+    /// Whether this module spelling resolves to a user-source declaration.
+    /// `user_modules` is intentionally not consulted: it is a legacy lexical
+    /// spelling set and therefore cannot distinguish two paths with the same
+    /// final component.
+    pub(super) fn module_binding_has_user_declaration(
+        &self,
+        module_name: &str,
+        method: &str,
+    ) -> bool {
+        let owner = self.canonical_module_import_owner(module_name);
+        let declaration = format!("{owner}.{method}");
+        self.fn_def_spans
+            .get(&declaration)
+            .is_some_and(|(_, declaring_module)| {
+                declaring_module.as_deref() == Some(owner.as_str())
+            })
+    }
+
+    /// Reject an exact native-only function at the semantic call/reference
+    /// boundary. Module spellings are lexical only: aliases resolve to their
+    /// canonical imported owner before consulting the fully-qualified
+    /// manifest policy, while user declarations with the same spelling remain
+    /// valid. Whole-module policy remains owned by
+    /// `wasm_native_only_module_feature` so the two tables cannot emit duplicate
+    /// diagnostics for the same call.
+    pub(super) fn reject_wasm_native_only_module_function(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let owner = self.canonical_module_import_owner(module_name);
+        if !self.canonical_std_module_sources.contains(&owner) {
+            return;
+        }
+        // Function policy is fully qualified and therefore cannot be shadowed
+        // by a user module whose leaf happens to be `fs`.
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if owner == rejection.module && method == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
+    }
+
+    /// Apply exact function policy after a named import has resolved its
+    /// declaration owner.  Unlike a bare surface spelling this carries the
+    /// source identity (`std.fs.try_read`) and cannot be captured by a user
+    /// function or a same-leaf module.
+    pub(super) fn reject_wasm_native_only_function_identity(
+        &mut self,
+        source_identity: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let Some((module, function)) = source_identity.rsplit_once('.') else {
+            return;
+        };
+        if !self.canonical_std_module_sources.contains(module) {
+            return;
+        }
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if module == rejection.module && function == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
     }
 
     /// Record a channel method rewrite to be resolved after inference settles.
@@ -1769,7 +2201,11 @@ impl Checker {
                     .module_registry
                     .handle_method_dispatches_through_impl(name, method)
             {
-                self.record_runtime_method_call_rewrite(span, c_symbol);
+                if crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).is_some() {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                } else {
+                    let _ = self.record_source_extern_handle_method_rewrite(span, name, c_symbol);
+                }
             }
         }
     }
@@ -1794,8 +2230,18 @@ impl Checker {
             .unwrap_or_else(|| receiver_name.to_string());
         let symbol = transport_attach_runtime_symbol(&canonical, method)?;
         let (module, _) = canonical.rsplit_once('.')?;
+        // The registry carries the original loaded spelling (`tls.TlsStream` /
+        // `websocket.Conn`), while nominal resolution carries its exact full
+        // source owner. Join the two identities here rather than asking the
+        // registry to recognise the canonical spelling directly: a user
+        // module may use either leaf spelling but cannot produce the same
+        // loaded source identity.
         if self.user_modules.contains(module)
-            || !self.module_registry.is_handle_type(canonical.as_str())
+            || self
+                .module_registry
+                .canonical_handle_type_identity(receiver_name)
+                .as_deref()
+                != Some(canonical.as_str())
         {
             return None;
         }
@@ -1809,9 +2255,8 @@ impl Checker {
     /// a fielded `#[resource]` wrapper — whose qualified name is not in the
     /// opaque `handle_types` set and whose short name matches no fieldless
     /// handle — so its methods keep dispatching through their real impl body.
-    fn receiver_is_opaque_handle(&self, name: &str) -> bool {
+    pub(super) fn receiver_is_opaque_handle(&self, name: &str) -> bool {
         self.module_registry.is_handle_type(name)
-            || self.module_registry.qualify_handle_type(name).is_some()
     }
 
     pub(super) fn record_module_qualified_stdlib_call_rewrite_if_any(
@@ -1820,60 +2265,46 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if self.user_modules.contains(module_name) {
+        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let source_declaration = format!("{canonical_owner}.{method}");
+        if let Some(target) = self.intrinsic_runtime_target_for_signature(&source_declaration) {
+            // The checker has already proved the exact canonical declaration
+            // and catalog identity. Keep the user-facing callee spelling only
+            // for HIR presentation; the typed target is the executable
+            // authority and no lowering re-parses this string.
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: CallTarget::Runtime(target),
+                    c_symbol: method.to_string(),
+                    elem_ty: None,
+                },
+            );
+            return;
+        }
+        if self.module_binding_has_user_declaration(module_name, method) {
             return;
         }
         if let Some(c_symbol) = self
             .module_registry
-            .resolve_module_call(module_name, method)
+            .resolve_module_call(&canonical_owner, method)
         {
             let symbol = if c_symbol == method {
-                let qualified = format!("{module_name}.{method}");
-                if !self.fn_sigs.contains_key(&qualified) {
+                let source_qualified = format!("{canonical_owner}.{method}");
+                let surface_qualified = format!("{module_name}.{method}");
+                if !self.fn_sigs.contains_key(&source_qualified)
+                    && !self.fn_sigs.contains_key(&surface_qualified)
+                {
                     return;
                 }
-                if module_name == "math" && Self::is_direct_math_intrinsic(method) {
-                    method.to_string()
-                } else {
-                    qualified
-                }
+                // Linker presentation remains the checker-selected registry
+                // spelling for now; the target below carries the canonical
+                // source declaration identity.
+                surface_qualified
             } else {
                 c_symbol
             };
-            self.record_module_qualified_method_call_rewrite(span, symbol);
-        }
-    }
-
-    fn is_direct_math_intrinsic(method: &str) -> bool {
-        matches!(
-            method,
-            "sqrt"
-                | "exp"
-                | "log"
-                | "sin"
-                | "cos"
-                | "abs"
-                | "min"
-                | "max"
-                | "abs_f"
-                | "min_f"
-                | "max_f"
-                | "pow"
-                | "floor"
-                | "ceil"
-                | "round"
-        )
-    }
-
-    fn generic_math_intrinsic_op(module_name: &str, method: &str) -> Option<MathGenericOp> {
-        if module_name != "math" {
-            return None;
-        }
-        match method {
-            "abs" => Some(MathGenericOp::Abs),
-            "min" => Some(MathGenericOp::Min),
-            "max" => Some(MathGenericOp::Max),
-            _ => None,
+            self.record_module_qualified_method_call_rewrite(span, symbol, source_declaration);
         }
     }
 
@@ -1892,12 +2323,34 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if !self.user_modules.contains(module_name) {
+        if !self.module_binding_has_user_declaration(module_name, method) {
             return;
         }
-        let key = format!("{module_name}.{method}");
-        if self.fn_sigs.contains_key(&key) {
-            self.record_module_qualified_method_call_rewrite(span, key);
+        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let source_declaration = format!("{canonical_owner}.{method}");
+        // A canonical compiler-intrinsic declaration is source-backed but not
+        // an ordinary user function. Its typed runtime or type-directed math
+        // rewrite was selected by the stdlib path; never overwrite it with a
+        // linker-name `User` fallback merely because it also has a source fn.
+        if self
+            .intrinsic_runtime_target_for_signature(&source_declaration)
+            .is_some()
+            || self
+                .intrinsic_math_generic_op_for_signature(&source_declaration)
+                .is_some()
+        {
+            return;
+        }
+        if self.fn_sigs.contains_key(&source_declaration)
+            || self
+                .fn_sigs
+                .contains_key(&format!("{module_name}.{method}"))
+        {
+            self.record_module_qualified_method_call_rewrite(
+                span,
+                source_declaration.clone(),
+                source_declaration,
+            );
         }
     }
 
@@ -1918,23 +2371,40 @@ impl Checker {
             return;
         }
         match name.as_str() {
-            "http_client.Response" => {
+            "http_client.Response" | "std.net.http.http_client.Response" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
-            "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
-            "process.Child" => {
+            "smtp.Conn" | "std.net.smtp.Conn" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp);
+            }
+            "websocket.Conn"
+            | "websocket.Server"
+            | "websocket.Message"
+            | "std.net.websocket.Conn"
+            | "std.net.websocket.Server"
+            | "std.net.websocket.Message" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::WebSocket);
+            }
+            "process.Child" | "std.process.Child" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
             }
-            "http.Server" | "http.Request" => {
+            "http.Server" | "http.Request" | "std.net.http.Server" | "std.net.http.Request" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
             }
-            "net.Listener" | "net.Connection" => {
+            STD_NET_LISTENER | STD_NET_CONNECTION => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
             }
-            "tls.TlsStream" => {
+            "tls.TlsStream" | "std.net.tls.TlsStream" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls);
             }
-            "quic.QUICEndpoint" | "quic.QUICConnection" | "quic.QUICStream" | "quic.QUICEvent" => {
+            "quic.QUICEndpoint"
+            | "quic.QUICConnection"
+            | "quic.QUICStream"
+            | "quic.QUICEvent"
+            | "std.net.quic.QUICEndpoint"
+            | "std.net.quic.QUICConnection"
+            | "std.net.quic.QUICStream"
+            | "std.net.quic.QUICEvent" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic);
             }
             _ => {}
@@ -1950,7 +2420,7 @@ impl Checker {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
-        if name != "semaphore.Semaphore" || self.user_modules.contains("semaphore") {
+        if name != "std.semaphore.Semaphore" {
             return;
         }
         if matches!(method, "acquire" | "acquire_timeout") {
@@ -2011,12 +2481,64 @@ impl Checker {
         if !self.modules.contains(module_short) {
             return None;
         }
-        let exports = self.module_type_exports.get(module_short)?;
+        let resolved_module = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))
+            .map(String::as_str)?;
+        let exports = self.module_type_exports.get(resolved_module)?;
         if !exports.contains(type_name) {
             return None;
         }
-        let qualified = format!("{module_short}.{type_name}");
+        let qualified = format!("{resolved_module}.{type_name}");
         self.type_defs.get(&qualified).cloned()
+    }
+
+    /// Return the exact source owner's exported type set for a lexical module
+    /// binding. Diagnostics use this helper as well as successful resolution so
+    /// suggestions never accidentally consult a same-leaf surface key.
+    pub(super) fn module_type_exports_for_binding(
+        &self,
+        module_short: &str,
+    ) -> Option<&HashSet<String>> {
+        if !self.modules.contains(module_short) {
+            return None;
+        }
+        let owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        self.module_type_exports.get(owner)
+    }
+
+    /// Canonicalize a supervisor child's user-spelled `actor_type` to the
+    /// registered actor identity.
+    ///
+    /// A supervisor child records its actor type as the raw source string the
+    /// user wrote (`child b: bank.Account` stores `bank.Account`). For a
+    /// package-module child that spelling carries the user's import *alias*
+    /// (`bank`), whereas the checker registers the actor under its exact source
+    /// owner (`hew.bank.Account`, keyed off `current_module`). Left raw, the
+    /// alias-prefixed string never matches the canonical `fn_sigs` /
+    /// `actor_init_params` / `type_defs` keys, so a `LocalPid<bank.Account>`
+    /// finds no `receive fn` and every wall keyed on the actor identity silently
+    /// skips.
+    ///
+    /// Resolve the dotted `alias.Type` spelling through `module_import_bindings`
+    /// (via `resolve_module_type`) to the exact source owner — mirroring the
+    /// `spawn module.Actor(...)` path in `resolve_spawn_target`, so a
+    /// supervisor-child handle carries the same identity a spawn handle does. A
+    /// bare root-actor spelling (`Account`) and any spelling that does not
+    /// resolve to a module-exported actor are returned unchanged, so root/flat
+    /// programs are a no-op by construction.
+    pub(super) fn canonical_supervisor_child_type(&self, raw: &str) -> String {
+        if let Some((module_short, type_name)) = raw.split_once('.') {
+            if let Some(td) = self
+                .resolve_module_type(module_short, type_name)
+                .filter(|td| td.kind == TypeDefKind::Actor)
+            {
+                return td.name;
+            }
+        }
+        raw.to_string()
     }
 
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
@@ -2035,19 +2557,17 @@ impl Checker {
         Some((td, v))
     }
 
-    /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
-    /// The last `.`-separated segment of `current_module`, i.e. the *short*
-    /// module name used as the qualified type-alias prefix (`websocket` for
-    /// `std.net.websocket`). Returns `None` at the root / flat namespace, where
-    /// type names are unqualified.
-    pub(super) fn current_module_short(&self) -> Option<&str> {
-        self.current_module.as_deref().map(crate::short_name)
+    /// Full canonical owner path of the module whose declarations are being
+    /// checked. Use this for declaration identity and layout-facing type
+    /// lookup.
+    pub(super) fn current_module_identity(&self) -> Option<&str> {
+        self.current_module.as_deref()
     }
 
     /// Resolve a bare actor reference to its registered checker identity.
     ///
     /// Resolution order (local-first, mirroring `per-module-type-identity`):
-    /// 1. the current module's own actor (`{current_short}.{name}`)
+    /// 1. the current module's own actor (`{current_full_path}.{name}`)
     /// 2. a root/flat actor registered under the bare name
     /// 3. a named-import binding (`unqualified_to_module`)
     /// 4. the modules exporting an actor of that name: exactly one resolves
@@ -2058,8 +2578,8 @@ impl Checker {
                 .get(key)
                 .is_some_and(|td| td.kind == TypeDefKind::Actor)
         };
-        if let Some(short) = self.current_module_short() {
-            let dotted = format!("{short}.{name}");
+        if let Some(module) = self.current_module.as_deref() {
+            let dotted = format!("{module}.{name}");
             if is_actor(&dotted) {
                 return BareActorResolution::Resolved(dotted);
             }
@@ -2067,13 +2587,26 @@ impl Checker {
         if is_actor(name) {
             return BareActorResolution::Resolved(name.to_string());
         }
-        if let Some(module) = self
-            .unqualified_to_module
+        if let Some(owners) = self
+            .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))
         {
-            let dotted = format!("{module}.{name}");
-            if is_actor(&dotted) {
-                return BareActorResolution::Resolved(dotted);
+            let candidates: Vec<String> = owners
+                .iter()
+                .filter(|identity| is_actor(identity))
+                .cloned()
+                .collect();
+            match candidates.as_slice() {
+                [identity] => return BareActorResolution::Resolved(identity.clone()),
+                [] => {}
+                _ => {
+                    let modules = candidates
+                        .iter()
+                        .filter_map(|identity| identity.rsplit_once('.'))
+                        .map(|(module, _)| module.to_string())
+                        .collect();
+                    return BareActorResolution::Ambiguous(modules);
+                }
             }
         }
         let mut candidates: Vec<&str> = self
@@ -2105,21 +2638,10 @@ impl Checker {
     /// bare key last. Returns `None` outside a module or when the qualified
     /// type def / method is absent (caller falls back to the bare lookup).
     pub(super) fn module_local_method_sig(&self, type_name: &str, method: &str) -> Option<FnSig> {
-        let short = self.current_module_short()?;
-        let qualified = format!("{short}.{type_name}");
+        let owner = self.current_module_identity()?;
+        let qualified = format!("{owner}.{type_name}");
         let td = self.type_defs.get(&qualified)?;
         td.methods.get(method).cloned()
-    }
-
-    /// Resolve a module-local type definition through its authoritative
-    /// qualified key (`{current_short}.{type_name}`).
-    ///
-    /// This avoids the bare-name last-write-wins entry when a sibling module
-    /// declares the same record/type name.
-    pub(super) fn module_local_type_def(&self, type_name: &str) -> Option<TypeDef> {
-        let short = self.current_module_short()?;
-        let qualified = format!("{short}.{type_name}");
-        self.type_defs.get(&qualified).cloned()
     }
 
     pub(super) fn lookup_named_method_sig(
@@ -2132,10 +2654,26 @@ impl Checker {
             .or_else(|| {
                 self.module_registry
                     .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type)| FnSig {
-                        params,
-                        return_type,
-                        ..FnSig::default()
+                    .map(|(_c_symbol, params, return_type, canonical_owner)| {
+                        // The registry's own projection sees only the loaded
+                        // module and its imports, so a nominal that module
+                        // neither declares nor imports (`stream.Sink` reached
+                        // from `std.net.http`) comes back at the legacy short
+                        // owner while source resolution mints the complete one.
+                        // Re-resolve through the shared ladder so a method
+                        // signature and the source around it name one owner
+                        // (rc1-F1 stage D, registry producer).
+                        FnSig {
+                            params: params
+                                .iter()
+                                .map(|ty| {
+                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: self
+                                .canonicalize_registry_signature(&return_type, &canonical_owner),
+                            ..FnSig::default()
+                        }
                     })
             })
     }
@@ -2200,9 +2738,12 @@ impl Checker {
         else {
             return None;
         };
-        let sig = self.lookup_named_method_sig(name, type_args, method)?;
-        Some(
-            self.apply_instantiated_call_signature(
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
+        let return_type = self
+            .apply_instantiated_call_signature(
                 &sig,
                 None,
                 args,
@@ -2212,8 +2753,152 @@ impl Checker {
                 },
                 true,
             )
-            .return_type,
-        )
+            .return_type;
+        // The successful signature lookup and the emitted impl body must use
+        // the same declaration identity.  In particular, a fielded resource
+        // wrapper such as `std.text.regex.Pattern` deliberately cannot be
+        // rewritten to its raw handle extern: its source impl forwards
+        // `self.handle` and reconstructs wrappers where needed.  Resolve the
+        // canonical, source-qualified impl key here, at the lookup boundary,
+        // rather than making HIR rediscover it from a presentation name.
+        self.record_named_source_method_rewrite(receiver_ty, method, &sig, span);
+        Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
+    }
+
+    /// Record a direct call to the exact source implementation that supplied
+    /// a named-method signature.  This is intentionally keyed only by the
+    /// checker-owned declaration map: same-leaf user types and registry
+    /// aliases cannot mint an imported stdlib impl dispatch.
+    fn record_named_source_method_rewrite(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        sig: &FnSig,
+        span: &Span,
+    ) {
+        let Ty::Named {
+            name,
+            args: type_args,
+            builtin,
+            ..
+        } = receiver_ty
+        else {
+            return;
+        };
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let method_key = format!("{canonical_name}::{method}");
+        let dispatch_key = if type_args.is_empty() {
+            method_key.clone()
+        } else {
+            type_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                .collect::<Option<Vec<_>>>()
+                .as_ref()
+                .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical_name, args))
+                .map(|owner| format!("{owner}::{method}"))
+                .filter(|key| self.impl_method_declaration_ids.contains_key(key))
+                .unwrap_or_else(|| method_key.clone())
+        };
+        let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).cloned() else {
+            return;
+        };
+        let consumes_receiver = sig.consumes_receiver
+            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_inherent_close_consumes_receiver(
+                &canonical_name,
+                *builtin,
+                method,
+                sig,
+            );
+        if consumes_receiver {
+            self.method_call_consumes_receiver
+                .insert(SpanKey::in_module(span, self.current_module_idx));
+        }
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::impl_method(declaration),
+                c_symbol: dispatch_key,
+                descriptor: None,
+                extern_identity: None,
+                elem_ty: None,
+                consumes_receiver,
+                returns_receiver_identity: sig.returns_receiver_identity,
+            },
+        );
+    }
+
+    /// Restore the source owner on bare nominal types in a qualified receiver's
+    /// method result.
+    ///
+    /// Impl signatures are registered while their declaring module is active,
+    /// where a self-module type is legitimately spelled bare (`Listener::accept
+    /// -> Connection`). At an imported call site the receiver has already
+    /// acquired its exact identity (`net.Listener`), so letting that bare return
+    /// escape would lose the owner again and make downstream layout/codegen
+    /// confuse it with a root or foreign `Connection`.
+    ///
+    /// Only names proven in the same owner's `type_defs` are qualified. An
+    /// already-qualified result (including `foo.Connection`) is authoritative
+    /// and unchanged, as are builtins and a method on a bare/root receiver.
+    pub(super) fn qualify_method_return_to_receiver_owner(
+        &self,
+        receiver_name: &str,
+        ty: &Ty,
+    ) -> Ty {
+        let canonical_registry_receiver = self
+            .module_registry
+            .canonical_method_receiver_identity(receiver_name);
+        let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
+            canonical
+        } else if self.type_defs.contains_key(receiver_name) {
+            receiver_name
+        } else {
+            return ty.clone();
+        };
+        let Some((owner, _)) = exact_receiver.rsplit_once('.') else {
+            return ty.clone();
+        };
+        self.qualify_method_return_to_owner(owner, ty)
+    }
+
+    fn qualify_method_return_to_owner(&self, owner: &str, ty: &Ty) -> Ty {
+        let mapped =
+            ty.map_children_pub(&|child| self.qualify_method_return_to_owner(owner, child));
+        let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = mapped
+        else {
+            return mapped;
+        };
+        if name.contains('.') {
+            let name = self
+                .module_registry
+                .canonical_registry_signature_type_identity(&name, owner)
+                .unwrap_or(name);
+            return Ty::Named {
+                name,
+                args,
+                builtin: None,
+            };
+        }
+        let qualified = format!("{owner}.{name}");
+        Ty::Named {
+            name: if self.type_defs.contains_key(&qualified)
+                || self.module_registry.is_method_receiver_type(&qualified)
+            {
+                qualified
+            } else {
+                name
+            },
+            args,
+            builtin: None,
+        }
     }
 
     /// Enforce the actor mailbox boundary on every arg of an actor receive
@@ -2370,7 +3055,7 @@ impl Checker {
                 trait_name,
                 assoc_name,
                 ..
-            } if trait_name.as_ref() == "Pid" && assoc_name.as_ref() == "Msg"
+            } if trait_name.as_ref() == "std.builtins.Pid" && assoc_name.as_ref() == "Msg"
         )
     }
 
@@ -2540,6 +3225,16 @@ impl Checker {
                                 "type `{name}` contains an opaque field `{opaque_name}` \
                                  and cannot be cloned"
                             ),
+                        );
+                        return Ty::Error;
+                    }
+                    RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                        let receiver_name = receiver_ty.user_facing().to_string();
+                        self.report_affine_record_clone_error(
+                            &receiver_name,
+                            &type_name,
+                            marker,
+                            span,
                         );
                         return Ty::Error;
                     }
@@ -2723,6 +3418,16 @@ impl Checker {
         _span: &Span,
     ) -> RecordCloneAdmissibility {
         use TypeDefKind::{Enum, Record, Struct};
+        let receiver_ty = Ty::Named {
+            name: name.to_string(),
+            args: type_args.to_vec(),
+            builtin: None,
+        };
+        if let Some((type_name, marker)) =
+            self.ty_clone_contains_affine_value(&receiver_ty, &mut std::collections::HashSet::new())
+        {
+            return RecordCloneAdmissibility::AffineValue { type_name, marker };
+        }
         let Some(type_def) = self.type_defs.get(name) else {
             // A bare type parameter (`x: T`) has no `type_defs` entry. When it
             // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
@@ -2790,6 +3495,161 @@ impl Checker {
             return RecordCloneAdmissibility::OpaqueField { opaque_name };
         }
         RecordCloneAdmissibility::Admissible
+    }
+
+    fn report_affine_record_clone_error(
+        &mut self,
+        receiver_name: &str,
+        affine_name: &str,
+        marker: hew_parser::ast::ResourceMarker,
+        span: &Span,
+    ) {
+        let message = Self::affine_record_clone_error_message(receiver_name, affine_name, marker);
+        self.report_error(TypeErrorKind::InvalidOperation, span, message);
+    }
+
+    fn affine_record_clone_error_message(
+        receiver_name: &str,
+        affine_name: &str,
+        marker: hew_parser::ast::ResourceMarker,
+    ) -> String {
+        let (attribute, contract) = match marker {
+            hew_parser::ast::ResourceMarker::Resource => (
+                "#[resource]",
+                "has an affine close contract and no semantic clone",
+            ),
+            hew_parser::ast::ResourceMarker::Linear => (
+                "#[linear]",
+                "must be consumed exactly once and has no semantic clone",
+            ),
+            hew_parser::ast::ResourceMarker::None => {
+                unreachable!("affine clone blocker cannot carry ResourceMarker::None")
+            }
+        };
+        let subject = if receiver_name == affine_name {
+            format!("type `{receiver_name}` is `{attribute}`")
+        } else {
+            format!("type `{receiver_name}` contains `{attribute}` value `{affine_name}`")
+        };
+        format!("{subject} and cannot be cloned: `{affine_name}` {contract}")
+    }
+
+    /// Return the first `#[resource]` / `#[linear]` value reachable from a
+    /// structural record-clone receiver.
+    ///
+    /// Explicit record clone is a non-consuming read that creates a second
+    /// owner. That is valid only when every stored value has a semantic clone.
+    /// Resource/linear markers veto the operation even when their physical
+    /// fields are all bit-copy, and the veto descends through unmarked
+    /// records/enums/tuples/arrays so an affine value cannot hide in a wrapper.
+    fn ty_clone_contains_affine_value(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<(String, hew_parser::ast::ResourceMarker)> {
+        use hew_parser::ast::ResourceMarker;
+
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        match &resolved {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                // These wrappers duplicate the OUTER handle semantically and
+                // do not clone their protocol/payload type argument. Keep them
+                // terminal, matching MIR's value-snapshot affine-marker proof.
+                if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
+                    return None;
+                }
+                if self.registry.is_resource(name) {
+                    return Some((name.clone(), ResourceMarker::Resource));
+                }
+                if self.registry.is_linear(name) {
+                    return Some((name.clone(), ResourceMarker::Linear));
+                }
+                // Built-in value containers (for example `Option<T>`,
+                // `Result<T, E>`, and `Vec<T>`) store their type arguments, so
+                // descend through them. User records are different: a generic
+                // argument may be a phantom tag (for example `Key<T>`), and
+                // only the instantiated declared fields/variants below are
+                // authoritative for whether a value is actually contained.
+                if builtin.is_some() {
+                    for arg in args {
+                        if let Some(blocker) = self.ty_clone_contains_affine_value(arg, visiting) {
+                            return Some(blocker);
+                        }
+                    }
+                }
+                let type_def = self.lookup_type_def(name)?;
+                // Cycle detection is about the declared layout edge, not the
+                // instantiated spelling. A polymorphic recursive definition
+                // such as `Grow<T> { Node(Vec<Grow<Vec<T>>>) }` makes that
+                // spelling grow forever (`Grow<i64>`,
+                // `Grow<Vec<i64>>`, ...), so using it as the key never closes
+                // the walk and can overflow the checker stack. Re-visiting the
+                // same nominal declaration is already an active recursive
+                // layout edge; its fields are being checked by the outer frame.
+                let visit_key = type_def.name.clone();
+                if !visiting.insert(visit_key.clone()) {
+                    return None;
+                }
+                let blocker = type_def
+                    .fields
+                    .values()
+                    .map(|field_ty| {
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
+                    })
+                    .find_map(|field_ty| self.ty_clone_contains_affine_value(&field_ty, visiting))
+                    .or_else(|| {
+                        self.tuple_record_constructor_fields(name, &type_def)
+                            .iter()
+                            .find_map(|field_ty| {
+                                let field_ty = Self::instantiate_type_def_member(
+                                    field_ty,
+                                    &type_def.type_params,
+                                    args,
+                                );
+                                self.ty_clone_contains_affine_value(&field_ty, visiting)
+                            })
+                    })
+                    .or_else(|| {
+                        type_def
+                            .variants
+                            .values()
+                            .find_map(|variant| match variant {
+                                VariantDef::Unit => None,
+                                VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+                                    let field_ty = Self::instantiate_type_def_member(
+                                        field_ty,
+                                        &type_def.type_params,
+                                        args,
+                                    );
+                                    self.ty_clone_contains_affine_value(&field_ty, visiting)
+                                }),
+                                VariantDef::Struct(fields) => {
+                                    fields.iter().find_map(|(_, field_ty)| {
+                                        let field_ty = Self::instantiate_type_def_member(
+                                            field_ty,
+                                            &type_def.type_params,
+                                            args,
+                                        );
+                                        self.ty_clone_contains_affine_value(&field_ty, visiting)
+                                    })
+                                }
+                            })
+                    });
+                visiting.remove(&visit_key);
+                blocker
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.ty_clone_contains_affine_value(item, visiting)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.ty_clone_contains_affine_value(elem, visiting)
+            }
+            _ => None,
+        }
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) record's
@@ -3932,7 +4792,11 @@ impl Checker {
         }
     }
 
-    fn type_param_has_marker_bound(&self, param_name: &str, marker: MarkerTrait) -> bool {
+    pub(super) fn type_param_has_marker_bound(
+        &self,
+        param_name: &str,
+        marker: MarkerTrait,
+    ) -> bool {
         let marker_name = marker.to_string();
         for frame in self.current_type_param_bounds.iter().rev() {
             if let Some(bounds) = frame.bounds.get(param_name) {
@@ -4000,7 +4864,7 @@ impl Checker {
                 self.resolved_calls
                     .get_mut(&key)
                     .expect("collection resolver inserted Vec call before symbol override")
-                    .target
+                    .method_target
                     .symbol_name = symbol_name;
             }
             crate::vec_authority::VecSymbolResolution::Deferred => {}
@@ -4576,11 +5440,8 @@ impl Checker {
                         },
                     );
                 }
-                iter_ty = Ty::Named {
-                    name: "HashMapIter".to_string(),
-                    args: vec![resolved_key, resolved_val],
-                    builtin: None,
-                };
+                iter_ty =
+                    Ty::builtin_named(BuiltinType::HashMapIter, vec![resolved_key, resolved_val]);
             }
             return iter_ty;
         }
@@ -4862,20 +5723,16 @@ impl Checker {
                         type_def.kind,
                         TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
                     );
-                    if is_record_or_enum {
-                        let roots = element_self_roots(name);
-                        if !self.record_enum_collection_fields_clonable(
-                            elem_ty,
-                            &roots,
-                            &mut HashSet::new(),
-                        ) {
-                            return "it contains a `Vec`/`HashMap`/`HashSet` field whose \
-                                    element type has no clone/drop thunk path for the \
-                                    owned-element Vec runtime (a function/closure, machine, \
-                                    opaque, or `Rc` leaf, or a mutually recursive type with \
-                                    no container indirection)"
-                                .to_string();
-                        }
+                    if is_record_or_enum
+                        && !self
+                            .record_enum_collection_fields_clonable(elem_ty, &mut HashSet::new())
+                    {
+                        return "it contains a `Vec`/`HashMap`/`HashSet` field whose \
+                                element type has no clone/drop thunk path for the \
+                                owned-element Vec runtime (a function/closure, machine, \
+                                opaque, or `Rc` leaf, or a mutually recursive type with \
+                                no container indirection)"
+                            .to_string();
                     }
                 }
             }
@@ -4918,6 +5775,35 @@ impl Checker {
             return Some(
                 "it is an indirect enum whose per-element release protocol is not yet wired, \
                  so its heap nodes would leak at scope exit"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    /// A `dyn Trait` element behind an opaque vtable pointer has no clone/drop
+    /// thunk (`VecIter::next()` needs one to clone each element into an
+    /// independent owner) and no scalar-index or push-rewrite entry, so
+    /// `Vec<dyn Trait>` type-checks today and then fails three different ways
+    /// deep in codegen/HIR with internal-looking diagnostics (`VecIter<dyn T>
+    /// is not supported`, `MethodCallNoRewrite`, `VecIndexElementTypeUnsupported`)
+    /// instead of one clear rejection naming the supported alternative. `dyn
+    /// Trait` itself is fine (a function parameter monomorphises per call
+    /// site); only wrapping it in `Vec` is unsupported, so this check is
+    /// scoped to the `Vec` element position, not `Ty::TraitObject` generally.
+    ///
+    /// Returns `Some(reason)` for a `Ty::TraitObject` element, `None` otherwise.
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a &self method to match the sibling \
+                  indirect_enum_vec_element_reject_reason call convention at both call sites"
+    )]
+    pub(super) fn trait_object_vec_element_reject_reason(&self, elem_ty: &Ty) -> Option<String> {
+        if matches!(elem_ty, Ty::TraitObject { .. }) {
+            return Some(
+                "trait-object elements are not supported in `Vec` (no clone/drop, index, or \
+                 push path exists for an opaque `dyn Trait` pointer); wrap each variant in an \
+                 enum and store `Vec<YourEnum>` instead"
                     .to_string(),
             );
         }
@@ -5049,6 +5935,19 @@ impl Checker {
     }
 
     pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
+        self.vec_owned_element_admissible_on_path(elem_ty, &mut HashSet::new())
+    }
+
+    /// [`Self::vec_owned_element_admissible`] carrying the record/enum names
+    /// already on the active walk. A nested element reached across a container
+    /// edge continues the SAME walk instead of restarting it, so a group that
+    /// recurses only through container indirection (`A` holds `Vec<B>`, `B`
+    /// holds `Vec<A>`) closes its name cycle and terminates.
+    fn vec_owned_element_admissible_on_path(
+        &self,
+        elem_ty: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
         match elem_ty {
             // Tuple element: a tuple with at least one owned (non-Copy) field
             // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
@@ -5057,8 +5956,8 @@ impl Checker {
             // through the same authority; container and closure leaves still
             // fail closed.
             Ty::Tuple(elems) => {
-                // A tuple has no self-recursion root, so the `roots` set is
-                // empty: any container field is unowned.
+                // A tuple starts no nominal recursion walk of its own, so a
+                // container-bearing tuple field must prove its own path.
                 elems
                     .iter()
                     .all(|e| self.vec_tuple_owned_field_admissible(e))
@@ -5096,14 +5995,24 @@ impl Checker {
                         }
                         return true;
                     }
-                    Some(BuiltinType::Rc | BuiltinType::Weak) => return args.len() == 1,
+                    // Sender is cloneable while Receiver is deliberately
+                    // drop-only. Both need descriptor-backed Vec storage;
+                    // copy/clone surfaces reject Receiver separately.
+                    Some(
+                        BuiltinType::Rc
+                        | BuiltinType::Weak
+                        | BuiltinType::Sender
+                        | BuiltinType::Receiver,
+                    ) => {
+                        return args.len() == 1;
+                    }
                     // Other builtin nominals are not user records/enums and
                     // have no owned-Vec thunk path.
                     Some(_) => return false,
                     // User-defined record/enum: fall through to the logic below.
                     None => {}
                 }
-                let Some(type_def) = self.type_defs.get(name) else {
+                let Some(type_def) = self.lookup_type_def(name) else {
                     return false;
                 };
                 // Only record/struct/enum value types have synthesizable
@@ -5125,9 +6034,9 @@ impl Checker {
                 // field is admissible when every such collection field is
                 // CLONABLE by the synthesized in-place thunk — each field's
                 // element type is a copy primitive, `string`/`bytes`, a
-                // self-recursion edge back to THIS element (the
-                // `enum R { A(Vec<R>); ... }` Redis-reply shape), or a nested
-                // admissible owned element. The record/enum's
+                // recursion edge back to a record/enum already on this walk (the
+                // `enum R { A(Vec<R>); ... }` Redis-reply shape and its mutual
+                // twin), or a nested admissible owned element. The record/enum's
                 // `__hew_record_drop_inplace_<R>` / `__hew_enum_*_inplace_<E>`
                 // thunk recurses through each collection field via the
                 // owned-collection ABI (`hew_vec_{clone,free}_owned`,
@@ -5136,12 +6045,11 @@ impl Checker {
                 // are proven by the owned-element leak oracles. A field holding
                 // an UNCLONABLE collection element (function/closure, machine,
                 // opaque, `Rc`) fails the per-arg clonability check and keeps the
-                // record fail-closed. The self-recursion escape is keyed on this
-                // element's OWN name only; a directly self-referential record
-                // with no container indirection still reaches `RecordCycle` in
-                // MIR (LESSONS `recursive-admission-needs-indirection-witness`).
-                let roots = element_self_roots(name);
-                self.record_enum_collection_fields_clonable(elem_ty, &roots, &mut HashSet::new())
+                // record fail-closed. The recursion escape is keyed on the
+                // CONTAINER edge only; a directly self-referential record with no
+                // container indirection still reaches `RecordCycle` in MIR
+                // (LESSONS `recursive-admission-needs-indirection-witness`).
+                self.record_enum_collection_fields_clonable(elem_ty, visiting)
             }
             _ => false,
         }
@@ -5149,17 +6057,18 @@ impl Checker {
 
     /// True when every builtin-collection field transitively reachable from a
     /// record/enum owned element `ty` is CLONABLE by the synthesized in-place
-    /// thunk (see [`Self::vec_owned_element_admissible`]). `roots` carries the
-    /// recursing element's own name(s) — a `Vec<R>`/`HashMap<_, R>`/`HashSet<R>`
-    /// field whose args are all roots is the admitted self-recursion edge, whose
-    /// runtime recursion happens through the inner collection's own descriptor.
-    /// `visiting` breaks the finite record-name cycle so the walk terminates.
+    /// thunk (see [`Self::vec_owned_element_admissible`]). `visiting` carries the
+    /// record/enum names on the active walk. It is the single authority for
+    /// termination, while the container-argument helpers below are the only
+    /// places allowed to treat a re-entry as an indirection witness: a
+    /// `Vec<R>` element or `HashMap<_, R>` value can close through the heap
+    /// buffer. A direct member, a `HashMap<R, _>` key, and a `HashSet<R>`
+    /// element remain inline and therefore reject on re-entry.
     /// Non-collection fields (`string`/`bytes`/primitives) carry no container
     /// and are trivially clonable; nested record/enum/tuple fields recurse.
     fn record_enum_collection_fields_clonable(
         &self,
         ty: &Ty,
-        roots: &HashSet<String>,
         visiting: &mut HashSet<String>,
     ) -> bool {
         match ty {
@@ -5169,49 +6078,71 @@ impl Checker {
                 args,
             } => {
                 match builtin {
+                    Some(BuiltinType::Vec) if args.len() == 1 => {
+                        return self.vec_collection_arg_clonable(&args[0], visiting);
+                    }
+                    Some(BuiltinType::HashSet) if args.len() == 1 => {
+                        return self.record_enum_collection_fields_clonable(&args[0], visiting);
+                    }
+                    Some(BuiltinType::HashMap) if args.len() == 2 => {
+                        // A map's KEY participates in the inline key layout;
+                        // only its value is stored behind the heap buffer.
+                        return self.record_enum_collection_fields_clonable(&args[0], visiting)
+                            && self.vec_collection_arg_clonable(&args[1], visiting);
+                    }
                     Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet) => {
-                        // Every type argument must be a value the owned-collection
-                        // ABI can deep-clone and free.
-                        return args
-                            .iter()
-                            .all(|a| self.vec_collection_arg_clonable(a, roots, visiting));
+                        return false;
                     }
                     // Other builtins (Option/Result/Rc/handles) carry their own
                     // ABI; recurse only through their type arguments.
                     Some(_) => {
-                        return args.iter().all(|a| {
-                            self.record_enum_collection_fields_clonable(a, roots, visiting)
-                        });
+                        return args
+                            .iter()
+                            .all(|a| self.record_enum_collection_fields_clonable(a, visiting));
                     }
                     None => {}
                 }
-                if !visiting.insert(name.clone()) {
-                    // Finite record-name cycle: a user record/enum self-edge
-                    // reached without a bare container carries no unclonable
-                    // collection field of its own.
-                    return true;
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    // An unresolved nominal will produce its own type error;
+                    // this structural proof cannot assume a clone/drop thunk.
+                    return false;
+                };
+                let visit_key = type_def.name.clone();
+                if !visiting.insert(visit_key.clone()) {
+                    // We reached this nominal through an inline member. A
+                    // descriptor-backed container must witness the re-entry
+                    // before this point; otherwise the layout is infinitely
+                    // sized and its clone/drop recursion is not admissible.
+                    return false;
                 }
-                let ok = self.type_defs.get(name).is_none_or(|td| {
-                    td.fields.values().all(|fty| {
-                        self.record_enum_collection_fields_clonable(fty, roots, visiting)
-                    }) && td.variants.values().all(|variant| match variant {
-                        VariantDef::Unit => true,
-                        VariantDef::Tuple(tys) => tys.iter().all(|t| {
-                            self.record_enum_collection_fields_clonable(t, roots, visiting)
-                        }),
-                        VariantDef::Struct(fields) => fields.iter().all(|(_, t)| {
-                            self.record_enum_collection_fields_clonable(t, roots, visiting)
-                        }),
-                    })
+                let ok = type_def.fields.values().all(|field_ty| {
+                    let field_ty =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.record_enum_collection_fields_clonable(&field_ty, visiting)
+                }) && type_def.variants.values().all(|variant| match variant {
+                    VariantDef::Unit => true,
+                    VariantDef::Tuple(tys) => tys.iter().all(|field_ty| {
+                        let field_ty = Self::instantiate_type_def_member(
+                            field_ty,
+                            &type_def.type_params,
+                            args,
+                        );
+                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
+                    }),
+                    VariantDef::Struct(fields) => fields.iter().all(|(_, t)| {
+                        let field_ty =
+                            Self::instantiate_type_def_member(t, &type_def.type_params, args);
+                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
+                    }),
                 });
-                visiting.remove(name);
+                visiting.remove(&visit_key);
                 ok
             }
             Ty::Tuple(elems) => elems
                 .iter()
-                .all(|e| self.record_enum_collection_fields_clonable(e, roots, visiting)),
+                .all(|e| self.record_enum_collection_fields_clonable(e, visiting)),
             Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.record_enum_collection_fields_clonable(inner, roots, visiting)
+                self.record_enum_collection_fields_clonable(inner, visiting)
             }
             // Primitives, `string`, `bytes`, function/closure surface types carry
             // no builtin-collection field of their own — a function/closure as a
@@ -5222,27 +6153,38 @@ impl Checker {
     }
 
     /// True when a builtin-collection field's type argument `a` is a value the
-    /// owned-collection clone/free ABI can deep-clone and release: a
-    /// self-recursion root (its own thunk recurses through the inner
+    /// owned-collection clone/free ABI can deep-clone and release: a record/enum
+    /// already on the active walk (its own thunk recurses through the inner
     /// collection), a copy primitive / `BitCopy` record, `string`/`bytes`, or a
     /// nested admissible owned element (record/enum/tuple/nested collection). An
     /// unclonable arg (function/closure, machine, opaque, `Rc`-bearing) makes the
     /// enclosing collection field — and thus the record/enum element — fail
     /// closed.
-    fn vec_collection_arg_clonable(
-        &self,
-        a: &Ty,
-        roots: &HashSet<String>,
-        _visiting: &HashSet<String>,
-    ) -> bool {
-        if let Ty::Named { name, .. } = a {
-            if roots.contains(name) {
+    ///
+    /// This is the container edge, so `visiting` is a per-nominal
+    /// container-indirection witness: only a cycle that closes ACROSS this heap
+    /// container is admitted. Nested elements continue the same walk, so a
+    /// mutually recursive group terminates instead of restarting the name set
+    /// on every hop.
+    fn vec_collection_arg_clonable(&self, a: &Ty, visiting: &mut HashSet<String>) -> bool {
+        let resolved = self.subst.resolve(a).materialize_literal_defaults();
+        if let Ty::Named {
+            name,
+            builtin: None,
+            ..
+        } = &resolved
+        {
+            let visit_key = self
+                .lookup_type_def(name)
+                .map_or_else(|| name.clone(), |type_def| type_def.name);
+            if visiting.contains(&visit_key) {
                 return true;
             }
         }
-        matches!(a, Ty::String | Ty::Bytes)
-            || crate::check::admissibility::primitive_copy_layout(a, &self.type_defs).is_some()
-            || self.vec_owned_element_admissible(a)
+        matches!(&resolved, Ty::String | Ty::Bytes)
+            || crate::check::admissibility::primitive_copy_layout(&resolved, &self.type_defs)
+                .is_some()
+            || self.vec_owned_element_admissible_on_path(&resolved, visiting)
     }
 
     fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {
@@ -5252,7 +6194,7 @@ impl Checker {
                 .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
             Ty::String | Ty::Bytes => true,
             Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender),
                 args,
                 ..
             } => args.len() == 1,
@@ -5456,6 +6398,9 @@ impl Checker {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec::into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
                 if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
                     self.record_method_call_receiver_kind(
                         span,
@@ -5471,11 +6416,7 @@ impl Checker {
                         },
                     );
                 }
-                Ty::Named {
-                    name: "VecIter".to_string(),
-                    args: vec![resolved_elem],
-                    builtin: None,
-                }
+                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "iter" => {
                 // `Vec<T>::iter()` yields the SAME `VecIter<T>` surface as
@@ -5505,6 +6446,9 @@ impl Checker {
                 // its `keys()`/`values()` projections.
                 self.check_arity(args, 0, "`Vec::iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
                 if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
                     let clone_span = span.start..span.start;
                     let vec_ty = self.make_vec_type(resolved_elem.clone(), &clone_span);
@@ -5517,11 +6461,7 @@ impl Checker {
                         },
                     );
                 }
-                Ty::Named {
-                    name: "VecIter".to_string(),
-                    args: vec![resolved_elem],
-                    builtin: None,
-                }
+                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "get" if runtime_method_declared => {
                 // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
@@ -5879,6 +6819,19 @@ impl Checker {
         } else {
             method_key.clone()
         };
+        let target = self
+            .impl_method_declaration_ids
+            .get(&c_symbol)
+            .or_else(|| self.impl_method_declaration_ids.get(&method_key))
+            .cloned()
+            .map_or_else(
+                || CallTarget::Unsupported {
+                    reason: format!(
+                        "primitive impl method `{c_symbol}` has no registered declaration identity"
+                    ),
+                },
+                CallTarget::impl_method,
+            );
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -5890,15 +6843,18 @@ impl Checker {
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
+                    target,
                     c_symbol,
                     // User-fn dispatch into a primitive trait impl
                     // (`i64::fmt` etc.) is open-set; the typed runtime-call
                     // catalog does not enumerate user-defined method keys.
                     descriptor: None,
+                    extern_identity: None,
                     elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
-                    consumes_receiver: false,
+                    consumes_receiver: sig.consumes_receiver,
+                    returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
         }
@@ -6046,8 +7002,7 @@ impl Checker {
             } => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
                     return !Self::ty_contains_impl_param(self_arg, impl_params)
-                        && crate::unify::unify(&mut self.subst, &receiver_resolved, self_arg)
-                            .is_ok();
+                        && self.try_unify_with_owner_identity(&receiver_resolved, self_arg);
                 }
                 let Ty::Named {
                     name: r_name,
@@ -6069,8 +7024,7 @@ impl Checker {
             // equality, or unify an unbound receiver var with the concrete leaf.
             concrete => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
-                    return crate::unify::unify(&mut self.subst, &receiver_resolved, concrete)
-                        .is_ok();
+                    return self.try_unify_with_owner_identity(&receiver_resolved, concrete);
                 }
                 receiver_resolved == *concrete
             }
@@ -6118,6 +7072,7 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let first_arg = args.first()?;
+        let trait_key = self.trait_ref_lookup_key(trait_name);
         // Short-circuit before synthesising first_arg: if trait_name has no
         // primitive impls registered at all, return immediately.  This
         // prevents the fallback trait-qualified path from synthesising
@@ -6128,7 +7083,7 @@ impl Checker {
         let has_primitive_impl = self
             .primitive_trait_impls
             .keys()
-            .any(|(_, tn)| tn == trait_name);
+            .any(|(_, tn)| tn == &trait_key);
         if !has_primitive_impl {
             return None;
         }
@@ -6155,7 +7110,7 @@ impl Checker {
         // this call site and there is no ambiguity to resolve.
         let sig = self
             .primitive_trait_impls
-            .get(&(canonical.clone(), trait_name.to_string()))
+            .get(&(canonical.clone(), trait_key.clone()))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
         // Bind the impl's type params from the concrete receiver before
@@ -6168,7 +7123,7 @@ impl Checker {
         let sig = self.instantiate_primitive_trait_method_sig(
             sig,
             &canonical,
-            trait_name,
+            &trait_key,
             &resolved_receiver,
         )?;
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
@@ -6200,11 +7155,348 @@ impl Checker {
         Some(self.project_assoc_types(&applied.return_type))
     }
 
+    pub(super) fn check_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, args, span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let runtime_rewrite_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                ..
+            })
+        );
+        let builtin_option_result_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        );
+        if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
+            self.method_call_consumes_receiver.insert(key);
+            if let Expr::Identifier(name) = &receiver.0 {
+                // The typed consumption decision overrides a surface Copy
+                // derivation. In particular, LambdaActorHandle is represented
+                // by an empty stdlib nominal, but release still consumes its
+                // sole runtime handle and any later receiver use is invalid.
+                self.env.mark_moved(name, receiver.1.clone());
+            }
+        }
+        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+        result
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "method ownership joins every resolved dispatch family at one authority seam"
+    )]
+    fn record_resolved_method_call_ownership(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        _method: &str,
+        args: &[CallArg],
+        span: &Span,
+        result_ty: &Ty,
+    ) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
+        let non_owning = resolved_result.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved_result, MarkerTrait::Copy);
+        let rewrite = self.method_call_rewrites.get(&key);
+        let dyn_call = self.dyn_trait_method_calls.get(&key);
+        let resolved_call = self.resolved_calls.get(&key);
+        let actor_call = self.actor_method_dispatch.get(&key);
+        let machine_call = self.machine_method_dispatch.get(&key);
+        let suspending_receiver = self
+            .suspending_io_receiver_nominals
+            .get(&key)
+            .map(String::as_str);
+        let is_suspending_io_delivery = (self.conn_await_reads.contains_key(&key)
+            && suspending_receiver == Some(STD_NET_CONNECTION))
+            || (self.listener_await_accepts.contains(&key)
+                && suspending_receiver == Some(STD_NET_LISTENER));
+        let runtime_family = match rewrite {
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) => Some(descriptor.family()),
+            _ => None,
+        };
+        let display_method = self.lang_items.display_method_identity();
+        let is_display_fmt = display_method.as_ref().is_some_and(|(_, display_method)| {
+            let target = dyn_call.map(|call| &call.target).or(match rewrite {
+                Some(MethodCallRewrite::StaticTraitDispatch { target, .. }) => Some(target),
+                _ => None,
+            });
+            target.is_some_and(|target| {
+                matches!(
+                    target,
+                    CallTarget::DynamicVtable { method, .. }
+                        | CallTarget::StaticTraitMethod { method, .. }
+                        if method == display_method
+                )
+            })
+        });
+
+        let result_ownership = if non_owning {
+            Ownership::NoOwner
+        } else if self.method_call_preserves_receiver_identity.contains(&key) {
+            Ownership::Borrowed
+        } else if matches!(
+            rewrite,
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )
+        ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
+        {
+            Ownership::ReceiverIdentity
+        } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
+            Ownership::owned(Acquisition::Fresh)
+        } else if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrap
+                    | OptionResultMethod::OptionUnwrapOr
+                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            Ownership::owned(Acquisition::MoveOut)
+        } else if matches!(
+            actor_call,
+            Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
+        ) || matches!(
+            runtime_family,
+            Some(
+                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::ChannelTryRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamTryNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::DuplexRecv
+                    | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
+            )
+        ) || is_suspending_io_delivery
+        {
+            Ownership::owned(Acquisition::Delivery)
+        } else if let Some(call) = resolved_call {
+            call.method_target.family.result_ownership()
+        } else {
+            match rewrite {
+                Some(
+                    MethodCallRewrite::BuiltinVecIntoIter { .. }
+                    | MethodCallRewrite::BuiltinVecIter { .. }
+                    | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
+                    | MethodCallRewrite::WireCodec { .. },
+                ) => Ownership::owned(Acquisition::Fresh),
+                Some(
+                    MethodCallRewrite::BuiltinVecIterNext { .. }
+                    | MethodCallRewrite::RecordCloneInplace { .. },
+                ) => Ownership::owned(Acquisition::Clone),
+                Some(
+                    MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
+                ) => Ownership::owned(Acquisition::Delivery),
+                Some(MethodCallRewrite::RcIntrinsic { .. }) => {
+                    Ownership::owned(Acquisition::Retained)
+                }
+                _ => match machine_call {
+                    Some(MachineMethodKind::StateName { .. }) => {
+                        Ownership::owned(Acquisition::Fresh)
+                    }
+                    Some(MachineMethodKind::Step { .. } | MachineMethodKind::TakeEmits { .. })
+                    | None => Ownership::Unknown,
+                },
+            }
+        };
+
+        let signature = if let Some(call) = dyn_call {
+            Some((
+                format!("{}::{}", call.trait_name, call.method_name),
+                call.signature.clone(),
+            ))
+        } else {
+            match rewrite {
+                Some(MethodCallRewrite::RewriteToFunction {
+                    extern_identity: Some(identity),
+                    ..
+                }) => self
+                    .fn_sigs
+                    .get(&identity.signature_key)
+                    .cloned()
+                    .map(|sig| (identity.signature_key.clone(), sig)),
+                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => self
+                    .fn_sigs
+                    .get(c_symbol)
+                    .cloned()
+                    .map(|sig| (c_symbol.clone(), sig)),
+                Some(MethodCallRewrite::StaticTraitDispatch {
+                    declaring_trait,
+                    method_name,
+                    ..
+                }) => {
+                    let signature_key = format!("{declaring_trait}::{method_name}");
+                    self.fn_sigs
+                        .get(&signature_key)
+                        .cloned()
+                        .map(|sig| (signature_key, sig))
+                }
+                _ => None,
+            }
+        };
+        let arguments = if matches!(
+            rewrite,
+            Some(MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr,
+            })
+        ) {
+            vec![Boundary::Transfer; args.len()]
+        } else if let Some(family) = runtime_family {
+            args.iter()
+                .enumerate()
+                .map(|(source_index, _)| {
+                    match family.arg_consume_verdict(source_index.saturating_add(1)) {
+                        crate::runtime_call::ConsumeVerdict::ProvenBorrow => Boundary::Borrow,
+                        crate::runtime_call::ConsumeVerdict::ProvenConsume
+                        | crate::runtime_call::ConsumeVerdict::ConservativeConsume => {
+                            Boundary::Transfer
+                        }
+                    }
+                })
+                .collect()
+        } else if let Some((signature_key, signature)) = signature {
+            let modes = self
+                .fn_param_ownership
+                .get(&signature_key)
+                .cloned()
+                .unwrap_or_else(|| vec![Boundary::Unknown; signature.params.len()]);
+            args.iter()
+                .enumerate()
+                .map(|(source_index, arg)| {
+                    let formal_index = arg
+                        .name()
+                        .and_then(|name| {
+                            signature
+                                .param_names
+                                .iter()
+                                .position(|formal| formal == name)
+                        })
+                        .unwrap_or(source_index);
+                    modes
+                        .get(formal_index)
+                        .copied()
+                        .unwrap_or(Boundary::Unknown)
+                })
+                .collect()
+        } else if let Some(call) = resolved_call {
+            match call.method_target.family {
+                MethodTargetFamily::HashMap(HashMapMethod::Insert)
+                | MethodTargetFamily::HashSet(HashSetMethod::Insert)
+                | MethodTargetFamily::Vec(VecMethod::Push | VecMethod::Set | VecMethod::Append) => {
+                    vec![Boundary::Transfer; args.len()]
+                }
+                MethodTargetFamily::HashMap(_)
+                | MethodTargetFamily::HashSet(_)
+                | MethodTargetFamily::Vec(_) => vec![Boundary::Borrow; args.len()],
+            }
+        } else if actor_call.is_some() {
+            vec![Boundary::Transfer; args.len()]
+        } else {
+            args.iter()
+                .map(|arg| {
+                    let arg_ty = self
+                        .expr_types
+                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
+                        .map(|ty| self.subst.resolve(ty));
+                    if arg_ty.as_ref().is_some_and(|ty| {
+                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
+                    }) {
+                        Boundary::Borrow
+                    } else {
+                        Boundary::Unknown
+                    }
+                })
+                .collect()
+        };
+
+        let recognized = rewrite.is_some()
+            || dyn_call.is_some()
+            || resolved_call.is_some()
+            || actor_call.is_some()
+            || machine_call.is_some()
+            || is_suspending_io_delivery;
+        let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
+            Some(Boundary::Transfer)
+        } else if !recognized {
+            Some(Boundary::Unknown)
+        } else if self.method_call_consumes_receiver.contains(&key)
+            || resolved_call.is_some_and(|call| call.method_target.consumes_receiver)
+            || dyn_call.is_some_and(|call| call.signature.consumes_receiver)
+            || matches!(
+                rewrite,
+                Some(
+                    MethodCallRewrite::RewriteToFunction {
+                        consumes_receiver: true,
+                        ..
+                    } | MethodCallRewrite::StaticTraitDispatch {
+                        consumes_receiver: true,
+                        ..
+                    }
+                )
+            )
+        {
+            Some(Boundary::Transfer)
+        } else {
+            Some(Boundary::Borrow)
+        };
+
+        self.produced_call_arities
+            .insert(key.clone(), (true, args.len()));
+        self.resolved_method_call_ownership.insert(
+            key,
+            PendingMethodCallOwnership {
+                fact: ProducedValueFact {
+                    ownership: result_ownership,
+                    receiver_span: matches!(result_ownership, Ownership::ReceiverIdentity)
+                        .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
+                    receiver_boundary,
+                    arguments,
+                },
+                extern_identity: rewrite.and_then(|rewrite| match rewrite {
+                    MethodCallRewrite::RewriteToFunction {
+                        extern_identity, ..
+                    } => extern_identity.clone(),
+                    _ => None,
+                }),
+                resolved_result_ty: resolved_result,
+            },
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
     )]
-    pub(super) fn check_method_call(
+    fn check_method_call_inner(
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
@@ -6215,7 +7507,13 @@ impl Checker {
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
             let receiver_is_known_type = self.type_defs.contains_key(name);
-            let key = format!("{name}.{method}");
+            // `name` is a lexical import binding (`string`, or an explicit
+            // module alias). Declaration and export registries are keyed by the
+            // exact source owner, so resolve the binding before every authority
+            // lookup. Never recover the owner from the final path segment: two
+            // nested stdlib modules may share both a leaf and a function name.
+            let canonical_owner = self.canonical_module_import_owner(name);
+            let key = format!("{canonical_owner}.{method}");
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
                 && (self.modules.contains(name)
@@ -6231,7 +7529,14 @@ impl Checker {
                 // method contains "::" → treat as a qualified variant constructor rather than a
                 // module function. Mirrors the lookup in check_call (calls.rs:407-465).
                 if method.contains("::") {
-                    let constructor_match = self.lookup_variant_constructor(method);
+                    let lifecycle_surface = format!("{name}.{method}");
+                    let Ok(canonical_lifecycle) =
+                        self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
+                    else {
+                        return Ty::Error;
+                    };
+                    let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
+                    let constructor_match = self.lookup_variant_constructor(constructor_surface);
                     if let Some((type_name, expected_params, type_params)) = constructor_match {
                         let type_param_count = type_params.len();
                         let mut inferred_args = Vec::new();
@@ -6261,7 +7566,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return Ty::normalize_named(type_name, resolved_args);
+                        return self.variant_nominal_ty(type_name, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
@@ -6324,20 +7629,22 @@ impl Checker {
                 self.require_unsafe(&key, span);
                 // Native-only stdlib modules are rejected on wasm32 because
                 // their runtime implementations are not compiled there.
-                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source of
-                // truth shared with the value-position guard in expressions.rs.
-                if !self.user_modules.contains(name) {
-                    for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                        if name == module {
-                            self.reject_wasm_feature(span, feature);
-                        }
-                    }
-                    // crypto.random_bytes and its fallible twin depend on a
-                    // native-only secure entropy source absent from the wasm32 link
-                    // set; reject so secure randomness fails closed on wasm32.
-                    if name == "crypto" && matches!(method, "random_bytes" | "try_random_bytes") {
-                        self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-                    }
+                // The manifest-generated module rejection slice is shared with
+                // the value-position guard in expressions.rs.
+                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                    self.reject_wasm_feature(span, feature);
+                }
+                // Exact-function policy is separately keyed by canonical
+                // source owner, so supported modules can retain native-only
+                // member exclusions without weakening alias coverage.
+                self.reject_wasm_native_only_module_function(name, method, span);
+                // crypto.random_bytes and its fallible twin depend on a
+                // native-only secure entropy source absent from the wasm32 link
+                // set; reject so secure randomness fails closed on wasm32.
+                if self.is_shipped_crypto_module(name)
+                    && matches!(method, "random_bytes" | "try_random_bytes")
+                {
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     if let Some(caller) = &self.current_function {
@@ -6369,11 +7676,11 @@ impl Checker {
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
-                    if key == "channel.new" {
+                    if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
-                    if let Some(op) = Self::generic_math_intrinsic_op(name, method) {
+                    if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::GenericMathIntrinsic { op },
@@ -6403,6 +7710,27 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, param_ty);
                     }
+                }
+                let impl_key = format!("{name}::{method}");
+                if let Some(declaration) = self.impl_method_declaration_ids.get(&impl_key).cloned()
+                {
+                    let target = CallTarget::ImplMethod(declaration);
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                            target: target.clone(),
+                            c_symbol: impl_key.clone(),
+                            elem_ty: None,
+                        },
+                    );
+                    self.record_direct_call_target(span, target);
+                    self.record_resolved_direct_call_ownership(
+                        &impl_key,
+                        &sig,
+                        args,
+                        &sig.return_type,
+                        span,
+                    );
                 }
                 // Wire codec static deserialize methods on a `#[wire]` struct or
                 // enum. `decode` is the binary CBOR path
@@ -6527,13 +7855,14 @@ impl Checker {
             // Recognised ONLY directly under an `await` (the suspend point); a
             // bare `conn.read()` stays the blocking FFI call (E8).
             let is_conn_await_read = self.inside_await_expr
-                && (name == "Connection" || name == "net.Connection")
+                && name == "std.net.Connection"
                 && matches!(method, "read" | "read_string");
             if is_conn_await_read {
-                self.conn_await_reads.insert(
-                    SpanKey::in_module(span, self.current_module_idx),
-                    method == "read_string",
-                );
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.conn_await_reads
+                    .insert(key.clone(), method == "read_string");
+                self.suspending_io_receiver_nominals
+                    .insert(key, name.clone());
             } else {
                 // NEW-2: `await listener.accept()` is the non-blocking suspending
                 // accept (the listener-readiness sibling of `await conn.read()`).
@@ -6541,18 +7870,59 @@ impl Checker {
                 // `ListenerAwaitAccept` instead of the blocking `hew_tcp_accept`.
                 // Recognised ONLY directly under an `await`; a bare
                 // `listener.accept()` stays the blocking FFI call.
-                let is_listener_await_accept = self.inside_await_expr
-                    && (name == "Listener" || name == "net.Listener")
-                    && method == "accept";
+                let is_listener_await_accept =
+                    self.inside_await_expr && name == "std.net.Listener" && method == "accept";
                 if is_listener_await_accept {
-                    self.listener_await_accepts
-                        .insert(SpanKey::in_module(span, self.current_module_idx));
+                    let key = SpanKey::in_module(span, self.current_module_idx);
+                    self.listener_await_accepts.insert(key.clone());
+                    self.suspending_io_receiver_nominals
+                        .insert(key, name.clone());
                 } else {
                     // The blocking-call warning is correct for a bare (non-awaited)
                     // `conn.read()`; suppress it when the read is the non-blocking
                     // suspending form (it no longer strands a worker).
                     self.warn_if_blocking_handle_method(name, method, span);
                 }
+            }
+        }
+        // Built-in container methods resolve before the user-record fallback
+        // below, so their `clone` implementations must consult the same affine
+        // payload authority explicitly. Without this gate, `Vec<Resource>` or
+        // `HashMap<K, Linear>` can duplicate an exact-once value even though a
+        // record containing that same container is correctly rejected.
+        if method == "clone"
+            && args.is_empty()
+            && matches!(
+                &resolved,
+                Ty::Named {
+                    builtin: Some(_),
+                    ..
+                }
+            )
+        {
+            if resolved.has_inference_var()
+                && matches!(
+                    &resolved,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        ..
+                    }
+                )
+            {
+                self.deferred_builtin_clone_admission
+                    .entry(SpanKey::in_module(span, self.current_module_idx))
+                    .or_insert_with(|| DeferredBuiltinCloneAdmission {
+                        span: span.clone(),
+                        receiver_ty: resolved.clone(),
+                        source_module: self.current_module.clone(),
+                    });
+            }
+            if let Some((type_name, marker)) = self
+                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
+            {
+                let receiver_name = resolved.user_facing().to_string();
+                self.report_affine_record_clone_error(&receiver_name, &type_name, marker, span);
+                return Ty::Error;
             }
         }
 
@@ -6990,7 +8360,10 @@ impl Checker {
                 // actionable one. Reject uniformly here, whether or not
                 // the actor declares `impl ActorMsg` — same diagnostic
                 // as the no-envelope case.
-                if method == "send" && !has_user_send_handler {
+                if method == "send"
+                    && !has_user_send_handler
+                    && !self.checking_canonical_stdlib_source("std.builtins")
+                {
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
@@ -7038,7 +8411,9 @@ impl Checker {
                                 },
                                 true,
                             );
-                            if method == "send" {
+                            if method == "send"
+                                && !self.checking_canonical_stdlib_source("std.builtins")
+                            {
                                 self.enforce_actor_method_send_args(args);
                             }
                             return applied_sig.return_type;
@@ -7177,7 +8552,9 @@ impl Checker {
                         } else {
                             applied_sig.return_type.clone()
                         };
-                        if matches!(method, "send" | "ask") {
+                        if matches!(method, "send" | "ask")
+                            && !self.checking_canonical_stdlib_source("std.builtins")
+                        {
                             // `RemotePid<T>::send` / `::ask` route to the native
                             // mesh transport (`hew_remote_pid_send` →
                             // `hew_actor_send_by_id`), which is not compiled for
@@ -7218,6 +8595,9 @@ impl Checker {
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
                                 MethodCallRewrite::RewriteToFunction {
+                                    target: CallTarget::Runtime(
+                                        crate::runtime_call::RuntimeCallFamily::RemotePidSend,
+                                    ),
                                     c_symbol: "hew_remote_pid_send".to_string(),
                                     // Closed runtime call dispatched by callee-
                                     // name intercept in codegen; the substrate
@@ -7229,10 +8609,12 @@ impl Checker {
                                         )
                                         .expect("RemotePidSend rejects elem"),
                                     ),
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
                                     consumes_receiver: false,
+                                    returns_receiver_identity: false,
                                 },
                             );
                         }
@@ -7244,10 +8626,7 @@ impl Checker {
                             "display" => Some("hew_remote_pid_display"),
                             _ => None,
                         } {
-                            self.record_extern_symbol_method_call_rewrite(
-                                span,
-                                c_symbol.to_string(),
-                            );
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
                         return return_type;
                     }
@@ -7825,6 +9204,9 @@ impl Checker {
                 },
                 _,
             ) => {
+                let canonical_receiver_name = self
+                    .canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone());
                 // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
                 // `Result<T, AskError>` wrapper an actor ask produces) resolve
                 // their methods against the origin-based stdlib snapshot ONLY,
@@ -7845,7 +9227,7 @@ impl Checker {
                     Some(b @ (BuiltinType::Result | BuiltinType::Option)) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
-                    _ => self.lookup_named_method_sig(name, type_args, method),
+                    _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
                     // Mutable-receiver enforcement (Q297 Stage 1): methods
@@ -8033,7 +9415,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::Step {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -8041,7 +9423,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::StateName {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -8049,7 +9431,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::TakeEmits {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -8059,6 +9441,13 @@ impl Checker {
                     // A terminal consuming method moves its receiver, so record
                     // the per-call-site flag for HIR/codegen AND mark the receiver
                     // expression moved (a later use surfaces `UseAfterMove`).
+                    // A resource's canonical close additionally records a
+                    // one-time discharge: lowering uses it to suppress the
+                    // scope-exit implicit drop on the consumed path, and the
+                    // checker uses it to report a second close with the
+                    // specific double-close diagnostic. Discharging the
+                    // obligation is a consequence of the move, never a
+                    // substitute for it — close-then-use is use-after-move.
                     // Three surfaces qualify:
                     //   1. stdlib `impl Closable for T { fn close }` — the trait
                     //      `close` flattens into T's inherent-method table; honour
@@ -8074,22 +9463,87 @@ impl Checker {
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
                         || self.named_type_method_consumes_receiver(name, method)
-                        || self.named_type_inherent_close_consumes_receiver(name, method, &sig);
+                        || self.named_type_inherent_close_consumes_receiver(
+                            name, *builtin, method, &sig,
+                        );
                     if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
-                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                        let discharges_resource = self.named_type_inherent_close_consumes_receiver(
+                            name, *builtin, method, &sig,
+                        );
+                        if discharges_resource {
+                            self.method_call_discharges_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            if let Expr::Identifier(receiver_name) = &receiver.0 {
+                                match self.env.mark_released(receiver_name, receiver.1.clone()) {
+                                    Some(Some(prior)) => {
+                                        let mut error = TypeError::new(
+                                            TypeErrorKind::UseAfterConsume,
+                                            receiver.1.clone(),
+                                            format!(
+                                                "resource `{receiver_name}` cannot be closed more than once"
+                                            ),
+                                        )
+                                        .with_note(prior, "resource was first closed here");
+                                        if let Some(source_module) = &self.current_module {
+                                            error = error.with_source_module(source_module.clone());
+                                        }
+                                        self.errors.push(error);
+                                    }
+                                    // First discharge: the close consumes its
+                                    // receiver, so the move lands with it and any
+                                    // later use is use-after-move. Marked directly
+                                    // (not via `mark_expr_moved_if_non_copy`)
+                                    // because the released flag was just set by
+                                    // this very call and must not read as a prior
+                                    // consumption of the receiver.
+                                    Some(None)
+                                        if !self.registry.implements_marker(
+                                            &resolved_recv,
+                                            MarkerTrait::Copy,
+                                        ) =>
+                                    {
+                                        self.env.mark_moved(receiver_name, receiver.1.clone());
+                                    }
+                                    Some(None) | None => {}
+                                }
+                            } else {
+                                self.mark_expr_moved_if_non_copy(
+                                    &receiver.0,
+                                    &receiver.1,
+                                    &resolved_recv,
+                                );
+                            }
+                        } else {
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_recv,
+                            );
+                        }
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     let builtin_option_result_marker =
-                        matches!(builtin, Some(BuiltinType::Result | BuiltinType::Option))
-                            && Self::is_builtin_option_result_marker_method(name, method);
-                    self.record_builtin_option_result_method_rewrite_if_any(
-                        name, type_args, method, span,
-                    );
+                        Self::is_builtin_option_result_marker_method(*builtin, method);
+                    if let Some(receiver_builtin @ (BuiltinType::Result | BuiltinType::Option)) =
+                        *builtin
+                    {
+                        self.record_builtin_option_result_method_rewrite_if_any(
+                            receiver_builtin,
+                            name,
+                            type_args,
+                            method,
+                            span,
+                        );
+                    }
                     self.record_named_extern_symbol_rewrite_if_any(
-                        name, type_args, method, &sig, span,
+                        &canonical_receiver_name,
+                        type_args,
+                        method,
+                        &sig,
+                        span,
                     );
                     // W3.042 S2-S2: user-defined methods on named types (both
                     // inherent `impl Type { fn m(...) }` and trait `impl T for
@@ -8116,7 +9570,15 @@ impl Checker {
                         || self.dyn_trait_method_calls.contains_key(&span_key)
                         || self.resolved_calls.contains_key(&span_key);
                     if !already_rewritten {
-                        let method_owner = crate::short_name(name);
+                        // The resolved receiver owner is executable dispatch
+                        // authority. Registration publishes this exact key;
+                        // never retry through the receiver's final segment.
+                        // The receiver's resolved nominal owner is executable
+                        // dispatch authority. The declaration map is keyed by
+                        // that exact source identity even when compatibility
+                        // `fn_sigs` aliases retain a shorter presentation.
+                        // Never retry through either the type or method leaf.
+                        let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
                         // struct or enum. `encode` is the binary CBOR path
@@ -8156,8 +9618,12 @@ impl Checker {
                                     },
                                 );
                             }
-                        } else if method_owner == "VecIter" && method == "next" {
+                        } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
+                        {
                             if let Some(elem_ty) = type_args.first() {
+                                if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
+                                    return Ty::Error;
+                                }
                                 if let Ok(elem_resolved) =
                                     ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
                                 {
@@ -8170,6 +9636,7 @@ impl Checker {
                                 }
                             }
                         } else if self.fn_sigs.contains_key(&method_key)
+                            || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
                                 // type_args may resolve to a mangled key even
@@ -8223,11 +9690,27 @@ impl Checker {
                             self.record_method_call_rewrite(
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
+                                    target: self
+                                        .impl_method_declaration_ids
+                                        .get(&dispatch_key)
+                                        .or_else(|| {
+                                            self.impl_method_declaration_ids.get(&method_key)
+                                        })
+                                        .cloned()
+                                        .map_or_else(
+                                            || CallTarget::Unsupported {
+                                                reason: format!(
+                                                    "impl method `{dispatch_key}` has no registered declaration identity"
+                                                ),
+                                            },
+                                            CallTarget::impl_method,
+                                        ),
                                     c_symbol: dispatch_key,
                                     // User-defined `Type::method` dispatch is
                                     // open-set; the typed runtime-call catalog
                                     // does not enumerate user method keys.
                                     descriptor: None,
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // #1295: a `#[resource]` type's inherent
                                     // `close(self)` is a terminal handle-release
@@ -8240,11 +9723,15 @@ impl Checker {
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,
+                                    returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );
                         }
                     }
-                    return applied_sig.return_type;
+                    return self.qualify_method_return_to_receiver_owner(
+                        &canonical_receiver_name,
+                        &applied_sig.return_type,
+                    );
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in
@@ -8274,8 +9761,13 @@ impl Checker {
                     // method reaches two distinct declaring traits.
                     let mut hits: Vec<(String, String, FnSig)> = Vec::new();
                     for bound_trait in &bounds {
+                        // Keep the source spelling for diagnostics, but resolve
+                        // the dispatch lookup through the declaration owner.
+                        // An imported alias such as `AlphaRender` is not a
+                        // declaration identity and must never reach HIR as one.
+                        let bound_trait_key = self.trait_ref_lookup_key(bound_trait);
                         let declaring =
-                            self.collect_all_declaring_traits_for_method(bound_trait, method);
+                            self.collect_all_declaring_traits_for_method(&bound_trait_key, method);
                         for declaring_trait in declaring {
                             // Resolve the sig from the declaring trait directly.
                             if let Some((_, sig)) =
@@ -8354,7 +9846,7 @@ impl Checker {
                             },
                             true,
                         );
-                        if declaring_trait == "Pid" && method == "send" {
+                        if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
                             // bound once the checker can express that shape on
@@ -8373,22 +9865,42 @@ impl Checker {
                                 type_name: name.clone(),
                             },
                         );
-                        let qualified = format!("{declaring_trait}::{method}");
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if trait_sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
+                        let target = self
+                            .trait_method_call_target_ids(&declaring_trait, method)
+                            .or_else(|| self.trait_method_call_target_ids(&bound_trait, method))
+                            .map_or_else(
+                                || CallTarget::Unsupported {
+                                    reason: format!(
+                                        "trait method `{declaring_trait}::{method}` has no registered declaration identity"
+                                    ),
+                                },
+                                |(declaring_trait, method)| CallTarget::StaticTraitMethod {
+                                    declaring_trait,
+                                    method,
+                                },
+                            );
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::StaticTraitDispatch {
+                                target,
                                 receiver_type_param: name.clone(),
                                 bound_trait,
                                 declaring_trait,
                                 method_name: method.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
+                                consumes_receiver: trait_sig.consumes_receiver,
+                                returns_receiver_identity: trait_sig.returns_receiver_identity,
                             },
                         );
                         return self.project_assoc_types(&applied_sig.return_type);
@@ -8465,6 +9977,16 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
+                            RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                                let receiver_name = resolved.user_facing().to_string();
+                                self.report_affine_record_clone_error(
+                                    &receiver_name,
+                                    &type_name,
+                                    marker,
+                                    span,
+                                );
+                                return Ty::Error;
+                            }
                             RecordCloneAdmissibility::GenericRecord => {
                                 self.report_error(
                                     TypeErrorKind::UndefinedMethod,
@@ -8536,8 +10058,10 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
-                    let pid_send_dispatch = found_bound
-                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "send");
+                    let pid_send_dispatch = found_bound.as_ref().is_some_and(|bound| {
+                        self.trait_ref_lookup_key(&bound.trait_name) == "std.builtins.Pid"
+                            && method == "send"
+                    });
                     if let Some(bound) = found_bound {
                         self.record_method_call_receiver_kind(
                             span,
@@ -8619,9 +10143,27 @@ impl Checker {
                                 // boundary explicit (LESSONS:
                                 // `boundary-fail-closed`).
                                 let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+                                let target = self
+                                    .trait_method_call_target_ids(&bound.trait_name, method)
+                                    .map_or_else(
+                                        || CallTarget::Unsupported {
+                                            reason: format!(
+                                                "dynamic trait method `{}::{method}` has no registered declaration identity",
+                                                bound.trait_name
+                                            ),
+                                        },
+                                        |(declaring_trait, method)| {
+                                            CallTarget::DynamicVtable {
+                                                declaring_trait,
+                                                method,
+                                                slot,
+                                            }
+                                        },
+                                    );
                                 self.dyn_trait_method_calls.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     crate::check::types::DynMethodCall {
+                                        target,
                                         trait_name: bound.trait_name.clone(),
                                         method_name: method.to_string(),
                                         slot,
@@ -8630,13 +10172,16 @@ impl Checker {
                                 );
                             }
                         }
-                        let qualified = format!("{}::{method}", bound.trait_name);
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
@@ -8680,6 +10225,30 @@ impl Checker {
                             "no method `.{method}()` on numeric type `{}`; use `as` for numeric casts \
                              or `.try_to_<W>()` for exact fallible conversion",
                             resolved.user_facing()
+                        )
+                    } else if method == "clone" && args.is_empty() {
+                        // A trait object is a two-word fat pointer whose
+                        // concrete type is erased. Its vtable carries only
+                        // `drop_in_place`/`size_of`/`align_of` plus the trait's
+                        // own methods (see `hew-runtime/src/trait_object.rs`),
+                        // so no slot can reproduce the concrete value. Naming
+                        // the limit and the supported ordering keeps this a
+                        // user-facing rejection instead of a reinterpretation
+                        // of the fat pointer as the concrete layout.
+                        //
+                        // WHY (shim): duplicating a `dyn Trait` needs a clone
+                        // slot in the vtable prefix, which renumbers every
+                        // method slot across the runtime, MIR, and codegen.
+                        // WHEN-OBSOLETE: when the trait-object ABI grows that
+                        // slot and every coercion site emits a clone thunk.
+                        // WHAT (real solution): a `clone_in_place` vtable entry
+                        // emitted alongside `drop_in_place`.
+                        format!(
+                            "`clone` is not supported on `{ty}`: a trait object erases its \
+                             concrete type and its vtable carries no clone slot; clone the \
+                             concrete value before erasing it \
+                             (`let copy: {ty} = clone original;`)",
+                            ty = resolved.user_facing(),
                         )
                     } else {
                         format!("no method `{method}` on `{}`", resolved.user_facing())
@@ -9059,11 +10628,227 @@ mod tests {
     use crate::module_registry::ModuleRegistry;
 
     #[test]
+    fn suspending_io_method_results_publish_delivery_ownership() {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let receiver = (Expr::Identifier("io".to_string()), 1..3);
+
+        let read_span = 10..20;
+        let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(read_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            read_key.clone(),
+            crate::stdlib::STD_NET_CONNECTION.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &read_span,
+            &Ty::String,
+        );
+
+        let read = checker
+            .resolved_method_call_ownership
+            .get(&read_key)
+            .expect("suspending read ownership");
+        assert_eq!(read.fact.ownership, Ownership::owned(Acquisition::Delivery));
+        assert_eq!(read.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let accept_span = 30..40;
+        let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
+        checker.listener_await_accepts.insert(accept_key.clone());
+        checker.suspending_io_receiver_nominals.insert(
+            accept_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "accept",
+            &[],
+            &accept_span,
+            &Ty::Named {
+                name: crate::stdlib::STD_NET_CONNECTION.to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+        );
+
+        let accept = checker
+            .resolved_method_call_ownership
+            .get(&accept_key)
+            .expect("suspending accept ownership");
+        assert_eq!(
+            accept.fact.ownership,
+            Ownership::owned(Acquisition::Delivery)
+        );
+        assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
+
+        let spoofed_span = 50..60;
+        let spoofed_key = SpanKey::in_module(&spoofed_span, checker.current_module_idx);
+        checker.conn_await_reads.insert(spoofed_key.clone(), true);
+        checker.suspending_io_receiver_nominals.insert(
+            spoofed_key.clone(),
+            crate::stdlib::STD_NET_LISTENER.to_string(),
+        );
+        checker.record_resolved_method_call_ownership(
+            &receiver,
+            "read_string",
+            &[],
+            &spoofed_span,
+            &Ty::String,
+        );
+        let spoofed = checker
+            .resolved_method_call_ownership
+            .get(&spoofed_key)
+            .expect("spoofed suspending read ownership");
+        assert_eq!(spoofed.fact.ownership, Ownership::Unknown);
+    }
+
+    #[test]
+    fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
+        let push_signature = FnSig {
+            params: vec![Ty::U8],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        let mut canonical = Checker::default();
+        canonical.extern_method_origins.insert(
+            "bytes::push".to_string(),
+            (Some("std.io".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::BytesPush),
+        );
+
+        let lookalike = Checker::default();
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            None,
+            "a user extern sharing the runtime spelling must remain an Extern call",
+        );
+
+        let wrong_signature = FnSig {
+            params: vec![Ty::I64],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &wrong_signature,
+            ),
+            None,
+            "the runtime ABI family is not admitted by symbol spelling and arity alone",
+        );
+    }
+
+    #[test]
+    fn wasm_file_stream_function_policy_uses_canonical_std_owner_not_spellings() {
+        let span = 0..0;
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker
+            .module_import_bindings
+            .insert((None, "files".to_string()), "std.fs".to_string());
+        checker.reject_wasm_native_only_module_function("files", "try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "module alias must reject");
+
+        // Use a fresh checker: the production de-duplication key intentionally
+        // suppresses repeated diagnostics at one source span.
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker.reject_wasm_native_only_function_identity("std.fs.try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "named-import identity must reject");
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .module_import_bindings
+            .insert((None, "lookalike".to_string()), "app.fs".to_string());
+        checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
+        checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
+        assert!(
+            checker.errors.is_empty(),
+            "a user package with the same leaf must not inherit std.fs policy"
+        );
+    }
+
+    #[test]
+    fn ask_reply_send_gate_uses_exact_import_owner_and_fails_closed_without_it() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker
+            .registry
+            .register_type("hew.replysend.Reply".to_string(), vec![Ty::I64]);
+        checker.registry.register_type(
+            "hew.replynonsend.Reply".to_string(),
+            vec![Ty::Named {
+                name: "Rc".to_string(),
+                args: vec![Ty::I64],
+                builtin: Some(BuiltinType::Rc),
+            }],
+        );
+        checker
+            .module_import_bindings
+            .insert((None, "replysend".to_string()), "hew.replysend".to_string());
+        checker.module_import_bindings.insert(
+            (None, "replynonsend".to_string()),
+            "hew.replynonsend".to_string(),
+        );
+        let bare_reply = Ty::Named {
+            name: "Reply".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+
+        let send = checker
+            .send_gate_reply_ty("replysend.Producer::make", &bare_reply)
+            .expect("an exact replysend binding and marker row must resolve");
+        assert!(matches!(send, Ty::Named { ref name, .. } if name == "hew.replysend.Reply"));
+        assert!(checker.registry.implements_marker(&send, MarkerTrait::Send));
+
+        let non_send = checker
+            .send_gate_reply_ty("replynonsend.Producer::make", &bare_reply)
+            .expect("an exact replynonsend binding and marker row must resolve");
+        assert!(matches!(non_send, Ty::Named { ref name, .. } if name == "hew.replynonsend.Reply"));
+        assert!(!checker
+            .registry
+            .implements_marker(&non_send, MarkerTrait::Send));
+
+        assert!(
+            checker
+                .send_gate_reply_ty("missing.Producer::make", &bare_reply)
+                .is_none(),
+            "a missing lexical module binding must not fall back to bare Reply"
+        );
+    }
+
+    #[test]
     fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
         for (receiver, symbol) in [
-            ("net.Connection", "hew_tcp_attach_local"),
-            ("tls.TlsStream", "hew_tls_attach_local"),
-            ("websocket.Conn", "hew_ws_attach_local"),
+            (STD_NET_CONNECTION, "hew_tcp_attach_local"),
+            ("std.net.tls.TlsStream", "hew_tls_attach_local"),
+            ("std.net.websocket.Conn", "hew_ws_attach_local"),
         ] {
             assert_eq!(
                 transport_attach_runtime_symbol(receiver, "attach"),
@@ -9084,6 +10869,76 @@ mod tests {
                 "a bare user type named {user_name} must keep ordinary method dispatch"
             );
         }
+    }
+
+    #[test]
+    fn qualified_method_receiver_restores_only_its_own_return_identity() {
+        fn empty_type_def(name: &str) -> TypeDef {
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: name.to_string(),
+                type_params: Vec::new(),
+                bounds: HashMap::new(),
+                fields: HashMap::new(),
+                field_order: Vec::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            }
+        }
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        for identity in [
+            "net.Listener",
+            "net.Connection",
+            "foo.Listener",
+            "foo.Connection",
+        ] {
+            checker
+                .type_defs
+                .insert(identity.to_string(), empty_type_def(identity));
+        }
+        let bare_connection = Ty::Named {
+            name: "Connection".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("net.Listener", &bare_connection,),
+            Ty::Named {
+                name: "net.Connection".to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+            "a `net.Listener` method's module-local `Connection` return must regain `net` ownership",
+        );
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("foo.Listener", &bare_connection,),
+            Ty::Named {
+                name: "foo.Connection".to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+            "a foreign same-short-name method result must retain its own source owner",
+        );
+
+        let foreign_connection = Ty::Named {
+            name: "foo.Connection".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("net.Listener", &foreign_connection,),
+            foreign_connection,
+            "an already-qualified foreign result is authoritative and must not be rewritten",
+        );
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("Listener", &bare_connection,),
+            bare_connection,
+            "a root-local receiver has no module owner to project onto its result",
+        );
     }
 
     /// A pending lowering fact whose element type resolves to `Ty::Error` must be
@@ -9289,7 +11144,7 @@ mod tests {
             .resolved_calls
             .get(&SpanKey::in_module(&span, 0))
             .expect("generic HashMap method dispatch must record a resolved call");
-        assert_eq!(call.target.symbol_name, "hew_hashmap_insert_layout");
+        assert_eq!(call.method_target.symbol_name, "hew_hashmap_insert_layout");
     }
 
     /// Two deferred `HashMap` admissions sharing the same unresolved

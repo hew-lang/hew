@@ -1,0 +1,9 @@
+fn make() -> i32 {
+    let m: i32 = 7;
+    m
+}
+
+fn main() {
+    let x = make();
+    println(f"{x}");
+}

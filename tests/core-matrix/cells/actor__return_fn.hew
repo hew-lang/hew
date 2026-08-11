@@ -1,0 +1,18 @@
+actor Echo {
+    var seen: i64;
+
+    receive fn take(v: i64) -> i64 {
+        seen = seen + v;
+        seen
+    }
+}
+
+fn make() -> LocalPid<Echo> {
+    let m = spawn Echo(seen: 0);
+    m
+}
+
+fn main() {
+    let x = make();
+    match await x.take(1) { Ok(x_v) => println(f"echo {x_v}"), Err(_) => println("err"), }
+}

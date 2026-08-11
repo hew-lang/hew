@@ -3,8 +3,8 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, is_borrowing_call_abi, is_handle_borrowing_call_abi, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt, HirStmtKind,
-    Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
+    ty_is_owned_handle_leaf, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt,
+    HirStmtKind, Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
 };
 
 /// The *source* (read) operands of an instruction — every `Place` whose
@@ -106,7 +106,11 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // Snapshot cloning borrows the source and writes a fresh non-aliasing
         // destination; it must not suppress the sender original's drop.
         Instr::ValueSnapshotClone { .. } => vec![],
-        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
+        Instr::ValueSnapshotDrop { value, guard, .. } => {
+            let mut places = vec![*value];
+            places.extend(*guard);
+            places
+        }
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -362,81 +366,53 @@ pub fn terminator_source_places(
         }
     }
 }
-pub(super) fn hir_expr_contains_synthetic_vec_string_index(expr: &HirExpr) -> bool {
+/// True when the scrutinee carries the `VecIter::next` desugar's synthetic
+/// `let __hew_iter_value_N = iter.vec.get(iter.idx)` clone-out read.
+///
+/// This is intentionally keyed on the typed Vec/Get family and the fixed
+/// synthetic binding name, not merely on `hew_vec_get_clone`: a source-level
+/// `match xs.get(i)` is also a fresh result but is not an iterator frame whose
+/// payload follows the per-iteration body/edge lifecycle.
+pub(super) fn hir_expr_contains_synthetic_vec_get_clone(expr: &HirExpr) -> bool {
     match &expr.kind {
         HirExprKind::Block(block) => {
             block
                 .statements
                 .iter()
-                .any(hir_stmt_is_synthetic_vec_string_index)
+                .any(hir_stmt_is_synthetic_vec_get_clone)
                 || block
                     .tail
                     .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+                    .is_some_and(hir_expr_contains_synthetic_vec_get_clone)
         }
         HirExprKind::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            hir_expr_contains_synthetic_vec_string_index(condition)
-                || hir_expr_contains_synthetic_vec_string_index(then_expr)
+            hir_expr_contains_synthetic_vec_get_clone(condition)
+                || hir_expr_contains_synthetic_vec_get_clone(then_expr)
                 || else_expr
                     .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+                    .is_some_and(hir_expr_contains_synthetic_vec_get_clone)
         }
         _ => false,
     }
 }
-fn hir_stmt_is_synthetic_vec_string_index(stmt: &HirStmt) -> bool {
+fn hir_stmt_is_synthetic_vec_get_clone(stmt: &HirStmt) -> bool {
     matches!(
         &stmt.kind,
         HirStmtKind::Let(binding, Some(value))
             if binding.name.starts_with("__hew_iter_value_")
-                && matches!(binding.ty, ResolvedTy::String)
-                && matches!(value.kind, HirExprKind::Index { .. })
-                && matches!(value.ty, ResolvedTy::String)
-    )
-}
-/// Element-type-AGNOSTIC companion to
-/// [`hir_expr_contains_synthetic_vec_string_index`]: true when the scrutinee
-/// carries the `for x in <vec>` desugar's synthetic `let __hew_iter_value_N =
-/// <vec>[i]` binding for ANY element type (owned tuple / record / enum, not
-/// just `string`). Used SOLELY by the #2523 provenance-skip decision: every
-/// such element is a FRESH, solely-owned per-frame value the iteration handed
-/// the body, never a projection of a re-readable aggregate that retains the
-/// bits, so a move-out (`let (k, val) = pair`, `return pair`) is a legitimate
-/// ownership transfer that must not route through default-deny. The
-/// string-specific disposition logic keeps its own narrower detector.
-pub(super) fn hir_expr_contains_synthetic_vec_index(expr: &HirExpr) -> bool {
-    match &expr.kind {
-        HirExprKind::Block(block) => {
-            block.statements.iter().any(hir_stmt_is_synthetic_vec_index)
-                || block
-                    .tail
-                    .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_index)
-        }
-        HirExprKind::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            hir_expr_contains_synthetic_vec_index(condition)
-                || hir_expr_contains_synthetic_vec_index(then_expr)
-                || else_expr
-                    .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_index)
-        }
-        _ => false,
-    }
-}
-fn hir_stmt_is_synthetic_vec_index(stmt: &HirStmt) -> bool {
-    matches!(
-        &stmt.kind,
-        HirStmtKind::Let(binding, Some(value))
-            if binding.name.starts_with("__hew_iter_value_")
-                && matches!(value.kind, HirExprKind::Index { .. })
+                && matches!(
+                    value.kind,
+                    HirExprKind::ResolvedImplCall {
+                        target_family:
+                            hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
+                        ref target_symbol,
+                        ..
+                    } if target_symbol == "hew_vec_get_clone"
+                )
     )
 }
 pub(super) fn place_refs_local(place: Place, local: u32) -> bool {
@@ -883,7 +859,11 @@ pub(super) fn instr_escape_places(instr: &Instr) -> Vec<Place> {
 /// blocking-call path, whose codegen intercept fails closed on its own.
 pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => args.first(),
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::Option),
+            ..
+        } if args.len() == 1 => args.first(),
         _ => None,
     }
 }
@@ -982,7 +962,7 @@ pub(super) fn terminator_escape_places(
     match term {
         Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             ..
         } => {
@@ -997,7 +977,7 @@ pub(super) fn terminator_escape_places(
                                 .get(local as usize)
                                 .is_some_and(ty_is_owned_handle_leaf)
                         });
-                    !(borrowed_handle || arg_is_borrowed(*builtin, place))
+                    !(borrowed_handle || arg_is_borrowed(authority.runtime_family(), place))
                 })
                 .collect()
         }
@@ -1045,11 +1025,15 @@ pub(super) fn terminator_escape_places(
         // No caller binding escapes: construction clones from the synthetic
         // shell. The shell itself is projection-tainted to suppress its drop.
         Terminator::MakeGenerator { .. } => Vec::new(),
-        // Lambda-actor construction: body_fn and state_drop_fn are static
-        // symbols and the `dest` handle slot is the WRITE — but the capture
-        // env (when present) transfers into the actor's heap-boxed state,
-        // so it is poisoned like any other moved-into-sink payload.
-        Terminator::MakeLambdaActor { env, .. } => env.iter().copied().collect(),
+        // Lambda-actor construction does not transfer a caller binding. The
+        // synthetic stack env is an alias shell only: every admitted owned
+        // field has an explicit clone-at-boxing protocol (`string` and strong
+        // `LambdaPid`), weak self is back-filled after construction, and
+        // BitCopy fields own nothing. Unsupported owned fields fail closed in
+        // `lower_spawn_lambda_actor` before this terminator exists. Poisoning
+        // the shell would therefore misclassify the caller's still-valid,
+        // independently dropped source handle as an aggregate move.
+        Terminator::MakeLambdaActor { .. } => Vec::new(),
     }
 }
 #[cfg(test)]
@@ -1071,6 +1055,19 @@ mod f1_suspending_escape_poison {
 
     fn sink_string_ty() -> ResolvedTy {
         ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String])
+    }
+
+    #[test]
+    fn option_payload_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedOption",
+            BuiltinType::Option,
+            vec![ResolvedTy::String],
+        );
+        assert_eq!(option_payload_ty(&renamed), Some(&ResolvedTy::String));
+
+        let shadow = ResolvedTy::named_user("Option", vec![ResolvedTy::String]);
+        assert_eq!(option_payload_ty(&shadow), None);
     }
 
     // A collapsed suspension carrier is a bare `Suspend` whose payload lives in
@@ -1322,7 +1319,9 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Call {
                 callee: "hew_hashmap_len_layout".to_string(),
-                builtin: Some(hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout),
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout,
+                ),
                 args: vec![Place::Local(2)],
                 dest: Some(Place::Local(3)),
                 next: 1,
@@ -1551,6 +1550,61 @@ mod f1_suspending_escape_poison {
                 value: Place::Local(1),
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn derive_local_bytes_drop_allowed_retains_enum_payload_handoff() {
+        let payload = BindingId(351);
+        let copy = BindingId(352);
+        let owned_locals = vec![(copy, "copy".to_string(), ResolvedTy::Bytes)];
+        let binding_locals = HashMap::from([(payload, Place::Local(1)), (copy, Place::Local(2))]);
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::EnumVariant {
+                        local: 0,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+            &[
+                ResolvedTy::named_user("BytesBox", vec![]),
+                ResolvedTy::Bytes,
+                ResolvedTy::Bytes,
+            ],
+            &HashSet::new(),
+        );
+        assert_eq!(
+            derivation.allowed,
+            HashSet::from([copy]),
+            "the retained destination must balance its independent +1"
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 1,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: vec![copy],
+            }],
+            "the exact payload-binder copy must mint one retain immediately before the move"
         );
     }
 

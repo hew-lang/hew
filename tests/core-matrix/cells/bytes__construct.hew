@@ -1,0 +1,8 @@
+fn main() {
+    let x: bytes = bytes::new();
+    x.push(65);
+    x.push(66);
+    let x_l = x.len();
+    let x_0 = x[0];
+    println(f"len={x_l} b0={x_0}");
+}

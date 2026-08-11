@@ -16,7 +16,7 @@
 //!   plus a vtable pointer. Two-word `#[repr(C)]` structs are
 //!   returned by-value in two integer registers on every Hew
 //!   target ABI (`x86_64` `SysV` `rax`/`rdx`, `AAPCS64` `x0`/`x1`,
-//!   wasm32 multivalue). This composes cleanly with the existing
+//!   wasm32 multivalue/sret pair). This composes cleanly with the existing
 //!   two-word `ChildLookupResult` shape that already crosses the
 //!   FFI boundary today.
 //!
@@ -66,7 +66,7 @@ use std::ffi::c_void;
 /// |-----------------|--------------|----------------------------|
 /// | `x86_64` `SysV`     | 16           | `rax`/`rdx` (two eightbytes) |
 /// | aarch64 `AAPCS64` | 16           | `x0`/`x1`                  |
-/// | wasm32          | 16           | multivalue / sret pair     |
+/// | wasm32          | 8            | two `i32` values / sret pair |
 ///
 /// A static assertion below pins the size at compile time.
 #[repr(C)]

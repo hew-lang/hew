@@ -5,7 +5,26 @@
 // HashSet, string, and bytes runtime families — each arm is a distinct
 // intern_runtime_decl + build_call chain. Proves the runtime-abi dispatch
 // surface is byte-identical across a pure codegen refactor.
+// Borrowed-parameter collection ingress: the by-value string parameter is
+// caller-borrowed, so the MOVE ingress emits `hew_string_clone` before the
+// insert. The reassigned variant crosses the generation boundary — the fresh
+// frame-owned generation is consumed, with no clone.
+fn add_member(members: HashSet<string>, name: string) {
+    members.insert(name);
+}
+
+fn add_renamed(members: HashSet<string>, var name: string) {
+    name = name.to_upper();
+    members.insert(name);
+}
+
 fn main() {
+    // Borrowed-parameter and reassigned-parameter ingress
+    let members: HashSet<string> = HashSet::new();
+    add_member(members, "col" + "our");
+    add_renamed(members, "flav" + "our");
+    println(members.len());
+
     // Vec runtime family
     let v: Vec<i64> = Vec::new();
     v.push(1);

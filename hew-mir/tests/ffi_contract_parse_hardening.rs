@@ -1,6 +1,6 @@
 //! Hardening proof for the build-script `[[ownership.contracts]]` parser.
 //!
-//! Includes the EXACT parser `hew-mir/build.rs` compiles
+//! Includes the EXACT parser `hew-types/build.rs` compiles
 //! (`build_support/ownership_contract_parse.rs`) and proves that a trailing
 //! foreign table cannot pollute the final contract: any `[header]` /
 //! `[[header]]` line other than `[[ownership.contracts]]` closes out the
@@ -79,4 +79,68 @@ fn foreign_table_between_contracts_is_skipped_and_wrapped_params_parse() {
     // formatter-wrapped multi-line params array.
     assert_eq!(contracts["hew_beta"].result, "fresh");
     assert_eq!(contracts["hew_beta"].params, ["borrow", "borrow"]);
+}
+
+#[test]
+#[should_panic(expected = "resource-param-types for hew_short must have one entry per parameter")]
+fn short_typed_resource_row_fails_closed() {
+    let _ = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_short"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.Connection"]
+release-symbol = ""
+discharge-depth = "none"
+"#,
+    );
+}
+
+#[test]
+#[should_panic(expected = "unknown result-retention for hew_wrong_retention")]
+fn wrong_result_retention_fails_closed() {
+    let _ = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_wrong_retention"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "retained"
+"#,
+    );
+}
+
+#[test]
+fn shared_refcount_retention_requires_a_retained_result() {
+    let rows = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_clone"
+result = "retained"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "shared-refcount"
+"#,
+    );
+    assert_eq!(rows["hew_clone"].result_retention, "shared-refcount");
+}
+
+#[test]
+#[should_panic(expected = "requires a retained result")]
+fn shared_refcount_retention_rejects_a_fresh_result() {
+    let _ = parse_ownership_contracts(
+        r#"
+[[ownership.contracts]]
+symbol = "hew_fresh"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "shared-refcount"
+"#,
+    );
 }

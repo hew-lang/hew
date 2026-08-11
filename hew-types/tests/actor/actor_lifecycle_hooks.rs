@@ -10,9 +10,834 @@
 use crate::common;
 
 use common::typecheck_isolated as typecheck;
+use hew_parser::ast::Item;
+use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::error::TypeErrorKind;
 
+/// The isolated lifecycle tests intentionally exercise the no-search-path
+/// bootstrap.  These authority tests instead attach the shipped std sources to
+/// their imports, matching the module-graph path that real programs use.
+fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
+    fn attach_std_sources(items: &mut [hew_parser::ast::Spanned<Item>]) {
+        for (item, _) in items {
+            let Item::Import(decl) = item else {
+                continue;
+            };
+            let source = match decl
+                .path
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["std", "failure"] => Some((
+                    include_str!("../../../std/failure.hew"),
+                    common::repo_root().join("std/failure.hew"),
+                )),
+                ["std", "link_monitor"] => Some((
+                    include_str!("../../../std/link_monitor.hew"),
+                    common::repo_root().join("std/link_monitor.hew"),
+                )),
+                _ => None,
+            };
+            if let Some((source, source_path)) = source {
+                let mut imported = common::parse_program(source).items;
+                attach_std_sources(&mut imported);
+                decl.resolved_items = Some(imported);
+                decl.resolved_source_paths = vec![source_path];
+            }
+        }
+    }
+
+    let mut program = common::parse_program(source);
+    attach_std_sources(&mut program.items);
+    let mut checker = common::checker();
+    checker.check_program(&program)
+}
+
+/// Attach a user-backed module that deliberately spells itself like a stdlib
+/// lifecycle owner. Its resolved source path is not the shipped file, which is
+/// the authority boundary under test.
+fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::TypeCheckOutput {
+    let module_source = match owner {
+        "failure" => "pub type CrashNotification { actor_id: u64; }\npub enum CrashKind { Crashed; }",
+        "link_monitor" => {
+            "pub type MonitorId { value: u64; }\n\
+             pub enum DownTarget { Local(u64); }\n\
+             pub enum DownReason { Exited; }\n\
+             pub type DownNotification { monitor: MonitorId; target: DownTarget; reason: DownReason; }"
+        }
+        _ => panic!("unsupported lifecycle owner fixture: {owner}"),
+    };
+    let mut program = common::parse_program(source);
+    for (item, _) in &mut program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["std", owner] {
+            decl.resolved_items = Some(common::parse_program(module_source).items);
+            decl.resolved_source_paths =
+                vec![common::repo_root().join(format!("tests/fixtures/spoofed-{owner}.hew"))];
+        }
+    }
+    let mut checker = common::checker();
+    checker.check_program(&program)
+}
+
+fn typecheck_module_body(module_path: &[&str], source: &str) -> hew_types::TypeCheckOutput {
+    let root_id = ModuleId::root();
+    let module_id = ModuleId::new(
+        module_path
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect(),
+    );
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: module_id.clone(),
+            items: common::parse_program(source).items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("module fixture must be unique");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root fixture must be unique");
+    graph.topo_order = vec![module_id, root_id];
+    let program = hew_parser::ast::Program {
+        items: vec![],
+        module_doc: None,
+        module_graph: Some(graph),
+    };
+    let mut checker = common::isolated_checker();
+    checker.check_program(&program)
+}
+
+fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::TypeCheckOutput {
+    let std_source = match owner {
+        "failure" => include_str!("../../../std/failure.hew"),
+        "link_monitor" => include_str!("../../../std/link_monitor.hew"),
+        _ => panic!("unsupported lifecycle owner fixture: {owner}"),
+    };
+    let mut helper = common::parse_program(&format!("import std::{owner}; pub fn loaded() {{}}"));
+    for (item, _) in &mut helper.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path.last().is_some_and(|segment| segment == owner) {
+            let mut imported = common::parse_program(std_source).items;
+            if owner == "link_monitor" {
+                for (nested, _) in &mut imported {
+                    let Item::Import(nested_decl) = nested else {
+                        continue;
+                    };
+                    if nested_decl.path == ["std", "failure"] {
+                        nested_decl.resolved_items = Some(
+                            common::parse_program(include_str!("../../../std/failure.hew")).items,
+                        );
+                    }
+                }
+            }
+            decl.resolved_items = Some(imported);
+        }
+    }
+
+    let mut root = common::parse_program(root_source);
+    for (item, _) in &mut root.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["app", "helper"] {
+            decl.resolved_items = Some(helper.items.clone());
+        }
+    }
+    let mut checker = common::checker();
+    checker.check_program(&root)
+}
+
+fn typecheck_link_monitor_import_edge(
+    target_path: &[&str],
+    target_source: &str,
+) -> hew_types::TypeCheckOutput {
+    let root_id = ModuleId::root();
+    let target_id = ModuleId::new(
+        target_path
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect(),
+    );
+    let consumer_id = ModuleId::new(vec!["std".to_string(), "link_monitor".to_string()]);
+    let target_items = common::parse_program(target_source).items;
+    let mut consumer = common::parse_program(&format!(
+        "import {}::{{CrashKind}};\n\
+         pub enum ImportedReason {{ Crashed(CrashKind); }}",
+        target_path.join("::")
+    ));
+    for (item, _) in &mut consumer.items {
+        if let Item::Import(decl) = item {
+            decl.resolved_items = Some(target_items.clone());
+        }
+    }
+
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: target_id.clone(),
+            items: target_items,
+            imports: vec![],
+            source_paths: if target_path == ["std", "failure"] {
+                vec![common::repo_root().join("std/failure.hew")]
+            } else {
+                vec![]
+            },
+            doc: None,
+        })
+        .expect("target fixture must be unique");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer.items,
+            imports: vec![ModuleImport {
+                target: target_id.clone(),
+                spec: None,
+                span: 0..0,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("consumer fixture must be unique");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root fixture must be unique");
+    graph.topo_order = vec![target_id, consumer_id, root_id];
+    let program = hew_parser::ast::Program {
+        items: vec![],
+        module_doc: None,
+        module_graph: Some(graph),
+    };
+    let mut checker = common::checker();
+    checker.check_program(&program)
+}
+
 // ── Accept fixtures ──────────────────────────────────────────────────
+
+#[test]
+fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::failure::{CrashNotification};
+
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: CrashNotification) {
+                let _id = note.actor_id;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("failure")
+        }),
+        "published lifecycle type use must consume its import: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::failure::{CrashNotification as ExitNote};
+
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: ExitNote) {
+                let _id = note.actor_id;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+}
+
+#[test]
+fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::failure as f;
+        import std::link_monitor as lm;
+
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: f.CrashNotification) {
+                let _id = note.actor_id;
+            }
+
+            #[on(down)]
+            fn on_down(note: lm.DownNotification) {
+                let _id = note.monitor.value;
+            }
+        }
+
+        fn main() {
+            let _kind = f.CrashKind::Crashed;
+            let _target = lm.DownTarget::Local(7);
+            let _reason = lm.DownReason::Exited;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "whole-module aliases must resolve to canonical lifecycle identities: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "qualified alias uses must consume both imports: {:?}",
+        output.warnings
+    );
+    assert_eq!(
+        output
+            .import_type_name_aliases
+            .get(&(None, "f.CrashNotification".to_string()))
+            .map(String::as_str),
+        Some("std.failure.CrashNotification"),
+        "the checker must publish its proven whole-module lifecycle identity for HIR"
+    );
+}
+
+#[test]
+fn user_backed_std_module_ids_do_not_grant_lifecycle_authority() {
+    for (module, hook_source) in [
+        (
+            &["std", "failure"][..],
+            r"
+            actor Watcher {
+                #[on(exit)]
+                fn on_peer_exit(note: failure.CrashNotification) {}
+            }
+            ",
+        ),
+        (
+            &["std", "link_monitor"][..],
+            r"
+            actor Watcher {
+                #[on(down)]
+                fn on_down(note: link_monitor.DownNotification) {}
+            }
+            ",
+        ),
+    ] {
+        let output = typecheck_module_body(module, hook_source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a user-backed std.x module ID must not imply lifecycle authority: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn spoofed_std_owner_imports_cannot_mint_lifecycle_identities() {
+    for (owner, qualified, bare, hook) in [
+        (
+            "failure",
+            "failure.CrashNotification",
+            "CrashNotification",
+            "exit",
+        ),
+        (
+            "link_monitor",
+            "link_monitor.DownNotification",
+            "DownNotification",
+            "down",
+        ),
+    ] {
+        let qualified_import = format!(
+            "import std::{owner};\n\
+             actor Watcher {{ #[on({hook})] fn callback(note: {qualified}) {{}} }}\n\
+             fn main() {{}}"
+        );
+        let qualified_output = typecheck_with_spoofed_std_import(owner, &qualified_import);
+        assert!(
+            qualified_output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a whole-module import of spoofed std::{owner} must not authorize {qualified}: {:?}",
+            qualified_output.errors
+        );
+
+        let named_import = format!(
+            "import std::{owner}::{{{bare}}};\n\
+             actor Watcher {{ #[on({hook})] fn callback(note: {bare}) {{}} }}\n\
+             fn main() {{}}"
+        );
+        let named_output = typecheck_with_spoofed_std_import(owner, &named_import);
+        assert!(
+            named_output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a named/bare import of spoofed std::{owner} must not authorize {bare}: {:?}",
+            named_output.errors
+        );
+    }
+}
+
+#[test]
+fn single_segment_owner_module_ids_do_not_grant_lifecycle_authority() {
+    for (module, hook_source) in [
+        (
+            &["failure"][..],
+            r"
+            actor Watcher {
+                #[on(exit)]
+                fn on_peer_exit(note: failure.CrashNotification) {}
+            }
+            ",
+        ),
+        (
+            &["link_monitor"][..],
+            r"
+            actor Watcher {
+                #[on(down)]
+                fn on_down(note: link_monitor.DownNotification) {}
+            }
+            ",
+        ),
+    ] {
+        let output = typecheck_module_body(module, hook_source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a same-named single-segment module must not imply lifecycle authority: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn canonical_std_module_named_import_is_seeded_before_member_resolution() {
+    let output = typecheck_link_monitor_import_edge(
+        &["std", "failure"],
+        include_str!("../../../std/failure.hew"),
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a resolved std.link_monitor -> std.failure named import must authorize CrashKind \
+         while member types are pre-registered: {:?}",
+        output.errors
+    );
+
+    let spoof =
+        typecheck_link_monitor_import_edge(&["app", "failure"], "pub enum CrashKind { Crashed; }");
+    assert!(
+        spoof
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+        "a same-final-segment user module edge must not seed canonical lifecycle authority: {:?}",
+        spoof.errors
+    );
+}
+
+#[test]
+fn named_imports_do_not_grant_unrequested_qualified_lifecycle_authority() {
+    for source in [
+        r"
+        import std::failure::{CrashAction};
+        fn main() {
+            let _kind = failure.CrashKind::Crashed;
+        }
+        ",
+        r"
+        import std::failure::{CrashKind};
+        fn main() {
+            let _kind = failure.CrashKind::Crashed;
+        }
+        ",
+        r"
+        import std::link_monitor::{MonitorId};
+        fn main() {
+            let _reason = link_monitor.DownReason::Exited;
+        }
+        ",
+        r"
+        import std::link_monitor::{DownReason};
+        fn main() {
+            let _reason = link_monitor.DownReason::Exited;
+        }
+        ",
+    ] {
+        let output = typecheck_with_resolved_std(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a named import must authorize only its lexical bindings, not arbitrary \
+             qualified lifecycle types: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
+    for source in [
+        r"
+            import std::failure;
+            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            fn main() {}
+        ",
+        r"
+            actor Watcher { #[on(exit)] fn on_peer_exit(note: CrashNotification) {} }
+            fn main() {}
+        ",
+    ] {
+        let output = typecheck_with_resolved_std(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "unpublished lifecycle payload must fail at resolution: {:?}",
+            output.errors
+        );
+    }
+
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::failure;
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a qualified payload use must consume a plain module import: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("failure")
+        }),
+        "a qualified lifecycle use must consume its import: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
+    let mut helper = common::parse_program(
+        r"
+        import std::failure::{CrashNotification};
+        pub fn loaded() {}
+        ",
+    );
+    for (item, _) in &mut helper.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["std", "failure"] {
+            decl.resolved_items =
+                Some(common::parse_program(include_str!("../../../std/failure.hew")).items);
+        }
+    }
+
+    let mut root = common::parse_program(
+        r"
+        import app::helper;
+
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: failure.CrashNotification) {}
+        }
+
+        fn main() {}
+        ",
+    );
+    for (item, _) in &mut root.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["app", "helper"] {
+            decl.resolved_items = Some(helper.items.clone());
+        }
+    }
+    let mut checker = common::checker();
+    let output = checker.check_program(&root);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+        "a sibling's import must not authorize the root scope: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn named_imported_down_payload_and_nested_types_consume_import() {
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::link_monitor::{DownNotification, DownReason, DownTarget};
+
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: DownNotification) {
+                let _id = note.monitor.value;
+                match note.target {
+                    DownTarget::Local(slot) => { let _slot = slot; }
+                    DownTarget::Remote(location) => { let _location = location; }
+                }
+                match note.reason {
+                    DownReason::Exited => {}
+                    DownReason::Crashed(kind) => { let _kind = kind; }
+                    DownReason::MonitorLost => {}
+                    DownReason::LocalShutdown => {}
+                }
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("link_monitor")
+        }),
+        "published DOWN types must consume their import: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn source_owned_down_payload_requires_direct_import_authority() {
+    for source in [
+        r"
+            import std::link_monitor;
+            actor Watcher { #[on(down)] fn on_down(note: DownNotification) {} }
+            fn main() {}
+        ",
+        r"
+            actor Watcher { #[on(down)] fn on_down(note: link_monitor.DownNotification) {} }
+            fn main() {}
+        ",
+    ] {
+        let output = typecheck_with_resolved_std(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "unpublished DOWN payload must fail at resolution: {:?}",
+            output.errors
+        );
+    }
+
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::link_monitor;
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: link_monitor.DownNotification) { let _id = note.monitor.value; }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a qualified DOWN use must consume a plain module import: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::UnusedImport && warning.message.contains("link_monitor")
+        }),
+        "a qualified DOWN use must consume its import: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload() {
+    let mut monitor = common::parse_program(include_str!("../../../std/link_monitor.hew"));
+    for (item, _) in &mut monitor.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["std", "failure"] {
+            decl.resolved_items =
+                Some(common::parse_program(include_str!("../../../std/failure.hew")).items);
+        }
+    }
+
+    let mut helper = common::parse_program("import std::link_monitor; pub fn loaded() {}");
+    for (item, _) in &mut helper.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["std", "link_monitor"] {
+            decl.resolved_items = Some(monitor.items.clone());
+        }
+    }
+
+    let mut root = common::parse_program(
+        r"
+        import app::helper;
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: link_monitor.DownNotification) {}
+        }
+        fn main() {}
+        ",
+    );
+    for (item, _) in &mut root.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.path == ["app", "helper"] {
+            decl.resolved_items = Some(helper.items.clone());
+        }
+    }
+    let mut checker = common::checker();
+    let output = checker.check_program(&root);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+        "a sibling's link-monitor import must not authorize the root scope: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_variants() {
+    for source in [
+        r"
+        import app::helper;
+        fn main() {
+            let _note = failure.CrashNotification::Forged {
+                actor_id: 1,
+            };
+        }
+        ",
+        r"
+        import app::helper;
+        fn main() {
+            let _kind = failure.CrashKind::HeapExceeded;
+        }
+        ",
+    ] {
+        let output = typecheck_with_transitive_std("failure", source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a transitive std::failure definition must not authorize a value path: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_variants() {
+    for source in [
+        r"
+        import app::helper;
+        fn main() {
+            let _note = link_monitor.DownNotification::Forged {
+                monitor: 1,
+            };
+        }
+        ",
+        r"
+        import app::helper;
+        fn main() {
+            let _target = link_monitor.DownTarget::Remote;
+        }
+        ",
+        r"
+        import app::helper;
+        fn main() {
+            let _reason = link_monitor.DownReason::MonitorLost;
+        }
+        ",
+    ] {
+        let output = typecheck_with_transitive_std("link_monitor", source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
+            "a transitive std::link_monitor definition must not authorize a value path: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn local_lifecycle_shadow_does_not_forge_imported_payload() {
+    let output = typecheck_with_resolved_std(
+        r"
+        import std::failure::{CrashNotification};
+
+        type CrashNotification { value: i64; }
+
+        actor Watcher {
+            #[on(exit)]
+            fn on_peer_exit(note: CrashNotification) { let _value = note.value; }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error
+                .message
+                .contains("must have type `CrashNotification` (from `std::failure`)")
+        }),
+        "a local shadow must not forge the lifecycle payload: {:?}",
+        output.errors
+    );
+}
 
 #[test]
 fn accept_on_start_only() {
@@ -111,6 +936,35 @@ fn accept_typed_on_down_hook() {
     assert!(
         output.errors.is_empty(),
         "canonical `#[on(down)]` should type-check: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_user_down_notification_collision_in_typed_hook() {
+    let output = typecheck(
+        r"
+        type DownNotification {
+            value: i64,
+        }
+
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: DownNotification) {
+                let _value = note.value;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error
+                .message
+                .contains("must have type `DownNotification` (from `std::link_monitor`)")
+        }),
+        "a user nominal that only shares the lifecycle payload's short name must be rejected: {:?}",
         output.errors
     );
 }

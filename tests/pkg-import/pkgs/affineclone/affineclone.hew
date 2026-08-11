@@ -1,0 +1,19 @@
+#[resource]
+pub type ResourceToken {
+    id: i64;
+}
+
+impl ResourceToken {
+    fn close(self) {}
+}
+
+#[linear]
+pub type LinearTicket {
+    id: i64;
+}
+
+impl LinearTicket {
+    fn redeem(consuming self) -> i64 {
+        self.id
+    }
+}

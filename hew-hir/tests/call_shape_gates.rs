@@ -192,6 +192,7 @@ fn synth_call_with_item_callee(name: &str, item_id: u32) -> HirExpr {
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
+            target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
         },
@@ -222,6 +223,7 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
+            target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
         },
@@ -350,6 +352,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
+            target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
         },
@@ -469,6 +472,7 @@ fn call_shape_in_machine_transition_guard_rejected() {
         id: ItemId(0),
         node: HirNodeId(0),
         name: "Gate".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         type_param_bounds: Vec::new(),
         states: vec![HirMachineState {

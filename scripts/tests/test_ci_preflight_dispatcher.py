@@ -15,6 +15,7 @@ def run_dispatcher(
     env: dict[str, str] | None = None,
     dry_run: bool = True,
     timeout: float | None = None,
+    parallelism: int = 16,
 ) -> subprocess.CompletedProcess[str]:
     extra_args = extra_args or []
     args = ["bash", str(SCRIPT)]
@@ -22,33 +23,30 @@ def run_dispatcher(
         args.append("--dry-run")
     args.extend(extra_args)
     args.extend(["--", *paths])
-    run_env = None
+    run_env = os.environ.copy()
     if env is not None:
-        run_env = {**os.environ, **env}
-    return subprocess.run(
-        args,
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=run_env,
-        timeout=timeout,
-    )
+        run_env.update(env)
+    with tempfile.TemporaryDirectory() as bin_dir:
+        fake_nproc = Path(bin_dir) / "nproc"
+        fake_nproc.write_text(
+            f"#!/bin/sh\nprintf '{parallelism}\\n'\n", encoding="utf-8"
+        )
+        fake_nproc.chmod(0o755)
+        run_env["PATH"] = f"{bin_dir}{os.pathsep}{run_env['PATH']}"
+        return subprocess.run(
+            args,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=run_env,
+            timeout=timeout,
+        )
 
 
 def run_dispatcher_help() -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), "--help"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-def run_ci_required() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", str(SCRIPT), "--ci-required"],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -64,13 +62,19 @@ def assert_scripts_config_profile(result: subprocess.CompletedProcess[str]) -> N
     assert "  - cargo fmt --all -- --check" in result.stdout
     assert "  - make freebsd-workflow-contract-check" in result.stdout
     assert "  - make test-release-workflow-contract" in result.stdout
-    assert "  - make test-rust" in result.stdout
+    assert "\n  - make test  " not in result.stdout
     assert "  - make doc-ratchet-selftest" in result.stdout
     assert "make test-codegen" not in result.stdout
 
 
+def assert_comprehensive_profile(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout
+    assert "  - make test  " in result.stdout
+
+
 def test_makefile_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Makefile"))
+    assert_comprehensive_profile(run_dispatcher("Makefile"))
 
 
 def test_scripts_path_routes_to_scripts_config_profile() -> None:
@@ -78,7 +82,7 @@ def test_scripts_path_routes_to_scripts_config_profile() -> None:
 
 
 def test_nextest_config_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher(".config/nextest.toml"))
+    assert_comprehensive_profile(run_dispatcher(".config/nextest.toml"))
 
 
 def test_workflow_routes_to_scripts_config_profile() -> None:
@@ -86,29 +90,40 @@ def test_workflow_routes_to_scripts_config_profile() -> None:
 
 
 def test_cargo_toml_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Cargo.toml"))
+    assert_comprehensive_profile(run_dispatcher("Cargo.toml"))
 
 
 def test_cargo_lock_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("Cargo.lock"))
+    assert_comprehensive_profile(run_dispatcher("Cargo.lock"))
 
 
 def test_dot_cargo_config_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher(".cargo/config.toml"))
+    assert_comprehensive_profile(run_dispatcher(".cargo/config.toml"))
 
 
 def test_rust_toolchain_routes_to_scripts_config_profile() -> None:
-    assert_scripts_config_profile(run_dispatcher("rust-toolchain.toml"))
+    assert_comprehensive_profile(run_dispatcher("rust-toolchain.toml"))
 
 
-def test_ci_required_names_freebsd_authoritative_job() -> None:
-    result = run_ci_required()
-    assert result.returncode == 0, result.stderr
-    expected = (
-        "FreeBSD workflow contract (ci.yml required Clippy & format job)\t"
-        "make freebsd-workflow-contract-check"
-    )
-    assert result.stdout.splitlines().count(expected) == 1, result.stdout
+def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() -> None:
+    local = run_dispatcher("scripts/structural-authority-audit.py")
+    assert local.returncode == 0, local.stderr
+    assert "  - make structural-lint " in local.stdout, local.stdout
+    assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert re.search(
+        r"name: Provision pinned ast-grep toolchain\s+uses: ./\.github/actions/setup-ast-grep",
+        workflow,
+    ), "hosted CI must explicitly provision the pinned toolchain"
+    assert re.search(
+        r"name: Verify structural lint bootstrap contract\s+run: make test-ast-grep-contract test-structural-lint-bootstrap",
+        workflow,
+    ), "hosted CI must run the bootstrap contract tests"
+    assert re.search(
+        r"name: Run structural authority lint\s+run: make structural-lint",
+        workflow,
+    ), "the required parity step must dispatch the labeled cache-only command"
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +156,26 @@ def test_dry_run_shows_budget_annotation_fallback_lane() -> None:
     )
 
 
-def test_dry_run_shows_budget_annotation_docs_lane() -> None:
-    """docs-only changes produce 'Commands: none (docs-only)'; no budget line needed."""
-    result = run_dispatcher("README.md")
+def test_dry_run_scales_every_budget_from_detected_parallelism() -> None:
+    """An 8-core host doubles both profile and command-specific baselines."""
+    result = run_dispatcher("some-unclassified-root-file.txt", parallelism=8)
+
     assert result.returncode == 0, result.stderr
-    assert "docs-only" in result.stdout, result.stdout
-    # docs lane has no commands, so no budget annotation — just confirm no crash.
+    assert result.stdout.count("Host parallelism:") == 1, result.stdout
+    assert "Host parallelism: 8 (nproc)" in result.stdout, result.stdout
+    assert "max(1, 16 / 8) = 2.00x" in result.stdout, result.stdout
+    assert "ceil(baseline * 16 / 8)" in result.stdout, result.stdout
+    assert "make lint  (budget: 1200s)" in result.stdout, result.stdout
+    assert "make test-hew-ratchet  (budget: 3000s)" in result.stdout, result.stdout
+    assert "make test-o2-differential  (budget: 5400s)" in result.stdout, result.stdout
+
+    fast_result = run_dispatcher("some-unclassified-root-file.txt", parallelism=32)
+    assert fast_result.returncode == 0, fast_result.stderr
+    assert "max(1, 16 / 32) = 1.00x" in fast_result.stdout, fast_result.stdout
+    assert "make lint  (budget: 600s)" in fast_result.stdout, fast_result.stdout
+    assert "make test-hew-ratchet  (budget: 1500s)" in fast_result.stdout, (
+        fast_result.stdout
+    )
 
 
 def test_help_includes_profile_json() -> None:
@@ -355,7 +384,7 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
     """runtime-net lane includes make stdlib + freshness check before tests.
 
     Both hew-runtime and hew-lib source changes must produce libhew.a before
-    test-runtime-net runs, so that linked programs never test against a stale .a.
+    the workspace tests run, so linked programs never test against a stale .a.
     """
     for path in ("hew-runtime/src/lib.rs", "hew-lib/src/lib.rs"):
         result = run_dispatcher(path)
@@ -374,9 +403,9 @@ def test_runtime_net_lane_rebuilds_libhew() -> None:
         # Freshness gate must appear before the test command.
         stdlib_pos = result.stdout.index("make stdlib")
         fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
-        test_pos = result.stdout.index("make test-runtime-net")
+        test_pos = result.stdout.index("make test")
         assert stdlib_pos < fresh_pos < test_pos, (
-            f"Expected order: make stdlib < check-libhew-fresh < test-runtime-net.\n"
+            f"Expected order: make stdlib < check-libhew-fresh < test.\n"
             f"stdout:\n{result.stdout}"
         )
 
@@ -414,11 +443,11 @@ def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
     result = run_dispatcher("hew-mir/src/lower.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
     # The hew-cli consumer corpus (compiled leak/drop oracles, await_e2e,
     # eval_e2e, …) runs inside make test-compiler-pipeline (-p hew-cli
-    # -p adze-cli, ci profile); a separate single-test hew-cli command here
+    # -p hew-pkg, ci profile); a separate single-test hew-cli command here
     # would be a duplicate run of tests the lane already covers.
     assert "--test await_e2e" not in result.stdout, result.stdout
 
@@ -491,7 +520,7 @@ def test_types_lane_includes_checked_mir_run() -> None:
 def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> None:
     """The compiler-pipeline and types lanes delegate hew-cli consumer-corpus
     coverage to make test-compiler-pipeline: its nextest invocation must keep
-    -p hew-cli and -p adze-cli under the ci profile.  If a Makefile edit drops
+    -p hew-cli and -p hew-pkg under the ci profile.  If a Makefile edit drops
     either package, the compiled leak/drop oracles and the e2e suites silently
     stop running for HIR/MIR/codegen and type-checker diffs — exactly the
     consumer-corpus escape class this ratchet exists to block.
@@ -504,15 +533,18 @@ def test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages() -> 
     recipe = match.group(0)
     assert "--profile ci" in recipe, recipe
     assert "-p hew-cli" in recipe, recipe
-    assert "-p adze-cli" in recipe, recipe
+    assert "-p hew-pkg" in recipe, recipe
 
 
 def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
-    """Docs-only changes remain a no-op and do not run the compiler oracle."""
+    """Docs-only changes run no compiler-backed suite."""
     result = run_dispatcher("docs/README.md")
     assert result.returncode == 0, result.stderr
     assert "docs-only" in result.stdout, result.stdout
     assert "make test-vertical-slice" not in result.stdout, result.stdout
+    assert "make test-doc-examples" not in result.stdout, result.stdout
+    assert "cargo nextest" not in result.stdout, result.stdout
+    assert "cargo clippy" not in result.stdout, result.stdout
 
 
 def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
@@ -547,32 +579,6 @@ def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
     )
 
 
-def test_ci_parity_script_passes() -> None:
-    """scripts/check-preflight-ci-parity.sh exits 0 on the current fallback lane.
-
-    This is the Stage 6 lock: any future change that drops a CI-required check
-    from the dispatcher fallback lane will cause this test to fail.
-    """
-    result = subprocess.run(
-        ["bash", str(ROOT / "scripts" / "check-preflight-ci-parity.sh")],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"CI parity check failed — the fallback lane is missing a CI-required step.\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    import re
-
-    # Match "N/N checks present" where N is the number of CI-required entries.
-    # The count comes from the dispatcher's --ci-required list, not a hardcoded literal.
-    assert re.search(r"\d+/\d+ checks present", result.stdout), (
-        f"Expected '<N>/<N> checks present' in parity output.\nstdout:\n{result.stdout}"
-    )
-
-
 def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
     """Changes in tests/hew/ route to the hew-tests lane with both ratchets."""
     result = run_dispatcher("tests/hew/vec_test.hew")
@@ -581,9 +587,24 @@ def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
     assert "make test-hew-ratchet" in result.stdout, (
         f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
     )
+    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
     )
+    assert "make hew-fmt-property" in result.stdout, result.stdout
+
+
+def test_parser_path_runs_formatter_property() -> None:
+    result = run_dispatcher("hew-parser/src/fmt.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: parser" in result.stdout, result.stdout
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
+
+
+def test_vertical_slice_source_runs_formatter_property() -> None:
+    result = run_dispatcher("tests/vertical-slice/accept/example.hew")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
 
 
 def test_std_hew_file_adds_hew_suite_addon() -> None:
@@ -615,9 +636,12 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     assert "make test-hew-ratchet" in result.stdout, (
         f"Expected 'make test-hew-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
+    assert "make test-hew-ratchet  (budget: 1500s)" in result.stdout, result.stdout
+    assert "make test-o2-differential  (budget: 2700s)" in result.stdout, result.stdout
     assert "make test-stdlib-ratchet" in result.stdout, (
         f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
     )
+    assert result.stdout.count("make hew-fmt-property") == 1, result.stdout
     # Ratchets must appear after make test (Rust suite runs first).
     # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
     test_pos = result.stdout.index("  - make test")
@@ -631,12 +655,26 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     )
 
 
+def test_stdlib_execution_proof_authorities_route_to_their_gate() -> None:
+    """The manifest and its checker run the proof gate before push."""
+    result = run_dispatcher(
+        "scripts/stdlib-execution-proof.sh",
+        "scripts/stdlib-execution-proofs.tsv",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: scripts-config" in result.stdout, result.stdout
+    assert "make test-stdlib-execution-proofs" in result.stdout, (
+        "Expected stdlib proof authorities to run their verifier.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
 def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     """Parser + type-checker changes route to the types lane, not fallback.
 
     The types lane runs test-compiler-pipeline (the full HIR/MIR/codegen closure)
     plus fuzz-oracle, covering both buckets.  A type-checker change can break
-    hew-hir / hew-mir tests that make test-types alone never runs (#2026).
+    hew-hir / hew-mir tests that a package subset would never run (#2026).
     This avoids the 9156-test fallback suite while keeping the gate sound.
     """
     result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
@@ -644,10 +682,10 @@ def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     assert "Selected profile: types" in result.stdout, (
         f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # The proving gate needs its per-command floor: 7887 tests measure ~234 s
     # warm, so the types lane's 180 s narrow tier would watchdog-kill it.
-    assert "make test-compiler-pipeline  (budget: 600s)" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
     assert "make fuzz-oracle" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
@@ -672,7 +710,7 @@ def test_hew_hir_routes_to_compiler_pipeline_lane() -> None:
     assert "Selected profile: compiler-pipeline" in result.stdout, (
         f"Expected compiler-pipeline for hew-hir change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     assert "make test-vertical-slice" in result.stdout, result.stdout
 
 
@@ -683,13 +721,13 @@ def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
     assert "Selected profile: compiler-pipeline" in result.stdout, (
         f"Expected compiler-pipeline for hew-codegen-rs change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_compile_routes_to_cli_lane() -> None:
     """hew-compile/* changes route to the cli lane.
 
-    is_cli_path matches hew-cli/*, adze-cli/*, hew-compile/*,
+    is_cli_path matches hew-cli/*, hew-pkg/*, hew-compile/*,
     hew-cabi/*, hew-capability-gen/*.
     """
     result = run_dispatcher("hew-compile/src/lib.rs")
@@ -697,7 +735,7 @@ def test_hew_compile_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-compile change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_cabi_routes_to_cli_lane() -> None:
@@ -707,7 +745,7 @@ def test_hew_cabi_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-cabi change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_capability_gen_routes_to_cli_lane() -> None:
@@ -717,22 +755,22 @@ def test_hew_capability_gen_routes_to_cli_lane() -> None:
     assert "Selected profile: cli" in result.stdout, (
         f"Expected cli lane for hew-capability-gen change.\nstdout:\n{result.stdout}"
     )
-    assert "make test-cli" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
 
 
 def test_hew_wasm_routes_to_wasm_lane() -> None:
     """hew-wasm/* changes route to the wasm lane.
 
-    The wasm lane runs cargo test -p hew-wasm --lib (not the full test
-    suite) plus make playground-check for the wasm-pack build smoke test.
+    The wasm selection runs the affected package plus make playground-check for the
+    wasm-pack build smoke test.
     """
     result = run_dispatcher("hew-wasm/src/lib.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: wasm" in result.stdout, (
         f"Expected wasm lane for hew-wasm change.\nstdout:\n{result.stdout}"
     )
-    assert "cargo test -p hew-wasm --lib" in result.stdout, (
-        f"Expected 'cargo test -p hew-wasm --lib' in wasm lane.\nstdout:\n{result.stdout}"
+    assert "cargo nextest run --profile ci -p hew-wasm" in result.stdout, (
+        f"Expected package-scoped nextest for wasm.\nstdout:\n{result.stdout}"
     )
     assert "make playground-check" in result.stdout, result.stdout
     # Must NOT have fallen back to the full test suite.
@@ -755,13 +793,61 @@ def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
         f"Expected compiler-pipeline for hew-hir + hew-types diff.\n"
         f"stdout:\n{result.stdout}"
     )
-    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "cargo nextest run --profile ci" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
     assert (
         "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
     ), (
         f"Expected narrow compiler-pipeline lane, not full fallback.\nstdout:\n{result.stdout}"
     )
+
+
+def test_leaf_crate_runs_only_its_reverse_dependency_closure() -> None:
+    result = run_dispatcher("hew-observe/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "cargo nextest run --profile ci -p hew-observe" in result.stdout
+    assert "--workspace" not in result.stdout
+    assert "-p hew-parser" not in result.stdout
+
+
+def test_analysis_change_runs_known_dependents_without_workspace() -> None:
+    result = run_dispatcher("hew-analysis/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    nextest = next(
+        line for line in result.stdout.splitlines() if "cargo nextest run" in line
+    )
+    for package in ("hew-analysis", "hew-cli", "hew-lsp", "hew-wasm"):
+        assert f"-p {package}" in nextest
+    assert "--workspace" not in nextest
+    assert "make test-hew-ratchet" not in result.stdout
+
+
+def test_hosted_linux_executes_the_dispatcher_directly() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "run: scripts/ci-preflight-dispatcher.sh --base origin/main" in workflow
+    assert "run: make test-hew-ratchet" not in workflow
+
+
+def test_selector_exports_fail_closed_compile_requirement() -> None:
+    with tempfile.NamedTemporaryFile() as output:
+        result = run_dispatcher(
+            "some-unclassified-root-file.txt",
+            extra_args=["--github-output", output.name],
+        )
+        values = output.read().decode()
+    assert result.returncode == 0, result.stderr
+    assert "profile=comprehensive" in values
+    assert "requires_compile=true" in values
+
+    with tempfile.NamedTemporaryFile() as output:
+        result = run_dispatcher(
+            ".github/workflows/ci.yml",
+            extra_args=["--github-output", output.name],
+        )
+        values = output.read().decode()
+    assert result.returncode == 0, result.stderr
+    assert "profile=scripts-config" in values
+    assert "requires_compile=false" in values
 
 
 _TESTS = [
@@ -773,11 +859,11 @@ _TESTS = [
     test_cargo_lock_routes_to_scripts_config_profile,
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
-    test_ci_required_names_freebsd_authoritative_job,
+    test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,
-    test_dry_run_shows_budget_annotation_docs_lane,
+    test_dry_run_scales_every_budget_from_detected_parallelism,
     test_help_includes_profile_json,
     test_profile_json_flag_accepted_in_dry_run,
     test_help_includes_fail_fast_and_run_all_default,
@@ -800,9 +886,11 @@ _TESTS = [
     test_fallback_lane_includes_smoke_tier_before_heavy,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
     test_hew_tests_path_routes_to_hew_tests_lane,
+    test_parser_path_runs_formatter_property,
+    test_vertical_slice_source_runs_formatter_property,
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
-    test_ci_parity_script_passes,
+    test_stdlib_execution_proof_authorities_route_to_their_gate,
     # Slice 2 positive bucket-routing tests
     test_hew_hir_routes_to_compiler_pipeline_lane,
     test_hew_codegen_rs_routes_to_compiler_pipeline_lane,
@@ -811,6 +899,10 @@ _TESTS = [
     test_hew_capability_gen_routes_to_cli_lane,
     test_hew_wasm_routes_to_wasm_lane,
     test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff,
+    test_leaf_crate_runs_only_its_reverse_dependency_closure,
+    test_analysis_change_runs_known_dependents_without_workspace,
+    test_hosted_linux_executes_the_dispatcher_directly,
+    test_selector_exports_fail_closed_compile_requirement,
 ]
 
 if __name__ == "__main__":

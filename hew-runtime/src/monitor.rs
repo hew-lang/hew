@@ -22,6 +22,7 @@ use crate::internal::types::HewActorState;
 use crate::lifetime::live_actors::pin_actor_by_id;
 use crate::lifetime::local_handles::{resolve_current_actor, HewLocalPidId};
 use crate::lifetime::poison_safe::PoisonSafeRw;
+#[cfg(test)]
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::node_identity::{Location, NodeId};
@@ -815,78 +816,37 @@ const _: () = {
 };
 
 pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMessage) {
-    let Some(monitoring_actor) =
-        crate::lifetime::live_actors::get_actor_ptr_by_id(watcher_actor_id)
-    else {
+    let Some(monitoring_actor_pin) = pin_actor_by_id(watcher_actor_id) else {
         return;
     };
-    let mut wake_actor = false;
-    let mut enqueue_failed = false;
-    crate::actor::with_live_actor_by_id(
-        watcher_actor_id,
-        monitoring_actor,
-        |monitoring_actor_ref| {
-            let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-
-            if !mailbox.is_null() {
-                let data_ptr = (&raw const down_data).cast::<c_void>();
-                let data_size = std::mem::size_of::<HewDownMessage>();
-
-                // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
-                let sent = unsafe {
-                    mailbox::mailbox_send_sys_checked(
-                        mailbox,
-                        HewSysMsg::Down,
-                        data_ptr.cast_mut(),
-                        data_size,
-                    )
-                };
-                if !sent {
-                    enqueue_failed = true;
-                    return;
-                }
-
-                if monitoring_actor_ref
-                    .actor_state
-                    .compare_exchange(
-                        HewActorState::Idle as i32,
-                        HewActorState::Runnable as i32,
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    monitoring_actor_ref
-                        .idle_count
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    monitoring_actor_ref
-                        .hibernating
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    wake_actor = true;
-                }
-            }
-
-            #[cfg(test)]
-            run_notify_monitors_hook();
-        },
-    );
-    if wake_actor {
-        crate::scheduler::sched_enqueue(monitoring_actor);
-    }
-    if enqueue_failed {
-        crate::actor::with_live_actor_by_id(
-            watcher_actor_id,
+    let monitoring_actor = monitoring_actor_pin.as_ptr();
+    let data_ptr = (&raw const down_data).cast::<c_void>();
+    let data_size = std::mem::size_of::<HewDownMessage>();
+    // SAFETY: ActorPin keeps the actor and mailbox live through enqueue,
+    // terminal handoff, and the controlled-failure trap.
+    let sent = unsafe {
+        crate::actor::send_system_message(
             monitoring_actor,
-            |_monitoring_actor_ref| {
-                // SAFETY: the live-actor authority validated the pointer.
-                unsafe {
-                    crate::actor::hew_actor_trap(
-                        monitoring_actor,
-                        crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
-                    );
-                }
-            },
-        );
+            HewSysMsg::Down,
+            data_ptr.cast_mut(),
+            data_size,
+        )
+    };
+
+    #[cfg(test)]
+    run_notify_monitors_hook();
+
+    if !sent {
+        // Crucially this runs without LIVE_ACTORS held. Trap notification may
+        // recurse through monitor/link lookup, while the ActorPin alone keeps
+        // this allocation live.
+        // SAFETY: ActorPin validates and retains `monitoring_actor`.
+        unsafe {
+            crate::actor::hew_actor_trap(
+                monitoring_actor,
+                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+            );
+        }
     }
 }
 
@@ -1625,6 +1585,8 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 

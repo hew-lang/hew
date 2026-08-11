@@ -1,4 +1,4 @@
-// `[[ownership.contracts]]` hand parser, shared between `hew-mir/build.rs`
+// `[[ownership.contracts]]` hand parser, shared between `hew-types/build.rs`
 // (via `include!`) and the parser-hardening test in
 // `tests/ffi_contract_parse_hardening.rs` so the exact build-time code is
 // what the test exercises. Types are referred to fully-qualified (no `use`
@@ -9,15 +9,28 @@
 struct ContractRow {
     result: String,
     params: Vec<String>,
+    /// For a resource-valued ABI parameter, the one nominal handle this row
+    /// audits. Empty entries denote non-resource positions.  The field is
+    /// deliberately optional for the existing non-resource ABI surface; an
+    /// absent typed fact is never interpreted as a resource borrow.
+    resource_param_types: Vec<String>,
+    /// Fully-qualified source nominal for an independently-owned opaque
+    /// result. Absence means this row does not mint a source resource
+    /// lifecycle candidate.
+    resource_result_type: Option<String>,
     release_symbol: String,
     discharge_depth: String,
-    /// The RETENTION answer for an owned result: `"transferred"` when the
-    /// callee provably keeps no pointer into the returned allocation, empty
-    /// when the question has not been answered for this symbol. Empty is the
-    /// fail-closed default and is what every row carries unless an executable
-    /// oracle established otherwise — see the `result-retention` section of
-    /// `scripts/jit-symbol-classification.toml`.
+    /// The RETENTION answer for an owned result: `"transferred"` for an
+    /// exclusive allocation handoff, `"shared-refcount"` for an independently
+    /// balanced retained alias, `"resource-transfer"` for an opaque close
+    /// authority, and empty when the question has not been answered.
+    /// Empty is the fail-closed default — see the `result-retention` section
+    /// of `scripts/jit-symbol-classification.toml`.
     result_retention: String,
+    /// Runtime-body evidence for an opaque `resource-transfer`. Kept in the
+    /// source table for auditability; it is validated but need not enter the
+    /// generated compiler table.
+    result_retention_basis: String,
 }
 
 fn quoted_value(line: &str) -> Option<&str> {
@@ -62,10 +75,61 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "unknown ownership result for {symbol}: {}",
         row.result
     );
+    // The generated table interpolates these three fields straight into
+    // `"..."` Rust string literals (`generate_ffi_ownership_table`); a `"` or
+    // `\` in an interpolated field would close the literal early or start an
+    // escape sequence, corrupting the generated source rather than failing
+    // the build cleanly. Reject them here instead.
+    for resource_type in &row.resource_param_types {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-param-types for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    if let Some(resource_type) = &row.resource_result_type {
+        assert!(
+            !resource_type.contains('"') && !resource_type.contains('\\'),
+            "resource-result-type for {symbol} must not contain `\"` or `\\`: {resource_type}"
+        );
+    }
+    assert!(
+        !row.release_symbol.contains('"') && !row.release_symbol.contains('\\'),
+        "release-symbol for {symbol} must not contain `\"` or `\\`: {}",
+        row.release_symbol
+    );
     for param in &row.params {
         assert!(
             ["borrow", "consume", "retain"].contains(&param.as_str()),
             "unknown param ownership for {symbol}: {param}"
+        );
+    }
+    if !row.resource_param_types.is_empty() {
+        assert_eq!(
+            row.resource_param_types.len(),
+            row.params.len(),
+            "resource-param-types for {symbol} must have one entry per parameter"
+        );
+        for (index, resource_type) in row.resource_param_types.iter().enumerate() {
+            if !resource_type.is_empty() {
+                assert!(
+                    ["borrow", "consume"].contains(&row.params[index].as_str()),
+                    "typed resource parameter {index} for {symbol} must be an audited borrow or consume"
+                );
+                assert!(
+                    resource_type.contains('.'),
+                    "resource parameter type for {symbol} must be a qualified nominal: {resource_type}"
+                );
+            }
+        }
+    }
+    if let Some(resource_type) = &row.resource_result_type {
+        assert!(
+            !resource_type.is_empty() && resource_type.contains('.'),
+            "resource result type for {symbol} must be a qualified nominal: {resource_type}"
+        );
+        assert!(
+            matches!(row.result.as_str(), "fresh" | "retained"),
+            "resource result type for {symbol} requires an owned result"
         );
     }
     assert!(
@@ -85,10 +149,11 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         );
     }
     // The RETENTION axis. Absence is the fail-closed answer "not established",
-    // so the only spelling is the positive one, and it is only meaningful about
-    // an allocation the caller was actually given.
+    // so only measured positive spellings are allowed, and they are meaningful
+    // only about an allocation the caller was actually given.
     assert!(
-        ["", "transferred"].contains(&row.result_retention.as_str()),
+        ["", "resource-transfer", "shared-refcount", "transferred"]
+            .contains(&row.result_retention.as_str()),
         "unknown result-retention for {symbol}: {}",
         row.result_retention
     );
@@ -96,6 +161,62 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
         "result-retention for {symbol} is meaningless without an owned result"
     );
+    assert!(
+        row.result_retention != "shared-refcount" || row.result == "retained",
+        "shared-refcount result-retention for {symbol} requires a retained result"
+    );
+    assert!(
+        row.result_retention != "resource-transfer" || row.resource_result_type.is_some(),
+        "resource-transfer result-retention for {symbol} requires a resource result type"
+    );
+    assert!(
+        row.result_retention != "resource-transfer"
+            || !row.result_retention_basis.trim().is_empty(),
+        "resource-transfer result-retention for {symbol} requires a non-empty basis"
+    );
+    assert!(
+        row.result_retention == "resource-transfer" || row.result_retention_basis.is_empty(),
+        "result-retention basis for {symbol} is only meaningful for resource-transfer"
+    );
+}
+
+/// Validate the cross-row disposer edge for every typed resource result.
+///
+/// This is deliberately a graph check over the same contract table rather
+/// than a second disposer registry: the producer's `release-symbol` must name
+/// a row that consumes exactly one position of the same qualified nominal and
+/// produces no owner.
+fn validate_contract_graph(contracts: &std::collections::BTreeMap<String, ContractRow>) {
+    for (symbol, row) in contracts {
+        let Some(resource_type) = row.resource_result_type.as_deref() else {
+            continue;
+        };
+        let release = contracts.get(&row.release_symbol).unwrap_or_else(|| {
+            panic!(
+                "resource result type for {symbol} names missing release contract {}",
+                row.release_symbol
+            )
+        });
+        assert_eq!(
+            release.result, "none",
+            "release contract {} for {symbol} must produce no owned result",
+            row.release_symbol
+        );
+        let matching_positions = release
+            .resource_param_types
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                candidate.as_str() == resource_type
+                    && release.params.get(*index).is_some_and(|mode| mode == "consume")
+            })
+            .count();
+        assert_eq!(
+            matching_positions, 1,
+            "release contract {} for {symbol} must consume exactly one {resource_type}",
+            row.release_symbol
+        );
+    }
 }
 
 /// Parse the full `[[ownership.contracts]]` table from TOML source. Every
@@ -109,6 +230,10 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
 /// contract being accumulated and enters a skip state: keys inside a foreign
 /// trailing table — even ones spelled `symbol =` / `result =` — must never
 /// pollute the final contract.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fail-closed hand parser keeps every accepted contract key in one visible dispatch"
+)]
 fn parse_ownership_contracts(
     source: &str,
 ) -> std::collections::BTreeMap<String, ContractRow> {
@@ -137,9 +262,12 @@ fn parse_ownership_contracts(
                 ContractRow {
                     result: String::new(),
                     params: Vec::new(),
+                    resource_param_types: Vec::new(),
+                    resource_result_type: None,
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
                     result_retention: String::new(),
+                    result_retention_basis: String::new(),
                 },
             ));
             continue;
@@ -176,6 +304,25 @@ fn parse_ownership_contracts(
                 body.push_str(continuation.trim());
             }
             row.params = quoted_list(&body);
+        } else if line.starts_with("resource-param-types =") {
+            // Keep this parallel to `params`: the empty-string slots pin the
+            // non-resource ABI positions, so an index can never be shifted
+            // into a neighbouring resource fact.
+            let mut body = line.to_owned();
+            while !body.trim_end().ends_with(']') {
+                let continuation = lines
+                    .next()
+                    .expect("unterminated resource-param-types array in ownership contract");
+                body.push(' ');
+                body.push_str(continuation.trim());
+            }
+            row.resource_param_types = quoted_list(&body);
+        } else if line.starts_with("resource-result-type =") {
+            row.resource_result_type = Some(
+                quoted_value(line)
+                    .expect("contract resource-result-type must be quoted")
+                    .to_owned(),
+            );
         } else if line.starts_with("release-symbol =") {
             quoted_value(line)
                 .expect("contract release-symbol must be quoted")
@@ -188,6 +335,10 @@ fn parse_ownership_contracts(
             quoted_value(line)
                 .expect("contract result-retention must be quoted")
                 .clone_into(&mut row.result_retention);
+        } else if line.starts_with("result-retention-basis =") {
+            quoted_value(line)
+                .expect("contract result-retention-basis must be quoted")
+                .clone_into(&mut row.result_retention_basis);
         }
     }
     finish(current.take(), &mut contracts);
@@ -195,5 +346,6 @@ fn parse_ownership_contracts(
         !contracts.is_empty(),
         "classification TOML must declare ownership contracts"
     );
+    validate_contract_graph(&contracts);
     contracts
 }

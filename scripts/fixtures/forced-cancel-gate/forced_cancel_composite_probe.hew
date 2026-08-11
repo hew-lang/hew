@@ -39,6 +39,17 @@ fn compute() -> Point {
     return Point { x: 11, y: 22 };
 }
 
+// Keep the supported heap-string owner on a separate unit task: the current
+// fork surface supports argument-bearing unit tasks only for BitCopy + string,
+// while the Point task below remains the no-argument value-task shape that
+// exercises the TaskEntry composite cancel-return path. Both tasks are paused
+// at their own entry cooperate check and cancelled by one scope deadline.
+fn consume_cancelled(label: string) {
+    if label.len() == -1 {
+        panic("cancelled task unexpectedly entered its body");
+    }
+}
+
 extern "C" {
     fn hew_test_pause_next_task_spawn_until_scope_cancel();
 }
@@ -51,7 +62,13 @@ actor Driver {
                 hew_test_pause_next_task_spawn_until_scope_cancel()
             };
             fork t = compute();
-            after(1000000) {};
+            unsafe {
+                hew_test_pause_next_task_spawn_until_scope_cancel()
+            };
+            let label = "forced-cancel-owned-string".to_upper();
+            fork cleanup = consume_cancelled(label);
+            after(1ms) {};
+            await cleanup;
             let v = await t;
             out = v;
         };

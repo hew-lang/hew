@@ -1,0 +1,20 @@
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: fn(i64) -> i64) -> i64 {
+        sleep(2ms);
+        let v_r = v(21);
+        println(f"{v_r}");
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x = |v: i64| v * 2;
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

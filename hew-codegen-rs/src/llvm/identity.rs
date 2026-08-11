@@ -194,21 +194,27 @@ pub(super) fn emit_identity_aggregate_call<'ctx>(
                     .llvm_ctx("identity incarnation store")?;
             }
             "hew_node_id_display" | "hew_location_display" | "hew_remote_pid_display" => {
-                let runtime_symbol = if callee == "hew_node_id_display" {
-                    if source_struct.count_fields() != 2 {
-                        return Err(CodegenError::FailClosed(
-                            "NodeId display requires a two-field NodeId aggregate".into(),
-                        ));
-                    }
-                    "hew_node_id_format"
-                } else {
-                    if source_struct.count_fields() != 5 {
+                let runtime_symbol =
+                    hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "{callee} has no compiler-synthetic runtime ownership mapping"
+                            ))
+                        })?;
+                let expected_fields = match runtime_symbol {
+                    "hew_node_id_format" => 2,
+                    "hew_location_format" => 5,
+                    other => {
                         return Err(CodegenError::FailClosed(format!(
-                            "{callee} requires a five-field location aggregate"
+                            "{callee} maps to unsupported identity formatter `{other}`"
                         )));
                     }
-                    "hew_location_format"
                 };
+                if source_struct.count_fields() != expected_fields {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} requires a {expected_fields}-field identity aggregate"
+                    )));
+                }
                 let format_fn = intern_runtime_decl(
                     fn_ctx.ctx,
                     fn_ctx.llvm_mod,

@@ -384,7 +384,7 @@ fn get_current_arena() -> *mut ActorArena {
 /// ownership outside the arena; mixing arena pointers with `free()` is
 /// undefined behaviour.
 #[no_mangle]
-pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
+pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
     if arena_ptr.is_null() {
         ptr::null_mut()

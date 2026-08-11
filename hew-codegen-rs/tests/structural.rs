@@ -24,6 +24,10 @@ mod extern_malloc_string_adoption;
 mod fork_spawn_env_drop;
 #[path = "structural/hashmap_layout_ops.rs"]
 mod hashmap_layout_ops;
+#[path = "structural/lifecycle_registry_call_sites.rs"]
+mod lifecycle_registry_call_sites;
+#[path = "structural/lifecycle_state_transaction.rs"]
+mod lifecycle_state_transaction;
 #[path = "structural/llvm_module_size.rs"]
 mod llvm_module_size;
 #[path = "structural/machine_layout.rs"]

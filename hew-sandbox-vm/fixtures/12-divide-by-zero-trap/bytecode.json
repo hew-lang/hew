@@ -194,6 +194,16 @@
         "name": "AskError"
       },
       {
+        "id": "type:CrashInfo",
+        "kind": "record",
+        "name": "CrashInfo"
+      },
+      {
+        "id": "type:CrashNotification",
+        "kind": "record",
+        "name": "CrashNotification"
+      },
+      {
         "id": "type:HashMapIter",
         "kind": "record",
         "name": "HashMapIter"
@@ -249,6 +259,26 @@
         "name": "f64"
       },
       {
+        "id": "type:failure.CrashAction",
+        "kind": "enum",
+        "name": "failure.CrashAction"
+      },
+      {
+        "id": "type:failure.CrashInfo",
+        "kind": "record",
+        "name": "failure.CrashInfo"
+      },
+      {
+        "id": "type:failure.CrashKind",
+        "kind": "enum",
+        "name": "failure.CrashKind"
+      },
+      {
+        "id": "type:failure.CrashNotification",
+        "kind": "record",
+        "name": "failure.CrashNotification"
+      },
+      {
         "id": "type:i64",
         "kind": "integer",
         "name": "i64"
@@ -267,6 +297,81 @@
         "id": "type:reply",
         "kind": "opaque",
         "name": "ReplyToken"
+      },
+      {
+        "id": "type:std.builtins.AskError",
+        "kind": "enum",
+        "name": "std.builtins.AskError"
+      },
+      {
+        "id": "type:std.builtins.HashMapIter",
+        "kind": "record",
+        "name": "std.builtins.HashMapIter"
+      },
+      {
+        "id": "type:std.builtins.LinkError",
+        "kind": "enum",
+        "name": "std.builtins.LinkError"
+      },
+      {
+        "id": "type:std.builtins.LocalPid",
+        "kind": "record",
+        "name": "std.builtins.LocalPid"
+      },
+      {
+        "id": "type:std.builtins.Location",
+        "kind": "record",
+        "name": "std.builtins.Location"
+      },
+      {
+        "id": "type:std.builtins.LookupError",
+        "kind": "enum",
+        "name": "std.builtins.LookupError"
+      },
+      {
+        "id": "type:std.builtins.NodeId",
+        "kind": "record",
+        "name": "std.builtins.NodeId"
+      },
+      {
+        "id": "type:std.builtins.RemotePid",
+        "kind": "record",
+        "name": "std.builtins.RemotePid"
+      },
+      {
+        "id": "type:std.builtins.SendError",
+        "kind": "enum",
+        "name": "std.builtins.SendError"
+      },
+      {
+        "id": "type:std.builtins.TimeoutError",
+        "kind": "enum",
+        "name": "std.builtins.TimeoutError"
+      },
+      {
+        "id": "type:std.builtins.VecIter",
+        "kind": "record",
+        "name": "std.builtins.VecIter"
+      },
+      {
+        "id": "type:std.failure.CrashAction",
+        "kind": "enum",
+        "name": "std.failure.CrashAction"
+      },
+      {
+        "id": "type:std.failure.CrashInfo",
+        "kind": "record",
+        "name": "std.failure.CrashInfo"
+      },
+      {
+        "id": "type:std.failure.CrashKind",
+        "kind": "enum",
+        "name": "std.failure.CrashKind"
+      },
+      {
+        "id": "type:std.failure.CrashNotification",
+        "kind": "record",
+        "name": "std.failure.CrashNotification"
       },
       {
         "id": "type:string",
@@ -299,7 +404,7 @@
       }
     ]
   },
-  "package_id": "pkg:c9edf97dba50609b",
+  "package_id": "pkg:ec4c4d567dcec05d",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

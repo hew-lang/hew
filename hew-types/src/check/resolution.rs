@@ -4,8 +4,285 @@ use super::coerce::cast_is_valid;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
+
+/// The canonical lifecycle owner an ALREADY-MINTED identity carries, paired
+/// with the module binding that owner is written as
+/// (`std.failure.CrashKind` → `failure`).
+///
+/// The two owners are enumerated, not derived: an identity the checker minted
+/// is never re-parsed to recover its parts, because reading
+/// `std.failure.CrashKind` as `binding.tail` finds a lexical binding named
+/// `std` and rejects the checker's own canonical spelling (rc1-F1 stage D).
+fn canonical_lifecycle_owner_binding(name: &str) -> Option<&'static str> {
+    let (owner, _) = crate::source_owned_lifecycle_owner(name)?;
+    // Only the CANONICAL spelling is an identity the checker minted. The short
+    // binding form (`failure.CrashKind`) the owner table also accepts is an
+    // older internal fact, and must still go through the ordinary
+    // binding-and-tail resolution below.
+    name.strip_prefix(owner.canonical_path)?
+        .strip_prefix('.')
+        .map(|_| owner.binding)
+}
 
 impl Checker {
+    /// Return the generated discriminator only when the exact enum owner is
+    /// backed by a selected canonical std source (or the equivalent recorded
+    /// import/prelude authority for the current checker frame).
+    pub(super) fn source_authorized_generated_enum_builtin(
+        &self,
+        name: &str,
+    ) -> Option<BuiltinType> {
+        let fact = crate::builtin_enums::monomorphic_builtin_enum(name)?;
+        if fact.canonical_name != name {
+            return None;
+        }
+        let builtin = crate::lookup_builtin_type(fact.name)?;
+        if !crate::builtin_enums::has_exact_monomorphic_builtin_enum_identity(name, Some(builtin)) {
+            return None;
+        }
+        let selected_source =
+            self.canonical_std_module_sources.contains(fact.owner)
+                || self.in_stdlib_registration
+                || self.canonical_lifecycle_import_authority.iter().any(
+                    |(importer, _, identity)| importer == &self.current_module && identity == name,
+                );
+        selected_source.then_some(builtin)
+    }
+
+    /// Whether the active compilation is checking a particular embedded
+    /// standard-library source module.  This is source provenance, not a
+    /// spelling check: it is true for the bundled module registration pass or
+    /// for an explicit direct check of that shipped source, and false for user
+    /// modules that happen to use a `std.*`-looking name.
+    pub(super) fn checking_canonical_stdlib_source(&self, module: &str) -> bool {
+        self.in_stdlib_registration
+            || (self.current_module.as_deref() == Some(module)
+                && self.canonical_std_module_sources.contains(module))
+            || self.canonical_std_root_sources.contains(module)
+    }
+
+    /// Resolve a compiler-known nominal discriminator only after the source
+    /// owner has already been selected. Qualified spellings are presentation
+    /// aliases unless either the module binding points at a canonical shipped
+    /// stdlib source or no source declaration exists (catalog-only carriers).
+    /// This prevents `import user::channel as channel` and user modules named
+    /// `std.channel` from minting Sender/Receiver executable authority.
+    pub(super) fn resolved_builtin_type(&self, name: &str) -> Option<BuiltinType> {
+        let candidate = match name {
+            "std.channel.Sender" => Some(BuiltinType::Sender),
+            "std.channel.Receiver" => Some(BuiltinType::Receiver),
+            "std.builtins.VecIter" => Some(BuiltinType::VecIter),
+            "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
+            "std.builtins.LocalPid" => Some(BuiltinType::LocalPid),
+            "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
+            _ => crate::lookup_builtin_type(name),
+        }?;
+        let Some((surface_owner, _)) = name.rsplit_once('.') else {
+            // Synthetic cursor discriminants are compiler-produced, but their
+            // bare public spelling is also the annotation surface for values
+            // returned by `iter()`. Admit that spelling only when the lexical
+            // source has not declared its own same-named type. The shipped
+            // stdlib registration and its exact canonical module remain
+            // authoritative for their private cursor declarations.
+            if matches!(candidate, BuiltinType::VecIter | BuiltinType::HashMapIter)
+                && !self.in_stdlib_registration
+                && !self.current_module.as_deref().is_some_and(|module| {
+                    module == "std.builtins" && self.canonical_std_module_sources.contains(module)
+                })
+                && (self.local_type_defs.contains(name) || self.source_type_defs.contains(name))
+            {
+                return None;
+            }
+            return Some(candidate);
+        };
+        let canonical_owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), surface_owner.to_string()))
+            .map_or(surface_owner, String::as_str);
+        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner);
+        let lifecycle_authorized =
+            crate::lookup_source_owned_lifecycle_type(name).is_some()
+                && self.canonical_lifecycle_import_authority.iter().any(
+                    |(importer, _, identity)| importer == &self.current_module && identity == name,
+                );
+        if canonical_source || lifecycle_authorized || self.in_stdlib_registration {
+            return Some(candidate);
+        }
+        // Catalog-only qualified carriers remain available when no source
+        // declaration owns the exact identity. An exact user declaration is
+        // always source-owned and cannot inherit the catalog discriminator.
+        (!self.type_def_spans.contains_key(name)).then_some(candidate)
+    }
+
+    /// Canonicalise a qualified lifecycle type through the current importer's
+    /// whole-module binding.  The returned binding is the lexical qualifier
+    /// that must be marked used (`f` in `f.CrashNotification`); the canonical
+    /// identity always retains the full std source owner
+    /// (`std.failure.CrashNotification`).
+    pub(super) fn canonical_source_lifecycle_type_name(
+        &self,
+        name: &str,
+    ) -> Option<(String, String)> {
+        // An ALREADY-MINTED identity is never re-parsed as `binding.tail`
+        // (rc1-F1 stage D). Once a whole-module alias has been resolved to
+        // `std.failure.CrashKind`, splitting it again reads `std` as a lexical
+        // module binding, finds none, and rejects the checker's own canonical
+        // spelling. Credit the binding that PROVED the identity instead; with no
+        // proof, name the owner leaf so the scope gate below still fails closed.
+        if let Some(owner_binding) = canonical_lifecycle_owner_binding(name) {
+            if crate::lookup_source_owned_lifecycle_type(name).is_some() {
+                let binding = self.lexical_binding_for_lifecycle_identity(name, owner_binding);
+                return Some((name.to_string(), binding));
+            }
+        }
+        let (binding, tail) = name.split_once('.')?;
+        let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
+        let owner = match self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), binding.to_string()))
+            .map(String::as_str)
+        {
+            Some("std.failure") => "std.failure",
+            Some("std.link_monitor") => "std.link_monitor",
+            Some(_) => return None,
+            None => match binding {
+                "failure" => "std.failure",
+                "link_monitor" => "std.link_monitor",
+                _ => binding,
+            },
+        };
+        let canonical = format!("{owner}.{bare}");
+        crate::lookup_source_owned_lifecycle_type(&canonical)
+            .map(|_| (canonical, binding.to_string()))
+    }
+
+    /// The lexical spelling that proves a canonical lifecycle identity in the
+    /// module being checked — the whole-module alias or bound name recorded by
+    /// the source-path-proven import authority. Deterministic when an identity
+    /// was reached through more than one binding. With no proof it falls back to
+    /// the owner's own module binding, which grants nothing on its own, so an
+    /// unproven use stays unauthorized at the scope gate.
+    fn lexical_binding_for_lifecycle_identity(
+        &self,
+        name: &str,
+        owner_binding: &'static str,
+    ) -> String {
+        self.canonical_lifecycle_import_authority
+            .iter()
+            .filter(|(importer, _, identity)| importer == &self.current_module && identity == name)
+            .map(|(_, binding, _)| binding)
+            .min()
+            .cloned()
+            .unwrap_or_else(|| owner_binding.to_string())
+    }
+
+    /// Whether this source-owned lifecycle identity is available from the
+    /// module currently being checked.  `type_defs` is intentionally not part
+    /// of this proof: it is a program-global declaration table, so a sibling
+    /// or transitive import must not authorize this module's qualified use.
+    pub(super) fn source_lifecycle_identity_is_in_scope(&self, name: &str, binding: &str) -> bool {
+        if crate::lookup_source_owned_lifecycle_type(name).is_none() {
+            return false;
+        }
+
+        if let Some((owner, _)) = name.rsplit_once('.') {
+            if self.checking_canonical_stdlib_source(owner) {
+                return true;
+            }
+        }
+
+        // This is deliberately independent of `type_visibility` and the
+        // ordinary import maps. Those registries describe source spelling and
+        // can legitimately contain a user-backed module named `std.failure`.
+        // Only this source-path-proven authority may mint a lifecycle identity.
+        self.canonical_lifecycle_import_authority.contains(&(
+            self.current_module.clone(),
+            binding.to_string(),
+            name.to_string(),
+        ))
+    }
+
+    /// Apply lifecycle import authority to a value-level record/enum path.
+    ///
+    /// Returns `Ok(None)` for an ordinary source path, `Ok(Some(canonical))`
+    /// for an authorized lifecycle path, and `Err(())` after reporting an
+    /// unauthorized lifecycle construction/reference.  Both module-qualified
+    /// paths (`f.DownReason::Crashed`) and type-qualified paths
+    /// (`DownReason::Crashed`) pass through this seam.
+    pub(super) fn canonicalize_source_lifecycle_value_path(
+        &mut self,
+        path: &str,
+        span: &Span,
+    ) -> Result<Option<String>, ()> {
+        let type_surface = path.split_once("::").map_or(path, |(ty, _)| ty);
+        let suffix = path.strip_prefix(type_surface).unwrap_or_default();
+
+        let resolved = if type_surface.contains('.') {
+            self.canonical_source_lifecycle_type_name(type_surface)
+        } else if !self.local_type_defs.contains(type_surface)
+            && !self.source_type_defs.contains(type_surface)
+            && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+        {
+            let canonical = self.published_bare_type_qualified(type_surface);
+            canonical.and_then(|canonical| {
+                crate::lookup_source_owned_lifecycle_type(&canonical)?;
+                let owner = canonical.split_once('.')?.0;
+                let binding = if self
+                    .unqualified_to_module
+                    .contains_key(&(self.current_module.clone(), type_surface.to_string()))
+                {
+                    type_surface.to_string()
+                } else {
+                    owner.to_string()
+                };
+                Some((canonical, binding))
+            })
+        } else {
+            None
+        };
+
+        let Some((canonical, binding)) = resolved else {
+            // A bare lifecycle type-qualified path is recognizable even when
+            // no import published it. Reject it here instead of allowing the
+            // program-global constructor table to supply authority.
+            if !type_surface.contains('.')
+                && !self.local_type_defs.contains(type_surface)
+                && !self.source_type_defs.contains(type_surface)
+                && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{type_surface}`"),
+                    vec![format!(
+                        "import the owning module before using `{type_surface}`"
+                    )],
+                );
+                return Err(());
+            }
+            return Ok(None);
+        };
+
+        if !self.in_stdlib_registration
+            && !self.source_lifecycle_identity_is_in_scope(&canonical, &binding)
+        {
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{type_surface}`"),
+                vec![format!(
+                    "import the owning module before using `{type_surface}`"
+                )],
+            );
+            return Err(());
+        }
+        self.used_modules
+            .borrow_mut()
+            .insert(ImportKey::new(self.current_module.clone(), binding));
+        Ok(Some(format!("{canonical}{suffix}")))
+    }
+
     /// The QUALIFIED identity (`owner.Name`) a bare TYPE reference resolves to
     /// when exactly one imported module PUBLISHED the bare binding into the
     /// current importer and a qualified def for it is registered; `None`
@@ -17,17 +294,50 @@ impl Checker {
     /// last-write-wins bare key in the downstream record-layout / field-order
     /// registry. The C1 layout authority shortens the qualifier back to bare on
     /// a non-colliding lookup, so a single-module reference is unaffected.
+    /// The declaration a SOURCE type spelling mints in the module being
+    /// checked (rc1-F1 stage D, source producer).
+    ///
+    /// One answer, used both by the scope gates that guard the mint and by the
+    /// mint itself, so a gate can never be computed from a different rung than
+    /// the identity it guards — the failure that let an unimported lifecycle
+    /// payload past its source-authority check.
+    ///
+    /// The single-publisher rung comes first: a bare name exactly one imported
+    /// module published binds to that owner's qualified identity, so two
+    /// modules' same-bare-name types cannot collapse onto one last-write-wins
+    /// key in the downstream layout registries. Everything else resolves
+    /// through the shared ladder every other producer uses, which is what makes
+    /// a spelling an import bound (`CrashNotification`, or `ExitNote` for an
+    /// aliased opt-in) carry the same owner here as in an extern contract or a
+    /// registry signature.
+    pub(super) fn source_nominal_declaration(&self, name: &str) -> Option<String> {
+        if let Some(published) = self.published_bare_type_qualified(name) {
+            return Some(published);
+        }
+        let declaration = self.resolve_nominal_declaration(NominalOrigin::Lexical, name)?;
+        // Compiler catalog nominals keep their own namespace. `Location`,
+        // `NodeId` and the other entries the compiler declares in
+        // `std.builtins` ARE their catalog discriminator; the downstream
+        // value-class and layout tables know them by that bare spelling alone,
+        // so qualifying one to `std.builtins.Location` renames a type nothing
+        // downstream can look up. Leave it as written.
+        if declaration
+            .strip_prefix("std.builtins.")
+            .is_some_and(|leaf| leaf == name)
+        {
+            return None;
+        }
+        Some(declaration)
+    }
+
     pub(super) fn published_bare_type_qualified(&self, name: &str) -> Option<String> {
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return None;
         }
-        // A builtin surface (`CrashInfo`, `CrashAction`, channel handles, …) has
-        // the builtin as its canonical identity — never a module-qualified user
-        // def. Leave it bare so the `builtin:` discriminator survives (the
-        // `#[on(crash)]` hook check and the substrate-handle paths key on it).
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
-            return None;
-        }
+        // A published source binding outranks the builtin catalog. This is
+        // load-bearing for `import foo::{ Receiver }` and flattened file
+        // imports: the binding names `foo.Receiver`, not the runtime channel
+        // endpoint merely because its bare spelling is builtin-shaped.
         let identities = self
             .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))?;
@@ -65,14 +375,105 @@ impl Checker {
     /// tell them apart; mapping both compared names to this identity before an
     /// EXACT compare accepts the former and rejects the latter.
     pub(super) fn canonical_nominal_name(&self, name: &str) -> Option<String> {
-        // An explicit module-qualified spelling is already an identity.
-        if name.contains('.') {
+        // A qualified spelling may still use a lexical module binding or the
+        // declaring module's short self-qualifier.  Resolve that surface once
+        // to its full source owner before treating it as an identity.  This is
+        // what makes `channel.Sender` inside `std.channel` and `net.NetError`
+        // inside a module importing `std.net` equal to the corresponding full
+        // identities without ever collapsing unrelated same-leaf types.
+        if let Some((surface_owner, short)) = name.rsplit_once('.') {
+            if let Some(canonical_owner) = self
+                .module_import_bindings
+                .get(&(self.current_module.clone(), surface_owner.to_string()))
+            {
+                let canonical = format!("{canonical_owner}.{short}");
+                if self.type_defs.contains_key(&canonical)
+                    || self.known_types.contains(&canonical)
+                    || self.canonical_std_module_sources.contains(canonical_owner)
+                {
+                    return Some(canonical);
+                }
+            }
+            if let Some(canonical) = self.canonical_current_module_qualified_type_name(name) {
+                return Some(canonical);
+            }
+            // A fully-qualified spelling with no proven lexical alias is
+            // already an exact nominal identity.
             return None;
         }
-        // A root-local / current-module declaration keeps its bare identity: it
-        // is a DISTINCT nominal type from any imported `owner.Name` sharing the
-        // bare spelling.
-        if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+        // A root-local declaration keeps its bare identity: it is a DISTINCT
+        // nominal type from any imported `owner.Name` sharing the bare spelling.
+        // A non-root module's local declaration, however, must retain that
+        // module owner at cross-module handoff.  Bodies are checked with the
+        // declaration available under its bare source spelling, while HIR/MIR
+        // layout registries key the same declaration as `owner.Name`.
+        if self.local_type_defs.contains(name) {
+            let module = self.current_module.as_deref()?;
+            let qualified = format!("{module}.{name}");
+            if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified) {
+                return Some(qualified);
+            }
+            // Lexical declaration authority blocks every foreign owner, but
+            // it does not manufacture a qualified registry identity. Leave
+            // the spelling bare until the local declaration's exact entry
+            // exists; critically, do not fall through to a unique imported
+            // same-leaf owner.
+            return None;
+        }
+        if self.source_type_defs.contains(name) {
+            if let Some(module) = self.current_module.as_deref() {
+                let qualified = format!("{module}.{name}");
+                if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified)
+                {
+                    return Some(qualified);
+                }
+                // Registration scopes can retain a bare source-name seed
+                // while finalising an expression authored in a sibling
+                // module.  It is not authority for `{current_module}.{name}`
+                // unless that exact declaration exists; continue to the
+                // proven import/unique-owner paths below (for example
+                // `NetError` in `std.net.tls` resolves through its `net`
+                // binding to `std.net.NetError`).
+            } else {
+                return None;
+            }
+        }
+        // Root expressions may carry a compiler builtin through a bare
+        // source-facing declaration name (notably `LocalPid`).  Its builtin
+        // discriminator is established before lowering; qualifying that
+        // presentation through the general unique-owner fallback would turn
+        // it into a source nominal after the lexical authority has gone away.
+        // Non-root stdlib bodies keep their owner through the branch above.
+        //
+        // A USER declaration whose bare leaf collides with a builtin name is
+        // the exception: a file-imported `type Result` shadows the prelude
+        // enum, and its layout registration is keyed by the declaring file's
+        // full owner (`lib.Result`). Keeping the spelling bare here hands MIR
+        // a field-order key its registration can never match. Yield to a
+        // unique NON-builtin, non-stdlib declaration owner — exactly the
+        // qualification every non-builtin-shaped leaf receives below — and
+        // keep the builtin presentation only when no such user owner exists.
+        if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
+            // Root's bare namespace IS the file-import namespace (#2208): a
+            // package import can only claim this leaf through an explicit
+            // qualified spelling, so only a flat-file-import declaration
+            // competes with the builtin presentation here. Exactly one such
+            // owner wins; zero (or an ambiguous set) keeps the builtin.
+            let mut file_owners: Vec<String> = self
+                .registered_type_owners(name)
+                .into_iter()
+                .filter(|owner| {
+                    owner.rsplit_once('.').is_some_and(|(module, _)| {
+                        self.flat_file_import_module_names.contains(module)
+                    }) && self.type_defs.contains_key(owner)
+                        && self.resolved_builtin_type(owner).is_none()
+                })
+                .collect();
+            file_owners.sort_unstable();
+            file_owners.dedup();
+            if let [only] = file_owners.as_slice() {
+                return Some(only.clone());
+            }
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified
@@ -90,6 +491,16 @@ impl Checker {
         // Ambiguous (>1 owner) or none → leave bare and let the exact / builtin
         // compare fail closed (a genuinely ambiguous bare reference is a
         // resolution error, not something to silently pick a winner for).
+        match self.registered_type_owners(name).as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    /// Every distinct module-qualified declaration owner registered for a bare
+    /// leaf `name`, collapsed through proven owner bindings so compatibility
+    /// and canonical registrations of one declaration count once.
+    fn registered_type_owners(&self, name: &str) -> Vec<String> {
         let mut owners: Vec<&String> = self
             .type_defs
             .keys()
@@ -97,15 +508,143 @@ impl Checker {
             .filter(|qualified| {
                 qualified
                     .rsplit_once('.')
-                    .is_some_and(|(module, short)| short == name && self.modules.contains(module))
+                    // The declaration tables are themselves the ownership
+                    // proof. `self.modules` is an import-facing subset and
+                    // intentionally omits some direct stdlib roots, which
+                    // made their body-local enum arms survive the output
+                    // boundary bare even when there was exactly one declared
+                    // owner.
+                    .is_some_and(|(_, short)| short == name)
             })
             .collect();
         owners.sort_unstable();
         owners.dedup();
-        match owners.as_slice() {
-            [only] => Some((*only).clone()),
-            _ => None,
+        // Compatibility and canonical registrations can name the same source
+        // declaration (for example `net.NetError` and `std.net.NetError`).
+        // Collapse them through their already-proven owner bindings before
+        // deciding whether the bare leaf is ambiguous; counting those two
+        // spellings separately left a branch constructor bare while its join
+        // carried the canonical result owner.
+        let mut canonical_owners: Vec<String> = owners
+            .into_iter()
+            .map(|owner| {
+                self.canonical_nominal_name(owner)
+                    .unwrap_or_else(|| owner.clone())
+            })
+            .collect();
+        canonical_owners.sort_unstable();
+        canonical_owners.dedup();
+        canonical_owners
+    }
+
+    /// Resolve the exact source owner written before a variant surface's final
+    /// `::`. Imported type aliases and a declaration's own lexical module leaf
+    /// are projected to the checker-owned nominal identity here; no leaf-only
+    /// scan is permitted.
+    fn canonical_variant_surface_owner(&self, surface_owner: &str, expected_ty: &Ty) -> String {
+        if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(self.current_module.clone(), surface_owner.to_string()))
+        {
+            return canonical.clone();
         }
+
+        let dotted = surface_owner.replace("::", ".");
+        if !dotted.contains('.') {
+            if let Some(expected) = expected_ty.type_name() {
+                if let Some(owner) = self.current_module_identity() {
+                    let local = format!("{owner}.{dotted}");
+                    if local == expected
+                        && (self.type_defs.contains_key(&local)
+                            || self.known_types.contains(&local))
+                    {
+                        return local;
+                    }
+                }
+                // A qualified enum pattern is checked against an already
+                // resolved scrutinee.  That expected nominal is sufficient
+                // authority for its own bare source leaf (for example a
+                // `Result<_, std.encoding.yaml.ParseError>` arm written as
+                // `ParseError::Invalid(_)` after `import std::encoding::yaml`).
+                // This is not a leaf-name lookup: the returned identity is the
+                // exact expected owner, and a local or explicitly published
+                // bare type has already claimed the spelling above.
+                if expected
+                    .rsplit_once('.')
+                    .is_some_and(|(_, short)| short == dotted)
+                    && !self.local_type_defs.contains(&dotted)
+                    && !self.source_type_defs.contains(&dotted)
+                {
+                    return expected.to_string();
+                }
+            }
+        }
+
+        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+            return dotted;
+        }
+
+        if let Some(canonical) = self.canonical_nominal_name(&dotted) {
+            return canonical;
+        }
+
+        dotted
+    }
+
+    /// Whether a qualified variant surface names `expected_ty`'s exact nominal
+    /// owner. An unqualified variant has no owner to validate and is resolved
+    /// only inside the already-selected expected definition.
+    pub(super) fn variant_surface_owner_matches(
+        &self,
+        surface_name: &str,
+        expected_ty: &Ty,
+    ) -> bool {
+        let Some((surface_owner, _)) = surface_name.rsplit_once("::") else {
+            return true;
+        };
+
+        let expected = match expected_ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                ..
+            } => "Option".to_string(),
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                ..
+            } => "Result".to_string(),
+            // Preserve an already-resolved full source owner here.  The
+            // strict comparison helper intentionally renders a declaration's
+            // own full spelling as its short source spelling for collision
+            // diagnostics, but variant-surface ownership compares against the
+            // full key produced by `canonical_variant_surface_owner`.
+            Ty::Named { name, .. } => self
+                .canonical_nominal_name(name)
+                .unwrap_or_else(|| name.clone()),
+            _ => return false,
+        };
+        self.canonical_variant_surface_owner(surface_owner, expected_ty) == expected
+    }
+
+    /// Canonicalise a type spelling that uses the current module's *declared
+    /// lexical leaf* as a qualifier.  Module graph identity is full-path, so
+    /// while checking `hew.selfqualtype` the source spelling
+    /// `selfqualtype.Meter` denotes `hew.selfqualtype.Meter` — not a separate
+    /// owner named only `selfqualtype`.
+    ///
+    /// This is deliberately narrower than a final-segment comparison.  A
+    /// nested module such as `left.render` does not thereby acquire an
+    /// unproven `render.Box` self-alias: the exact full current-owner type must
+    /// already be registered.  An explicit import binding is resolved before
+    /// this helper runs, so an intentionally imported foreign `selfqualtype`
+    /// binding retains that foreign owner.
+    fn canonical_current_module_qualified_type_name(&self, name: &str) -> Option<String> {
+        let canonical =
+            crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
+        (self.type_defs.contains_key(&canonical)
+            || self.known_types.contains(&canonical)
+            || self.type_aliases.contains_key(&canonical)
+            || self.type_visibility.contains_key(&canonical))
+        .then_some(canonical)
     }
 
     /// Whether comparing `a` and `b` under the permissive suffix rule
@@ -113,21 +652,142 @@ impl Checker {
     /// that owner-qualified nominal identity REJECTS — i.e. the specific
     /// bare↔qualified nominal collision issue #2651 is about.
     ///
-    /// Returns `true` only when the two types are structurally identical under
-    /// the suffix rule (so `unify` would accept them) but NOT under the strict
-    /// owner-qualified identity — the signature of a root-local type conflated
-    /// with an unrelated import (`Widget` vs `widgeti8.Widget`). A same-def
+    /// Returns `true` when any corresponding nominal nodes would match under
+    /// the suffix rule but NOT under strict owner-qualified identity — the
+    /// signature of a root-local type conflated with an unrelated import
+    /// (`Widget` vs `widgeti8.Widget`). A same-def
     /// alias (`Box` vs `nestbox.Box`, a prelude `MonitorError` vs
     /// `link_monitor.MonitorError`, a builtin handle `HashSet` vs
     /// `collections.HashSet`) is strictly equal and so is NOT flagged; a genuine
-    /// structural mismatch is not suffix-equal and so is left for `unify` to
-    /// report (preserving its coercion-recovery paths).
+    /// outer-name mismatch is not suffix-equal and so is left for `unify` to
+    /// report (preserving its coercion-recovery paths). Nested inference
+    /// variables do not defer an already-provable outer owner mismatch.
     ///
     /// This is a READ-ONLY comparison: it rewrites no stored name and binds no
     /// inference variable, so it cannot leak a canonical spelling downstream.
-    /// The caller guarantees both types are fully concrete.
     pub(super) fn nominal_owner_conflict(&self, a: &Ty, b: &Ty) -> bool {
-        self.nominal_structural_eq(a, b, false) && !self.nominal_structural_eq(a, b, true)
+        self.nominal_owner_conflict_on_unification_path(a, b)
+    }
+
+    /// Whether permissive unification would cross a provably distinct nominal
+    /// owner at any corresponding named node.
+    ///
+    /// This intentionally ignores differences below the named node while
+    /// deciding its owner. `Local<T>` versus `foreign.Local<i64>` is already an
+    /// invalid owner pairing even while `T` is unresolved; waiting until the
+    /// whole type is concrete lets suffix unification bind `T` and permanently
+    /// erase the conflict. Composite recursion covers the same nested type
+    /// positions that [`crate::unify::unify`] traverses.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive mirror of the type shapes traversed by context-free unification"
+    )]
+    pub(super) fn nominal_owner_conflict_on_unification_path(&self, a: &Ty, b: &Ty) -> bool {
+        match (a, b) {
+            (
+                Ty::Named {
+                    name: an,
+                    args: aa,
+                    builtin: ab,
+                },
+                Ty::Named {
+                    name: bn,
+                    args: ba,
+                    builtin: bb,
+                },
+            ) => {
+                (Ty::names_match_qualified(an, bn)
+                    && !self.strict_names_same_owner(an, *ab, bn, *bb))
+                    || (aa.len() == ba.len()
+                        && aa.iter().zip(ba).any(|(left, right)| {
+                            self.nominal_owner_conflict_on_unification_path(left, right)
+                        }))
+            }
+            (Ty::Tuple(left), Ty::Tuple(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).any(|(left, right)| {
+                        self.nominal_owner_conflict_on_unification_path(left, right)
+                    })
+            }
+            (Ty::Array(left, left_len), Ty::Array(right, right_len)) => {
+                left_len == right_len
+                    && self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (Ty::Slice(left), Ty::Slice(right))
+            | (Ty::Task(left), Ty::Task(right))
+            | (Ty::Borrow { pointee: left }, Ty::Borrow { pointee: right }) => {
+                self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (
+                Ty::Function {
+                    params: left_params,
+                    ret: left_ret,
+                }
+                | Ty::Closure {
+                    params: left_params,
+                    ret: left_ret,
+                    ..
+                },
+                Ty::Function {
+                    params: right_params,
+                    ret: right_ret,
+                }
+                | Ty::Closure {
+                    params: right_params,
+                    ret: right_ret,
+                    ..
+                },
+            ) => {
+                (left_params.len() == right_params.len()
+                    && left_params.iter().zip(right_params).any(|(left, right)| {
+                        self.nominal_owner_conflict_on_unification_path(left, right)
+                    }))
+                    || self.nominal_owner_conflict_on_unification_path(left_ret, right_ret)
+            }
+            (
+                Ty::Pointer {
+                    is_mutable: left_mutable,
+                    pointee: left,
+                },
+                Ty::Pointer {
+                    is_mutable: right_mutable,
+                    pointee: right,
+                },
+            ) => {
+                left_mutable == right_mutable
+                    && self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (
+                Ty::TraitObject {
+                    traits: left_traits,
+                },
+                Ty::TraitObject {
+                    traits: right_traits,
+                },
+            ) => left_traits.iter().any(|left| {
+                right_traits
+                    .iter()
+                    .find(|right| right.trait_name == left.trait_name)
+                    .is_some_and(|right| {
+                        (left.args.len() == right.args.len()
+                            && left.args.iter().zip(&right.args).any(|(left, right)| {
+                                self.nominal_owner_conflict_on_unification_path(left, right)
+                            }))
+                            || left.assoc_bindings.iter().any(|(left_name, left_ty)| {
+                                right
+                                    .assoc_bindings
+                                    .iter()
+                                    .find(|(right_name, _)| right_name == left_name)
+                                    .is_some_and(|(_, right_ty)| {
+                                        self.nominal_owner_conflict_on_unification_path(
+                                            left_ty, right_ty,
+                                        )
+                                    })
+                            })
+                    })
+            }),
+            _ => false,
+        }
     }
 
     /// The strict owner-qualified identity a concrete `Ty::Named` name denotes
@@ -137,14 +797,12 @@ impl Checker {
     /// its OWN module (`lifecycle.Lifecycle`) — the same definition — compares
     /// equal, while a foreign-owner qualifier (`widgeti8.Widget`) is preserved
     /// and stays distinct from a root-local bare `Widget`.
-    fn strict_nominal_identity(&self, name: &str) -> String {
+    pub(super) fn strict_nominal_identity(&self, name: &str) -> String {
         if let Some(qualified) = self.canonical_nominal_name(name) {
             return qualified;
         }
         if let Some((module, short)) = name.rsplit_once('.') {
-            let current = self.current_module.as_deref();
-            let current_short = current.map(crate::short_name);
-            if current == Some(module) || current_short == Some(module) {
+            if self.current_module.as_deref() == Some(module) {
                 return short.to_string();
             }
         }
@@ -176,10 +834,33 @@ impl Checker {
     /// not a collision, so it must NOT be flagged. A conflict is reported only
     /// when we can prove distinct owners: one side is a genuine root-local /
     /// current-module declaration and the other is a foreign-owner qualifier.
-    fn strict_names_same_owner(&self, an: &str, bn: &str) -> bool {
+    pub(super) fn strict_names_same_owner(
+        &self,
+        an: &str,
+        a_builtin: Option<BuiltinType>,
+        bn: &str,
+        b_builtin: Option<BuiltinType>,
+    ) -> bool {
+        match (a_builtin, b_builtin) {
+            (Some(a), Some(b)) => return a == b,
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
+        // A source module checks its own impl signatures with the target
+        // written bare (`Value`) while primary signature resolution preserves
+        // the declaration's full source owner (`std.encoding.yaml.Value`).
+        // Those are the same nominal only when the qualified spelling is the
+        // exact current module owner; do this before the root-local-vs-foreign
+        // collision guard below, which quite correctly rejects that shape for
+        // an actual imported type.
+        if let Some(module) = self.current_module.as_deref() {
+            if an == format!("{module}.{bn}") || bn == format!("{module}.{an}") {
+                return true;
+            }
+        }
         let a_id = self.strict_nominal_identity(an);
         let b_id = self.strict_nominal_identity(bn);
-        if a_id == b_id || Self::builtin_suffix_alias(&a_id, &b_id) {
+        if a_id == b_id {
             return true;
         }
         // Suffix-equal but distinct spellings that both resolved to a canonical
@@ -197,95 +878,19 @@ impl Checker {
         !provable_conflict
     }
 
-    /// Structural equality of two concrete types, comparing each `Ty::Named`
-    /// either by the permissive suffix rule (`strict == false`) or by
-    /// owner-qualified definition identity (`strict == true`). Non-nominal
-    /// leaves compare exactly; unhandled composite variants fall back to exact
-    /// equality (conservative — a difference there is never reported as a
-    /// #2651 owner conflict).
-    fn nominal_structural_eq(&self, a: &Ty, b: &Ty, strict: bool) -> bool {
-        match (a, b) {
-            (
-                Ty::Named {
-                    name: an, args: aa, ..
-                },
-                Ty::Named {
-                    name: bn, args: ba, ..
-                },
-            ) => {
-                let names_ok = if strict {
-                    self.strict_names_same_owner(an, bn)
-                } else {
-                    Ty::names_match_qualified(an, bn)
-                };
-                names_ok
-                    && aa.len() == ba.len()
-                    && aa
-                        .iter()
-                        .zip(ba.iter())
-                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
-            }
-            (Ty::Tuple(x), Ty::Tuple(y)) => {
-                x.len() == y.len()
-                    && x.iter()
-                        .zip(y.iter())
-                        .all(|(p, q)| self.nominal_structural_eq(p, q, strict))
-            }
-            (Ty::Array(e1, n1), Ty::Array(e2, n2)) => {
-                n1 == n2 && self.nominal_structural_eq(e1, e2, strict)
-            }
-            (Ty::Slice(e1), Ty::Slice(e2)) => self.nominal_structural_eq(e1, e2, strict),
-            (
-                Ty::Function {
-                    params: p1,
-                    ret: r1,
-                },
-                Ty::Function {
-                    params: p2,
-                    ret: r2,
-                },
-            ) => {
-                p1.len() == p2.len()
-                    && p1
-                        .iter()
-                        .zip(p2.iter())
-                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
-                    && self.nominal_structural_eq(r1, r2, strict)
-            }
-            (
-                Ty::Pointer {
-                    is_mutable: m1,
-                    pointee: p1,
-                },
-                Ty::Pointer {
-                    is_mutable: m2,
-                    pointee: p2,
-                },
-            ) => m1 == m2 && self.nominal_structural_eq(p1, p2, strict),
-            (Ty::Borrow { pointee: p1 }, Ty::Borrow { pointee: p2 }) => {
-                self.nominal_structural_eq(p1, p2, strict)
-            }
-            (Ty::Task(i1), Ty::Task(i2)) => self.nominal_structural_eq(i1, i2, strict),
-            _ => a == b,
-        }
-    }
-
-    /// Whether two owner-qualified names are the SAME builtin handle spelled
-    /// bare vs through its stdlib carrier (`HashSet` ↔ `collections.HashSet`,
-    /// `Sender` ↔ `channel.Sender`) — the one bare↔qualified equivalence that is
-    /// sound for a compiler-known builtin regardless of module keying.
-    fn builtin_suffix_alias(a: &str, b: &str) -> bool {
-        if a == b {
-            return true;
-        }
-        let a_qualified = a.contains('.');
-        let b_qualified = b.contains('.');
-        if a_qualified == b_qualified {
-            return false;
-        }
-        let a_bare = crate::short_name(a);
-        let b_bare = crate::short_name(b);
-        a_bare == b_bare && crate::lookup_builtin_type(a_bare).is_some()
+    /// Whether a bare TYPE reference is in scope for the current module because
+    /// the module being checked declares (and exports) this type itself — a
+    /// same-owner self-reference, which is not cross-module and must not route
+    /// through the owner-qualified import-visibility gate. An actor field
+    /// `let inner: Inner;` in the same file that declares `Inner` is always in
+    /// scope; the gate exists for a reference to ANOTHER module's type a plain
+    /// `import` did not publish unqualified, so gating a module against its own
+    /// declaration is the over-fire. A genuinely cross-module bare reference
+    /// matches this not at all and stays gated, so #1919's tightening is intact.
+    fn bare_type_reference_in_own_scope(&self, owner_modules: &[&str]) -> bool {
+        self.current_module
+            .as_deref()
+            .is_some_and(|current| owner_modules.contains(&current))
     }
 
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
@@ -299,14 +904,28 @@ impl Checker {
     /// record constructor (`check_struct_init`) so `fn f(x: Gadget)` and
     /// `Gadget { … }` reject the same ill-formed cases identically rather than
     /// the constructor silently binding a last-write-wins bare def.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cohesive scope gate with a diagnostic branch per ill-formed case"
+    )]
     pub(super) fn report_bare_type_scope_error(&mut self, name: &str, span: &Span) -> bool {
+        // While registering shipped stdlib declarations, their own source
+        // member signatures are being collected before normal importer-scope
+        // bindings exist. That registration pass supplies the declaration
+        // authority; user-written references still take the guarded path.
+        if self.in_stdlib_registration {
+            return false;
+        }
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return false;
         }
-        // Builtin surfaces resolve to their builtin identity regardless of which
-        // module exports them, so the qualified-by-default publication gate does
-        // not apply — never reject a bare builtin name.
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+        // Compiler-intrinsic builtin surfaces resolve regardless of import.
+        // Source-layout lifecycle payloads deliberately do not: their catalog
+        // discriminator is ABI metadata, not lexical authority. They must flow
+        // through the ordinary published-binding path below.
+        if crate::lookup_builtin_type(name).is_some_and(|builtin| !builtin.requires_source_import())
+            || builtin_named_type(name).is_some()
+        {
             return false;
         }
         let mut owner_modules: Vec<&str> = self
@@ -317,6 +936,9 @@ impl Checker {
             .collect();
         owner_modules.sort_unstable();
         owner_modules.dedup();
+        if self.bare_type_reference_in_own_scope(&owner_modules) {
+            return false;
+        }
         // Each published entry is the owner-qualified SOURCE identity
         // (`owner.OriginalName`) — the spelling that disambiguates an aliased
         // opt-in. Used directly as the candidate suggestion; no reconstruction
@@ -326,9 +948,41 @@ impl Checker {
             .get(&(self.current_module.clone(), name.to_string()))
             .map(|identities| identities.iter().cloned().collect())
             .unwrap_or_default();
+        if published_identities.is_empty()
+            && owner_modules.is_empty()
+            && crate::lookup_source_owned_lifecycle_type(name).is_some()
+        {
+            let span_key = SpanKey::in_module(span, self.current_module_idx);
+            if self
+                .reported_undefined_named_types
+                .insert((name.to_string(), span_key))
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{name}`"),
+                    vec![format!(
+                        "import the lifecycle type explicitly, e.g. `import std::{}::{{ {name} }}`",
+                        if matches!(
+                            crate::lookup_source_owned_lifecycle_type(name),
+                            Some(
+                                crate::BuiltinType::CrashNotification
+                                    | crate::BuiltinType::CrashKind
+                            )
+                        ) {
+                            "failure"
+                        } else {
+                            "link_monitor"
+                        }
+                    )],
+                );
+            }
+            return true;
+        }
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
+            self.mark_ambiguous_import_owners_used(&candidates);
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,
@@ -368,6 +1022,66 @@ impl Checker {
             return true;
         }
         false
+    }
+
+    /// Treat a rejected ambiguity as a use of every import that introduced the
+    /// competing exact owner. The identity comparison happens here before
+    /// translating to the import table's user-facing leaf spelling.
+    pub(super) fn mark_ambiguous_import_owners_used(&self, candidates: &[String]) {
+        let imported_leaves: HashSet<String> = candidates
+            .iter()
+            .filter_map(|identity| identity.rsplit_once('.').map(|(owner, _)| owner))
+            .filter_map(|owner| owner.rsplit('.').next())
+            .map(str::to_string)
+            .collect();
+        let used_keys: Vec<ImportKey> = self
+            .import_spans
+            .keys()
+            .filter(|key| {
+                key.owner_module == self.current_module && imported_leaves.contains(&key.short_name)
+            })
+            .cloned()
+            .collect();
+        self.used_modules.borrow_mut().extend(used_keys);
+    }
+
+    /// Credit every lexical import binding that names this exact source module.
+    /// `unqualified_to_module` and resolved nominal types intentionally carry
+    /// full declaration owners (`hew.alpha`), whereas the unused-import table
+    /// is keyed by the user's binding (`alpha`, or an explicit module alias).
+    /// Bridge those representations through `module_import_bindings`; never
+    /// recover an owner from a leaf segment.
+    pub(super) fn mark_module_owner_bindings_used(&self, source_owner: &str) {
+        let bindings: Vec<ImportKey> = self
+            .module_import_bindings
+            .iter()
+            .filter(|((importer, _), owner)| {
+                importer == &self.current_module && *owner == source_owner
+            })
+            .map(|((importer, binding), _)| ImportKey::new(importer.clone(), binding.clone()))
+            .filter(|key| self.import_spans.contains_key(key))
+            .collect();
+        self.used_modules.borrow_mut().extend(bindings);
+    }
+
+    /// Credit the lexical binding whose exact source owner prefixes a resolved
+    /// nominal identity. Full owners may themselves be dotted package paths,
+    /// so `split_once('.')` is neither sufficient nor sound here.
+    fn mark_resolved_nominal_owner_used(&self, resolved_name: &str) {
+        let owners: Vec<String> = self
+            .module_import_bindings
+            .iter()
+            .filter(|((importer, _), owner)| {
+                importer == &self.current_module
+                    && resolved_name
+                        .strip_prefix(owner.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+            .map(|(_, owner)| owner.clone())
+            .collect();
+        for owner in owners {
+            self.mark_module_owner_bindings_used(&owner);
+        }
     }
 
     #[expect(
@@ -494,9 +1208,9 @@ impl Checker {
             params: sig
                 .params
                 .iter()
-                .map(|param| self.subst.resolve(param))
+                .map(|param| self.normalize_for_use(param))
                 .collect(),
-            return_type: self.subst.resolve(&sig.return_type),
+            return_type: self.normalize_for_use(&sig.return_type),
             ..sig.clone()
         }
     }
@@ -507,13 +1221,13 @@ impl Checker {
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| self.subst.resolve(field))
+                    .map(|field| self.normalize_for_use(field))
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
                 fields
                     .iter()
-                    .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                    .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
                     .collect(),
             ),
         }
@@ -524,7 +1238,7 @@ impl Checker {
             fields: type_def
                 .fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
                 .collect(),
             variants: type_def
                 .variants
@@ -1032,7 +1746,7 @@ impl Checker {
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
-        for (span, var, maybe_value, inner_span, module_idx) in
+        for (span, var, maybe_value, inner_span, module_idx, binding_var) in
             std::mem::take(&mut self.deferred_range_bounds)
         {
             let resolved = self
@@ -1073,6 +1787,41 @@ impl Checker {
                         ),
                     );
                     continue;
+                }
+            }
+            // When the bound is a bare identifier referring to an unannotated
+            // `let` literal, its own binding var is a SEPARATE unknown from
+            // `var` (the range's element var) — promote it too so every
+            // reference to that identifier (not just this range's bound
+            // span) agrees with the range's resolved element type. Skip if
+            // it already resolved to a different concrete type (a real
+            // conflict some other constraint already settled); only promote
+            // while it is still open (`Var`) or literal-defaulting.
+            if let Some(binding_var) = binding_var {
+                let current = self.subst.resolve(&Ty::Var(binding_var));
+                if matches!(current, Ty::Var(_)) || current.is_integer_literal() {
+                    self.subst.insert(binding_var, &resolved).expect(
+                        "promoting a range-bound identifier's literal-defaulting var to the \
+                         range's resolved element type must stay acyclic",
+                    );
+                    // The exported `expr_types` snapshot was taken (via
+                    // `normalize_for_use`) BEFORE this promotion ran, so the
+                    // identifier's DECLARATION-site span (e.g. the `6` in
+                    // `let n = 6;`) is still stale in `expr_types` even
+                    // though `self.subst` now agrees. HIR's identifier
+                    // lowering reads the declaration site (via its own
+                    // binding table, built once from that site's `expr_types`
+                    // entry), not the reference site inside the range — so
+                    // the declaration site is the one that must be
+                    // re-recorded here.
+                    if let Some((value_span, value_module_idx)) =
+                        self.literal_binding_value_spans.get(&binding_var).cloned()
+                    {
+                        expr_types.insert(
+                            SpanKey::in_module(&value_span, value_module_idx),
+                            resolved.clone(),
+                        );
+                    }
                 }
             }
             // Re-record the outer span with the resolved element type so the
@@ -1288,6 +2037,11 @@ impl Checker {
                 trait_name,
                 assoc_name,
             } => {
+                // Projection carriers may originate at syntax-directed builtin
+                // consumers (`Index`, `Iterator`) or retain an import alias.
+                // Resolve that spelling before consulting declaration-owned impl
+                // binding keys; never retry through an unrelated short trait.
+                let trait_key = self.trait_ref_lookup_key(trait_name);
                 let projected_base = self.project_assoc_types(base);
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
@@ -1296,7 +2050,7 @@ impl Checker {
                     if args.is_empty() && self.is_type_param_in_scope(name) {
                         if let Some(binding) = self.lookup_type_param_assoc_binding(
                             name,
-                            trait_name.as_ref(),
+                            &trait_key,
                             assoc_name.as_ref(),
                         ) {
                             return self.project_assoc_types(&binding);
@@ -1307,27 +2061,46 @@ impl Checker {
                             assoc_name: assoc_name.clone(),
                         };
                     }
-                    // An imported type carries its module-qualified spelling
-                    // (`iter.Map`) at a cross-module call site, but the impl's
-                    // associated-type binding and its `type_defs` entry are keyed
-                    // on the bare declaration name (`Map`). Resolve against the
-                    // qualified name first, then fall back to the bare leaf so the
-                    // projection collapses for an imported generic adapter the same
-                    // way it does in the defining module (`per-module-type-identity`:
-                    // the qualifier is an outer-identity concern, not part of the
-                    // impl-binding key).
-                    let bare_name = crate::short_name(name);
-                    let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
+                    // Associated-type projection is executable conformance
+                    // authority. Both registration and the resolved base carry
+                    // the full nominal owner, so a miss must remain a miss.
+                    let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
+                        .or_else(|| {
+                            self.resolved_builtin_type(name)
+                                .map(|builtin| builtin.canonical_name().to_string())
+                        })
+                        .unwrap_or_else(|| {
+                            self.canonical_nominal_name(name)
+                                .unwrap_or_else(|| name.clone())
+                        });
+                    let key = (
+                        nominal_identity.clone(),
+                        trait_key.clone(),
+                        assoc_name.to_string(),
+                    );
                     let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
-                        if bare_name == name.as_str() {
-                            None
+                        // Earlier registration passes can encounter a trait
+                        // before its imported source owner has populated the
+                        // canonical map, leaving the binding under the trait's
+                        // presentation spelling.  Recover only when the
+                        // *current* canonical trait resolver proves that the
+                        // stored spelling names this exact trait and there is
+                        // exactly one matching owner/association binding.  A
+                        // same-leaf foreign trait or an ambiguous duplicate
+                        // remains unprojected rather than becoming a leaf-name
+                        // fallback.
+                        let mut compatible = self.impl_assoc_type_bindings.iter().filter(
+                            |((owner, stored_trait, stored_assoc), _)| {
+                                owner == &nominal_identity
+                                    && stored_assoc == assoc_name.as_ref()
+                                    && self.trait_ref_lookup_key(stored_trait) == trait_key
+                            },
+                        );
+                        let first = compatible.next();
+                        if compatible.next().is_none() {
+                            first.map(|(_, binding)| binding)
                         } else {
-                            let bare_key = (
-                                bare_name.to_string(),
-                                trait_name.to_string(),
-                                assoc_name.to_string(),
-                            );
-                            self.impl_assoc_type_bindings.get(&bare_key)
+                            None
                         }
                     });
                     if let Some(binding) = binding {
@@ -1337,11 +2110,7 @@ impl Checker {
                         // available) zipped with `args`. The fallback when
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
-                        let bound = if let Some(td) = self
-                            .type_defs
-                            .get(name)
-                            .or_else(|| self.type_defs.get(bare_name))
-                        {
+                        let bound = if let Some(td) = self.type_defs.get(&nominal_identity) {
                             let map: HashMap<String, Ty> = td
                                 .type_params
                                 .iter()
@@ -1371,6 +2140,71 @@ impl Checker {
                 }
             }
             _ => ty.map_children_pub(&|child| self.project_assoc_types(child)),
+        }
+    }
+
+    /// Normalize a type at a semantic use boundary.
+    ///
+    /// The order is intentional and shared: inference substitution can make an
+    /// associated projection concrete; that projection can in turn expose a
+    /// nominal spelling which must be mapped to its source-owned identity before
+    /// any comparison, layout lookup, or checker-to-HIR handoff.  Keeping the
+    /// three operations together prevents individual consumers from silently
+    /// accepting one presentation while another preserves a distinct spelling.
+    pub(super) fn normalize_for_use(&self, ty: &Ty) -> Ty {
+        let substituted = self.subst.resolve(ty);
+        let projected = self.project_assoc_types(&substituted);
+        self.canonicalize_nominal_identity(&projected)
+    }
+
+    /// Final checker-output form of a semantic type. Every type-carrying
+    /// ledger that crosses into HIR/MIR uses this one seam rather than
+    /// open-coding substitution, so projections and source identities cannot
+    /// drift from the expression table.
+    pub(super) fn finalize_type_for_handoff(&self, ty: &Ty) -> Ty {
+        self.normalize_for_use(ty).materialize_literal_defaults()
+    }
+
+    /// Recursively replace a proven nominal presentation alias with the
+    /// checker-owned source identity.  This is deliberately narrower than a
+    /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user
+    /// declarations and returns `None` when no owner proof exists.
+    pub(super) fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                let canonical_name = self
+                    .canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone());
+                Ty::Named {
+                    // A source declaration may share a builtin leaf spelling
+                    // (`Option`, `Result`, or an imported source nominal). The
+                    // resolver already established that its provisional type
+                    // is source-owned with `builtin: None`; do not recreate a
+                    // builtin discriminator merely because the final handoff
+                    // revisits that presentation name.
+                    builtin: builtin.or_else(|| {
+                        let trusted_qualified_builtin = canonical_name.contains('.')
+                            && self.resolved_builtin_type(&canonical_name).is_some();
+                        let source_nominal = !trusted_qualified_builtin
+                            && (self.local_type_defs.contains(&canonical_name)
+                                || self.source_type_defs.contains(&canonical_name)
+                                || self.type_defs.contains_key(&canonical_name));
+                        (!source_nominal)
+                            .then(|| self.resolved_builtin_type(&canonical_name))
+                            .flatten()
+                    }),
+                    name: canonical_name,
+                    args: args
+                        .iter()
+                        .map(|arg| self.canonicalize_nominal_identity(arg))
+                        .collect(),
+                }
+            }
+            _ => ty.map_children_pub(&|child| self.canonicalize_nominal_identity(child)),
         }
     }
 
@@ -1633,6 +2467,30 @@ impl Checker {
         )
     }
 
+    /// Parser shorthand for `Option<..>` and `Result<..>` must still obey the
+    /// same lexical authority as an ordinary named type.  The AST preserves
+    /// those spellings as dedicated variants for builtin ergonomics, but that
+    /// representation cannot let a root declaration or an explicitly imported
+    /// source declaration silently become a compiler builtin.
+    fn source_builtin_shorthand_nominal(&self, name: &str, args: &[Ty]) -> Option<Ty> {
+        if self.local_type_defs.contains(name) {
+            let resolved_name = self.current_module.as_ref().map_or_else(
+                || name.to_string(),
+                |module| {
+                    let qualified = format!("{module}.{name}");
+                    if self.type_defs.contains_key(&qualified) {
+                        qualified
+                    } else {
+                        name.to_string()
+                    }
+                },
+            );
+            return Some(Ty::named(resolved_name, args.to_vec()));
+        }
+        self.published_bare_type_qualified(name)
+            .map(|qualified| Ty::named(qualified, args.to_vec()))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "generic instantiation requires many cases"
@@ -1856,6 +2714,32 @@ impl Checker {
                         })
                         .collect()
                 });
+                // Whole-module imports are lexical bindings, not declaration
+                // identities.  Canonicalise `lmonobox.Box` through the exact
+                // binding owner (`hew.lmonobox.Box`) before it participates in
+                // unification or becomes a generic layout argument.  Lifecycle
+                // source carriers retain their dedicated authority below so the
+                // lexical binding remains available for its import-proof check.
+                let imported_module_binding = name.split_once('.').and_then(|(binding, tail)| {
+                    self.module_import_bindings
+                        .get(&(self.current_module.clone(), binding.to_string()))
+                        .filter(|owner| {
+                            !matches!(owner.as_str(), "std.failure" | "std.link_monitor")
+                        })
+                        .map(|owner| (format!("{owner}.{tail}"), binding.to_string()))
+                });
+                let (canonical_module_name, imported_module_binding) = imported_module_binding
+                    .map_or_else(
+                        || {
+                            (
+                                self.canonical_current_module_qualified_type_name(name)
+                                    .unwrap_or_else(|| name.clone()),
+                                None,
+                            )
+                        },
+                        |(canonical, binding)| (canonical, Some(binding)),
+                    );
+                let name = &canonical_module_name;
                 // Check if it's a generic type parameter
                 for ctx in self.generic_ctx.iter().rev() {
                     if let Some(ty) = ctx.get(name) {
@@ -1865,6 +2749,31 @@ impl Checker {
                 // Check type aliases (transparent: Distance = int → Ty::I64)
                 if let Some(aliased) = self.type_aliases.get(name) {
                     return aliased.clone();
+                }
+                // A qualified lifecycle source identity is valid only when its
+                // canonical owner was imported directly by this lexical module.
+                // Whole-module aliases retain canonical identity (`f.CrashKind`
+                // -> `failure.CrashKind`) while user/transitive definitions with
+                // the same spelling remain ordinary source types.
+                let lifecycle_qualified = self.canonical_source_lifecycle_type_name(name);
+                if let Some((canonical, binding)) = lifecycle_qualified.as_ref() {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(canonical, binding)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
                 }
                 // Qualify unqualified handle types only when imported and
                 // unambiguous. Collect owned strings so this borrow of
@@ -1895,10 +2804,48 @@ impl Checker {
                 // record constructor in `check_struct_init`, so a type position
                 // (`fn f(x: Gadget)`) and a construction (`Gadget { … }`) reject
                 // the ill-formed cases identically.
-                if !is_local && self.report_bare_type_scope_error(name, &te.1) {
+                if !is_local
+                    && !name.contains('.')
+                    && self.report_bare_type_scope_error(name, &te.1)
+                {
                     return Ty::Error;
                 }
-                let resolved_name = if is_local && self.type_defs.contains_key(name) {
+                // A named/glob lifecycle import must carry the same canonical
+                // source proof as a whole-module qualified import. Ordinary
+                // bare-publication tables describe only a module's spelling,
+                // so a user-backed `std.failure::{CrashNotification}` cannot
+                // mint the lifecycle ABI identity.
+                let published_lifecycle = (!is_local && !name.contains('.'))
+                    .then(|| self.source_nominal_declaration(name))
+                    .flatten()
+                    .filter(|canonical| {
+                        crate::lookup_source_owned_lifecycle_type(canonical).is_some()
+                    });
+                if let Some(canonical) = published_lifecycle {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(&canonical, name)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
+                }
+                let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                    canonical
+                } else if is_local {
                     // A bare reference to a locally-defined type normally binds
                     // to the bare `type_defs` key. But when checking a non-root
                     // module, the bare key is last-write-wins across modules that
@@ -1908,30 +2855,37 @@ impl Checker {
                     // bare local `Wrap` here would resolve to the WRONG module's
                     // fields downstream (observable as `no field ... help: <other
                     // module's field>` — #2208). Bind to this module's OWN
-                    // qualified identity (`{short}.{name}`) when it exists so the
+                    // qualified identity (`{full_module}.{name}`) when it exists so the
                     // local reference is immune to the cross-module bare-key
                     // race, mirroring the `published_bare_type_qualified` branch
-                    // below. `pre_register_type_decl` always seeds the qualified
-                    // key alongside the bare one, so non-colliding locals resolve
-                    // identically to their own def.
-                    match self.current_module_short() {
-                        Some(short) => {
-                            let qualified = format!("{short}.{name}");
-                            if self.type_defs.contains_key(&qualified) {
-                                qualified
-                            } else {
-                                name.clone()
-                            }
+                    // below. Canonical registration seeds the full qualified
+                    // key; the bare entry may remain only as a compatibility
+                    // surface and is never the owner authority here.
+                    //
+                    // KNOWN GAP (rc1-F1, route producer): a file peer-assembled
+                    // into a directory module and ALSO reached as its own
+                    // submodule is one declaration that mints `pkg.Tok` here and
+                    // `pkg.aaa.Tok` on the other route. The identity table
+                    // already answers this (`module_path_for_source` gives one
+                    // path per file, either route), but converging the checker
+                    // alone is not enough: HIR re-derives the owner from the
+                    // module graph and the MIR field-order table is keyed by
+                    // that render, so a checker-only fix trades a type mismatch
+                    // for a missing layout key. Closing it means checker, HIR
+                    // owner derivation and the MIR layout key all reading the
+                    // declaring file's minted identity together.
+                    if let Some(module) = self.current_module.as_deref() {
+                        let qualified = format!("{module}.{name}");
+                        if self.type_defs.contains_key(&qualified) {
+                            qualified
+                        } else {
+                            name.clone()
                         }
-                        None => name.clone(),
+                    } else {
+                        name.clone()
                     }
-                } else if let Some(qualified) = self.published_bare_type_qualified(name) {
-                    // Exactly one module published this bare name. Bind to that
-                    // owner's QUALIFIED identity (`owner.Name`) so a sibling
-                    // module exporting the same bare name cannot collapse the two
-                    // onto one last-write-wins bare key downstream (the MIR
-                    // record-layout / field-order registry is keyed by identity).
-                    qualified
+                } else if let Some(declaration) = self.source_nominal_declaration(name) {
+                    declaration
                 } else {
                     match handle_matches.as_slice() {
                         // Exactly one importing module exports this name: bind to
@@ -1942,12 +2896,29 @@ impl Checker {
                         _ => name.clone(),
                     }
                 };
-                // Mark module as used when type name is module-qualified.
-                if let Some((module, _)) = resolved_name.split_once('.') {
-                    self.used_modules.borrow_mut().insert(ImportKey::new(
-                        self.current_module.clone(),
-                        module.to_string(),
-                    ));
+                // A bare import binding can resolve to its source-canonical
+                // owner (`std.io.closable.CloseError`).  Consume the import by
+                // the original binding before treating that canonical identity
+                // as a source-qualified reference; otherwise the lint would
+                // look for a fictional root `std` import and warn about the
+                // actual `closable` import being unused.
+                if let Some(binding) = imported_module_binding {
+                    // `binding.Type` resolved above to its full source owner.
+                    // The lexical binding is the import-lint authority: using
+                    // the first segment of a dotted source owner such as
+                    // `hew.closableerr.CloseError` would instead credit a
+                    // nonexistent `hew` import and falsely warn that the
+                    // actual `closableerr` binding is unused.
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                } else if let Some(module) = self
+                    .unqualified_to_module
+                    .get(&(self.current_module.clone(), name.clone()))
+                {
+                    self.mark_module_owner_bindings_used(module);
+                } else if resolved_name.contains('.') {
+                    self.mark_resolved_nominal_owner_used(&resolved_name);
                 } else if let Some(module) = self
                     .unqualified_to_module
                     .get(&(self.current_module.clone(), resolved_name.clone()))
@@ -1957,9 +2928,7 @@ impl Checker {
                     // still consumes the owning module — mark it used so the
                     // unused-import lint does not false-positive on bare type
                     // references reached via an explicit opt-in or glob.
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), module.clone()));
+                    self.mark_module_owner_bindings_used(module);
                 }
                 // Visibility enforcement for qualified type references.
                 // Only fires when the resolved name is module-qualified (contains
@@ -2019,18 +2988,27 @@ impl Checker {
                         .type_defs
                         .get(resolved_name.as_str())
                         .is_some_and(|td| td.type_params.is_empty());
-                let builtin_type = builtin_named_type(resolved_name.as_str());
-                let args = match builtin_type {
-                    Some(kind)
-                        if kind.is_channel_handle() && args.is_empty() && !locally_non_generic =>
-                    {
-                        vec![Ty::Var(TypeVar::fresh())]
-                    }
-                    _ => args,
+                let generated_prelude_builtin = (!name.contains('.'))
+                    .then(|| self.published_bare_type_qualified(name))
+                    .flatten()
+                    .filter(|published| published == &resolved_name)
+                    .and_then(|published| {
+                        self.source_authorized_generated_enum_builtin(&published)
+                    });
+                let resolved_builtin = self
+                    .resolved_builtin_type(resolved_name.as_str())
+                    .or(generated_prelude_builtin);
+                let is_channel_handle = resolved_builtin
+                    .is_some_and(BuiltinType::is_channel_handle)
+                    || builtin_named_type(resolved_name.as_str()).is_some_and(
+                        super::super::builtin_names::BuiltinNamedType::is_channel_handle,
+                    );
+                let args = if is_channel_handle && args.is_empty() && !locally_non_generic {
+                    vec![Ty::Var(TypeVar::fresh())]
+                } else {
+                    args
                 };
-                if crate::lookup_builtin_type(resolved_name.as_str())
-                    == Some(crate::BuiltinType::Rc)
-                {
+                if resolved_builtin == Some(crate::BuiltinType::Rc) {
                     if let Some(type_args) = type_args.as_ref() {
                         if let (Some(payload_ty), Some((_, payload_span))) =
                             (args.first(), type_args.first())
@@ -2039,21 +3017,45 @@ impl Checker {
                         }
                     }
                 }
-                let builtin = crate::lookup_builtin_type(resolved_name.as_str());
+                let builtin = resolved_builtin.filter(|builtin| {
+                    // A raw bare spelling of a source-owned lifecycle type has
+                    // no authority. Real named/glob imports and the isolated
+                    // prelude bootstrap canonicalise it to `owner.Type` above.
+                    !builtin.requires_source_import()
+                        || resolved_name.contains('.')
+                        || self.in_stdlib_registration
+                });
                 // A bare name that shadows a builtin via a local `type X {}` decl
                 // normally binds to the source decl (`builtin: None`). Collection
-                // and substrate-handle builtins are the exception: their stdlib
-                // modules declare zero-field carrier types (`type Sink<T> {}`,
-                // `type Stream<T> {}`, `type Duplex<S, R> {}`, …) whose real type
-                // identity is the compiler builtin. Keeping `builtin: Some(..)`
-                // here is what carries the discriminator through HIR→MIR so the
-                // MIR boundary recognises them as substrate handles rather than
-                // emitting `unknown type` — same discriminator-survival invariant
-                // as the collection types already excluded here.
-                let builtin_overrides_source_decl =
-                    builtin.is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
-                let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
-                    && !builtin_overrides_source_decl;
+                // and substrate-handle builtins are the exception only while
+                // checking their imported stdlib carrier module. A root-source
+                // declaration is a distinct nominal shadow (`type Sink<T>`,
+                // `#[opaque] type Receiver {}`), never the runtime endpoint by
+                // spelling or generic arity alone.
+                // A qualified identity present in the builtin catalog is an
+                // actual compiler carrier (`stream.Stream`,
+                // `channel.Receiver`, ...). A user package declaration such
+                // as `foo.Receiver` has no exact catalog row and therefore
+                // remains source-owned even though its short spelling
+                // collides. Root bare declarations likewise remain user
+                // shadows.
+                let builtin_overrides_source_decl = self.in_stdlib_registration
+                    || (builtin.is_some() && crate::ty::is_reserved_type_name(&resolved_name))
+                    || self.source_authorized_generated_enum_builtin(&resolved_name) == builtin
+                        && builtin.is_some()
+                    || crate::builtin_type::has_exact_source_owned_lifecycle_identity(
+                        &resolved_name,
+                        builtin,
+                    )
+                    || (resolved_name.contains('.')
+                        && builtin.is_some_and(|kind| {
+                            kind.is_collection() || kind.is_substrate_handle()
+                        }));
+                // Preserve the lexical declaration decision made above. A
+                // local source type may be owner-qualified before this point,
+                // so re-testing its output spelling would let builtin-shaped
+                // declarations such as `Option` and `Result` lose authority.
+                let local_source_type_def = is_local && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not
                 // a registered user type / trait / alias, and not a generic type
                 // parameter (those all returned earlier) — is genuinely
@@ -2101,19 +3103,34 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.check_cross_module_generic_layout_use(&resolved_name, &args, &te.1);
-                if builtin.is_some() && !local_source_type_def {
-                    Ty::normalize_named(resolved_name, args)
+                if let Some(builtin) = builtin.filter(|_| !local_source_type_def) {
+                    if builtin == BuiltinType::CancellationToken && args.is_empty() {
+                        return Ty::CancellationToken;
+                    }
+                    Ty::Named {
+                        name: resolved_name,
+                        args,
+                        builtin: Some(builtin),
+                    }
                 } else {
                     Ty::named(resolved_name, args)
                 }
             }
-            TypeExpr::Result { ok, err } => Ty::result(
-                self.resolve_type_expr_tracking_holes_with_context(ok, hole_vars, context),
-                self.resolve_type_expr_tracking_holes_with_context(err, hole_vars, context),
-            ),
-            TypeExpr::Option(inner) => Ty::option(
-                self.resolve_type_expr_tracking_holes_with_context(inner, hole_vars, context),
-            ),
+            TypeExpr::Result { ok, err } => {
+                let args = vec![
+                    self.resolve_type_expr_tracking_holes_with_context(ok, hole_vars, context),
+                    self.resolve_type_expr_tracking_holes_with_context(err, hole_vars, context),
+                ];
+                self.source_builtin_shorthand_nominal("Result", &args)
+                    .unwrap_or_else(|| Ty::result(args[0].clone(), args[1].clone()))
+            }
+            TypeExpr::Option(inner) => {
+                let args =
+                    vec![self
+                        .resolve_type_expr_tracking_holes_with_context(inner, hole_vars, context)];
+                self.source_builtin_shorthand_nominal("Option", &args)
+                    .unwrap_or_else(|| Ty::option(args[0].clone()))
+            }
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems

@@ -1,0 +1,9 @@
+fn main() {
+    let x: i32 = 7;
+    let y: i32 = 9;
+    let v: Vec<i32> = Vec::new();
+    v.push(x);
+    v.push(y);
+    let n = v.len();
+    println(f"len={n}");
+}

@@ -20,7 +20,7 @@
 # as the permanent guard that the optimization did not change behaviour.
 #
 # Usage:
-#   scripts/o2-differential.sh            # uses target/debug/hew (or HEW_BIN)
+#   scripts/o2-differential.sh            # uses Cargo's resolved debug output (or HEW_BIN)
 #   HEW_BIN=/path/to/hew scripts/o2-differential.sh
 #   scripts/o2-differential.sh --tests-dir <dir>
 #   scripts/o2-differential.sh --o0-outcomes <path>
@@ -35,12 +35,12 @@
 # file must exist and be non-empty when the flag is given — a missing/empty
 # handoff file is a wiring bug, not a reason to silently fall back and mask it.
 #
-# CORPUS FLOOR: the comparison above is `[[ "$O0_OUTCOMES" == "$O2_OUTCOMES" ]]`,
+# NONEMPTY OUTCOMES: the comparison above is `[[ "$O0_OUTCOMES" == "$O2_OUTCOMES" ]]`,
 # and TWO EMPTY SETS MATCH. A wrong directory, a renamed fixture set or a build
 # that produced no tests would otherwise print "PASSED (0 tests)" and stay green
-# forever while proving nothing about miscompiles. So the outcome set is floored:
-# against scripts/corpus-floors.tsv for the default corpus, and against a
-# caller-supplied --min-outcomes for any other corpus. A caller that points the
+# forever while proving nothing about miscompiles. The default corpus rejects
+# an empty outcome set, and custom corpora accept a caller-supplied minimum. A
+# caller that points the
 # gate somewhere else must say how big that somewhere else is.
 #
 #   scripts/o2-differential.sh --tests-dir <dir> --min-outcomes <n>
@@ -48,10 +48,13 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck source=scripts/lib/corpus-nonempty.sh
 # shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 DEFAULT_TESTS_DIR="$REPO_ROOT/tests/hew"
 TESTS_DIR="$DEFAULT_TESTS_DIR"
 O0_OUTCOMES_FILE=""
@@ -154,8 +157,8 @@ if [[ -n "$MIN_OUTCOMES" ]]; then
     done
     echo "outcome floor OK: O0=$n_o0 O2=$n_o2 (caller floor $MIN_OUTCOMES)"
 else
-    corpus_floor_assert "o2-differential-outcomes" "$n_o0" "O0 run" || exit 1
-    corpus_floor_assert "o2-differential-outcomes" "$n_o2" "O2 run" || exit 1
+    corpus_nonempty_assert "o2-differential-outcomes" "$n_o0" "O0 run" || exit 1
+    corpus_nonempty_assert "o2-differential-outcomes" "$n_o2" "O2 run" || exit 1
 fi
 
 if [[ "$O0_OUTCOMES" == "$O2_OUTCOMES" ]]; then

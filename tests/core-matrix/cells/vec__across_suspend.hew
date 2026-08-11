@@ -1,0 +1,23 @@
+actor Holder {
+    var ready: bool;
+
+    receive fn hold(v: Vec<i64>) -> i64 {
+        sleep(2ms);
+        let v_l = v.len();
+        let v_0 = v[0];
+        println(f"len={v_l} v0={v_0}");
+        ready = true;
+        1
+    }
+}
+
+fn main() {
+    let x: Vec<i64> = Vec::new();
+    x.push(10);
+    x.push(20);
+    let h = spawn Holder(ready: false);
+    match await h.hold(x) {
+        Ok(n) => println(f"held {n}"),
+        Err(_) => println("err"),
+    }
+}

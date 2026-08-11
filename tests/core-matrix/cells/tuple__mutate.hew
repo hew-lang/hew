@@ -1,0 +1,6 @@
+fn main() {
+    var x: (i64, string) = (1, "x0");
+    x = (2, "x1");
+    let (x_a, x_b) = x;
+    println(f"{x_a} {x_b}");
+}

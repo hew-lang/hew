@@ -1,13 +1,42 @@
 use super::{
     bracket_actor_handler_blocks, check_function, check_to_diagnostic,
     collect_unknown_type_diagnostics, dataflow, elaborate, finalize_bytes_ownership,
-    finalize_string_ownership, BasicBlock, BindingId, Builder, CheckedMirFunction, FieldOffset,
-    HirBlock, HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind, HirStmtKind,
-    Instr, IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
+    finalize_string_ownership, BasicBlock, BindingId, Builder, BuiltinType, CheckedMirFunction,
+    FieldOffset, HirBlock, HirExpr, HirExprKind, HirFn, HirJoin, HirSelect, HirSelectArmKind,
+    HirStmtKind, Instr, IntentKind, JoinBranch, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, ResolvedTy, SelectArm, SelectArmKind, SourceOrigin,
     SpawnEnvFieldOwnership, SuspendKind, Terminator, ThirFunction, ValueClass,
 };
 use crate::model::StableActorRole;
+
+fn select_stream_item_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            mut args,
+            builtin: Some(BuiltinType::Stream),
+            ..
+        } if args.len() == 1 => Some(args.remove(0)),
+        _ => None,
+    }
+}
+
+fn select_receiver_item_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            mut args,
+            builtin: Some(BuiltinType::Receiver),
+            ..
+        } if args.len() == 1 => Some(args.remove(0)),
+        _ => None,
+    }
+}
+
+fn select_task_output_ty(ty: ResolvedTy) -> Option<ResolvedTy> {
+    match ty {
+        ResolvedTy::Task(inner) => Some(*inner),
+        _ => None,
+    }
+}
 
 impl Builder {
     /// Lower a recognised `hew_*` runtime-ABI call to
@@ -56,7 +85,7 @@ impl Builder {
             name: "HewTaskScope".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         }
     }
 
@@ -126,7 +155,7 @@ impl Builder {
                 };
                 let substituted: Vec<ResolvedTy> =
                     type_args.iter().map(|t| self.subst_ty(t)).collect();
-                let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                let mangled = hew_hir::monomorph::function_monomorph_symbol(name, &substituted);
                 if !self.module_fn_names.contains(&mangled) {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
@@ -313,7 +342,7 @@ impl Builder {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: callee_symbol.to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![],
                     dest: call_dest,
                     next: 1,
@@ -355,7 +384,7 @@ impl Builder {
             instr_spans: ::std::collections::BTreeMap::new(),
             source_origin: SourceOrigin::Unknown,
         };
-        let builder = Builder {
+        let mut builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
             ..self.child_builder_tables()
@@ -364,13 +393,13 @@ impl Builder {
         dataflow_result
             .checks
             .extend(crate::model::validate_context_markers(&raw));
-        let diagnostics: Vec<MirDiagnostic> = dataflow_result
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
             .checks
             .iter()
             .filter_map(check_to_diagnostic)
             .collect();
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: adapter_symbol.to_string(),
@@ -380,7 +409,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &[],
@@ -388,6 +417,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
         LoweredFunction {
             thir,
             raw,
@@ -536,7 +566,7 @@ impl Builder {
                 } else {
                     let substituted: Vec<ResolvedTy> =
                         type_args.iter().map(|t| self.subst_ty(t)).collect();
-                    let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                    let mangled = hew_hir::monomorph::function_monomorph_symbol(name, &substituted);
                     if !self.module_fn_names.contains(&mangled) {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -652,7 +682,7 @@ impl Builder {
                 } else {
                     let substituted: Vec<ResolvedTy> =
                         type_args.iter().map(|t| self.subst_ty(t)).collect();
-                    let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                    let mangled = hew_hir::monomorph::function_monomorph_symbol(name, &substituted);
                     if !self.module_fn_names.contains(&mangled) {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -872,7 +902,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places.clone(),
             dest: None,
             next: ret_block_id,
@@ -924,6 +954,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -948,8 +979,8 @@ impl Builder {
             .collect();
         diagnostics.append(&mut builder.diagnostics);
         collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
-        let string_derivation = finalize_string_ownership(&mut raw, &builder, &dataflow_result);
-        let bytes_derivation = finalize_bytes_ownership(&mut raw, &builder, &dataflow_result);
+        let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
+        let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: shim_name.to_string(),
@@ -959,7 +990,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -967,6 +998,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -1095,7 +1127,7 @@ impl Builder {
             });
             return None;
         };
-        let HirExprKind::Call { callee, args } = &expr.kind else {
+        let HirExprKind::Call { callee, args, .. } = &expr.kind else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "fork block cancellation child".to_string(),
@@ -1366,7 +1398,7 @@ impl Builder {
     /// the codegen dispatch site, not at function exit).
     #[allow(
         clippy::too_many_lines,
-        reason = "lower_select threads four phases — arm-kind rejection, \
+        reason = "lower_select threads four responsibilities — arm-kind rejection, \
                   block allocation, per-arm Place lowering + binding \
                   registration, and per-arm body emit — that don't \
                   factor cleanly into helpers without re-threading \
@@ -1423,6 +1455,9 @@ impl Builder {
                                 args.len()
                             ),
                         });
+                        return None;
+                    }
+                    if self.reject_proven_foreign_actor_message_args(args) {
                         return None;
                     }
                     let actor_place = self.lower_value(actor)?;
@@ -1484,16 +1519,21 @@ impl Builder {
                     )
                 }
                 HirSelectArmKind::StreamNext { stream } => {
-                    let stream_place = self.lower_value(stream)?;
                     let stream_ty = self.subst_ty(&stream.ty);
-                    let item_ty = match stream_ty {
-                        ResolvedTy::Named { name, mut args, .. }
-                            if name == "Stream" && args.len() == 1 =>
-                        {
-                            args.remove(0)
-                        }
-                        _ => ResolvedTy::Unit,
+                    let Some(item_ty) = select_stream_item_ty(stream_ty.clone()) else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "select stream-next with malformed carrier"
+                                    .to_string(),
+                                site,
+                            },
+                            note: format!(
+                                "expected checker-resolved builtin Stream<T>, found {stream_ty}; refusing to synthesize a Unit layout witness"
+                            ),
+                        });
+                        return None;
                     };
+                    let stream_place = self.lower_value(stream)?;
                     let item_dest = self.alloc_local(item_ty);
                     if let Some(binding_id) = arm.binding_id {
                         self.binding_locals.insert(binding_id, item_dest);
@@ -1506,12 +1546,20 @@ impl Builder {
                     )
                 }
                 HirSelectArmKind::TaskAwait { task } => {
-                    let task_place = self.lower_value(task)?;
                     let task_ty = self.subst_ty(&task.ty);
-                    let await_ty = match task_ty {
-                        ResolvedTy::Task(inner) => *inner,
-                        _ => ResolvedTy::Unit,
+                    let Some(await_ty) = select_task_output_ty(task_ty.clone()) else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "select task-await with malformed carrier".to_string(),
+                                site,
+                            },
+                            note: format!(
+                                "expected checker-resolved Task<T>, found {task_ty}; refusing to synthesize a Unit layout witness"
+                            ),
+                        });
+                        return None;
                     };
+                    let task_place = self.lower_value(task)?;
                     let await_dest = self.alloc_local(await_ty);
                     if let Some(binding_id) = arm.binding_id {
                         self.binding_locals.insert(binding_id, await_dest);
@@ -1529,39 +1577,26 @@ impl Builder {
                     // checker-resolved `Receiver<T>` handle type (mirror of the
                     // `Stream<T>` extraction on the StreamNext arm above), never
                     // from a runtime symbol name.
-                    let recv_place = self.lower_value(receiver)?;
                     let receiver_ty = self.subst_ty(&receiver.ty);
-                    // Dispatch on the typed builtin discriminator (with the
-                    // short-name fallback): the name string is `"Receiver"`
-                    // for a locally constructed handle but module-qualified
-                    // (`"channel.Receiver"`) for an annotated parameter, and
-                    // the bare-name compare silently fell through to the Unit
-                    // witness. Mirrors `select_arm_binding_ty` in
-                    // `hew-hir/src/lower.rs`.
-                    let elem = match receiver_ty {
-                        ResolvedTy::Named {
-                            name,
-                            mut args,
-                            builtin,
-                            ..
-                        } if args.len() == 1
-                            && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
-                                || hew_types::short_name(&name) == "Receiver") =>
-                        {
-                            args.remove(0)
-                        }
-                        // A malformed receiver type cannot supply a witness;
-                        // Unit produces a zero-size witness the runtime
-                        // aborts on fail-closed (mirrors the StreamNext arm's
-                        // Unit fallback).
-                        _ => ResolvedTy::Unit,
+                    let Some(elem) = select_receiver_item_ty(receiver_ty.clone()) else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "select channel-recv with malformed carrier"
+                                    .to_string(),
+                                site,
+                            },
+                            note: format!(
+                                "expected checker-resolved builtin Receiver<T>, found {receiver_ty}; refusing to synthesize a Unit layout witness"
+                            ),
+                        });
+                        return None;
                     };
-                    let option_ty = ResolvedTy::Named {
-                        name: "Option".to_string(),
-                        args: vec![elem.clone()],
-                        builtin: None,
-                        is_opaque: false,
-                    };
+                    let recv_place = self.lower_value(receiver)?;
+                    let option_ty = ResolvedTy::named_builtin(
+                        "Option",
+                        hew_types::BuiltinType::Option,
+                        vec![elem.clone()],
+                    );
                     let item_dest = self.alloc_local(option_ty);
                     if let Some(binding_id) = arm.binding_id {
                         self.binding_locals.insert(binding_id, item_dest);
@@ -1668,12 +1703,12 @@ impl Builder {
                     Place::Local(n) => self.locals[n as usize].clone(),
                     _ => arm.body.ty.clone(),
                 };
-                self.statements.push(MirStatement::Bind {
-                    binding: binding_id,
-                    name: binding_name.clone(),
-                    site: arm.body.site,
-                    ty: ty_of_place.clone(),
-                });
+                self.push_bind_statement(
+                    binding_id,
+                    binding_name.clone(),
+                    arm.body.site,
+                    ty_of_place.clone(),
+                );
                 self.record_binding_scope(binding_id);
                 // The select-arm binding owns the value the runtime
                 // materialises into its slot on the win edge (the reply
@@ -1785,6 +1820,9 @@ impl Builder {
                 });
                 return None;
             }
+            if self.reject_proven_foreign_actor_message_args(&branch.args) {
+                return None;
+            }
             let actor_place = self.lower_value(&branch.actor)?;
             let stable_role =
                 self.fungible_child_ref_of(actor_place)
@@ -1881,7 +1919,7 @@ impl Builder {
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
                 self.alloc_local(ResolvedTy::Named {
-                    name: "NetError".to_string(),
+                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
@@ -1939,7 +1977,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_read".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![conn_place],
                 dest: Some(bytes_dest),
                 next,
@@ -1955,7 +1993,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_bytes_to_string".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![bytes_dest],
             dest: Some(string_dest),
             next,
@@ -2009,12 +2047,10 @@ impl Builder {
             let deadline_result_dest =
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
-                self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: Vec::new(),
-                    builtin: Some(hew_types::BuiltinType::TimeoutError),
-                    is_opaque: false,
-                })
+                self.alloc_local(
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError"),
+                )
             });
             let next = self.alloc_block();
             if let Some(ns) = deadline_ns {
@@ -2055,8 +2091,8 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_channel_recv_layout".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                    "hew_channel_recv_layout",
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout,
                 ),
                 args: vec![receiver_place],
                 dest: Some(result_dest),
@@ -2113,12 +2149,10 @@ impl Builder {
             let deadline_result_dest =
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
-                self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: Vec::new(),
-                    builtin: Some(hew_types::BuiltinType::TimeoutError),
-                    is_opaque: false,
-                })
+                self.alloc_local(
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError"),
+                )
             });
             let next = self.alloc_block();
             if let Some(ns) = deadline_ns {
@@ -2159,8 +2193,8 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_stream_next_layout".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                    "hew_stream_next_layout",
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout,
                 ),
                 args: vec![stream_place],
                 dest: Some(result_dest),
@@ -2216,7 +2250,7 @@ impl Builder {
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
                 self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "NetError".to_string(),
+                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
@@ -2264,7 +2298,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_accept".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![listener_place],
                 dest: Some(conn_dest),
                 next,
@@ -2273,5 +2307,56 @@ impl Builder {
         }
 
         Some(conn_dest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_task_scope_carries_opaque_abi_identity() {
+        assert_eq!(
+            Builder::task_scope_ty(),
+            ResolvedTy::named_opaque("HewTaskScope", Vec::new())
+        );
+    }
+
+    #[test]
+    fn select_stream_item_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedStream",
+            BuiltinType::Stream,
+            vec![ResolvedTy::String],
+        );
+        assert_eq!(select_stream_item_ty(renamed), Some(ResolvedTy::String));
+
+        let shadow = ResolvedTy::named_user("Stream", vec![ResolvedTy::String]);
+        assert_eq!(select_stream_item_ty(shadow), None);
+    }
+
+    #[test]
+    fn select_channel_item_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedReceiver",
+            BuiltinType::Receiver,
+            vec![ResolvedTy::I64],
+        );
+        assert_eq!(select_receiver_item_ty(renamed), Some(ResolvedTy::I64));
+
+        let shadow = ResolvedTy::named_user("Receiver", vec![ResolvedTy::I64]);
+        assert_eq!(select_receiver_item_ty(shadow), None);
+    }
+
+    #[test]
+    fn select_task_output_rejects_non_task_same_leaf_type() {
+        assert_eq!(
+            select_task_output_ty(ResolvedTy::Task(Box::new(ResolvedTy::Bool))),
+            Some(ResolvedTy::Bool)
+        );
+        assert_eq!(
+            select_task_output_ty(ResolvedTy::named_user("Task", vec![ResolvedTy::Bool])),
+            None
+        );
     }
 }

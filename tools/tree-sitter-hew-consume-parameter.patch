@@ -1,0 +1,26 @@
+--- a/grammar.js
++++ b/grammar.js
+@@ -388,16 +388,19 @@
+ 
+     parameters: $ => sep1($.parameter, ','),
+ 
+-    // Param (hew-parser `parse_param_decl`) admits `var` or `consume` before
+-    // an ordinary named parameter. `consume` is the affine FFI/resource
+-    // ownership modifier, e.g. `fn hew_handle_free(consume h: Handle);`.
++    // Param (hew-parser `parse_params_with_implicit_self_and_context`) admits
++    // `consume` and then `var`, independently and in that order. `consume` is
++    // the affine FFI/resource ownership modifier, e.g.
++    // `fn hew_handle_free(consume h: Handle);`, and `consume var items: T`
++    // is accepted — `var consume` is not.
+     // In trait/impl method position a leading bare receiver is also accepted:
+     // `self`, `var self`, or `consuming self` — all without a type annotation, as
+     // `Self`-typed receiver sugar (hew-parser/src/parser.rs:5552 and 5634).
+     parameter: $ => choice(
+       $.self_parameter,
+       seq(
+-        optional(choice('var', 'consume')),
++        optional('consume'),
++        optional('var'),
+         field('name', $.identifier),
+         ':',
+         field('type', $._type),

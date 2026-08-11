@@ -30,8 +30,19 @@ import json
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import toml_compat  # noqa: E402
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # Python 3.10 is still the system Python on supported macOS builders.
+    # Use the repository's dependency-free, fail-closed TOML reader rather
+    # than adding a package download to release validation.
+    tomllib = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,6 +50,39 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def die(message: str) -> "None":
     print(f"error: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _configured_target(config: dict[str, Any], path: Path) -> str | None:
+    """Validate and return Cargo's optional scalar build target."""
+    build = config.get("build")
+    if build is None:
+        return None
+    if not isinstance(build, dict):
+        die(f"{path} has a non-table build configuration")
+    target = build.get("target")
+    if target is None:
+        return None
+    if isinstance(target, str):
+        if not target:
+            die(f"{path} has an empty build.target")
+        return target
+    if isinstance(target, list) and all(isinstance(item, str) for item in target):
+        if len(target) == 1 and target[0]:
+            return target[0]
+        die(
+            f"{path} configures {len(target)} build targets; there is no single "
+            "Cargo output directory to check. Build one target at a time."
+        )
+    die(f"{path} has a non-string build.target value")
+
+
+def _load_toml(text: str, path: Path) -> dict[str, Any]:
+    if tomllib is None:
+        try:
+            return toml_compat.loads(text)
+        except toml_compat.TOMLDecodeError as err:
+            raise ValueError(f"cannot parse {path}: {err}") from err
+    return tomllib.loads(text)
 
 
 def target_root() -> Path:
@@ -56,6 +100,7 @@ def target_root() -> Path:
         # spelled the way the caller and Cargo spell it.
         return Path(os.path.abspath(REPO_ROOT / env))
 
+    failures: list[str] = []
     for extra in (["--offline"], []):
         try:
             out = subprocess.run(
@@ -64,17 +109,24 @@ def target_root() -> Path:
                 capture_output=True,
                 check=False,
             )
-        except OSError:
-            break
+        except OSError as err:
+            die(f"cannot execute cargo metadata: {err}")
         if out.returncode == 0:
             try:
-                return Path(json.loads(out.stdout)["target_directory"]).resolve()
-            except (ValueError, KeyError):
-                break
+                target_directory = json.loads(out.stdout)["target_directory"]
+            except (ValueError, KeyError, TypeError) as err:
+                die(f"cargo metadata returned no valid target_directory: {err}")
+            if not isinstance(target_directory, str) or not target_directory:
+                die("cargo metadata returned an empty or non-string target_directory")
+            return Path(target_directory).resolve()
+        mode = "offline" if extra else "online"
+        stderr = out.stderr.decode("utf-8", errors="replace").strip()
+        failures.append(f"{mode}: exit {out.returncode}: {stderr or '<no stderr>'}")
 
-    # No cargo, or a workspace cargo cannot read: the default is the only
-    # answer left, and it is the one Cargo would use too.
-    return (REPO_ROOT / "target").resolve()
+    die(
+        "cargo metadata could not resolve the artifact output directory; "
+        + " | ".join(failures)
+    )
 
 
 def config_build_target() -> str:
@@ -94,20 +146,18 @@ def config_build_target() -> str:
 
     for path in candidates:
         try:
-            config = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             continue
-        target = config.get("build", {}).get("target")
-        if target is None:
-            continue
-        if isinstance(target, str):
+        except (OSError, UnicodeError) as err:
+            die(f"cannot read {path}: {err}")
+        try:
+            config = _load_toml(text, path)
+        except ValueError as err:
+            die(str(err))
+        target = _configured_target(config, path)
+        if target is not None:
             return target
-        if isinstance(target, list) and len(target) == 1:
-            return str(target[0])
-        die(
-            f"{path} configures {len(target)} build targets; there is no single "
-            "Cargo output directory to check. Build one target at a time."
-        )
     return ""
 
 

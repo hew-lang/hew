@@ -37,28 +37,11 @@ fn lookup_user_type_def<'a>(
     type_defs: &'a HashMap<String, TypeDef>,
     type_name: &str,
 ) -> Option<&'a TypeDef> {
-    type_defs
-        .get(type_name)
-        .or_else(|| type_defs.get(crate::short_name(type_name)))
+    type_defs.get(type_name)
 }
 
 fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Option<&'a FnSig> {
-    fn_sigs
-        .get(key)
-        .or_else(|| {
-            let (type_name, method_name) = key.split_once("::")?;
-            let short = crate::short_name(type_name);
-            if short == type_name {
-                return None;
-            }
-            fn_sigs.get(&format!("{short}::{method_name}"))
-        })
-        .or_else(|| {
-            let (type_name, method_name) = key.split_once("::")?;
-            fn_sigs.iter().find_map(|(sig_name, sig)| {
-                (scoped_method_name(sig_name, type_name) == Some(method_name)).then_some(sig)
-            })
-        })
+    fn_sigs.get(key)
 }
 
 fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
@@ -109,14 +92,6 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }
-}
-
-fn scoped_method_name<'a>(sig_name: &'a str, type_name: &str) -> Option<&'a str> {
-    let scoped_prefix = format!("{type_name}::");
-    let unqualified = crate::short_name(sig_name);
-    (unqualified != sig_name)
-        .then(|| unqualified.strip_prefix(&scoped_prefix))
-        .flatten()
 }
 
 fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
@@ -180,13 +155,8 @@ pub fn lookup_named_method_sig(
     // Falls back to the bare key for generic impls (`impl<T> Trait for Wrapper<T>`),
     // inherent methods, and any arg that cannot be mangled.
     //
-    // IMPORTANT: use a direct `fn_sigs.get` (not `lookup_user_fn_sig`) for the
-    // mangled key.  `lookup_user_fn_sig` has a module-stripping fallback that
-    // strips after the last `.` in the type-name part of the key.  A mangled key
-    // like `"LocalPid$$bank.Account::who"` contains a `.` in the mangled segment,
-    // causing the fallback to strip `"LocalPid$$bank"` and resolve `"Account::who"` —
-    // i.e. the root-module actor's method — instead of failing.  The mangled
-    // key is an exact, unambiguous identifier; it must only match via direct lookup.
+    // A specialised key is exact and unambiguous. It must never fall through
+    // to a leaf-name retry when the specialised declaration is absent.
     if !type_args.is_empty() {
         let resolved_args: Option<Vec<ResolvedTy>> = type_args
             .iter()
@@ -195,7 +165,6 @@ pub fn lookup_named_method_sig(
         if let Some(resolved_args) = resolved_args {
             if let Some(mangled_self) = mangle_impl_self_name(type_name, &resolved_args) {
                 let mangled_key = format!("{mangled_self}::{method}");
-                // Direct lookup only — no module-stripping fallback (see comment above).
                 if let Some(sig) = fn_sigs.get(&mangled_key).cloned() {
                     // The mangled-key entry has no generic type params (it was
                     // registered for a concrete specialised impl), so we
@@ -339,17 +308,8 @@ pub fn collect_method_sigs_for_named_type(
     }
 
     let exact_prefix = format!("{type_name}::");
-    let short = crate::short_name(type_name);
-    let short_prefix = (short != type_name).then(|| format!("{short}::"));
     for (sig_name, sig) in fn_sigs {
-        let method_name = sig_name
-            .strip_prefix(&exact_prefix)
-            .or_else(|| {
-                short_prefix
-                    .as_ref()
-                    .and_then(|prefix| sig_name.strip_prefix(prefix))
-            })
-            .or_else(|| scoped_method_name(sig_name, type_name));
+        let method_name = sig_name.strip_prefix(&exact_prefix);
         if let Some(method_name) = method_name {
             let method_name = method_name.to_string();
             if seen.insert(method_name.clone()) {

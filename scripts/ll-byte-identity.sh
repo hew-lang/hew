@@ -31,14 +31,13 @@
 # files in either directory are reported as missing-counterpart warnings (not
 # failures), so adding a new fixture does not break the oracle.
 #
-# CORPUS FLOOR: this oracle owns no corpus — it compares two directories its
+# NONEMPTY INPUT: this oracle owns no corpus — it compares two directories its
 # caller chose — so it cannot know the size to expect and does not guess one.
 # What it CAN refuse is to report success having compared nothing: every head
 # file missing, or every file yielding no function bodies, used to leave
 # matched=0 and print "OK (0 fixtures byte-identical)". The intrinsic floor is
 # one comparison; the tracked floor belongs to the caller that owns the corpus
-# and is passed in as [min-compared] (scripts/ll-corpus.sh passes its own
-# floored fixture count from scripts/corpus-floors.tsv).
+# and is passed in as [min-compared].
 #
 # Exit codes:
 #   0  all matched function bodies are byte-identical
@@ -103,6 +102,15 @@ VERBOSE="${LL_IDENTITY_VERBOSE:-0}"
 #   @str_lit.<N>           }    (content-derived canonical token)
 #   @__hew_const_str__<NAME>__<N>  →  @_pool_[c"<initializer-bytes>"]
 #   @__hew_const__<NAME>__<N>      →  @__hew_const__<NAME>__N
+#
+# LLVM prints an EMPTY-content [1 x i8] string global as `zeroinitializer`
+# rather than `c"\00"` — both spellings are the identical one zero byte, so
+# Pass 1 registers zeroinitializer globals under the same canonical content a
+# `c"\00"` literal would get. Pass 2 substitutes via a single greedy scan
+# (`match()`/`substr()`, not per-symbol `gsub()`) so a registered token is
+# never matched as a PREFIX of a longer, unregistered token: an un-anchored
+# `gsub("@str_lit[.]13", ...)` over the whole line also matched inside
+# `@str_lit.135`, leaving a residual digit and a corrupted pool reference.
 # ---------------------------------------------------------------------------
 norm() {
   local file="$1"
@@ -114,6 +122,7 @@ norm() {
     # Matched definition forms:
     #   @str_lit = private unnamed_addr constant [N x i8] c"…", align 1
     #   @str_lit.4 = private unnamed_addr constant [N x i8] c"…", align 1
+    #   @str_lit.4 = private unnamed_addr constant [1 x i8] zeroinitializer, align 1
     #   @__hew_const_str__NAME__4 = ... c"…", ...
     # ------------------------------------------------------------------
     NR == FNR {
@@ -122,41 +131,33 @@ norm() {
         rest = substr($0, RSTART + RLENGTH - 1)
         if (match(rest, /c"[^"]*"/))
           pool_content[sym] = substr(rest, RSTART, RLENGTH)
+        else if (rest ~ /zeroinitializer/)
+          pool_content[sym] = "c\"\\00\""
       }
       next
     }
     # ------------------------------------------------------------------
-    # Between passes (FNR == 1 on the second file visit): sort the
-    # collected symbols by length descending so that longer names
-    # (e.g. @str_lit.4) are substituted before their shorter prefix
-    # (@str_lit) — prevents partial-match corruption.
-    # ------------------------------------------------------------------
-    FNR == 1 {
-      n_syms = 0
-      for (s in pool_content)
-        syms[n_syms++] = s
-      for (i = 0; i < n_syms; i++)
-        for (j = i + 1; j < n_syms; j++)
-          if (length(syms[j]) > length(syms[i])) {
-            t = syms[i]; syms[i] = syms[j]; syms[j] = t
-          }
-    }
-    # ------------------------------------------------------------------
     # Pass 2: substitute pool-symbol references with content-derived
-    # canonical tokens, then apply the numeric-const fallback.
+    # canonical tokens via one greedy left-to-right scan per line — the
+    # regex itself always matches the FULL digit-suffix run, so a
+    # registered shorter symbol can never partially match inside a longer
+    # unregistered one — then apply the numeric-const fallback.
     # ------------------------------------------------------------------
     {
       line = $0
-      for (i = 0; i < n_syms; i++) {
-        s       = syms[i]
-        content = pool_content[s]
-        canonical = "@_pool_[" content "]"
-        # Build a regex pattern for this symbol; escape literal dots so
-        # @str_lit.4 matches the four-char suffix, not any character.
-        pat = "@" s
-        gsub(/\./, "[.]", pat)
-        gsub(pat, canonical, line)
+      out = ""
+      rest = line
+      while (match(rest, /@(str_lit(\.[0-9]+)?|__hew_const_str__[A-Za-z0-9_]+__[0-9]+)/)) {
+        pre = substr(rest, 1, RSTART - 1)
+        tok = substr(rest, RSTART, RLENGTH)
+        sym = substr(tok, 2)
+        if (sym in pool_content)
+          out = out pre "@_pool_[" pool_content[sym] "]"
+        else
+          out = out pre tok
+        rest = substr(rest, RSTART + RLENGTH)
       }
+      line = out rest
       # Numeric const pool: NAME discriminates identity; collapse pool-id.
       #
       # NOTE: the gsub replacement string is a LITERAL in POSIX/gawk/mawk;

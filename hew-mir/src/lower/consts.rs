@@ -1,15 +1,16 @@
 use super::{
-    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, BindingId, Builder, CmpPred,
-    ExecutionContextReader, FloatWidth, HashMap, HashSet, HirBinding, HirBlock, HirConstValue,
-    HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt, HirStmtKind, Instr,
-    IntArithOp, IntSignedness, IntentKind, MirCheck, MirConst, MirConstValue, MirDiagnostic,
-    MirDiagnosticKind, NumericMethodOp, NumericSignedness, PointerWidth, ResolvedRef, ResolvedTy,
-    ResourceMarker, Strategy, UnaryOp, ValueClass, CRASH_KIND_VARIANTS, HEW_CTX_OFFSET_ACTOR_ID,
-    HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_TRACE_SPAN, SENTINEL_CRASH_CODE_NODE,
-    SENTINEL_CRASH_CODE_SITE, SENTINEL_DOWN_CRASH_KIND_BINDING, SENTINEL_DOWN_LOCAL_SLOT_BINDING,
-    SENTINEL_DOWN_LOCATION_BINDING, SENTINEL_DOWN_MONITOR_ID_BINDING,
-    SENTINEL_DOWN_REASON_KIND_BINDING, SENTINEL_DOWN_TARGET_KIND_BINDING,
-    SENTINEL_EXIT_ACTOR_ID_BINDING, SENTINEL_EXIT_KIND_TAG_BINDING,
+    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, BindingId, Builder,
+    BuiltinType, CmpPred, ExecutionContextReader, FloatWidth, HashMap, HashSet, HirBinding,
+    HirBlock, HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
+    HirStmtKind, Instr, IntArithOp, IntSignedness, IntentKind, MirCheck, MirConst, MirConstValue,
+    MirDiagnostic, MirDiagnosticKind, NumericMethodOp, NumericSignedness, PointerWidth,
+    ResolvedRef, ResolvedTy, ResourceMarker, Strategy, UnaryOp, ValueClass, CRASH_KIND_VARIANTS,
+    HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_TRACE_SPAN,
+    SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE, SENTINEL_DOWN_CRASH_KIND_BINDING,
+    SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
+    SENTINEL_DOWN_MONITOR_ID_BINDING, SENTINEL_DOWN_REASON_KIND_BINDING,
+    SENTINEL_DOWN_TARGET_KIND_BINDING, SENTINEL_EXIT_ACTOR_ID_BINDING,
+    SENTINEL_EXIT_KIND_TAG_BINDING,
 };
 
 /// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
@@ -21,7 +22,7 @@ use super::{
 /// and decodes the tag byte. A `panic()`-diverging body returns no value.
 pub(super) fn crash_action_return_ty() -> ResolvedTy {
     ResolvedTy::named_builtin(
-        "CrashAction",
+        "std.failure.CrashAction",
         hew_types::BuiltinType::CrashAction,
         Vec::new(),
     )
@@ -54,7 +55,12 @@ pub(super) fn crash_action_return_ty() -> ResolvedTy {
 pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
     let span = note_param.span.clone();
     let crash_notification_ty = note_param.ty.clone();
-    let crash_kind_ty = ResolvedTy::named_user("CrashKind", Vec::new());
+    // Synthetic lifecycle payloads must carry the same canonical builtin
+    // discriminator as checker-authored source values.  A source spelling is
+    // presentation only here; using a user nominal would cross D10 and erase
+    // the crash-hook value-class authority.
+    let crash_kind_ty = hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("CrashKind")
+        .expect("generated builtin enum catalog must contain CrashKind");
 
     let actor_id_ref = || HirExpr {
         node: SENTINEL_CRASH_CODE_NODE,
@@ -87,7 +93,7 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 value_class: ValueClass::BitCopy,
                 intent: IntentKind::Read,
                 kind: HirExprKind::MachineVariantCtor {
-                    machine_name: "CrashKind".to_string(),
+                    machine_name: "std.failure.CrashKind".to_string(),
                     state_idx: idx,
                     payload: None,
                 },
@@ -121,6 +127,7 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 }
             };
             hew_hir::HirMatchArm {
+                scope: None,
                 predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
@@ -192,14 +199,29 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
 )]
 pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
     let span = note_param.span.clone();
-    let monitor_id_ty =
-        ResolvedTy::named_builtin("MonitorId", hew_types::BuiltinType::MonitorId, Vec::new());
-    let down_target_ty =
-        ResolvedTy::named_builtin("DownTarget", hew_types::BuiltinType::DownTarget, Vec::new());
-    let down_reason_ty =
-        ResolvedTy::named_builtin("DownReason", hew_types::BuiltinType::DownReason, Vec::new());
-    let crash_kind_ty =
-        ResolvedTy::named_builtin("CrashKind", hew_types::BuiltinType::CrashKind, Vec::new());
+    // These are source-owned lifecycle declarations.  The mailbox ABI gives
+    // us their values, but not permission to collapse them to leaf names:
+    // HIR/MIR layout registries are keyed by the declaration owner.
+    let monitor_id_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.MonitorId",
+        hew_types::BuiltinType::MonitorId,
+        Vec::new(),
+    );
+    let down_target_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.DownTarget",
+        hew_types::BuiltinType::DownTarget,
+        Vec::new(),
+    );
+    let down_reason_ty = ResolvedTy::named_builtin(
+        "std.link_monitor.DownReason",
+        hew_types::BuiltinType::DownReason,
+        Vec::new(),
+    );
+    let crash_kind_ty = ResolvedTy::named_builtin(
+        "std.failure.CrashKind",
+        hew_types::BuiltinType::CrashKind,
+        Vec::new(),
+    );
     let location_ty =
         ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new());
 
@@ -229,6 +251,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         ty,
     };
     let match_arm = |tag: Option<i64>, body: HirExpr| hew_hir::HirMatchArm {
+        scope: None,
         predicate: tag.map_or(hew_hir::HirMatchArmPredicate::Wildcard, |value| {
             hew_hir::HirMatchArmPredicate::Literal {
                 lit: HirLiteral::Integer(value),
@@ -250,7 +273,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Unknown,
         kind: HirExprKind::StructInit {
-            name: "MonitorId".to_string(),
+            name: "std.link_monitor.MonitorId".to_string(),
             type_args: Vec::new(),
             fields: vec![(
                 "value".to_string(),
@@ -287,7 +310,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownTarget".to_string(),
+                            machine_name: "std.link_monitor.DownTarget".to_string(),
                             state_idx: 0,
                             payload: Some(vec![(
                                 "0".to_string(),
@@ -310,7 +333,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownTarget".to_string(),
+                            machine_name: "std.link_monitor.DownTarget".to_string(),
                             state_idx: 1,
                             payload: Some(vec![(
                                 "0".to_string(),
@@ -342,9 +365,18 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 ResolvedTy::I32,
             )),
             arms: vec![
-                match_arm(Some(0), unit_variant("CrashKind", 0, crash_kind_ty.clone())),
-                match_arm(Some(1), unit_variant("CrashKind", 1, crash_kind_ty.clone())),
-                match_arm(None, unit_variant("CrashKind", 2, crash_kind_ty.clone())),
+                match_arm(
+                    Some(0),
+                    unit_variant("std.failure.CrashKind", 0, crash_kind_ty.clone()),
+                ),
+                match_arm(
+                    Some(1),
+                    unit_variant("std.failure.CrashKind", 1, crash_kind_ty.clone()),
+                ),
+                match_arm(
+                    None,
+                    unit_variant("std.failure.CrashKind", 2, crash_kind_ty.clone()),
+                ),
             ],
         },
         span: span.clone(),
@@ -364,7 +396,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
             arms: vec![
                 match_arm(
                     Some(0),
-                    unit_variant("DownReason", 0, down_reason_ty.clone()),
+                    unit_variant("std.link_monitor.DownReason", 0, down_reason_ty.clone()),
                 ),
                 match_arm(
                     Some(1),
@@ -375,7 +407,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::MachineVariantCtor {
-                            machine_name: "DownReason".to_string(),
+                            machine_name: "std.link_monitor.DownReason".to_string(),
                             state_idx: 1,
                             payload: Some(vec![("0".to_string(), crash_kind)]),
                         },
@@ -384,9 +416,12 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 ),
                 match_arm(
                     Some(2),
-                    unit_variant("DownReason", 2, down_reason_ty.clone()),
+                    unit_variant("std.link_monitor.DownReason", 2, down_reason_ty.clone()),
                 ),
-                match_arm(None, unit_variant("DownReason", 3, down_reason_ty.clone())),
+                match_arm(
+                    None,
+                    unit_variant("std.link_monitor.DownReason", 3, down_reason_ty.clone()),
+                ),
             ],
         },
         span: span.clone(),
@@ -399,7 +434,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Unknown,
         kind: HirExprKind::StructInit {
-            name: "DownNotification".to_string(),
+            name: "std.link_monitor.DownNotification".to_string(),
             type_args: Vec::new(),
             fields: vec![
                 ("monitor".to_string(), monitor),
@@ -610,23 +645,27 @@ pub(super) fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Opti
 }
 pub(super) fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name.as_str() == "LocalPid" && args.len() == 1 => {
-            match &args[0] {
-                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
-        }
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::LocalPid),
+            ..
+        } if args.len() == 1 => match &args[0] {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
 pub(super) fn actor_name_from_remote_pid_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" && args.len() == 1 => {
-            match &args[0] {
-                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
-        }
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::RemotePid),
+            ..
+        } if args.len() == 1 => match &args[0] {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -636,6 +675,30 @@ pub(super) fn named_type_marker(
 ) -> Option<ResourceMarker> {
     hew_hir::lookup_type_marker_for_ty(ty, type_classes)
 }
+
+/// Whether `ty` denotes a canonical stdlib lifecycle payload.
+///
+/// HIR may carry either a builtin discriminator or the exact module-owned
+/// source identity. Bare and foreign same-short-name user types are distinct
+/// nominal types and remain rejected.
+pub(super) fn is_canonical_lifecycle_named_ty(
+    ty: &ResolvedTy,
+    builtin: hew_types::BuiltinType,
+    source_identity: &str,
+) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: resolved_builtin,
+            ..
+        } if args.is_empty()
+            && (*resolved_builtin == Some(builtin)
+                || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
 fn builtin_registration_fields_match(
     actual: &[(String, ResolvedTy)],
     expected: &[hew_hir::builtin_type_classes::BuiltinTypeField],
@@ -651,17 +714,24 @@ pub(super) fn is_crash_info_payload_ty(
     _type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named { name, .. } = ty else {
         return false;
     };
     // M-5: `CrashInfo` now carries an owned `message: string`, so it is no
     // longer marker-`BitCopy`. The authoritative discriminant is the
     // `CrashInfo` role on the builtin registration, not the marker.
-    if !args.is_empty() {
+    if !is_canonical_lifecycle_named_ty(
+        ty,
+        hew_types::BuiltinType::CrashInfo,
+        "std.failure.CrashInfo",
+    ) {
         return false;
     }
 
-    let Some(registration) = hew_hir::builtin_type_classes::builtin_type_registration(name) else {
+    let canonical_name = hew_types::BuiltinType::CrashInfo.canonical_name();
+    let Some(registration) =
+        hew_hir::builtin_type_classes::builtin_type_registration(canonical_name)
+    else {
         return false;
     };
     if registration.role != Some(hew_hir::builtin_type_classes::BuiltinTypeRole::CrashInfo) {
@@ -672,24 +742,33 @@ pub(super) fn is_crash_info_payload_ty(
     else {
         return false;
     };
-    record_field_orders.get(name).is_some_and(|actual_fields| {
-        builtin_registration_fields_match(actual_fields, expected_fields)
-    })
+    record_field_orders
+        .get(
+            &hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[])
+                .expect("CrashInfo has a compiler-owned struct layout"),
+        )
+        .or_else(|| record_field_orders.get(name))
+        .or_else(|| record_field_orders.get("std.failure.CrashInfo"))
+        .or_else(|| record_field_orders.get(canonical_name))
+        .is_some_and(|actual_fields| {
+            builtin_registration_fields_match(actual_fields, expected_fields)
+        })
 }
 pub(super) fn register_builtin_record_layouts(
     record_layouts: &mut Vec<crate::model::RecordLayout>,
     record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
 ) {
-    for registration in hew_hir::builtin_type_classes::builtin_type_registrations() {
+    for registration in hew_hir::builtin_type_classes::compiler_record_layout_registrations() {
         let hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(fields) = registration.shape
         else {
             continue;
         };
-        if let Some(existing_fields) = record_field_orders.get(registration.name) {
-            debug_assert!(
+        let key = hew_hir::compiler_record_layout_key(registration.builtin, &[])
+            .expect("every Struct builtin registration has a compiler record key");
+        if let Some(existing_fields) = record_field_orders.get(&key) {
+            assert!(
                 builtin_registration_fields_match(existing_fields, fields),
-                "builtin record registration for `{}` disagrees with existing record layout",
-                registration.name
+                "compiler record layout `{key}` was registered with a conflicting shape"
             );
             continue;
         }
@@ -699,12 +778,166 @@ pub(super) fn register_builtin_record_layouts(
             .map(|field| (field.name.to_string(), field.ty.to_resolved_ty()))
             .collect();
         record_layouts.push(crate::model::RecordLayout {
-            name: registration.name.to_string(),
+            name: key.clone(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
             field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
-        record_field_orders.insert(registration.name.to_string(), fields);
+        record_field_orders.insert(key, fields);
     }
+}
+
+/// The declaring module of every synthetic lifecycle shape below, read from
+/// the checker's owner table rather than restated here — one owner set, one
+/// place, so a moved declaration cannot key MIR's layouts differently from the
+/// identity the checker minted.
+fn link_monitor_owner() -> &'static str {
+    hew_types::SOURCE_OWNED_LIFECYCLE_OWNERS
+        .iter()
+        .find(|owner| owner.declares.contains(&hew_types::BuiltinType::MonitorId))
+        .map_or("std.link_monitor", |owner| owner.canonical_path)
+}
+
+/// Register the source-owned shapes that synthetic lifecycle hooks reconstruct
+/// from the fixed mailbox ABI.  These declarations normally arrive through an
+/// imported `std.link_monitor` HIR item; direct compilation of that stdlib
+/// source has no importing program item, yet can still exercise the same
+/// synthetic hook path.
+///
+/// Registration is under the DECLARATION OWNER only.  The leaf spelling was
+/// published alongside it so a root compile of `std/link_monitor.hew` could
+/// find the shapes under its own bare rendering; that second key put two
+/// identities for one declaration into the global layout tables, where a user
+/// `MonitorId` and the runtime one differ only by which was registered first.
+/// Synthetic hook bodies construct through the owner-qualified identity, so
+/// the leaf key had no remaining consumer.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the source-owned lifecycle layout catalog is one atomic mailbox ABI boundary"
+)]
+pub(super) fn register_lifecycle_hook_layouts(
+    record_layouts: &mut Vec<crate::model::RecordLayout>,
+    record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &mut Vec<crate::model::EnumLayout>,
+) {
+    let lifecycle_ty = |name: &str, builtin| ResolvedTy::named_builtin(name, builtin, Vec::new());
+    let register_records =
+        |prefix: &str,
+         record_layouts: &mut Vec<crate::model::RecordLayout>,
+         record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>| {
+            let named = |leaf: &str| {
+                if prefix.is_empty() {
+                    leaf.to_string()
+                } else {
+                    format!("{prefix}.{leaf}")
+                }
+            };
+            for (name, fields) in [
+                (
+                    named("MonitorId"),
+                    vec![("value".to_string(), ResolvedTy::U64)],
+                ),
+                (
+                    named("DownNotification"),
+                    vec![
+                        (
+                            "monitor".to_string(),
+                            lifecycle_ty(&named("MonitorId"), hew_types::BuiltinType::MonitorId),
+                        ),
+                        (
+                            "target".to_string(),
+                            lifecycle_ty(&named("DownTarget"), hew_types::BuiltinType::DownTarget),
+                        ),
+                        (
+                            "reason".to_string(),
+                            lifecycle_ty(&named("DownReason"), hew_types::BuiltinType::DownReason),
+                        ),
+                    ],
+                ),
+            ] {
+                if record_field_orders.contains_key(&name) {
+                    continue;
+                }
+                record_layouts.push(crate::model::RecordLayout {
+                    name: name.clone(),
+                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
+                });
+                record_field_orders.insert(name, fields);
+            }
+        };
+    let register_enums = |prefix: &str, enum_layouts: &mut Vec<crate::model::EnumLayout>| {
+        let named = |leaf: &str| {
+            if prefix.is_empty() {
+                leaf.to_string()
+            } else {
+                format!("{prefix}.{leaf}")
+            }
+        };
+        for (name, variants) in [
+            (
+                named("DownTarget"),
+                vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Local".to_string(),
+                        field_tys: vec![ResolvedTy::U64],
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Remote".to_string(),
+                        field_tys: vec![ResolvedTy::named_builtin(
+                            "Location",
+                            hew_types::BuiltinType::Location,
+                            Vec::new(),
+                        )],
+                        field_names: Vec::new(),
+                    },
+                ],
+            ),
+            (
+                named("DownReason"),
+                vec![
+                    crate::model::MachineVariantLayout {
+                        name: "Exited".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "Crashed".to_string(),
+                        field_tys: vec![ResolvedTy::named_builtin(
+                            "std.failure.CrashKind",
+                            hew_types::BuiltinType::CrashKind,
+                            Vec::new(),
+                        )],
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "MonitorLost".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                    crate::model::MachineVariantLayout {
+                        name: "LocalShutdown".to_string(),
+                        field_tys: Vec::new(),
+                        field_names: Vec::new(),
+                    },
+                ],
+            ),
+        ] {
+            if enum_layouts.iter().any(|layout| layout.name == name) {
+                continue;
+            }
+            let tag_width = u32::max(1, variants.len().next_power_of_two().trailing_zeros());
+            enum_layouts.push(crate::model::EnumLayout {
+                name,
+                tag_width,
+                variants,
+                is_indirect: false,
+            });
+        }
+    };
+    let owner = link_monitor_owner();
+    register_records(owner, record_layouts, record_field_orders);
+    register_enums(owner, enum_layouts);
 }
 /// Register `EnumLayout` entries for monomorphic builtin enums declared
 /// in `std/builtins.hew` (e.g. `LookupError`).
@@ -717,18 +950,16 @@ pub(super) fn register_builtin_record_layouts(
 /// tagged-union types; `Builder::is_known_actor_runtime_ty` reads
 /// `machine_layout_names` to classify the type as `BitCopy`.
 ///
-/// Returns the set of registered names so the caller can fold them into
-/// `machine_layout_names`. Skips any name that already has a layout (e.g.
-/// because a user enum coincidentally shadows the builtin name); the
-/// user-source layout wins, mirroring the precedent in
-/// `register_builtin_record_layouts`.
+/// Returns the set of exact registered identities so the caller can fold them
+/// into `machine_layout_names`. A same-leaf user enum is a distinct nominal and
+/// therefore coexists with the generated builtin layout.
 pub(super) fn register_builtin_monomorphic_enum_layouts(
     enum_layouts: &mut Vec<crate::model::EnumLayout>,
 ) -> Vec<String> {
     let existing: HashSet<String> = enum_layouts.iter().map(|el| el.name.clone()).collect();
     let mut registered = Vec::new();
     for spec in hew_types::builtin_enums::monomorphic_builtin_enums() {
-        if existing.contains(spec.name) {
+        if existing.contains(spec.canonical_name) {
             continue;
         }
         let variant_count = u32::try_from(spec.variants.len().max(1)).unwrap_or(u32::MAX);
@@ -743,12 +974,12 @@ pub(super) fn register_builtin_monomorphic_enum_layouts(
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
-            name: spec.name.to_string(),
+            name: spec.canonical_name.to_string(),
             tag_width,
             variants,
             is_indirect: false,
         });
-        registered.push(spec.name.to_string());
+        registered.push(spec.canonical_name.to_string());
     }
     registered
 }
@@ -865,7 +1096,12 @@ pub(super) fn check_function(
     // by the calling convention (LLVM function argument + parameter prologue
     // in codegen), never by a `Bind` statement in the checker-authority stream.
     let param_ids: Vec<hew_hir::BindingId> = func.params.iter().map(|p| p.id).collect();
-    let mut result = dataflow::analyze(blocks, &builder.type_classes, &param_ids);
+    let mut result = dataflow::analyze_with_binding_locals(
+        blocks,
+        &builder.type_classes,
+        &param_ids,
+        &builder.binding_locals,
+    );
     let checks = &mut result.checks;
 
     // DecisionMapTotal. Every `DecisionFact` on this function must
@@ -1164,15 +1400,29 @@ pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDia
 /// merely *looks* like `Result<(), SendError>` by name still has to carry the
 /// real `SendError` payload variant.
 pub(super) fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return false;
     };
-    if name != "Result" {
+    let Some(send_error_name) = hew_types::builtin_enums::monomorphic_builtin_enum("SendError")
+        .map(|fact| fact.canonical_name)
+    else {
         return false;
-    }
+    };
     matches!(
         args.as_slice(),
-        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "SendError"
+        [
+            ResolvedTy::Unit,
+            ResolvedTy::Named {
+                name,
+                builtin: Some(hew_types::BuiltinType::SendError),
+                ..
+            }
+        ] if name == send_error_name
     )
 }
 /// Recognise the checker-recorded `Result<(), CloseError>` shape that
@@ -1180,15 +1430,23 @@ pub(super) fn is_unit_send_error_result(ty: &ResolvedTy) -> bool {
 /// materialises this from the runtime's i32 status, so the MIR producer
 /// must consume the recorded type (`checker-authority`) rather than infer it.
 pub(super) fn is_unit_close_error_result(ty: &ResolvedTy) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return false;
     };
-    if name != "Result" {
-        return false;
-    }
     matches!(
         args.as_slice(),
-        [ResolvedTy::Unit, ResolvedTy::Named { name: err, .. }] if err == "CloseError"
+        [
+            ResolvedTy::Unit,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::CloseError),
+                ..
+            }
+        ]
     )
 }
 /// Extract the `Result<R, RecvError>` payload type the recv producers
@@ -1196,48 +1454,235 @@ pub(super) fn is_unit_close_error_result(ty: &ResolvedTy) -> bool {
 /// closed on a checker contract drift rather than mis-sizing the payload
 /// slot (`checker-authority`, `boundary-fail-closed`).
 pub(super) fn recv_result_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(hew_types::BuiltinType::Result),
+        ..
+    } = ty
+    else {
         return None;
     };
-    if name != "Result" {
-        return None;
-    }
     match args.as_slice() {
-        [payload, ResolvedTy::Named { name: err, .. }] if err == "RecvError" => Some(payload),
+        [payload, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::RecvError),
+            ..
+        }] => Some(payload),
         _ => None,
     }
 }
 pub(super) fn runtime_symbol_for_call_expr(
     expr: &HirExpr,
 ) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
-    let HirExprKind::Call { callee, args } = &expr.kind else {
+    let HirExprKind::Call { target, args, .. } = &expr.kind else {
         return None;
     };
-    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
-        return None;
-    };
-    // Typed path: HIR resolved a checker-known runtime builtin (the
-    // no-AST-item builtins and every closed-set method-call rewrite) to
-    // its catalog family. The C symbol is derived from the catalog
-    // bijection — no user-name reverse-mapping. A real user function
-    // that shadows a builtin name resolves to `ResolvedRef::Item` in
-    // HIR and never reaches this arm.
+    // `CallTarget::Runtime` is the sole authority for this edge.  The
+    // callee `BindingRef` is deliberately not inspected here: it is a linker
+    // presentation carried alongside the semantic target, and may legally
+    // have the same leaf spelling as a user declaration.  Re-selecting from
+    // that spelling would turn a mutated/stale target into a silent
+    // misdispatch.
     //
-    // The allowlist gate preserves the producer routing split: families
-    // whose symbol is in `known_runtime_symbols` lower to
-    // `Instr::CallRuntimeAbi`; pre-staged families (codegen
-    // `Terminator::Call` callee-name intercepts such as
-    // `hew_remote_pid_send`) fall through to `module_fn_names` →
-    // `lower_direct_call`, exactly as their name-resolved form did.
-    if let ResolvedRef::Builtin(family) = resolved {
+    // Pre-staged families whose C presentation is not a runtime-ABI symbol
+    // intentionally return `None`; the ordinary Call lowerer consumes the
+    // same typed family and emits its direct terminator path.
+    if let hew_types::CallTarget::Runtime(family) = target {
+        // F-string interpolation is the typed StringConcat family. Its MIR
+        // producer lives in the ordinary Runtime-family branch so this helper
+        // does not turn that semantic identity into a C-symbol dispatch key.
+        if family == &hew_types::runtime_call::RuntimeCallFamily::StringConcat {
+            return None;
+        }
         let symbol = family.c_symbol();
         if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
             return Some((symbol.to_string(), args, expr.site));
         }
-        return None;
-    }
-    if crate::runtime_symbols::is_known_runtime_symbol(name) {
-        return Some((name.clone(), args, expr.site));
     }
     None
+}
+
+#[cfg(test)]
+mod lifecycle_layout_identity_tests {
+    use super::*;
+
+    /// One declaration publishes ONE layout key.
+    ///
+    /// The synthetic hook catalog used to publish each shape twice — under its
+    /// declaration owner AND under its bare leaf — so the global layout tables
+    /// held two identities for one declaration, and which one a lookup found
+    /// depended on registration order against any user type sharing the leaf.
+    #[test]
+    fn synthetic_lifecycle_shapes_publish_only_their_declaration_owner() {
+        let mut record_layouts = Vec::new();
+        let mut record_field_orders = HashMap::new();
+        let mut enum_layouts = Vec::new();
+        register_lifecycle_hook_layouts(
+            &mut record_layouts,
+            &mut record_field_orders,
+            &mut enum_layouts,
+        );
+        let owner = link_monitor_owner();
+        let published: Vec<&str> = record_field_orders
+            .keys()
+            .map(String::as_str)
+            .chain(enum_layouts.iter().map(|layout| layout.name.as_str()))
+            .collect();
+        assert!(
+            !published.is_empty(),
+            "the synthetic hook catalog must publish its shapes"
+        );
+        for name in published {
+            assert!(
+                name.strip_prefix(owner)
+                    .and_then(|leaf| leaf.strip_prefix('.'))
+                    .is_some_and(|leaf| !leaf.contains('.')),
+                "`{name}` is not published under the declaration owner `{owner}`"
+            );
+        }
+    }
+
+    /// The MIR catalog's owner and the checker's owner are the same identity.
+    #[test]
+    fn the_synthetic_catalog_owner_is_the_checker_owner() {
+        assert_eq!(
+            hew_types::lookup_source_owned_lifecycle_type(&format!(
+                "{}.MonitorId",
+                link_monitor_owner()
+            )),
+            Some(hew_types::BuiltinType::MonitorId)
+        );
+    }
+}
+
+#[cfg(test)]
+mod builtin_carrier_tests {
+    use super::*;
+
+    fn actor_ty() -> ResolvedTy {
+        ResolvedTy::named_user("app.Worker", Vec::new())
+    }
+
+    #[test]
+    fn local_pid_actor_name_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedLocalPid",
+            BuiltinType::LocalPid,
+            vec![actor_ty()],
+        );
+        assert_eq!(actor_name_from_handle_ty(&renamed), Some("app.Worker"));
+
+        let shadow = ResolvedTy::named_user("LocalPid", vec![actor_ty()]);
+        assert_eq!(actor_name_from_handle_ty(&shadow), None);
+    }
+
+    #[test]
+    fn remote_pid_actor_name_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedRemotePid",
+            BuiltinType::RemotePid,
+            vec![actor_ty()],
+        );
+        assert_eq!(actor_name_from_remote_pid_ty(&renamed), Some("app.Worker"));
+
+        let shadow = ResolvedTy::named_user("RemotePid", vec![actor_ty()]);
+        assert_eq!(actor_name_from_remote_pid_ty(&shadow), None);
+    }
+
+    #[test]
+    fn builtin_enum_layouts_use_exact_source_identity() {
+        let mut layouts = Vec::new();
+        let registered = register_builtin_monomorphic_enum_layouts(&mut layouts);
+
+        for expected in [
+            "std.builtins.LookupError",
+            "std.builtins.LinkError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert!(registered.iter().any(|name| name == expected));
+            assert!(layouts.iter().any(|layout| layout.name == expected));
+        }
+        assert!(layouts.iter().all(|layout| layout.name.contains('.')));
+    }
+
+    #[test]
+    fn same_leaf_user_layout_does_not_suppress_or_inherit_builtin_layout() {
+        let mut layouts = vec![crate::model::EnumLayout {
+            name: "LinkError".to_string(),
+            tag_width: 1,
+            variants: vec![crate::model::MachineVariantLayout {
+                name: "UserOnly".to_string(),
+                field_tys: Vec::new(),
+                field_names: Vec::new(),
+            }],
+            is_indirect: false,
+        }];
+
+        register_builtin_monomorphic_enum_layouts(&mut layouts);
+
+        let user = layouts
+            .iter()
+            .find(|layout| layout.name == "LinkError")
+            .expect("same-leaf user layout");
+        assert_eq!(user.variants.len(), 1);
+        assert_eq!(user.variants[0].name, "UserOnly");
+        let builtin = layouts
+            .iter()
+            .find(|layout| layout.name == "std.builtins.LinkError")
+            .expect("canonical builtin layout must coexist");
+        assert_ne!(builtin.variants.len(), user.variants.len());
+    }
+
+    #[test]
+    fn user_monitor_ref_layout_coexists_with_builtin_registration() {
+        let mut layouts = Vec::new();
+        let mut fields: HashMap<String, Vec<(String, ResolvedTy)>> =
+            HashMap::from([("MonitorRef".to_string(), Vec::new())]);
+
+        register_builtin_record_layouts(&mut layouts, &mut fields);
+
+        assert_eq!(fields.get("MonitorRef"), Some(&Vec::new()));
+        let builtin_key = hew_hir::compiler_record_layout_key(BuiltinType::MonitorRef, &[])
+            .expect("MonitorRef compiler layout key");
+        assert!(fields.contains_key(&builtin_key));
+        assert!(layouts.iter().any(|layout| layout.name == builtin_key));
+    }
+
+    #[test]
+    fn result_error_shape_gates_reject_same_leaf_user_types() {
+        let result = |error| {
+            ResolvedTy::named_builtin(
+                "RenamedResult",
+                BuiltinType::Result,
+                vec![ResolvedTy::Unit, error],
+            )
+        };
+
+        let send = hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("SendError")
+            .expect("generated SendError");
+        assert!(is_unit_send_error_result(&result(send)));
+        assert!(!is_unit_send_error_result(&result(ResolvedTy::named_user(
+            "SendError",
+            Vec::new(),
+        ))));
+
+        let close =
+            ResolvedTy::named_builtin("CompilerCloseError", BuiltinType::CloseError, Vec::new());
+        assert!(is_unit_close_error_result(&result(close)));
+        assert!(!is_unit_close_error_result(&result(
+            ResolvedTy::named_user("CloseError", Vec::new(),)
+        )));
+
+        let recv =
+            ResolvedTy::named_builtin("CompilerRecvError", BuiltinType::RecvError, Vec::new());
+        assert_eq!(
+            recv_result_payload_ty(&result(recv)),
+            Some(&ResolvedTy::Unit)
+        );
+        assert!(
+            recv_result_payload_ty(&result(ResolvedTy::named_user("RecvError", Vec::new())))
+                .is_none()
+        );
+    }
 }

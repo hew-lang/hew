@@ -143,6 +143,7 @@ base_hash="$({
     printf '%s\n' "${ImageOS:-}" "${ImageVersion:-}"
 } | git hash-object --stdin)"
 reports=()
+temporary_reports=("")
 cache_hits=0
 cache_misses=0
 while IFS= read -r listed_fixture; do
@@ -159,12 +160,14 @@ while IFS= read -r listed_fixture; do
     fixture_hash="$(python3 "$HEW_INVENTORY_PY" digest --fixture "$fixture")"
     cache_key="$(printf 'hew-suite-cache-v3\n%s\n%s\n%s\n' "$base_hash" "$listed_fixture" "$fixture_hash" | git hash-object --stdin)"
     cached_report="$CACHE_DIR/$cache_key.xml"
+    cached_stderr="$CACHE_DIR/$cache_key.stderr"
     if [[ -s "$cached_report" ]] \
         && python3 "$HEW_INVENTORY_PY" check-report \
             --inventory "$INVENTORY_FILE" --fixture "$fixture" \
             --report "$cached_report" >/dev/null 2>&1; then
         cache_hits=$((cache_hits + 1))
         reports+=("$cached_report")
+        [[ ! -f "$cached_stderr" ]] || cat "$cached_stderr" >> "$STDERR_FILE"
         continue
     fi
 
@@ -180,18 +183,32 @@ while IFS= read -r listed_fixture; do
         cat "$fresh_stderr"
     } >> "$STDERR_FILE"
 
-    if [[ "$rc" -ne 0 || ! -s "$fresh_report" ]] \
-        || ! python3 "$HEW_INVENTORY_PY" check-report \
+    report_valid=false
+    if [[ -s "$fresh_report" ]] \
+        && python3 "$HEW_INVENTORY_PY" check-report \
             --inventory "$INVENTORY_FILE" --fixture "$fixture" \
             --report "$fresh_report" >/dev/null 2>&1; then
-        echo "error: Hew test produced an invalid or failing JUnit report for $fixture" >&2
-        rm -f "$fresh_report" "$fresh_stderr"
-        cat "$STDERR_FILE" >&2
-        exit 1
+        report_failures="$(python3 "$HEW_JUNIT_PY" "$fresh_report" \
+            | awk -F '\t' '$1 == "__SUMMARY__" { print $3 }')"
+        if [[ ( "$report_failures" -eq 0 && "$rc" -eq 0 ) \
+            || ( "$report_failures" -gt 0 && "$rc" -ne 0 ) ]]; then
+            report_valid=true
+        fi
     fi
-    rm -f "$fresh_stderr"
-    mv "$fresh_report" "$cached_report"
-    reports+=("$cached_report")
+
+    if [[ "$report_valid" == true ]]; then
+        mv "$fresh_report" "$cached_report"
+        mv "$fresh_stderr" "$cached_stderr"
+        reports+=("$cached_report")
+    else
+        echo "error: Hew test produced no valid complete JUnit report for $fixture" >&2
+        synthetic_report="$(mktemp /tmp/hew-suite-ratchet-harness-failure.XXXXXX.xml)"
+        python3 "$HEW_JUNIT_PY" --harness-failure \
+            "$synthetic_report" "$listed_fixture" "$fresh_stderr"
+        reports+=("$synthetic_report")
+        temporary_reports+=("$synthetic_report")
+        rm -f "$fresh_report" "$fresh_stderr"
+    fi
 done < <(awk -F '::' '{ print $1 }' "$INVENTORY_FILE" | LC_ALL=C sort -u)
 
 if [[ ${#reports[@]} -eq 0 ]]; then
@@ -199,6 +216,10 @@ if [[ ${#reports[@]} -eq 0 ]]; then
     exit 1
 fi
 python3 "$HEW_JUNIT_PY" --merge "$JUNIT_OUTPUT" "${reports[@]}"
+for temporary_report in "${temporary_reports[@]}"; do
+    [[ -n "$temporary_report" ]] || continue
+    rm -f "$temporary_report"
+done
 echo "Cache: $cache_hits hit fixture(s), $cache_misses re-run fixture(s)."
 
 # Fail closed if the runner produced no report at all: a runner crash before

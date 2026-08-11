@@ -102,14 +102,49 @@ def merge(output: Path, inputs: list[Path]) -> None:
     ET.ElementTree(root).write(output, encoding="unicode", xml_declaration=True)
 
 
+def write_harness_failure(output: Path, classname: str, message: str) -> None:
+    """Write one synthetic failure when a fixture produced no usable report."""
+    root = ET.Element("testsuites", tests="1", failures="1", skipped="0")
+    suite = ET.SubElement(
+        root,
+        "testsuite",
+        name=classname,
+        tests="1",
+        failures="1",
+        skipped="0",
+    )
+    testcase = ET.SubElement(
+        suite,
+        "testcase",
+        classname=classname,
+        name="fixture_harness_failure",
+    )
+    failure = ET.SubElement(
+        testcase, "failure", message="fixture produced no valid JUnit"
+    )
+    failure.text = message
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(output, encoding="unicode", xml_declaration=True)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 3 and argv[0] == "--merge":
         merge(Path(argv[1]), [Path(path) for path in argv[2:]])
         return 0
+    if len(argv) == 4 and argv[0] == "--harness-failure":
+        message_path = Path(argv[3])
+        try:
+            message = message_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            message = "runner returned no stderr"
+        write_harness_failure(Path(argv[1]), argv[2], message)
+        return 0
     if len(argv) != 1:
         print(
             "usage: python3 scripts/lib/hew_junit.py <junit.xml>\n"
-            "       python3 scripts/lib/hew_junit.py --merge <output> <input>...",
+            "       python3 scripts/lib/hew_junit.py --merge <output> <input>...\n"
+            "       python3 scripts/lib/hew_junit.py --harness-failure "
+            "<output> <fixture> <stderr>",
             file=sys.stderr,
         )
         return 2

@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +81,9 @@ def test_one_fixture_edit_invalidates_only_that_fixture() -> None:
         report = work / "report.xml"
 
         first = run(env, report)
-        assert "Cache: 0 hit fixture(s), 2 re-run fixture(s)." in first.stdout
+        assert "Cache: 0 hit fixture(s), 2 re-run fixture(s)." in first.stdout, (
+            first.stdout
+        )
         warm = run(env, report)
         assert "Cache: 2 hit fixture(s), 0 re-run fixture(s)." in warm.stdout
         assert counter.read_text(encoding="utf-8").splitlines() == [
@@ -152,8 +155,22 @@ def test_unsharded_ci_restores_the_fixture_cache() -> None:
     assert "hew-suite-v3-freebsd-x86_64-" in release
 
 
+def test_failing_fixtures_are_merged_and_named() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        work = Path(temp)
+        env, _, _ = fixture_env(work, failing=True)
+        report = work / "report.xml"
+        result = run(env, report, expected_returncode=1)
+        assert "FAILED: first" in result.stdout
+        assert "FAILED: second" in result.stdout
+        assert "expected 1, got 2" in report.read_text(encoding="utf-8")
+        names = [case.get("name") for case in ET.parse(report).iter("testcase")]
+        assert names == ["first", "second"]
+
+
 if __name__ == "__main__":
     test_one_fixture_edit_invalidates_only_that_fixture()
     test_cache_key_tracks_compiler_archive_and_semantic_environment()
     test_missing_live_identity_fails_before_running_fixtures()
     test_unsharded_ci_restores_the_fixture_cache()
+    test_failing_fixtures_are_merged_and_named()

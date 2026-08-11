@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, whatever its base. Restricting this to `main` meant a
+  # stacked PR (based on another branch) received no checks at all, so its
+  # merge gate could report READY with nothing having run. A stacked branch
+  # is exactly where a break is easiest to miss.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

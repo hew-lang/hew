@@ -555,35 +555,35 @@ def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
     assert "cargo clippy" not in result.stdout, result.stdout
 
 
-def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
-    """Fallback lane runs the smoke tier (make ci-preflight-smoke) before make lint and make test.
-
-    The smoke tier surfaces fmt/clippy/fast-oracle failures in <5 min before
-    the expensive full suite (make lint + make playground-check + make test) is
-    invoked.  Coverage is unchanged: the heavy tier runs on smoke pass.
-    """
-    # An unclassified path routes to the fallback (comprehensive) lane.
+def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     result = run_dispatcher("some-unclassified-root-file.txt")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: comprehensive" in result.stdout, result.stdout
-    assert "make ci-preflight-smoke" in result.stdout, (
-        "Expected 'make ci-preflight-smoke' in fallback lane commands.\n"
-        f"stdout:\n{result.stdout}"
-    )
-    assert "make lint" in result.stdout, (
-        f"Expected 'make lint' in fallback lane commands.\nstdout:\n{result.stdout}"
-    )
-    assert "make test" in result.stdout, (
-        f"Expected 'make test' in fallback lane commands.\nstdout:\n{result.stdout}"
-    )
-    # Smoke tier must appear before make lint in the command list.
-    smoke_pos = result.stdout.index("make ci-preflight-smoke")
+    assert "make ci-preflight-smoke" not in result.stdout, result.stdout
+    assert "cargo fmt --all -- --check" in result.stdout, result.stdout
+    assert "make lint" in result.stdout, result.stdout
+    assert "make test" in result.stdout, result.stdout
+
+    fmt_pos = result.stdout.index("cargo fmt --all -- --check")
     lint_pos = result.stdout.index("make lint")
     test_pos = result.stdout.index("make test")
-    assert smoke_pos < lint_pos < test_pos, (
-        f"Expected order: make ci-preflight-smoke < make lint < make test.\n"
-        f"smoke_pos={smoke_pos}, lint_pos={lint_pos}, test_pos={test_pos}\n"
-        f"stdout:\n{result.stdout}"
+    assert fmt_pos < lint_pos < test_pos, result.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert "cargo nextest run --workspace --profile smoke" in makefile, makefile
+    assert (
+        "cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast"
+        in makefile
+    ), makefile
+
+    nextest = (ROOT / ".config/nextest.toml").read_text()
+    assert (
+        'default-filter = "test(every_hew_file_roundtrips_through_formatter)"'
+        in nextest
+    )
+    assert (
+        "hew-parser/tests/fmt_roundtrip_corpus.rs"
+        not in nextest.split("[profile.ci]", 1)[1].split("[profile.ci.junit]", 1)[0]
     )
 
 
@@ -926,7 +926,7 @@ _TESTS = [
     test_types_lane_includes_checked_mir_verify,
     test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages,
     test_docs_only_change_does_not_include_vertical_slice_oracle,
-    test_fallback_lane_includes_smoke_tier_before_heavy,
+    test_comprehensive_profile_reserves_smoke_for_local_opt_in,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
     test_hew_tests_path_routes_to_hew_tests_lane,
     test_parser_path_runs_formatter_property,

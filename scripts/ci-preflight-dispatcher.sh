@@ -894,23 +894,18 @@ case "$LANE" in
         add_command "make playground-check"
         ;;
     fallback)
-        # Smoke tier first: fast fail-early on format, clippy, and deterministic
-        # in-process oracles (including fmt_roundtrip_corpus) before committing
-        # to the heavy build + E2E suite.  The smoke tier completes in <5 min and
-        # catches the most common regression classes (bad formatting, clippy
-        # violations, formatter-AST bugs) without building and running test-codegen.
-        #
-        # On smoke pass, the heavy tier runs in full — no coverage is dropped.
-        # make lint follows smoke because it adds structural-lint,
-        # hew-fmt-check (Hew file formatting), runtime-poison-safe-lint,
-        # lint-wasm-todo, and verify-ffi which the smoke tier does not include.
+        # Keep the fast smoke target as a direct local opt-in. Its nextest
+        # selection is a subset of the full workspace run below, so running it
+        # here would make it a serial prefix of its own superset. Format checking
+        # remains first for quick feedback, and make lint supplies clippy,
+        # structural-lint, Hew formatting, and the remaining static checks.
         #
         # Hew-language suites run after the Rust workspace to keep the ratchet
         # verdict separate from the Rust test verdict.
         #
         # The sequence below mirrors CI's build-and-test job exactly so a green
         # fallback preflight predicts a green merge-queue outcome.
-        add_command "make ci-preflight-smoke"
+        add_command "cargo fmt --all -- --check"
         add_command "make lint"
         add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"

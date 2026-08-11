@@ -187,8 +187,24 @@ fn collect_seeds_and_edges(
         }
 
         for instr in &block.instructions {
-            let (reads, writes) = instr_reads_writes(instr);
+            let (reads, writes, interior_writes) = instr_reads_writes(instr);
             let read_locals: Vec<u32> = reads.iter().filter_map(|p| place_local(*p)).collect();
+
+            // An interior write mutates through a place whose MIR slot bytes do
+            // not change (e.g. `BytesAppend` rewriting its receiver's buffer,
+            // `Drop` on a variant place), so it never appears in `writes`.
+            //
+            // Today this is redundant: every instruction that produces interior
+            // writes is impure, so `pure_single_dest` is `None` below and its
+            // reads are already seeded. It is kept explicit because that is a
+            // property of `is_pure_value_instr`'s current allowlist, not an
+            // invariant of the IR — adding any interior-writing instruction to
+            // that allowlist would otherwise let this lint call a counter dead
+            // while it is still mutated through an alias. This lint tells users
+            // to DELETE code, so it must fail toward silence.
+            for n in interior_writes.iter().filter_map(|p| place_local(*p)) {
+                seeds.insert(n);
+            }
 
             // A pure instruction writing exactly one plain local propagates:
             // its operands matter only if its destination does. Anything else
@@ -301,7 +317,16 @@ fn recover_counter_shape(block: &BasicBlock, local: u32) -> Option<CounterShape>
         let temp = *t;
         // Find the defining instruction of `temp` earlier in this block.
         for prior in block.instructions[..idx].iter().rev() {
-            let (reads, writes) = instr_reads_writes(prior);
+            let (reads, writes, interior_writes) = instr_reads_writes(prior);
+            // An interior write to the counter (or to the temp) means the value
+            // is mutated through an alias the slot does not show. Refuse to
+            // classify it as an accumulate step.
+            if interior_writes
+                .iter()
+                .any(|w| matches!(w, Place::Local(n) if *n == temp || *n == local))
+            {
+                return None;
+            }
             if !writes
                 .iter()
                 .any(|w| matches!(w, Place::Local(n) if *n == temp))

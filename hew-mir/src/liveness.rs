@@ -428,9 +428,10 @@ fn dedup_by_lint_span(findings: &mut Vec<MirLint>) {
 /// the CLI applies the user's `LintLevels` and `// hew:allow(...)` policy at
 /// render time.
 ///
-/// Surfaced through the CLI front end only — the LSP / wasm front ends stop at
-/// HIR and never lower to MIR, so they never call this. Editor / web surfacing
-/// is tracked in issue #2176.
+/// Surfaced through the CLI front end. Editor / web surfacing is issue #2176
+/// (PR #2873), which lowers the module already built for HIR diagnostics and
+/// renders MIR findings as warnings; until that lands, the LSP and wasm front
+/// ends stop at HIR and never call this.
 #[must_use]
 pub fn run_mir_lints(functions: &[RawMirFunction]) -> Vec<MirLint> {
     let mut out = Vec::new();

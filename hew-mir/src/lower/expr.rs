@@ -9315,6 +9315,7 @@ fn runtime_authority_for_collection(
         Family::HashMap(Map::Len) => matches!(runtime, Rt::HashMapLenLayout),
         Family::HashMap(Map::Keys) => matches!(runtime, Rt::HashMapKeysLayout),
         Family::HashMap(Map::Values) => matches!(runtime, Rt::HashMapValuesLayout),
+        Family::HashMap(Map::Entries) => matches!(runtime, Rt::HashMapEntriesLayout),
         Family::HashMap(Map::Clone) => matches!(runtime, Rt::HashMapCloneLayout),
         Family::HashMap(Map::Clear) => matches!(runtime, Rt::HashMapClearLayout),
         Family::HashSet(Set::Insert) => matches!(runtime, Rt::HashSetInsertLayout),

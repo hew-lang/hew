@@ -1249,46 +1249,27 @@ fn hew_inventory_gate(root: &Path) -> Result<()> {
         build_native(root, Profile::Debug, None, false)?;
         cargo_output_dir(root, "debug", None)?.join(executable("hew"))
     };
-    let mut fixtures = Vec::new();
-    for entry in std::fs::read_dir(root.join("tests/hew"))
-        .map_err(|err| format!("read tests/hew: {err}"))?
-    {
-        let entry = entry.map_err(|err| format!("read tests/hew entry: {err}"))?;
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(OsStr::new("hew")) {
-            fixtures.push(path);
-        }
-    }
-    fixtures.sort();
-    if fixtures.is_empty() {
-        return Err("Hew suite inventory selected no tests/hew/*.hew fixtures".to_string());
-    }
-
-    let mut inventory = Vec::new();
-    for fixture in fixtures {
-        let output = Command::new(&hew)
-            .current_dir(root)
-            .arg("test")
-            .arg(&fixture)
-            .args(["--list", "--allow-empty"])
-            .output()
-            .map_err(|err| format!("list Hew suite inventory for {}: {err}", fixture.display()))?;
-        ensure_success(
-            output.status,
-            &format!("list Hew suite inventory for {}", fixture.display()),
-        )?;
-        inventory.extend(
-            String::from_utf8(output.stdout)
-                .map_err(|err| format!("decode inventory for {}: {err}", fixture.display()))?
-                .lines()
-                .map(str::to_owned),
-        );
-    }
-    inventory.sort();
-    let rendered = format!("{}\n", inventory.join("\n"));
     let destination = PathBuf::from(required_env("HEW_FULL_INVENTORY")?);
-    std::fs::write(&destination, rendered)
-        .map_err(|err| format!("write {}: {err}", destination.display()))
+    let hew = hew
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 compiler path: {}", hew.display()))?;
+    let destination = destination
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 inventory path: {}", destination.display()))?;
+    run_program(
+        root,
+        python(),
+        &[
+            "scripts/lib/hew_test_inventory.py",
+            "list",
+            "--compiler",
+            hew,
+            "--tests",
+            "tests/hew",
+            "--output",
+            destination,
+        ],
+    )
 }
 
 fn package_root() -> Result<PathBuf> {

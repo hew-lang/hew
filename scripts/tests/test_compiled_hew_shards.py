@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "compiled-hew-shards.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 XTASK = ROOT / "xtask" / "src" / "build_system.rs"
+INVENTORY_HELPER = ROOT / "scripts" / "lib" / "hew_test_inventory.py"
 COUNT = 1169
 SHARDS = 4
 
@@ -204,6 +205,7 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
         self.xtask = XTASK.read_text(encoding="utf-8")
+        self.inventory_helper = INVENTORY_HELPER.read_text(encoding="utf-8")
 
     def test_one_certified_build_feeds_all_four_shards(self) -> None:
         self.assertEqual(
@@ -243,9 +245,9 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
         inventory_gate = self.xtask.split("fn hew_inventory_gate", 1)[1].split(
             "\nfn ", 1
         )[0]
-        self.assertIn('root.join("tests/hew")', inventory_gate)
-        self.assertIn('.args(["--list", "--allow-empty"])', inventory_gate)
-        self.assertIn("inventory.sort()", inventory_gate)
+        self.assertIn('"scripts/lib/hew_test_inventory.py"', inventory_gate)
+        self.assertIn('tests.glob("*.hew")', self.inventory_helper)
+        self.assertIn('"--list", "--allow-empty"', self.inventory_helper)
         self.assertIn("cargo xtask gate hew-ratchet", self.workflow)
         self.assertIn("cargo xtask gate o2-differential", self.workflow)
         self.assertEqual(self.workflow.count("HEW_SHARD_COUNT: 4"), 2)

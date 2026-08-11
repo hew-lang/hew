@@ -14,12 +14,15 @@ import shutil
 import subprocess
 import sys
 from typing import NoReturn
-import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 from corpus_nonempty import assert_nonempty  # noqa: E402
+from hew_test_inventory import (  # noqa: E402
+    parse_junit,
+    read_inventory,
+)
 
 
 PARTITION_RE = re.compile(r"^hash:([1-9][0-9]*)/([1-9][0-9]*)$")
@@ -48,88 +51,6 @@ HOST_ENVIRONMENT = (
 def die(message: str) -> NoReturn:
     print(f"compiled-hew-shards: {message}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def read_inventory(path: Path) -> list[str]:
-    try:
-        identities = [
-            line for line in path.read_text(encoding="utf-8").splitlines() if line
-        ]
-    except FileNotFoundError:
-        die(f"inventory is missing: {path}")
-    if not identities:
-        die(f"inventory is empty: {path}")
-    seen: set[str] = set()
-    duplicates: set[str] = set()
-    for identity in identities:
-        if identity in seen:
-            duplicates.add(identity)
-        seen.add(identity)
-    if duplicates:
-        die(
-            f"inventory contains duplicate identities: {path}: {sorted(duplicates)[:5]}"
-        )
-    return identities
-
-
-def normalized_identity(classname: str, name: str) -> str:
-    if not classname or not name:
-        die("JUnit testcase is missing classname or name")
-    file = Path(classname)
-    if file.is_absolute():
-        try:
-            file = file.resolve().relative_to(REPO_ROOT)
-        except ValueError:
-            die(f"JUnit classname is outside the repository: {classname}")
-    return f"{file.as_posix()}::{name}"
-
-
-def parse_junit(path: Path) -> dict[str, str]:
-    try:
-        root = ET.fromstring(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        die(f"JUnit report is missing: {path}")
-    except ET.ParseError as error:
-        die(f"malformed JUnit report {path}: {error}")
-    if root.tag != "testsuites":
-        die(f"JUnit report {path} has <{root.tag}> root, expected <testsuites>")
-    outcomes: dict[str, str] = {}
-    failures = 0
-    skipped = 0
-    for testcase in root.iter("testcase"):
-        identity = normalized_identity(
-            testcase.get("classname", ""), testcase.get("name", "")
-        )
-        if identity in outcomes:
-            die(
-                f"JUnit report contains duplicate testcase identity: {path}: {identity}"
-            )
-        if testcase.find("failure") is not None:
-            outcome = "FAILED"
-            failures += 1
-        elif testcase.find("skipped") is not None:
-            outcome = "ignored"
-            skipped += 1
-        else:
-            outcome = "ok"
-        outcomes[identity] = outcome
-    try:
-        declared = int(root.get("tests", ""))
-        declared_failures = int(root.get("failures", ""))
-        declared_skipped = int(root.get("skipped", ""))
-    except ValueError:
-        die(f"JUnit report has non-integer summary attributes: {path}")
-    if (declared, declared_failures, declared_skipped) != (
-        len(outcomes),
-        failures,
-        skipped,
-    ):
-        die(
-            f"JUnit summary disagrees with testcase elements: {path}: "
-            f"declared={(declared, declared_failures, declared_skipped)} "
-            f"counted={(len(outcomes), failures, skipped)}"
-        )
-    return outcomes
 
 
 def run_command(

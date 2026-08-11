@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run every compiled-Hew test, with content-addressed per-fixture verdicts.
 #
-# The former failure inventory is empty, so a direct zero-failure assertion is
-# stronger and has no second list to maintain. The historical public command
-# name remains compatible.
+# The expected test identities are recorded separately from verdicts. A live
+# `hew test --list` must match that set before any cached report is trusted, so
+# deleting or renaming tests cannot turn into a smaller green suite.
 #
 # Parses `hew test --format junit` output (via scripts/lib/hew_junit.py)
 # rather than regex-matching the human-readable text — a cosmetic text-format
@@ -33,9 +33,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/corpus-nonempty.sh
-# shellcheck disable=SC1091
-source "$REPO_ROOT/scripts/lib/corpus-nonempty.sh"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
@@ -46,6 +43,8 @@ TESTS_DIR="${HEW_TESTS_DIR:-$REPO_ROOT/tests/hew}"
 EMIT_O0_OUTCOMES_FILE=""
 JUNIT_OUTPUT="$REPO_ROOT/target/hew-test-reports/hew-suite-ratchet.xml"
 HEW_JUNIT_PY="$REPO_ROOT/scripts/lib/hew_junit.py"
+HEW_INVENTORY_PY="$REPO_ROOT/scripts/lib/hew_test_inventory.py"
+EXPECTED_TESTS_FILE="${HEW_EXPECTED_TESTS_FILE:-$REPO_ROOT/scripts/hew-suite-expected-tests.txt}"
 CACHE_DIR="${HEW_TEST_CACHE_DIR:-$REPO_ROOT/target/hew-test-cache}"
 
 usage() {
@@ -97,12 +96,20 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     exit 1
 fi
 
-# Cache one JUnit result per source file. The shared digest covers every input
-# that can affect a verdict and deliberately favors misses over a stale green.
+# Establish the suite's name-level integrity bar before consulting the cache.
+# Both this harness and the sharded harness use hew_test_inventory.py for the
+# listing and JUnit identity rules.
 mkdir -p "$(dirname "$JUNIT_OUTPUT")"
 mkdir -p "$CACHE_DIR"
 STDERR_FILE="$(mktemp /tmp/hew-suite-ratchet-stderr.XXXXXX)"
-trap 'rm -f "$STDERR_FILE"' EXIT
+INVENTORY_FILE="$(mktemp /tmp/hew-suite-ratchet-inventory.XXXXXX)"
+trap 'rm -f "$STDERR_FILE" "$INVENTORY_FILE"' EXIT
+
+python3 "$HEW_INVENTORY_PY" list \
+    --compiler "$HEW_BIN" \
+    --tests "$TESTS_DIR" \
+    --expected "$EXPECTED_TESTS_FILE" \
+    --output "$INVENTORY_FILE"
 
 libhew_archive=""
 for candidate in "$(dirname "$HEW_BIN")/libhew.a" "$(dirname "$HEW_BIN")/hew.lib"; do
@@ -117,20 +124,12 @@ if [[ -z "$libhew_archive" ]]; then
 fi
 
 suite_hash="$({
-    printf '%s\n' 'hew-suite-cache-v2' 'hew test <fixture> --format junit --allow-empty'
-    git hash-object "$HEW_BIN" "$libhew_archive" "$0" "$HEW_JUNIT_PY"
+    printf '%s\n' 'hew-suite-cache-v3' 'hew test <fixture> --format junit'
+    git hash-object "$HEW_BIN" "$libhew_archive" "$0" "$HEW_JUNIT_PY" \
+        "$HEW_INVENTORY_PY" "$EXPECTED_TESTS_FILE"
     find "$REPO_ROOT" \
         \( -path "$REPO_ROOT/target" -o -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/.tmp" \) -prune -o \
         -type f \( -name '*.hew' -o -name '*.toml' -o -name '*.lock' \) -print \
-        | LC_ALL=C sort
-    find "$REPO_ROOT" \
-        \( -path "$REPO_ROOT/target" -o -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/.tmp" \) -prune -o \
-        -type f \( -name '*.hew' -o -name '*.toml' -o -name '*.lock' \) -print \
-        | LC_ALL=C sort \
-        | git hash-object --stdin-paths
-    # Tests may point at an external fixture directory in harness checks.
-    find "$TESTS_DIR" -type f -name '*.hew' -print | LC_ALL=C sort
-    find "$TESTS_DIR" -type f -name '*.hew' -print \
         | LC_ALL=C sort \
         | git hash-object --stdin-paths
     env | LC_ALL=C sort \
@@ -149,42 +148,51 @@ suite_hash="$({
     printf '%s\n' "${ImageOS:-}" "${ImageVersion:-}"
 } | git hash-object --stdin)"
 reports=()
-for fixture in "$TESTS_DIR"/*.hew; do
-    [[ -f "$fixture" ]] || continue
+while IFS= read -r listed_fixture; do
+    [[ -n "$listed_fixture" ]] || continue
+    if [[ "$listed_fixture" = /* ]]; then
+        fixture="$listed_fixture"
+    else
+        fixture="$REPO_ROOT/$listed_fixture"
+    fi
+    if [[ ! -f "$fixture" ]]; then
+        echo "error: listed Hew fixture is missing: $fixture" >&2
+        exit 1
+    fi
     fixture_hash="$(git hash-object "$fixture")"
-    cache_key="$(printf 'hew-suite-cache-v2\n%s\n%s\n%s\n' "$suite_hash" "$fixture" "$fixture_hash" | git hash-object --stdin)"
+    cache_key="$(printf 'hew-suite-cache-v3\n%s\n%s\n%s\n' "$suite_hash" "$listed_fixture" "$fixture_hash" | git hash-object --stdin)"
     cached_report="$CACHE_DIR/$cache_key.xml"
-    cached_empty="$CACHE_DIR/$cache_key.empty"
-    if [[ -f "$cached_empty" ]]; then
+    if [[ -s "$cached_report" ]] \
+        && python3 "$HEW_INVENTORY_PY" check-report \
+            --inventory "$INVENTORY_FILE" --fixture "$fixture" \
+            --report "$cached_report" >/dev/null 2>&1; then
+        reports+=("$cached_report")
         continue
     fi
-    if [[ ! -s "$cached_report" ]] || ! python3 "$HEW_JUNIT_PY" "$cached_report" >/dev/null 2>&1; then
-        fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
-        fresh_stderr="$CACHE_DIR/$cache_key.stderr.new.$$"
-        rc=0
-        "$HEW_BIN" test "$fixture" --format junit --allow-empty \
-            > "$fresh_report" 2> "$fresh_stderr" || rc=$?
-        if [[ $rc -eq 0 && ! -s "$fresh_report" ]] \
-            && [[ "$(wc -l < "$fresh_stderr" | tr -d ' ')" == 1 ]] \
-            && grep -qxF 'No test functions found.' "$fresh_stderr"; then
-            printf '%s\n' 'no test functions' > "$cached_empty"
-            rm -f "$fresh_report" "$fresh_stderr"
-            continue
-        fi
-        if [[ $rc -ne 0 || ! -s "$fresh_report" ]] || ! python3 "$HEW_JUNIT_PY" "$fresh_report" >/dev/null; then
-            echo "error: hew test produced an invalid or failing JUnit report for $fixture" >&2
-            rm -f "$fresh_report"
-            cat "$fresh_stderr" >> "$STDERR_FILE"
-            rm -f "$fresh_stderr"
-            cat "$STDERR_FILE" >&2
-            exit 1
-        fi
-        cat "$fresh_stderr" >> "$STDERR_FILE"
-        rm -f "$fresh_stderr"
-        mv "$fresh_report" "$cached_report"
+
+    fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
+    fresh_stderr="$CACHE_DIR/$cache_key.stderr.new.$$"
+    rc=0
+    "$HEW_BIN" test "$fixture" --format junit \
+        > "$fresh_report" 2> "$fresh_stderr" || rc=$?
+    {
+        printf '%s\n' "==> $listed_fixture"
+        cat "$fresh_stderr"
+    } >> "$STDERR_FILE"
+
+    if [[ "$rc" -ne 0 || ! -s "$fresh_report" ]] \
+        || ! python3 "$HEW_INVENTORY_PY" check-report \
+            --inventory "$INVENTORY_FILE" --fixture "$fixture" \
+            --report "$fresh_report" >/dev/null 2>&1; then
+        echo "error: Hew test produced an invalid or failing JUnit report for $fixture" >&2
+        rm -f "$fresh_report" "$fresh_stderr"
+        cat "$STDERR_FILE" >&2
+        exit 1
     fi
+    rm -f "$fresh_stderr"
+    mv "$fresh_report" "$cached_report"
     reports+=("$cached_report")
-done
+done < <(awk -F '::' '{ print $1 }' "$INVENTORY_FILE" | LC_ALL=C sort -u)
 
 if [[ ${#reports[@]} -eq 0 ]]; then
     echo "error: Hew suite selected no test-bearing fixtures under $TESTS_DIR" >&2
@@ -235,15 +243,6 @@ if [[ -n "$EMIT_O0_OUTCOMES_FILE" ]]; then
         | sort > "$EMIT_O0_OUTCOMES_FILE"
 fi
 
-# Floor the size of the run itself. The ratchet compares a failing-test set
-# against the expected list; a run that executed no tests at all reports an
-# empty failing set, which agrees with an empty expected list and would ratchet
-# green over nothing.
-if ! corpus_nonempty_assert "hew-suite-tests" "$report_total"; then
-    cat "$STDERR_FILE" >&2
-    exit 1
-fi
-
 # Extract names of failing tests.
 ACTUAL_STR=""
 while IFS=$'\t' read -r status name; do
@@ -253,7 +252,7 @@ done <<< "$(printf '%s\n' "$PARSED" | grep -v '^__SUMMARY__')"
 
 parsed_failed=0
 if [[ -n "$ACTUAL_STR" ]]; then
-    parsed_failed="$(line_set_count "$ACTUAL_STR")"
+    parsed_failed="$(printf '%s' "$ACTUAL_STR" | awk 'NF { count++ } END { print count + 0 }')"
 fi
 if [[ "$parsed_failed" -ne "$report_failures" ]]; then
     echo "error: parsed $parsed_failed FAILED test(s) but report summary reports $report_failures failed; refusing to ratchet" >&2

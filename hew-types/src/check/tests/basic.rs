@@ -338,7 +338,7 @@ fn record_with_bytes_field_eq_rejects_with_named_diagnostic() {
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("`==` on record type `Packet`")
-                && e.message.contains("field or payload")
+                && e.message.contains("member `data`")
                 && e.message.contains("layout-managed/non-Copy")
                 && e.message.contains("bytes")
                 && !e.message.contains("IntCmp")
@@ -380,7 +380,7 @@ fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
             e.kind == TypeErrorKind::InvalidOperation
                 && e.message
                     .contains("`==` on enum `Option<bytes>` with payload variants")
-                && e.message.contains("field or payload")
+                && e.message.contains("member `Some`")
                 && e.message.contains("layout-managed/non-Copy")
                 && e.message.contains("bytes")
                 && !e.message.contains("IntCmp")

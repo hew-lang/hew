@@ -7,7 +7,9 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::env::{PlaceConflict, PlacePath};
-use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
+use crate::eq_eligibility::{
+    ty_eq_ineligibility_with_type_params, EqEligibility, EqEligibilityFailure,
+};
 use crate::BuiltinType;
 
 type DangerousRcBinding = String;
@@ -4656,34 +4658,50 @@ impl Checker {
         enum UnsupportedComparison {
             Record {
                 type_name: String,
-                reason: Option<EqEligibility>,
+                reason: Option<EqEligibilityFailure>,
             },
             PayloadEnum {
                 type_name: String,
-                reason: EqEligibility,
+                reason: EqEligibilityFailure,
+            },
+            Tuple {
+                type_name: String,
+                reason: Option<EqEligibilityFailure>,
             },
             EnumOrdering(String),
         }
 
         let current_type_params = self.current_type_param_names();
         let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
-            let Ty::Named { name, builtin, .. } = ty else {
-                return None;
-            };
             let type_name = ty.user_facing().to_string();
-            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+            if matches!(ty, Ty::Tuple(_)) {
                 if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    let eligibility = ty_is_eq_eligible_with_type_params(
+                    return ty_eq_ineligibility_with_type_params(
                         ty,
                         &self.type_defs,
                         &current_type_params,
-                    );
-                    return (eligibility != EqEligibility::Eligible).then_some(
-                        UnsupportedComparison::PayloadEnum {
-                            type_name,
-                            reason: eligibility,
-                        },
-                    );
+                    )
+                    .map(|reason| UnsupportedComparison::Tuple {
+                        type_name,
+                        reason: Some(reason),
+                    });
+                }
+                return Some(UnsupportedComparison::Tuple {
+                    type_name,
+                    reason: None,
+                });
+            }
+            let Ty::Named { name, builtin, .. } = ty else {
+                return None;
+            };
+            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                    return ty_eq_ineligibility_with_type_params(
+                        ty,
+                        &self.type_defs,
+                        &current_type_params,
+                    )
+                    .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason });
                 }
                 return Some(UnsupportedComparison::EnumOrdering(type_name));
             }
@@ -4691,17 +4709,15 @@ impl Checker {
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
                     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        let eligibility = ty_is_eq_eligible_with_type_params(
+                        return ty_eq_ineligibility_with_type_params(
                             ty,
                             &self.type_defs,
                             &current_type_params,
-                        );
-                        return (eligibility != EqEligibility::Eligible).then_some(
-                            UnsupportedComparison::Record {
-                                type_name,
-                                reason: Some(eligibility),
-                            },
-                        );
+                        )
+                        .map(|reason| UnsupportedComparison::Record {
+                            type_name,
+                            reason: Some(reason),
+                        });
                     }
                     Some(UnsupportedComparison::Record {
                         type_name,
@@ -4715,17 +4731,12 @@ impl Checker {
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                     if has_payload_variant {
                         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            let eligibility = ty_is_eq_eligible_with_type_params(
+                            ty_eq_ineligibility_with_type_params(
                                 ty,
                                 &self.type_defs,
                                 &current_type_params,
-                            );
-                            (eligibility != EqEligibility::Eligible).then_some(
-                                UnsupportedComparison::PayloadEnum {
-                                    type_name,
-                                    reason: eligibility,
-                                },
                             )
+                            .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason })
                         } else {
                             Some(UnsupportedComparison::EnumOrdering(type_name))
                         }
@@ -4751,8 +4762,10 @@ impl Checker {
                 if let Some(reason) = reason {
                     (
                         format!(
-                            "`{op}` on record type `{type_name}` is not supported because {}",
-                            Self::structural_eq_ineligibility_reason(reason)
+                            "`{op}` on record type `{type_name}` is not supported because member \
+                             `{}` is ineligible: {}",
+                            reason.member,
+                            Self::structural_eq_ineligibility_reason(reason.reason)
                         ),
                         "compare individual eligible fields explicitly, or match/destructure and \
                          handle managed fields with their supported equality operations"
@@ -4767,12 +4780,32 @@ impl Checker {
             }
             UnsupportedComparison::PayloadEnum { type_name, reason } => (
                 format!(
-                    "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
-                    Self::structural_eq_ineligibility_reason(reason)
+                    "`{op}` on enum `{type_name}` with payload variants is not supported because \
+                     member `{}` is ineligible: {}",
+                    reason.member,
+                    Self::structural_eq_ineligibility_reason(reason.reason)
                 ),
                 "match on the enum and compare eligible payload fields in the relevant arms"
                     .to_string(),
             ),
+            UnsupportedComparison::Tuple { type_name, reason } => {
+                if let Some(reason) = reason {
+                    (
+                        format!(
+                            "`{op}` on tuple type `{type_name}` is not supported because member \
+                             `{}` is ineligible: {}",
+                            reason.member,
+                            Self::structural_eq_ineligibility_reason(reason.reason)
+                        ),
+                        "compare only tuple members that support equality".to_string(),
+                    )
+                } else {
+                    (
+                        format!("`{op}` is not supported for tuple type `{type_name}`"),
+                        "tuple ordering is not structural; compare an explicit member".to_string(),
+                    )
+                }
+            }
             UnsupportedComparison::EnumOrdering(type_name) => (
                 format!("`{op}` is not supported for enum `{type_name}`"),
                 "match on the enum and compare an explicit value in each arm".to_string(),
@@ -4792,11 +4825,11 @@ impl Checker {
                 "structural equality eligibility was unexpectedly unresolved".to_string()
             }
             EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "a field or payload contains layout-managed/non-Copy data `{}`",
+                "it contains layout-managed/non-Copy data `{}`",
                 managed_ty.user_facing()
             ),
             EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "a field or payload contains owned or heap-backed data `{}`",
+                "it contains owned or heap-backed data `{}`",
                 owned_ty.user_facing()
             ),
             EqEligibility::IneligibleUnknown => {

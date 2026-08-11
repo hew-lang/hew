@@ -678,6 +678,9 @@ impl Builder {
     }
 
     fn is_structural_eq_comparison(&self, lhs_ty: &ResolvedTy, rhs_ty: &ResolvedTy) -> bool {
+        if lhs_ty == rhs_ty && matches!(lhs_ty, ResolvedTy::Tuple(_)) {
+            return true;
+        }
         if let (Some(lhs_key), Some(rhs_key)) = (
             self.record_layout_key_for_eq(lhs_ty),
             self.record_layout_key_for_eq(rhs_ty),
@@ -6745,6 +6748,96 @@ impl Builder {
                         next,
                     });
                     self.start_block(next);
+                    return Some(dest);
+                }
+                if matches!(
+                    record_ty,
+                    ResolvedTy::Tuple(_)
+                        | ResolvedTy::Named {
+                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            ..
+                        }
+                ) {
+                    let record_layouts: Vec<crate::model::RecordLayout> = self
+                        .record_field_orders
+                        .iter()
+                        .filter(|(_, fields)| !fields.is_empty())
+                        .map(|(name, fields)| crate::model::RecordLayout {
+                            name: name.clone(),
+                            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                            field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
+                        })
+                        .collect();
+                    let plan =
+                        match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                            &record_ty,
+                            &record_layouts,
+                            &self.enum_layouts,
+                            &self.opaque_handle_names,
+                            &self.lifecycle_registry,
+                        ) {
+                            Ok(plan) => plan,
+                            Err(error) => {
+                                self.diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "structural clone of `{record_ty}` could not be \
+                                             classified: {error}"
+                                        ),
+                                        site: expr.site,
+                                    },
+                                    note: "the checker admitted the clone, but MIR could not build \
+                                           a total member-wise clone plan"
+                                        .to_string(),
+                                });
+                                return None;
+                            }
+                        };
+                    match plan.is_clone_total(
+                        &record_layouts,
+                        &self.enum_layouts,
+                        &self.opaque_handle_names,
+                        &self.lifecycle_registry,
+                    ) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "structural clone of `{record_ty}` contains a drop-only \
+                                         member"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "clone admission must never manufacture ownership for an \
+                                       affine or resource-bearing member"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        Err(error) => {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "structural clone totality for `{record_ty}` could not be \
+                                         proven: {error}"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR requires a total clone and inverse drop plan"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                    }
+                    let dest = self.alloc_local(record_ty.clone());
+                    self.instructions.push(Instr::ValueSnapshotClone {
+                        dest,
+                        src: src_place,
+                        ty: record_ty,
+                        plan,
+                        boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                    });
                     return Some(dest);
                 }
                 // A type parameter that monomorphises to a builtin heap value

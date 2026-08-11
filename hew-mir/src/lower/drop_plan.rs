@@ -6627,6 +6627,13 @@ pub(super) fn string_binder_read_is_user_fn_borrow(
 /// there must get the SAME arg[0] receiver-borrow exemption. Conservative:
 /// `false` unless the only references to `binder` are the borrowed receiver.
 pub(super) fn binder_read_is_borrow_safe_instr(instr: &Instr, binder: u32) -> bool {
+    if matches!(
+        instr,
+        Instr::IntCmp { lhs, rhs, .. }
+            if place_refs_local(*lhs, binder) || place_refs_local(*rhs, binder)
+    ) {
+        return true;
+    }
     if let Instr::CallRuntimeAbi(call) = instr {
         let contract = crate::runtime_symbols::callee_ownership_contract(call.symbol());
         if contract.borrows_string_call_args() {

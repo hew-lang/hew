@@ -347,7 +347,7 @@ tuple__construct	PASS
 tuple__drop_early_return	PASS
 tuple__drop_panic	PASS
 tuple__drop_scope	PASS
-tuple__equality	NYI-INTERNAL	tests/core-matrix/cells/tuple__equality.hew:5:5: error: fail-closed: IntCmp aggregate operands must be named structural-equality types; got lhs=Tuple([I64, String]), rhs=Tuple([I64, String])
+tuple__equality	PASS
 tuple__format	NYI-CLEAN	tests/core-matrix/cells/tuple__format.hew:3:18: error: type `(i64, string)` does not implement `Display` (f-string interpolation requires `impl Display for (i64, string)`)
 tuple__index	PASS
 tuple__iterate	PASS

@@ -488,8 +488,12 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                         if let Some(l) = base_local(p) {
                             if let Some(&root) = alias_of.get(&l) {
-                                // Any unmodelled read of the record itself.
-                                poison!(root);
+                                if binder_read_is_borrow_safe_instr(other, l) {
+                                    site!(Some(root), Some(idx));
+                                } else {
+                                    // Any unmodelled read of the aggregate itself.
+                                    poison!(root);
+                                }
                             } else if field_binders.contains(&l) {
                                 if binder_read_is_borrow_safe_instr(other, l) {
                                     site!(binder_root(l), Some(idx));
@@ -1840,6 +1844,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         if !copy_in_elem_store
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
@@ -2557,6 +2562,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                             && preserved_record_store_local != Some(l)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
@@ -4997,6 +5003,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                         if !cloned_borrowed_ingress
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }

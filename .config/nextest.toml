@@ -116,6 +116,7 @@ leak-timeout = { period = "200ms", result = "fail" }
 default-filter = "not package(hew-wasm) - binary(parity) - binary(parity_ratchet) - binary(playground) - binary(ios_subset)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
+# timeout-class: standard
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -127,6 +128,7 @@ slow-timeout = { period = "100s", terminate-after = 3 }
 # slow when this rule was written; every other platform retains the 300-second
 # ceiling below.
 platform = "cfg(all(target_os = \"macos\", target_arch = \"x86_64\"))"
+# timeout-class: intel-macos
 slow-timeout = { period = "300s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -154,6 +156,7 @@ test-group = "subprocess-intensive"
 # window even when healthy (each spawns compile+link+run children sharing 4
 # cores with up to 7 siblings). Wider terminate budget on ci only; the tests'
 # internal timeouts still bound genuine hangs.
+# timeout-class: subprocess
 slow-timeout = { period = "120s", terminate-after = 4 }
 
 [[profile.ci.overrides]]
@@ -162,6 +165,7 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 # process-tree deadline; this modest outer budget now remains a final backstop.
 filter = "binary(ffi_link_e2e)"
 test-group = "ffi-native-link"
+# timeout-class: ffi-link
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -171,6 +175,7 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # hosted runners.
 filter = "binary(await_e2e)"
 test-group = "subprocess-intensive"
+# timeout-class: subprocess
 slow-timeout = { period = "120s", terminate-after = 4 }
 
 [[profile.ci.overrides]]
@@ -191,6 +196,7 @@ test-group = "real-timing"
 # nextest kill (30 s × 3) bounds a wedged test that bypasses that guard.
 # Does NOT cover A1 (worker/disk death) or A2 (process-wide starvation) —
 # those defeat per-test timeouts entirely; see task #47 / supervisor.rs / channel.rs.
+# timeout-class: timing
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -201,6 +207,7 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 filter = "binary(hew_runtime) and test(/^connection::tests::(conn_actor_drop_closes_transport_before_join|connmgr_remove_releases_connections_lock_before_reader_wake|install_connection_actor_shutdown_releases_lock_before_reader_wake|connmgr_free_waits_for_self_removed_reader_lifecycle|connmgr_remove_skips_stale_route_cleanup_after_replacement|connmgr_publish_skips_removed_connection_(while_establish_blocks|without_routing_table))$/)"
 test-group = "real-timing"
 # Single process-level deadlock backstop; the positive channel waits have no deadlines.
+# timeout-class: thread-handshake
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
@@ -220,6 +227,7 @@ test-group = "real-timing"
 # kill (30 s × 3) bounds a wedged test that bypasses that guard.
 # Does NOT cover A1 (worker/disk death) or A2 (process-wide starvation) —
 # those defeat per-test timeouts entirely; see task #47 / supervisor.rs / channel.rs.
+# timeout-class: timing
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -244,6 +252,7 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 # which left it exposed to the concurrent-load timing flake).
 filter = "test(remote_ask_round_trip_returns_exact_values) | test(wire_cbor_cross_process_round_trip) | test(remote_ask_under_partition_fails_closed_not_hang)"
 test-group = "real-timing"
+# timeout-class: distributed
 slow-timeout = { period = "120s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
@@ -259,6 +268,7 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 # regression fails fast (wrong read result), and the wide period only prevents a
 # false KILL on a slow VM. The assertion stays strict (next() must return None).
 filter = "test(tcp_stream_backing_records_error_on_reset)"
+# timeout-class: qemu-network
 slow-timeout = { period = "120s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
@@ -294,6 +304,7 @@ path = "junit.xml"
 # distinct profile name is sufficient to give this run its own report; no
 # other ci behaviour needs duplicating for a single small crate.
 default-filter = "all()"
+# timeout-class: standard
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [profile.ci-cabi.junit]
@@ -308,6 +319,7 @@ path = "junit.xml"
 # use: freebsd.yml's/gate-freebsd's dedicated dwarf_debugger_locals_e2e run,
 # which follows the workspace and hew-cabi passes in the same FreeBSD job.
 default-filter = "all()"
+# timeout-class: standard
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [profile.ci-focused.junit]
@@ -340,6 +352,7 @@ path = "junit.xml"
 # profile provides full coverage and includes this selected test.
 default-filter = "test(every_hew_file_roundtrips_through_formatter)"
 test-threads = "num-cpus"
+# timeout-class: smoke
 slow-timeout = { period = "60s", terminate-after = 2 }
 
 [[profile.smoke.overrides]]

@@ -617,7 +617,14 @@ fn execute_gate(root: &Path, name: &str, filter_expr: Option<&str>) -> Result<()
                 (python(), &["scripts/tests/test_target_dir_gate_wiring.py"]),
             ],
         ),
-        "cutover-contract" => run_program(root, python(), &["scripts/tests/test_xtask_cutover.py"]),
+        "cutover-contract" => run_many(
+            root,
+            &[
+                (python(), &["scripts/tests/test_xtask_cutover.py"]),
+                (python(), &["scripts/tests/test_timeout_policy.py"]),
+                (python(), &["scripts/timeout-policy.py"]),
+            ],
+        ),
         "sanitizer-contract" => {
             run_program(root, "bash", &["scripts/tests/test_sanitizer_gate.sh"])
         }

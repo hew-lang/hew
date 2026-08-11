@@ -1072,6 +1072,7 @@ jobs:
   release:
     needs: [build, build-linux, build-freebsd, build-freebsd-aarch64, linux-packages, docker-clean-room-test]
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     # Requires successful macOS, Windows, Linux, FreeBSD x86_64, FreeBSD
     # aarch64, package, and clean-room validation jobs. Alpine/musl assets are
     # deferred until the llvm-alpine:22 toolchain is repaired.

@@ -32,3 +32,4 @@ fn case_plain_break(c: bool) -> i64 {
 fn main() {
     println(case_unsafe(true));
 }
+// compiletest: check-fail

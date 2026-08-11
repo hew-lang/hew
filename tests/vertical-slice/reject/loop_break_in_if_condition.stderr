@@ -1,0 +1,7 @@
+$DIR/tests/vertical-slice/reject/loop_break_in_if_condition.hew:13:34: error: type mismatch: expected `i64`, found `()`
+ 13 |     let x: i64 = if c { 5 } else {
+    |                                  ^
+$DIR/tests/vertical-slice/reject/loop_break_in_if_condition.hew:13:18: error: checker produced-value graph is incomplete: join dependency child SpanKey { start: 682, end: 688, module_idx: 0 } changes type from I64 to Error
+ 13 |     let x: i64 = if c { 5 } else {
+    |                  ^^^^^^^^^^^^^^^^^
+type errors found

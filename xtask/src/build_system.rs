@@ -706,12 +706,8 @@ fn execute_gate(root: &Path, name: &str, filter_expr: Option<&str>) -> Result<()
         "fuzz-corpus" => run_program(root, "bash", &["scripts/fuzz/hydrate-corpus.sh"]),
         "fuzz-oracle" => fuzz_oracle(root),
         "fuzz-oracle-selftest" => compiled_hew_script(root, "scripts/fuzz/oracle-selftest.sh", &[]),
-        "checked-mir-verify" => {
-            compiled_hew_script(root, "scripts/checked-mir-corpus.sh", &["verify"])
-        }
-        "checked-mir-golden" => {
-            compiled_hew_script(root, "scripts/checked-mir-corpus.sh", &["golden"])
-        }
+        "checked-mir-verify" => checked_mir_snapshots(root, false),
+        "checked-mir-golden" => checked_mir_snapshots(root, true),
         "checked-mir-run" => compiled_hew_script(root, "scripts/checked-mir-corpus.sh", &["run"]),
         "checked-mir-expect" => {
             compiled_hew_script(root, "scripts/checked-mir-corpus.sh", &["expect"])
@@ -1637,6 +1633,18 @@ fn compiled_hew_script(root: &Path, script: &str, args: &[&str]) -> Result<()> {
     let mut command = Command::new(script);
     command.current_dir(root).env("HEW_BIN", hew).args(args);
     run_command(&mut command, script)
+}
+
+fn checked_mir_snapshots(root: &Path, review: bool) -> Result<()> {
+    build_native(root, Profile::Debug, None, false)?;
+    let hew = cargo_output_dir(root, "debug", None)?.join(executable("hew"));
+    if review {
+        env::set_var("INSTA_UPDATE", "new");
+    } else {
+        env::set_var("INSTA_UPDATE", "no");
+    }
+    crate::snapshots::checked_mir_corpus(root, &hew);
+    Ok(())
 }
 
 fn fuzz_oracle(root: &Path) -> Result<()> {

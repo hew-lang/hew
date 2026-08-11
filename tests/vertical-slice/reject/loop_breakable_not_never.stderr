@@ -1,0 +1,19 @@
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:16:34: error: type mismatch: expected `i64`, found `()`
+ 16 |     let x: i64 = if c { 5 } else { loop { unsafe { break; } } };
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:22:34: error: type mismatch: expected `i64`, found `()`
+ 22 |     let x: i64 = if c { 5 } else { loop { if c { break; } } };
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:28:34: error: type mismatch: expected `i64`, found `()`
+ 28 |     let x: i64 = if c { 5 } else { loop { break; } };
+    |                                  ^^^^^^^^^^^^^^^^^^^
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:16:18: error: checker produced-value graph is incomplete: join dependency child SpanKey { start: 848, end: 854, module_idx: 0 } changes type from I64 to Error
+ 16 |     let x: i64 = if c { 5 } else { loop { unsafe { break; } } };
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:22:18: error: checker produced-value graph is incomplete: join dependency child SpanKey { start: 1020, end: 1026, module_idx: 0 } changes type from I64 to Error
+ 22 |     let x: i64 = if c { 5 } else { loop { if c { break; } } };
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+$DIR/tests/vertical-slice/reject/loop_breakable_not_never.hew:28:18: error: checker produced-value graph is incomplete: join dependency child SpanKey { start: 1182, end: 1188, module_idx: 0 } changes type from I64 to Error
+ 28 |     let x: i64 = if c { 5 } else { loop { break; } };
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+type errors found

@@ -7,3 +7,4 @@
 fn main() {
     let _t: Task = 0;
 }
+// compiletest: check-fail

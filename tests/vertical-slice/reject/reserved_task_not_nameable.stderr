@@ -1,0 +1,4 @@
+$DIR/tests/vertical-slice/reject/reserved_task_not_nameable.hew:8:13: error: Task<T> is a compiler-internal type and cannot be written in source. Use `fork name = expr` to create a task handle; the binding's type is inferred automatically.
+ 8 |     let _t: Task = 0;
+   |             ^^^^^
+type errors found

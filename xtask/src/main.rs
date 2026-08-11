@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 mod build_system;
+mod snapshots;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const DEFERRED_BLOCK_START: &str = "```json sandbox-fixtures-deferred";

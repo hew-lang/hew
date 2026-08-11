@@ -335,6 +335,13 @@ expect_check_fail_error_count_no_cascade() {
   done
 }
 
+# Native reject fixtures with a stable diagnostic contract use adjacent
+# `.stderr` snapshots. The directive lives in each source, so adding or removing
+# a case cannot silently desynchronise a second global inventory.
+python3 "${ROOT}/scripts/hew-compiletest.py" \
+  --hew-bin "${HEW}" \
+  --directory "${ROOT}/tests/vertical-slice/reject"
+
 # Compile a fixture to a native binary (no memory cap — the LLVM codegen +
 # clang/ld.lld link pipeline mmaps the multi-hundred-MB `libhew.a` and needs
 # well over 1 GB of address space), then run ONLY the produced binary under a
@@ -5390,14 +5397,6 @@ expect_check_fail_contains \
 # ---------------------------------------------------------------------------
 run_accept_expect_status "reserved_name_shadow_variant_call" 0
 
-# Reject: `Task` in a type annotation without a local `Task` declaration must
-# still raise TaskNotNameable — the reservation guard is only bypassed when
-# the user has declared their own type named `Task`.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/reserved_task_not_nameable.hew" \
-    "compiler-internal type" \
-    "reserved_task_not_nameable"
-
 # Layout: accept/imported_shadow_variant_call.hew imports
 # accept/imported_shadow_errmod.hew.  A pub enum in a non-root (imported)
 # module that declares NotFound(string) must have its bare constructor
@@ -5429,46 +5428,6 @@ run_accept_expect_status "loop_breakless_match_arm" 3
 #   (3) plain bare `break`
 # Each case pairs `if c { 5 }` (i64) with the breakable loop; the type
 # mismatch (i64 vs Unit) must be detected and rejected.
-if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/loop_breakable_not_never.hew" >"${reject_output}" 2>&1; then
-  echo "expected loop_breakable_not_never to fail (breakable loop must not be typed Never)" >&2
-  exit 1
-fi
-grep -qF "type mismatch" "${reject_output}"
-echo "PASS loop_breakable_not_never (reject)"
-
-# Reject: a `break` reachable from a loop-header, scrutinee, or iterable
-# sub-expression must mark the enclosing loop breakable too.  These cover the
-# sub-expression fields the walker previously skipped (recursing only into
-# bodies/arms): `if`/`while` conditions, `for` iterables, and `match`/`if let`
-# scrutinees.  Each is a standalone file so a regression in one position can
-# never be masked by another position still rejecting.  A loop-header break
-# (`while` condition, `for` iterable) targets the OUTER loop because the header
-# is evaluated in the enclosing scope.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/loop_break_in_if_condition.hew" \
-  "type mismatch" "loop_break_in_if_condition"
-echo "PASS loop_break_in_if_condition (reject)"
-
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/loop_break_in_while_condition.hew" \
-  "type mismatch" "loop_break_in_while_condition"
-echo "PASS loop_break_in_while_condition (reject)"
-
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/loop_break_in_for_iterable.hew" \
-  "type mismatch" "loop_break_in_for_iterable"
-echo "PASS loop_break_in_for_iterable (reject)"
-
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/loop_break_in_match_scrutinee.hew" \
-  "type mismatch" "loop_break_in_match_scrutinee"
-echo "PASS loop_break_in_match_scrutinee (reject)"
-
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/loop_break_in_iflet_scrutinee.hew" \
-  "type mismatch" "loop_break_in_iflet_scrutinee"
-echo "PASS loop_break_in_iflet_scrutinee (reject)"
-
 # ---------------------------------------------------------------------------
 # string.split("", "") and split-to-chars semantics (empty separator)
 #

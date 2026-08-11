@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import NoReturn
@@ -13,6 +15,7 @@ import xml.etree.ElementTree as ET
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EXPECTED = REPO_ROOT / "scripts/hew-suite-expected-tests.txt"
+IMPORT_RE = re.compile(r"(?m)^\s*(?:pub\s+)?import\s+([A-Za-z_][A-Za-z0-9_:]*)")
 
 
 def die(message: str) -> NoReturn:
@@ -137,6 +140,60 @@ def fixture_identities(inventory: list[str], fixture: Path) -> set[str]:
     return {identity for identity in inventory if identity.startswith(prefix)}
 
 
+def resolve_standard_module(module: str) -> Path:
+    parts = module.split("::")
+    relative = Path(*parts[1:])
+    candidates = [
+        REPO_ROOT / "std" / relative.with_suffix(".hew"),
+        REPO_ROOT / "std" / relative / f"{relative.name}.hew",
+    ]
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    if len(existing) != 1:
+        die(f"cannot resolve imported module {module}: candidates={candidates}")
+    return existing[0]
+
+
+def fixture_dependencies(fixture: Path) -> list[Path]:
+    pending = [fixture.resolve(), (REPO_ROOT / "std/prelude.hew").resolve()]
+    dependencies: set[Path] = set()
+    while pending:
+        path = pending.pop()
+        if path in dependencies:
+            continue
+        if not path.is_file():
+            die(f"fixture dependency is missing: {path}")
+        dependencies.add(path)
+        text = path.read_text(encoding="utf-8")
+        for match in IMPORT_RE.finditer(text):
+            module = match.group(1).removesuffix("::")
+            if not module.startswith("std::"):
+                die(f"unsupported non-standard import in {path}: {module}")
+            pending.append(resolve_standard_module(module).resolve())
+
+    for source in list(dependencies):
+        if not source.is_relative_to(REPO_ROOT / "std"):
+            continue
+        parent = source.parent
+        while parent.is_relative_to(REPO_ROOT / "std"):
+            manifest = parent / "hew.toml"
+            if manifest.is_file():
+                dependencies.add(manifest.resolve())
+            if parent == REPO_ROOT / "std":
+                break
+            parent = parent.parent
+    return sorted(dependencies)
+
+
+def dependency_digest(fixture: Path) -> str:
+    digest = hashlib.sha256()
+    for path in fixture_dependencies(fixture):
+        digest.update(normalize_path(path).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     subcommands = parser.add_subparsers(dest="action", required=True)
@@ -153,6 +210,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     report_parser.add_argument("--inventory", type=Path, required=True)
     report_parser.add_argument("--fixture", type=Path, required=True)
     report_parser.add_argument("--report", type=Path, required=True)
+    digest_parser = subcommands.add_parser("digest")
+    digest_parser.add_argument("--fixture", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -179,6 +238,8 @@ def main(argv: list[str]) -> int:
         assert_same_identities(
             expected, set(actual), f"JUnit report for {args.fixture}"
         )
+    else:
+        print(dependency_digest(args.fixture.resolve()))
     return 0
 
 

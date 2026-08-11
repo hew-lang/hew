@@ -123,15 +123,10 @@ if [[ -z "$libhew_archive" ]]; then
     exit 1
 fi
 
-suite_hash="$({
+base_hash="$({
     printf '%s\n' 'hew-suite-cache-v3' 'hew test <fixture> --format junit'
     git hash-object "$HEW_BIN" "$libhew_archive" "$0" "$HEW_JUNIT_PY" \
         "$HEW_INVENTORY_PY" "$EXPECTED_TESTS_FILE"
-    find "$REPO_ROOT" \
-        \( -path "$REPO_ROOT/target" -o -path "$REPO_ROOT/.git" -o -path "$REPO_ROOT/.tmp" \) -prune -o \
-        -type f \( -name '*.hew' -o -name '*.toml' -o -name '*.lock' \) -print \
-        | LC_ALL=C sort \
-        | git hash-object --stdin-paths
     env | LC_ALL=C sort \
         | sed -n '/^HEW_/p' \
         | sed '/^HEW_BIN=/d;/^HEW_TEST_CACHE_DIR=/d'
@@ -148,6 +143,8 @@ suite_hash="$({
     printf '%s\n' "${ImageOS:-}" "${ImageVersion:-}"
 } | git hash-object --stdin)"
 reports=()
+cache_hits=0
+cache_misses=0
 while IFS= read -r listed_fixture; do
     [[ -n "$listed_fixture" ]] || continue
     if [[ "$listed_fixture" = /* ]]; then
@@ -159,17 +156,20 @@ while IFS= read -r listed_fixture; do
         echo "error: listed Hew fixture is missing: $fixture" >&2
         exit 1
     fi
-    fixture_hash="$(git hash-object "$fixture")"
-    cache_key="$(printf 'hew-suite-cache-v3\n%s\n%s\n%s\n' "$suite_hash" "$listed_fixture" "$fixture_hash" | git hash-object --stdin)"
+    fixture_hash="$(python3 "$HEW_INVENTORY_PY" digest --fixture "$fixture")"
+    cache_key="$(printf 'hew-suite-cache-v3\n%s\n%s\n%s\n' "$base_hash" "$listed_fixture" "$fixture_hash" | git hash-object --stdin)"
     cached_report="$CACHE_DIR/$cache_key.xml"
     if [[ -s "$cached_report" ]] \
         && python3 "$HEW_INVENTORY_PY" check-report \
             --inventory "$INVENTORY_FILE" --fixture "$fixture" \
             --report "$cached_report" >/dev/null 2>&1; then
+        cache_hits=$((cache_hits + 1))
         reports+=("$cached_report")
         continue
     fi
 
+    cache_misses=$((cache_misses + 1))
+    echo "--> running $listed_fixture"
     fresh_report="$CACHE_DIR/$cache_key.xml.new.$$"
     fresh_stderr="$CACHE_DIR/$cache_key.stderr.new.$$"
     rc=0
@@ -199,6 +199,7 @@ if [[ ${#reports[@]} -eq 0 ]]; then
     exit 1
 fi
 python3 "$HEW_JUNIT_PY" --merge "$JUNIT_OUTPUT" "${reports[@]}"
+echo "Cache: $cache_hits hit fixture(s), $cache_misses re-run fixture(s)."
 
 # Fail closed if the runner produced no report at all: a runner crash before
 # any output must never read as an empty (thus vacuously matching) run.

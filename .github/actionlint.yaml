@@ -1,0 +1,4 @@
+paths:
+  .github/workflows/deploy-docs.yml:
+    ignore:
+      - 'constant expression "false" in condition'

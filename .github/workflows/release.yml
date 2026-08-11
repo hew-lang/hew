@@ -251,6 +251,7 @@ jobs:
 
       - name: Smoke test hew-lsp and hew-observe (Windows)
         if: startsWith(matrix.target, 'windows')
+        shell: pwsh
         run: |
           $env:HEW_RELEASE_TARGET = '${{ matrix.rust_target }}'
           cargo xtask gate release-verify

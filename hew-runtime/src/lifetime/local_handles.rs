@@ -2,7 +2,17 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+// KEEP(wasm32 non-test): `AtomicBool` types `SupervisorControl::teardown_claimed`,
+// the single-shot claim that makes supervisor reclamation happen exactly once —
+// but `SupervisorControl` and its impl are `#[cfg(not(target_arch = "wasm32"))]`
+// while this import is unconditional. It is also used by
+// `LocalHandles::fail_next_registration` under `cfg(test)`. A wasm32 non-test
+// build is therefore the only configuration with no user for this one name;
+// `AtomicUsize` and `Ordering` still have users there, which is why rustc flags
+// the name and not the line. Split out so the allow covers `AtomicBool` alone.
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(unused_imports))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};

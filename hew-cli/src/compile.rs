@@ -54,6 +54,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        module_search_paths: None,
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -72,6 +73,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         enable_wasm_target: false,
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        module_search_paths: None,
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
     }
@@ -550,6 +552,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
 
         let module_graph = build_module_graph(
@@ -637,6 +640,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
 
         let module_graph = build_module_graph(
@@ -692,6 +696,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -749,6 +754,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -808,6 +814,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -865,6 +872,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
+            module_search_paths: None,
         };
         let module_graph = build_module_graph(
             &root_path,

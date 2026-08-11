@@ -194,28 +194,42 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     // Detect and build FFI staticlib if this is an ecosystem package with
     // a Cargo.toml (e.g. db/sqlite, image/magick).
     let cwd = root;
-    let ffi_lib = match detect_and_build_ffi_lib(&cwd) {
-        Ok(lib) => lib,
-        Err(e) => {
-            eprintln!("Error building FFI library: {e}");
-            std::process::exit(1);
-        }
-    };
+    let ffi_lib = resolve_ffi_lib(&cwd);
+
+    let compile_paths = resolve_compile_paths(&cwd);
 
     let summary = runner::run_tests(
         &all_tests,
         filter,
         include_ignored,
         ffi_lib.as_deref(),
+        &compile_paths,
         timeout,
-        args.jobs
-            .map_or_else(runner::default_jobs, std::num::NonZeroUsize::get),
+        requested_jobs(args.jobs),
     );
     output::output_results(&summary, use_color, format);
 
     if summary.failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn requested_jobs(jobs: Option<std::num::NonZeroUsize>) -> usize {
+    jobs.map_or_else(runner::default_jobs, std::num::NonZeroUsize::get)
+}
+
+fn resolve_ffi_lib(project_dir: &Path) -> Option<String> {
+    detect_and_build_ffi_lib(project_dir).unwrap_or_else(|error| {
+        eprintln!("Error building FFI library: {error}");
+        std::process::exit(1);
+    })
+}
+
+fn resolve_compile_paths(project_dir: &Path) -> runner::TestCompilePaths {
+    runner::TestCompilePaths::resolve(project_dir).unwrap_or_else(|error| {
+        eprintln!("Error: cannot prepare in-process test compilation: {error}");
+        std::process::exit(1);
+    })
 }
 
 fn canonicalize_test_paths(paths: &[PathBuf]) -> Result<Vec<String>, String> {

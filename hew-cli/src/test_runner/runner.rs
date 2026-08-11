@@ -1,7 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -111,6 +111,61 @@ pub struct TestSummary {
     pub ignored: usize,
 }
 
+/// Filesystem inputs needed by the in-process native compiler.
+#[derive(Debug)]
+pub struct TestCompilePaths {
+    paths: crate::NativeCompilePaths,
+}
+
+impl TestCompilePaths {
+    /// Resolve the standard library and runtime archive before scheduling work.
+    pub fn resolve(project_dir: &Path) -> Result<Self, String> {
+        let module_search_paths =
+            hew_types::module_registry::build_module_search_paths_for(Some(project_dir));
+        let target = crate::target::TargetSpec::from_requested(None)
+            .map_err(|error| format!("cannot determine the host target: {error}"))?;
+        let hew_lib = crate::link::find_hew_lib(
+            target.hew_lib_name(),
+            target.normalized_triple(),
+            target.can_run_on_host(),
+        )?;
+        Self::from_explicit(module_search_paths, PathBuf::from(hew_lib))
+    }
+
+    fn from_explicit(module_search_paths: Vec<PathBuf>, hew_lib: PathBuf) -> Result<Self, String> {
+        let has_stdlib = module_search_paths
+            .iter()
+            .any(|root| root.join("std/builtins.hew").is_file());
+        if !has_stdlib {
+            let tried = module_search_paths
+                .iter()
+                .map(|root| root.join("std/builtins.hew").display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Hew standard library is missing; looked for std/builtins.hew at: {}",
+                if tried.is_empty() {
+                    "<no search roots>"
+                } else {
+                    &tried
+                }
+            ));
+        }
+        if !hew_lib.is_file() {
+            return Err(format!(
+                "Hew runtime archive is missing at `{}`",
+                hew_lib.display()
+            ));
+        }
+        Ok(Self {
+            paths: crate::NativeCompilePaths {
+                module_search_paths,
+                hew_lib,
+            },
+        })
+    }
+}
+
 /// Run a set of test cases.
 ///
 /// Each test is compiled to a native binary via the `hew compile` pipeline and
@@ -121,14 +176,30 @@ pub fn run_tests(
     filter: Option<&str>,
     include_ignored: bool,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
     jobs: usize,
 ) -> TestSummary {
     if jobs <= 1 {
-        return run_tests_serial(tests, filter, include_ignored, ffi_lib, timeout);
+        return run_tests_serial(
+            tests,
+            filter,
+            include_ignored,
+            ffi_lib,
+            compile_paths,
+            timeout,
+        );
     }
 
-    run_tests_parallel(tests, filter, include_ignored, ffi_lib, timeout, jobs)
+    run_tests_parallel(
+        tests,
+        filter,
+        include_ignored,
+        ffi_lib,
+        compile_paths,
+        timeout,
+        jobs,
+    )
 }
 
 fn run_tests_serial(
@@ -136,6 +207,7 @@ fn run_tests_serial(
     filter: Option<&str>,
     include_ignored: bool,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
 ) -> TestSummary {
     let mut results = Vec::new();
@@ -190,7 +262,7 @@ fn run_tests_serial(
                 continue;
             }
 
-            let result = run_single_test(&source, test, ffi_lib, timeout);
+            let result = run_single_test(&source, test, ffi_lib, compile_paths, timeout);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -219,6 +291,7 @@ fn run_tests_parallel(
     filter: Option<&str>,
     include_ignored: bool,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
     jobs: usize,
 ) -> TestSummary {
@@ -295,9 +368,9 @@ fn run_tests_parallel(
                     let _serial_guard = serial_gate
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    run_single_test(&task.source, &task.test, ffi_lib, timeout)
+                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
                 } else {
-                    run_single_test(&task.source, &task.test, ffi_lib, timeout)
+                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
                 };
                 result_slots
                     .lock()
@@ -347,6 +420,7 @@ fn compile_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
 ) -> Result<CompiledTestArtifact, String> {
     if ffi_lib.is_some() {
         return Err("hew test FFI libraries are unavailable on the v0.5 compile path".to_string());
@@ -383,7 +457,11 @@ fn compile_test(
     let binary_path = emit_dir.path().join(binary_name);
 
     crate::diagnostic::start_diagnostic_capture();
-    let compile_result = crate::compile_native_binary(tmp_source.path(), &binary_path);
+    let compile_result = crate::compile_native_binary_with_paths(
+        tmp_source.path(),
+        &binary_path,
+        Some(&compile_paths.paths),
+    );
     let diagnostics = crate::diagnostic::finish_diagnostic_capture();
     if compile_result.is_err() {
         return Err(if diagnostics.is_empty() {
@@ -406,11 +484,12 @@ fn run_single_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(source, test, ffi_lib) {
+    let artifact = match compile_test(source, test, ffi_lib, compile_paths) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -522,6 +601,58 @@ mod tests {
         })
     }
 
+    fn cargo_test_compile_paths() -> &'static TestCompilePaths {
+        static PATHS: OnceLock<TestCompilePaths> = OnceLock::new();
+        PATHS.get_or_init(|| {
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("hew-cli should have a workspace parent")
+                .to_path_buf();
+            let cargo_profile_dir = Path::new(env!("OUT_DIR"))
+                .ancestors()
+                .nth(3)
+                .expect("OUT_DIR should be below the Cargo profile directory");
+            let target = crate::target::TargetSpec::from_requested(None)
+                .expect("the test host target should resolve");
+            TestCompilePaths::from_explicit(
+                vec![workspace_root],
+                cargo_profile_dir.join(target.hew_lib_name()),
+            )
+            .expect("make stdlib should provide explicit test compiler paths")
+        })
+    }
+
+    #[test]
+    fn explicit_compile_paths_name_missing_standard_library() {
+        let dir = tempfile::tempdir().expect("create path fixture");
+        let archive = dir.path().join("libhew.a");
+        std::fs::write(&archive, []).expect("create archive fixture");
+
+        let error = TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive)
+            .expect_err("a root without std/builtins.hew must fail");
+
+        assert!(error.contains("standard library"), "error: {error}");
+        assert!(error.contains("std/builtins.hew"), "error: {error}");
+    }
+
+    #[test]
+    fn explicit_compile_paths_name_missing_runtime_archive() {
+        let dir = tempfile::tempdir().expect("create path fixture");
+        std::fs::create_dir(dir.path().join("std")).expect("create std fixture");
+        std::fs::write(dir.path().join("std/builtins.hew"), []).expect("create builtins fixture");
+        let archive = dir.path().join("missing-libhew.a");
+
+        let error =
+            TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive.clone())
+                .expect_err("a missing runtime archive must fail");
+
+        assert!(error.contains("runtime archive"), "error: {error}");
+        assert!(
+            error.contains(&archive.display().to_string()),
+            "error: {error}"
+        );
+    }
+
     /// Helper to run tests from inline source.
     fn run_inline(source: &str) -> TestSummary {
         run_inline_with_timeout(source, DEFAULT_TEST_TIMEOUT)
@@ -544,7 +675,15 @@ mod tests {
                 t
             })
             .collect();
-        run_tests(&tests, None, false, None, timeout, 1)
+        run_tests(
+            &tests,
+            None,
+            false,
+            None,
+            cargo_test_compile_paths(),
+            timeout,
+            1,
+        )
     }
 
     #[test]
@@ -720,7 +859,21 @@ fn test_timeout() {
             },
         ];
 
-        let summary = run_tests(&tests, None, false, None, DEFAULT_TEST_TIMEOUT, 2);
+        let unused_paths = TestCompilePaths {
+            paths: crate::NativeCompilePaths {
+                module_search_paths: Vec::new(),
+                hew_lib: PathBuf::new(),
+            },
+        };
+        let summary = run_tests(
+            &tests,
+            None,
+            false,
+            None,
+            &unused_paths,
+            DEFAULT_TEST_TIMEOUT,
+            2,
+        );
         let names: Vec<_> = summary
             .results
             .iter()

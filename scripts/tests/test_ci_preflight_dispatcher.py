@@ -111,6 +111,14 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert "  - make structural-lint " in local.stdout, local.stdout
     assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
 
+    fallback = run_dispatcher("Cargo.toml")
+    assert fallback.returncode == 0, fallback.stderr
+    assert "  - make structural-lint " not in fallback.stdout, fallback.stdout
+    assert "  - make lint " in fallback.stdout, fallback.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert re.search(r"^lint:.*\bstructural-lint\b", makefile, re.MULTILINE), makefile
+
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(
         r"name: Provision pinned ast-grep toolchain\s+uses: ./\.github/actions/setup-ast-grep",

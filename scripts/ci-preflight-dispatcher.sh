@@ -901,9 +901,9 @@ case "$LANE" in
         # violations, formatter-AST bugs) without building and running test-codegen.
         #
         # On smoke pass, the heavy tier runs in full — no coverage is dropped.
-        # make lint follows smoke because it adds hew-fmt-check (Hew file
-        # formatting), runtime-poison-safe-lint, lint-wasm-todo, and verify-ffi
-        # which the smoke tier does not include.
+        # make lint follows smoke because it adds structural-lint,
+        # hew-fmt-check (Hew file formatting), runtime-poison-safe-lint,
+        # lint-wasm-todo, and verify-ffi which the smoke tier does not include.
         #
         # Hew-language suites run after the Rust workspace to keep the ratchet
         # verdict separate from the Rust test verdict.
@@ -911,7 +911,6 @@ case "$LANE" in
         # The sequence below mirrors CI's build-and-test job exactly so a green
         # fallback preflight predicts a green merge-queue outcome.
         add_command "make ci-preflight-smoke"
-        add_command "make structural-lint"
         add_command "make lint"
         add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"

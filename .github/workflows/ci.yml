@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A push to a branch makes any run still going for that same ref obsolete:
+# its verdict can no longer gate anything, because a newer commit exists.
+# Those runs were still holding runners, so 15 open pull requests could
+# starve the queue and nothing scheduled at all. Never cancel on main —
+# a push there must complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   checks: write

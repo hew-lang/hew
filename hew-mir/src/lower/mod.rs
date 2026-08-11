@@ -600,6 +600,12 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     pub(crate) binding_locals: HashMap<BindingId, Place>,
+    /// Owned match-like payload bindings whose lexical mapping is restored
+    /// when their body ends, but whose concrete backend place must remain
+    /// available to scope-exit drop elaboration. Ownership finalization runs
+    /// against the lexical map first; this side table is merged immediately
+    /// afterward so it cannot create a spurious live alias or retain.
+    pub(crate) deferred_drop_binding_locals: HashMap<BindingId, Place>,
     /// Count of anonymous caller-owned temp bindings minted so far in this
     /// function. The next mint is
     /// `BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - count)` — a
@@ -5791,6 +5797,8 @@ pub(crate) fn lower_function(
 
     let string_derivation = finalize_string_ownership(&mut raw, &mut builder, &dataflow_result);
     let bytes_derivation = finalize_bytes_ownership(&mut raw, &mut builder, &dataflow_result);
+    let deferred_drop_binding_locals = std::mem::take(&mut builder.deferred_drop_binding_locals);
+    builder.binding_locals.extend(deferred_drop_binding_locals);
 
     // Compute cooperate-check sites from the CFG. Empty for leaf functions
     // (< 10 MIR statements, no calls, no loops). Codegen reads

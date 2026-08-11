@@ -647,6 +647,10 @@ impl Builder {
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
             }
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 — record provenance for a heap-owning TOP-LEVEL while-let
             // payload binder so its move-out routes through default-deny.
@@ -699,6 +703,10 @@ impl Builder {
             let previous = self.binding_locals.insert(binding.binding, dest);
             if let Some(local) = base_local(dest) {
                 self.transient_local_scopes.insert(local, body.scope);
+            }
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
             }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 F2 — nested while-let binder bound from a transient predicate
@@ -789,8 +797,9 @@ impl Builder {
             .truncate(active_snapshot_parent_mark);
         self.active_scopes.pop();
         self.loop_stack.pop();
-        // Restore the prior `binding_locals` entries so the binding scope
-        // ends at the body's end — matches Match-arm body-block semantics.
+        // Restore the lexical map for every body-scoped payload. Owned payload
+        // places remain available through `deferred_drop_binding_locals` and
+        // are merged only after ownership finalization has derived retains.
         for (binding, previous) in overwritten_bindings.into_iter().rev() {
             if let Some(previous) = previous {
                 self.binding_locals.insert(binding, previous);
@@ -1508,6 +1517,10 @@ impl Builder {
                 },
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 — record provenance for a heap-owning TOP-LEVEL if-let
             // payload binder so its move-out routes through default-deny.
@@ -1558,6 +1571,10 @@ impl Builder {
                 },
             });
             let previous = self.binding_locals.insert(binding.binding, dest);
+            if keep_for_drop_elab {
+                self.deferred_drop_binding_locals
+                    .insert(binding.binding, dest);
+            }
             overwritten_bindings.push((binding.binding, previous));
             // #2523 F2 — nested if-let binder bound from a transient predicate
             // copy; reject a heap-owning move-out fail-closed.
@@ -1600,7 +1617,9 @@ impl Builder {
         self.emit_pending_defers(body.scope);
         self.active_scopes.pop();
 
-        // Restore binding_locals after then-arm scope ends.
+        // Restore lexical mappings now. Owned payload places remain available
+        // in `deferred_drop_binding_locals` for function-wide drop elaboration;
+        // exit-state dataflow limits their drop to the matched branch.
         for (binding, previous) in overwritten_bindings.into_iter().rev() {
             if let Some(previous) = previous {
                 self.binding_locals.insert(binding, previous);

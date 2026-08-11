@@ -803,6 +803,32 @@ pub(super) fn elaborate(
             &builder.locals,
             &projection_alias_tainted,
         );
+    // A projected builtin handle can defer to its enum carrier only when that
+    // carrier actually earned an `EnumInPlace` drop. If carrier admission was
+    // withheld, suppressing the binder as an alias removes both release paths.
+    // Keep alias suppression only for the exact carrier bindings present in the
+    // enum allow-set; otherwise the binder remains the sole close authority.
+    let payload_alias_carriers = collect_payload_alias_map(&checked.blocks);
+    borrowed_builtin_handle_projection_aliases.retain(|binding| {
+        let Some(alias_local) = builder
+            .binding_locals
+            .get(binding)
+            .and_then(|place| base_local(*place))
+        else {
+            return false;
+        };
+        let Some(carrier_local) = payload_alias_carriers.get(&alias_local) else {
+            return true;
+        };
+        owned_locals_snapshot.iter().any(|(carrier, _, _)| {
+            enum_composite_drop_allowed.contains(carrier)
+                && builder
+                    .binding_locals
+                    .get(carrier)
+                    .and_then(|place| base_local(*place))
+                    == Some(*carrier_local)
+        })
+    });
     let owned_tuple_handle_projections = derive_owned_tuple_handle_projection_bindings(
         &checked.blocks,
         &owned_locals_snapshot,
@@ -6916,21 +6942,12 @@ pub(super) fn enumerate_exits(
                 )
             })
     };
-    // Projection-alias taint: a binding that is a non-owning interior alias of a
-    // composite (a match/if-let payload binder destructured out of an enum
-    // scrutinee — `Ok(inner)` / `Some(s)` — or a `*FieldLoad` interior pointer).
-    // Such a binding NEVER solely owns its value; the OWNING composite frees it
-    // through its recursive `EnumInPlace` / `RecordInPlace` / `TupleInPlace` drop.
-    // A scope-close `Goto` must NOT fire a drop for one: when `Ok(inner)` is bound
-    // and the inner `Option<string>` (`inner`) leaves scope crossing the join, the
-    // outer `Result` composite is STILL live past the join and frees `inner`
-    // recursively at the eventual `Return`. Dropping `inner` on the goto here AND
-    // letting the composite free it at the return double-frees the payload string
-    // (DI-020). The taint exactly identifies these non-sole-owner aliases, so the
-    // scope-close release stays limited to genuinely sole-owned bindings that
-    // leave scope (a resource handle, a leaf cow owner) — the leak the
-    // scope-close pass exists to close — while a payload alias is left to its
-    // composite's single recursive free.
+    // A binder destructured out of an enum normally shares the payload owned by
+    // that composite. Suppress the binder only when the carrier's recursive
+    // drop is present on this same edge. If carrier admission withheld its
+    // drop, the binder is the remaining release authority and must keep its
+    // typed drop; suppressing both strands the payload. This mirrors the
+    // terminal-exit filter above.
     //
     // The single function-wide taint set was computed with the REAL `locals`
     // table (not an empty slice), so the `string`
@@ -6945,14 +6962,19 @@ pub(super) fn enumerate_exits(
     // parent composite is consume-marked on the selected arm; those destinations
     // are sole owners and must close on this edge before the join loses them.
     let drops_for_scope_close_goto = |block_id: u32, target: u32| -> Vec<ElabDrop> {
-        drops_for_exit(block_id)
-            .into_iter()
+        let live = drops_for_exit(block_id);
+        let carrier_locals_present: HashSet<u32> = live
+            .iter()
+            .filter_map(|drop| base_local(drop.place))
+            .collect();
+        live.into_iter()
             .filter(|drop| {
-                // A projection-alias payload binder is owned by its composite,
-                // which frees it recursively at its own exit — never drop it on a
-                // scope-close edge (no double-free).
                 if let Some(l) = base_local(drop.place) {
-                    if projection_alias_tainted.contains(&l) {
+                    if projection_alias_tainted.contains(&l)
+                        && payload_alias_carrier
+                            .get(&l)
+                            .is_some_and(|carrier| carrier_locals_present.contains(carrier))
+                    {
                         return false;
                     }
                 }

@@ -1,0 +1,82 @@
+//! Regression coverage for owned resource payloads bound by conditional patterns.
+
+import std::fs;
+import std::stream;
+import std::testing;
+
+fn cleanup(path: string) {
+    if fs.exists(path) {
+        fs.delete(path);
+    }
+}
+
+#[test]
+fn test_if_let_resource_can_close_explicitly() {
+    let path = "tests/hew/_resource_if_let_close.txt";
+    cleanup(path);
+    if let Ok(sink) = stream.to_file(path) {
+        sink.write("rc1");
+        sink.close();
+    }
+    testing.assert_eq_str(fs.read(path), "rc1");
+    cleanup(path);
+}
+
+#[test]
+fn test_if_let_resource_empty_body_drops_at_scope_exit() {
+    let path = "tests/hew/_resource_if_let_drop.txt";
+    cleanup(path);
+    if let Ok(sink) = stream.to_file(path) {}
+    testing.assert_eq_str(fs.read(path), "");
+    cleanup(path);
+}
+
+#[test]
+fn test_match_resource_can_close_explicitly() {
+    let path = "tests/hew/_resource_match_close.txt";
+    cleanup(path);
+    match stream.to_file(path) {
+        Ok(sink) => {
+            sink.write("match");
+            sink.close();
+        },
+        Err(_) => panic("expected file sink"),
+    }
+    testing.assert_eq_str(fs.read(path), "match");
+    cleanup(path);
+}
+
+#[test]
+fn test_while_let_resource_can_close_explicitly() {
+    let path = "tests/hew/_resource_while_let_close.txt";
+    cleanup(path);
+    while let Ok(sink) = stream.to_file(path) {
+        sink.write("while");
+        sink.close();
+        break;
+    }
+    testing.assert_eq_str(fs.read(path), "while");
+    cleanup(path);
+}
+
+fn open_from_if_let(path: string) -> Result<stream.Sink<string>, string> {
+    if let Ok(sink) = stream.to_file(path) {
+        return Ok(sink);
+    }
+    Err("open failed")
+}
+
+#[test]
+fn test_if_let_resource_can_be_returned() {
+    let path = "tests/hew/_resource_if_let_return.txt";
+    cleanup(path);
+    match open_from_if_let(path) {
+        Ok(sink) => {
+            sink.write("returned");
+            sink.close();
+        },
+        Err(_) => panic("expected file sink"),
+    }
+    testing.assert_eq_str(fs.read(path), "returned");
+    cleanup(path);
+}

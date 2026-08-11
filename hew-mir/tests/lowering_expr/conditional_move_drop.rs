@@ -168,6 +168,48 @@ fn conditional_move_destination_keeps_arm_scope_close_drop() {
     );
 }
 
+/// An `if let` resource payload can outlive its carrier's drop admission. The
+/// arm-closing edge must retain the payload's own close in that case; treating
+/// projection taint as an unconditional suppression strands the resource.
+#[test]
+fn if_let_resource_payload_keeps_arm_scope_close_drop() {
+    let pipeline = pipeline_with_tc(
+        r"
+        #[resource]
+        type Probe { fd: i64 }
+
+        impl Probe {
+            fn close(self) {}
+        }
+
+        fn make() -> Result<Probe, string> {
+            Ok(Probe { fd: 1 })
+        }
+
+        fn main() {
+            if let Ok(probe) = make() {
+                let fd = probe.fd;
+            }
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the reduced resource binder must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let drops = all_exit_drops(&pipeline, "main");
+    let resource_drops: Vec<_> = drops
+        .iter()
+        .filter(|drop| matches!(drop.kind, DropKind::Resource | DropKind::EnumInPlace))
+        .collect();
+    assert_eq!(
+        resource_drops.len(),
+        1,
+        "the matched resource payload needs exactly one close authority; got {drops:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Common case unchanged — no consume, no guard.
 // ---------------------------------------------------------------------------

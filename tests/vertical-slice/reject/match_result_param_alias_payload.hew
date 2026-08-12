@@ -1,0 +1,30 @@
+//! Reject: moving a heap payload out of a Result returned by a parameter forwarder.
+//!
+//! `forward` returns its parameter's storage rather than a fresh Result. The
+//! direct match must retain the aliasing rejection; otherwise moving `payload`
+//! would leave the caller's Result with a dangling slot.
+
+fn seed() -> Vec<i64> {
+    let values: Vec<i64> = Vec::new();
+    values.push(1);
+    values
+}
+
+fn forward(result: Result<Vec<i64>, Vec<i64>>) -> Result<Vec<i64>, Vec<i64>> {
+    result
+}
+
+fn consume(result: Result<Vec<i64>, Vec<i64>>) -> i64 {
+    match forward(result) {
+        Ok(payload) => {
+            var moved = payload;
+            moved = seed();
+            moved.len()
+        },
+        Err(payload) => payload.len(),
+    }
+}
+
+fn main() -> i64 {
+    consume(Ok(seed()))
+}

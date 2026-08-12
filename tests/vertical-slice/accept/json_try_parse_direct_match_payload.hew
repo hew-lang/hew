@@ -1,0 +1,41 @@
+//! Direct `json.try_parse` matches own their fresh Result payloads.
+//!
+//! Both arms bind heap-owning payloads: `Ok(doc)` is an opaque JSON resource and
+//! `Err(ParseError::Invalid(message))` carries the parser's native string detail.
+//! The inputs are dynamically allocated so the loop exercises the ownership path
+//! in both directions rather than only literal-backed values.
+
+import std::encoding::json;
+
+fn report_line(line: string) -> i64 {
+    match json.try_parse(line) {
+        Ok(doc) => {
+            let owned_doc = doc;
+            if owned_doc.type_of() >= 0 {
+                1
+            } else {
+                0
+            }
+        },
+        Err(ParseError::Invalid(message)) => {
+            let detail = message;
+            if !detail.is_empty() {
+                2
+            } else {
+                0
+            }
+        },
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    var ok: i64 = 0;
+    var err: i64 = 0;
+    while i < 100 {
+        ok = ok + report_line("{\"n\": 1}".to_upper());
+        err = err + report_line("{ not valid".to_upper());
+        i = i + 1;
+    }
+    println(f"ok={ok} err={err}");
+}

@@ -1,0 +1,46 @@
+//! # Structured concurrency
+//!
+//! `scope` owns child tasks. A `fork` starts work, and scope exit waits for all
+//! children. `await task` joins a named value-producing fork. If one child
+//! traps, sibling structured tasks are cancelled and the trap escapes the
+//! scope; lambda actors are independent and are not sibling-cancelled.
+//!
+//! ```hew
+//! fn double(value: i64) -> i64 { value * 2 }
+//!
+//! fn main() {
+//!     scope {
+//!         fork left = double(10);
+//!         fork right = double(11);
+//!         let a = await left;
+//!         let b = await right;
+//!         println(f"{a},{b}");
+//!     }
+//! }
+//! ```
+//!
+//! `join` is the actor-ask fan-out form. It issues every branch concurrently,
+//! waits for all replies, and binds a tuple in source order. Two branches have
+//! result shape `(R0, R1)`, not a list, map, or nested `Result`:
+//!
+//! ```hew
+//! actor Doubler {
+//!     receive fn compute(value: i64) -> i64 { value * 2 }
+//! }
+//!
+//! fn main() {
+//!     let a = spawn Doubler;
+//!     let b = spawn Doubler;
+//!     let (first, second) = join {
+//!         a.compute(10),
+//!         b.compute(11),
+//!     };
+//!     assert_eq(first, 20);
+//!     assert_eq(second, 22);
+//!     println(f"{first},{second}");
+//! }
+//! ```
+//!
+//! `scope` and `join` are distinct: scope manages task lifetime, while join
+//! collects ordered actor replies. Cancellation is cooperative at suspension
+//! points and is part of normal scope teardown, not an exception to the model.

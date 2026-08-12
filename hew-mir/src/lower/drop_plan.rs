@@ -6778,6 +6778,29 @@ pub(super) fn enumerate_exits(
     // carrier.
     let payload_alias_carrier = collect_payload_alias_map(blocks);
 
+    // Carrier locals that are non-owning borrowed views of persistent actor
+    // state (`ActorStateFieldLoad { mode: Borrowed }` — a bare byte-copy alias;
+    // codegen retains nothing). Such a carrier never held an in-function drop
+    // obligation, so "its drop is absent from this edge" carries no signal of
+    // withheld admission: the actor FIELD owns the composite and frees its
+    // payload recursively for the actor's whole lifetime. A payload binder
+    // destructured out of one (`match self.field { Ok(r) => ... }`) must stay
+    // alias-suppressed on every exit — granting it sole close authority would
+    // release a handle the actor still owns (a `MonitorRef` scope-close here
+    // demonitors immediately after arming).
+    let borrowed_view_carrier_locals: HashSet<u32> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ActorStateFieldLoad {
+                dest,
+                mode: crate::model::ActorStateLoadMode::Borrowed,
+                ..
+            } => base_local(*dest),
+            _ => None,
+        })
+        .collect();
+
     // Narrow the function-wide LIFO to the drops whose owning binding is
     // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
     // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
@@ -6841,7 +6864,10 @@ pub(super) fn enumerate_exits(
                     return true;
                 }
                 match payload_alias_carrier.get(&l) {
-                    Some(carrier) => !carrier_locals_present.contains(carrier),
+                    Some(carrier) => {
+                        !carrier_locals_present.contains(carrier)
+                            && !borrowed_view_carrier_locals.contains(carrier)
+                    }
                     None => true,
                 }
             })
@@ -6943,11 +6969,12 @@ pub(super) fn enumerate_exits(
             })
     };
     // A binder destructured out of an enum normally shares the payload owned by
-    // that composite. Suppress the binder only when the carrier's recursive
-    // drop is present on this same edge. If carrier admission withheld its
-    // drop, the binder is the remaining release authority and must keep its
-    // typed drop; suppressing both strands the payload. This mirrors the
-    // terminal-exit filter above.
+    // that composite. Suppress the binder when the carrier's recursive drop is
+    // present on this same edge, or when the carrier is a borrowed view of
+    // persistent actor state (its owner outlives the function entirely). If a
+    // function-owned carrier's admission withheld its drop, the binder is the
+    // remaining release authority and must keep its typed drop; suppressing
+    // both strands the payload. This mirrors the terminal-exit filter above.
     //
     // The single function-wide taint set was computed with the REAL `locals`
     // table (not an empty slice), so the `string`
@@ -6971,9 +6998,10 @@ pub(super) fn enumerate_exits(
             .filter(|drop| {
                 if let Some(l) = base_local(drop.place) {
                     if projection_alias_tainted.contains(&l)
-                        && payload_alias_carrier
-                            .get(&l)
-                            .is_some_and(|carrier| carrier_locals_present.contains(carrier))
+                        && payload_alias_carrier.get(&l).is_some_and(|carrier| {
+                            carrier_locals_present.contains(carrier)
+                                || borrowed_view_carrier_locals.contains(carrier)
+                        })
                     {
                         return false;
                     }

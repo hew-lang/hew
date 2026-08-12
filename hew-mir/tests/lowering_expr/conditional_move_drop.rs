@@ -210,6 +210,61 @@ fn if_let_resource_payload_keeps_arm_scope_close_drop() {
     );
 }
 
+/// A payload binder destructured from a BORROWED actor-state load
+/// (`match self.field { Ok(r) => r.fd, ... }`) aliases a composite the actor
+/// field owns for the actor's whole lifetime. The carrier temp is a bare
+/// byte-copy view with no in-function drop obligation, so its absence from an
+/// edge's drop set is not withheld admission — the binder must keep its alias
+/// suppression on EVERY exit. Granting it close authority released a live
+/// `MonitorRef` (demonitor immediately after arming) in the distributed e2e
+/// fixtures.
+#[test]
+fn actor_field_match_payload_keeps_no_exit_drop() {
+    let pipeline = pipeline_with_tc(
+        r"
+        #[resource]
+        type Probe { fd: i64 }
+
+        impl Probe {
+            fn close(self) {}
+        }
+
+        fn make() -> Result<Probe, string> {
+            Ok(Probe { fd: 3 })
+        }
+
+        actor Holder {
+            var slot: Result<Probe, string>;
+
+            receive fn arm() -> i64 {
+                slot = make();
+                match slot {
+                    Result::Ok(probe) => probe.fd,
+                    Result::Err(_) => 0,
+                }
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the field-backed match binder must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let drops = all_exit_drops(&pipeline, "Holder__recv__arm");
+    let resource_drops: Vec<_> = drops
+        .iter()
+        .filter(|drop| matches!(drop.kind, DropKind::Resource | DropKind::EnumInPlace))
+        .collect();
+    assert!(
+        resource_drops.is_empty(),
+        "a payload binder aliasing a live actor field owns nothing — no exit \
+         may close the resource the field still holds; got {drops:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Common case unchanged — no consume, no guard.
 // ---------------------------------------------------------------------------

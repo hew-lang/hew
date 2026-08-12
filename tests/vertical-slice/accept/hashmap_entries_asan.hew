@@ -1,9 +1,17 @@
 //! ASan/LSan oracle for HashMap.entries() tuple clone/drop ownership.
+//!
+//! Strings here are built by concatenation, NOT written as literals. String
+//! literals are static and never freed, so a fixture using them cannot observe
+//! an element-ownership bug: aliasing the value blob instead of cloning it
+//! leaves every literal-based assertion passing. Heap-allocated strings make
+//! the same defect abort on a corrupted refcount header.
+
+fn mk(s: string) -> string { s + "!" }
 
 fn snapshot() -> Vec<(string, string)> {
     let m: HashMap<string, string> = HashMap::new();
-    m.insert("one", "first");
-    m.insert("two", "second");
+    m.insert(mk("one"), mk("first"));
+    m.insert(mk("two"), mk("second"));
     m.entries()
 }
 
@@ -11,8 +19,8 @@ fn main() -> i64 {
     let entries = snapshot();
     var seen: i64 = 0;
     for pair in entries {
-        if pair.0 == "one" && pair.1 == "first" { seen = seen | 1; }
-        if pair.0 == "two" && pair.1 == "second" { seen = seen | 2; }
+        if pair.0 == "one!" && pair.1 == "first!" { seen = seen | 1; }
+        if pair.0 == "two!" && pair.1 == "second!" { seen = seen | 2; }
     }
     if seen == 3 { 0 } else { 93 }
 }

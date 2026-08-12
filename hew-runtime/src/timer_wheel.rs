@@ -63,6 +63,15 @@ static TICKER_NOTIFY_HOOK: OnceLock<fn()> = OnceLock::new();
 
 /// Register the ticker's wakeup function.  Called once from
 /// `timer_periodic::start_ticker_thread`.  Subsequent calls are ignored.
+//
+// KEEP(wasm32): `timer_periodic` is declared
+// `#[cfg(not(target_arch = "wasm32"))]` in lib.rs while `timer_wheel` compiles
+// for both targets by design (wasm ticks are host-driven), so wasm32 is the
+// only build where nobody registers. `notify_ticker` degrades correctly there:
+// `OnceLock::get()` returns `None` and the call is a no-op. On native the hook
+// is what stops the ticker parking on a stale deadline — without it a timer
+// scheduled onto an empty wheel would not fire until an unrelated wake.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn register_ticker_notify_hook(f: fn()) {
     // OnceLock: only the first registration wins; safe to call again.
     let _ = TICKER_NOTIFY_HOOK.set(f);

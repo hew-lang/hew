@@ -1564,6 +1564,14 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a live, newly spawned actor not yet visible to dispatch.
+// KEEP(wasm32): production caller in supervisor.rs marks a shallow-template
+// restart incarnation as borrowing state from the persistent child spec.
+// lib.rs gates `pub mod supervisor` behind
+// `#[cfg(not(target_arch = "wasm32"))]` while `pub mod actor` is ungated — the
+// same asymmetry already annotated elsewhere in this file. The bit it writes,
+// `HewActor::state_drop_borrowed`, is READ on both targets and is ABI
+// layout-asserted for wasm parity in scheduler_wasm.rs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording borrowed state provenance");
@@ -1583,6 +1591,11 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be the live child whose former template alias was just broken.
+// KEEP(wasm32): production caller is `hew_supervisor_set_child_state_clone` in
+// the native-only supervisor module; it flips provenance to owned once the
+// template deep-clone breaks the alias. Same cfg asymmetry as
+// `mark_state_drop_borrowed`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording owned state provenance");

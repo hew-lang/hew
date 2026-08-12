@@ -5653,8 +5653,22 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 let mut yield_retained_locals: Vec<u32> = Vec::new();
                 for arg in args {
+                    // A trait-object element push is the one rewrite that turns
+                    // a BARE-BINDING push into `hew_vec_push_owned_move` (the
+                    // drop-only descriptor has no clone thunk for copy-in), so
+                    // the source binding must be consumed through the move
+                    // ingress here. The scope is structural trait-object-ness,
+                    // never the `_move` spelling alone: the array-literal
+                    // desugar owns its element consume
+                    // (`consume_owned_vec_move_array_element` below), and the
+                    // fresh-rvalue `_move` rewrite for other owned elements
+                    // moves an unbound temp with no binding to consume — a
+                    // second move-ingress consume on either would double-record
+                    // the same site as use-after-consume.
                     let move_ingress = builtin_method_arg_is_move_ingress(*target_family)
-                        || callee == "hew_vec_push_owned_move";
+                        || (callee == "hew_vec_push_owned_move"
+                            && !vec_owned_move_array_ingress
+                            && self.vec_receiver_has_trait_object_element(&receiver.ty));
                     // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
                     // documents copy-in as intentionally absent — so the operand's
                     // heap is byte-transferred into the collection and the

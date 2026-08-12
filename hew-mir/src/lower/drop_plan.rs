@@ -4116,7 +4116,12 @@ pub(super) fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
 /// `BitCopy` is excluded (no scope-exit drop needed). Record-aware: a tuple
 /// element of nested-record type whose field owns heap (`(Boxed, i64)` where
 /// `Boxed { payload: Vec<i64> }`) is recognised so its member-drop fires the
-/// inner buffer's release (DIV-1; a record-blind walker leaked it).
+/// inner buffer's release (DIV-1; a record-blind walker leaked it). The same
+/// shared structural authority also walks `Option` / user-enum payloads, so a
+/// tuple such as `(Option<string>, i64)` or `(Wrap, i64)` is intentionally
+/// admitted here; when that tuple is carried as a record field, the soundness
+/// hinge is the owned-record escape rule in `derive_owned_record_drop_allowed`,
+/// not a tuple-specific shape whitelist.
 pub(super) fn ty_is_heap_owning_tuple(
     ty: &ResolvedTy,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
@@ -5943,7 +5948,11 @@ fn build_lifo_drops(
         // (`tuple_composite_drop_allowed`). The `__tuple_N` destructure temp
         // (elements moved out) and a returned tuple are both excluded, so the
         // helper frees each member exactly once. A binding the prover did not
-        // clear leaks (as before); it never double-frees.
+        // clear leaks (as before); it never double-frees. Tuples whose fields
+        // transitively hold `Option` / user-enum payloads are included by the
+        // same structural authority and remain sound for the same reason: the
+        // nested payloads are still dropped through the tuple's one member-drop
+        // path, not by a separate ad hoc whitelist.
         if tuple_composite_drop_allowed.contains(binding)
             && ty_is_heap_owning_tuple(
                 ty,

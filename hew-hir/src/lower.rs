@@ -16865,6 +16865,28 @@ impl LowerCtx {
         assert!(previous.is_none(), "generated HIR site published twice");
     }
 
+    /// Replace an authored expression's pre-materialization source occurrence
+    /// with the generated value that crosses its type-directed boundary.
+    /// Both occurrences retain facts, but parent identity/join relations must
+    /// converge on the value after representation-changing materialization.
+    fn replace_produced_value_source_site(
+        &mut self,
+        span: &Span,
+        source: SiteId,
+        materialized: SiteId,
+    ) {
+        let key = self.mk_key(span);
+        let sites = self
+            .produced_value_source_sites
+            .get_mut(&key)
+            .expect("materialization source must already be registered");
+        let source_index = sites
+            .iter()
+            .rposition(|site| *site == source)
+            .expect("materialization source site must be registered");
+        sites[source_index] = materialized;
+    }
+
     /// Publish a synthetic expression root that deliberately has no checker
     /// span identity of its own. Actor-lambda bodies can share the enclosing
     /// spawn span, so consuming the spawn's fresh-handle fact for the body
@@ -19211,6 +19233,7 @@ impl LowerCtx {
                     return inner;
                 }
             };
+            let source_site = inner.site;
             self.record_produced_value_fact(&span, &inner);
             let wrapped = HirExpr {
                 node: self.ids.node(),
@@ -19233,6 +19256,7 @@ impl LowerCtx {
                     hew_types::ProducedValueAcquisition::Fresh,
                 ),
             );
+            self.replace_produced_value_source_site(&wrapped.span, source_site, wrapped.site);
             return wrapped;
         }
         inner

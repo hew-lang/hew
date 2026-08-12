@@ -1582,10 +1582,20 @@ impl Checker {
                             // representation change, so it must not fail the graph
                             // the way the tail-`Ok` and numeric-normalization
                             // boundaries above are exempted.
+                            let is_dyn_materialization =
+                                // A concrete arm checked against `dyn Trait`
+                                // keeps its concrete `expr_types` entry so HIR
+                                // can build the payload before wrapping it.
+                                // The coercion side table is the materialization
+                                // boundary that makes the arm produce the
+                                // join's trait-object representation.
+                                matches!(parent_ty, Ty::TraitObject { .. })
+                                    && self.dyn_trait_coercions.contains_key(child);
                             if child_ty != parent_ty
                                 && !matches!(child_ty, Ty::Never)
                                 && !matches!(parent_ty, Ty::Never)
                                 && !self.tail_ok_coercions.contains(child)
+                                && !is_dyn_materialization
                                 && !is_checker_numeric_normalization(
                                     child_ty,
                                     parent_ty,

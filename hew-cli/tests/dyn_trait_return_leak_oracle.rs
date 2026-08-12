@@ -36,6 +36,7 @@ impl Person {{
 
 type Parcel {{
     label: string;
+    route: string;
 }}
 
 impl Parcel {{
@@ -44,14 +45,15 @@ impl Parcel {{
     }}
 }}
 
-fn make_person(seed: string) -> dyn Labeled {{
-    let erased: dyn Labeled = Person {{ label: string.repeat(seed, 64) }};
-    erased
-}}
-
-fn make_parcel(seed: string) -> dyn Labeled {{
-    let erased: dyn Labeled = Parcel {{ label: string.repeat(seed, 96) }};
-    erased
+fn make_labeled(seed: string, kind: i64) -> dyn Labeled {{
+    if kind == 0 {{
+        Person {{ label: string.repeat(seed, 64) }}
+    }} else {{
+        Parcel {{
+            label: string.repeat(seed, 96),
+            route: string.repeat(seed, 17),
+        }}
+    }}
 }}
 
 fn inspect(value: dyn Labeled) -> i64 {{
@@ -60,8 +62,8 @@ fn inspect(value: dyn Labeled) -> i64 {{
 
 fn main() -> i64 {{
     for frame in 0..{frames} {{
-        let person = make_person(f"person-{{frame}}");
-        let parcel = make_parcel(f"parcel-{{frame}}");
+        let person = make_labeled(f"person-{{frame}}", 0);
+        let parcel = make_labeled(f"parcel-{{frame}}", 1);
         if inspect(person) < 64 || inspect(parcel) < 96 {{ return 91; }}
     }}
     print("OK");

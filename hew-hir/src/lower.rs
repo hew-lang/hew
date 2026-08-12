@@ -34530,6 +34530,14 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
                 .join(", ");
             format!("{name}<{arg_list}>")
         }
+        ResolvedTy::TraitObject { traits } => {
+            let bounds = traits
+                .iter()
+                .map(|bound| bound.trait_name.clone())
+                .collect::<Vec<_>>()
+                .join(" + ");
+            format!("dyn {bounds}")
+        }
         other => format!("{other:?}"),
     }
 }
@@ -34634,35 +34642,60 @@ fn check_vec_index_element_type(
     }
 
     let rendered = render_elem_ty(&elem_ty);
-    let (kind, note) = if is_range_slice {
-        (
-            HirDiagnosticKind::VecSliceElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
-                 Supported element types for Vec range-slicing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, user-defined types, and \
-                 type-parameter elements."
-            ),
-        )
+    let is_trait_object = matches!(elem_ty, ResolvedTy::TraitObject { .. });
+    let note = vec_index_unsupported_note(&rendered, is_range_slice, is_trait_object);
+    let kind = if is_range_slice {
+        HirDiagnosticKind::VecSliceElementTypeUnsupported {
+            element_ty: rendered,
+        }
     } else {
-        (
-            HirDiagnosticKind::VecIndexElementTypeUnsupported {
-                element_ty: rendered.clone(),
-            },
-            format!(
-                "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
-                 Supported element types for Vec scalar indexing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-                 usize, f32, f64, string, tuples, type-parameter elements, \
-                 and user-defined types (records, enums, \
-                 Duplex, etc.)."
-            ),
-        )
+        HirDiagnosticKind::VecIndexElementTypeUnsupported {
+            element_ty: rendered,
+        }
     };
     diagnostics.push(HirDiagnostic::new(kind, index_expr_span.clone(), note));
+}
+
+/// Diagnostic note for an unsupported `Vec<T>` scalar-index or range-slice
+/// element type. Trait-object elements get a dedicated message naming the
+/// supported alternative (`into_iter()` / pop / remove), matching the
+/// quality of the reachable checker-level trait-object refusals
+/// (`hew-types/src/check/methods.rs`); every other unsupported element type
+/// gets the generic supported-set listing.
+fn vec_index_unsupported_note(
+    rendered: &str,
+    is_range_slice: bool,
+    is_trait_object: bool,
+) -> String {
+    match (is_range_slice, is_trait_object) {
+        (true, true) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not supported: a sliced Vec would \
+             share each `HeapBoxed` trait-object owner with the source, and `{rendered}` \
+             has no semantic clone operation to give the slice an independent copy; \
+             consume the Vec with `into_iter()` instead."
+        ),
+        (true, false) => format!(
+            "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
+             Supported element types for Vec range-slicing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, user-defined types, and \
+             type-parameter elements."
+        ),
+        (false, true) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not supported: returning or \
+             overwriting an owned element would require a semantic trait-object clone, \
+             and `{rendered}` has none; use pop/remove or consuming iteration \
+             (`into_iter()`) to move an owner out instead."
+        ),
+        (false, false) => format!(
+            "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
+             Supported element types for Vec scalar indexing are: \
+             bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+             usize, f32, f64, string, tuples, type-parameter elements, \
+             and user-defined types (records, enums, \
+             Duplex, etc.)."
+        ),
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

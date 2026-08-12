@@ -14,16 +14,20 @@ use super::{
 use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 
 impl Builder {
+    /// Trait-object elements are rejected earlier, at the HIR gate
+    /// (`check_vec_index_element_type` in `hew-hir/src/lower.rs`) —
+    /// `ResolvedTy::TraitObject` never reaches this MIR-level check.
+    /// `Receiver` elements pass that HIR gate (its supported-set matches
+    /// `ResolvedTy::Named { .. }` generically), so the drop-only refusal
+    /// for them lives here instead.
     fn reject_drop_only_index(&mut self, elem_ty: &ResolvedTy, site: hew_hir::SiteId) -> bool {
-        if !matches!(self.subst_ty(elem_ty), ResolvedTy::TraitObject { .. })
-            && !matches!(
-                self.subst_ty(elem_ty),
-                ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Receiver),
-                    ..
-                }
-            )
-        {
+        if !matches!(
+            self.subst_ty(elem_ty),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                ..
+            }
+        ) {
             return false;
         }
         self.diagnostics.push(MirDiagnostic {

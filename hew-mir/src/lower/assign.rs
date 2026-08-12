@@ -209,6 +209,11 @@ impl Builder {
                         type_args.len()
                     );
                 }
+                // Trait-object receivers never reach this arm: the HIR gate
+                // (`check_vec_index_element_type` in `hew-hir/src/lower.rs`)
+                // rejects `xs[i] = v` fatally for `Vec<dyn Trait>` before MIR
+                // lowering runs. This check still fires for `Receiver`
+                // elements, which pass that HIR gate.
                 if self.vec_receiver_has_drop_only_element(&receiver.ty) {
                     let _ = self.reject_drop_only_vec_operation("index set copy-in", target.site);
                     return;

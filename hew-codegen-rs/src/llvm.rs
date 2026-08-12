@@ -29093,14 +29093,53 @@ fn lower_terminator<'ctx>(
             }
             // Lambda-actor drain: each lambda actor runs on its own OS
             // thread outside the work-stealing scheduler, so the
-            // `hew_shutdown_wait` above does not cover them. Without this
-            // drain a fire-and-forget `let log = actor |s|{...}; log("hi")`
-            // races process termination and silently drops the body's
-            // `println`. `hew_lambda_drain_all` blocks until every
-            // dispatch thread has exited (or the 5 s default timeout
-            // elapses), and is a no-op when no lambda actors were
-            // spawned — so emitting unconditionally on every native
-            // `main` is cheap.
+            // `hew_shutdown_wait` above does not cover them.
+            // Supervisor-safe native shutdown: supervisor actors intentionally
+            // bypass the generic idle drain because they remain live by design.
+            // Close and join scheduler workers directly; the shared cleanup tail
+            // below owns root extraction and child-spec destruction.
+            if fn_ctx.emit_immediate_shutdown_epilogue {
+                fn_ctx.call_runtime_void(
+                    "hew_sched_shutdown",
+                    &[],
+                    "hew_sched_shutdown_call",
+                    "hew_sched_shutdown call",
+                )?;
+            }
+            // Shared native runtime ownership tail. Ordinary actor programs
+            // arrive here after graceful drain; supervisor programs arrive after
+            // immediate worker shutdown. Both consume registered supervisor roots
+            // through free_registered_supervisors/InternalChildSpec::drop before
+            // actor cleanup and runtime detach. This runs BEFORE the lambda drain
+            // below: actor cleanup synchronously runs each actor's codegen state
+            // drop (`free_actor_resources` -> `state_drop_fn`), which is the only
+            // release point for a `LambdaPid` an actor holds in its own state
+            // (e.g. a still-idle top-level actor never explicitly releases the
+            // field). Draining lambda dispatch threads first would wait forever
+            // on exactly that actor-held handle, since nothing else closes its
+            // mailbox. Workers are already joined by this point (via
+            // `hew_shutdown_wait` above or `hew_sched_shutdown` just above), so
+            // no actor handler is genuinely in-flight when its state is freed —
+            // this reorder only releases already-quiesced/parked state ahead of
+            // the drain, it does not let cleanup race a live handler.
+            if fn_ctx.emit_runtime_cleanup_epilogue {
+                fn_ctx.call_runtime_void(
+                    "hew_runtime_cleanup_after_main",
+                    &[],
+                    "hew_runtime_cleanup_after_main_call",
+                    "hew_runtime_cleanup_after_main call",
+                )?;
+            }
+            // Lambda-actor drain: each lambda actor runs on its own OS thread
+            // outside the work-stealing scheduler, so nothing above joins its
+            // dispatch thread directly. Without this drain a fire-and-forget
+            // `let log = actor |s|{...}; log("hi")` races process termination
+            // and silently drops the body's `println`. `hew_lambda_drain_all`
+            // blocks until every dispatch thread has exited (or the 5 s default
+            // timeout elapses), and is a no-op when no lambda actors were
+            // spawned — so emitting unconditionally on every native `main` is
+            // cheap. Runs LAST, after actor cleanup above, so a `LambdaPid` held
+            // in actor state has already been released and its mailbox closed.
             if fn_ctx.emit_lambda_drain_epilogue {
                 let i64_ty = fn_ctx.ctx.i64_type();
                 let lambda_drain = intern_runtime_decl(
@@ -29144,31 +29183,6 @@ fn lower_terminator<'ctx>(
                         .llvm_ctx("combine shutdown failure statuses")?,
                     None => lambda_abandoned,
                 });
-            }
-            // Supervisor-safe native shutdown: supervisor actors intentionally
-            // bypass the generic idle drain because they remain live by design.
-            // Close and join scheduler workers directly; the shared cleanup tail
-            // below owns root extraction and child-spec destruction.
-            if fn_ctx.emit_immediate_shutdown_epilogue {
-                fn_ctx.call_runtime_void(
-                    "hew_sched_shutdown",
-                    &[],
-                    "hew_sched_shutdown_call",
-                    "hew_sched_shutdown call",
-                )?;
-            }
-            // Shared native runtime ownership tail. Ordinary actor programs
-            // arrive here after graceful drain; supervisor programs arrive after
-            // immediate worker shutdown. Both consume registered supervisor roots
-            // through free_registered_supervisors/InternalChildSpec::drop before
-            // actor cleanup and runtime detach.
-            if fn_ctx.emit_runtime_cleanup_epilogue {
-                fn_ctx.call_runtime_void(
-                    "hew_runtime_cleanup_after_main",
-                    &[],
-                    "hew_runtime_cleanup_after_main_call",
-                    "hew_runtime_cleanup_after_main call",
-                )?;
             }
             if let Some(abandoned) = shutdown_abandoned {
                 let current_fn = fn_ctx

@@ -9,9 +9,9 @@ on:
 jobs:
   deploy:
     # Disabled until CLOUDFLARE_API_TOKEN secret is configured in repository
-    # settings and the operator has verified the deploy command against the
-    # hew-docs Cloudflare Pages project.  Remove this guard and the comment
-    # above to enable; see docs/release-runbook.md Phase 7 for the checklist.
+    # settings. The verified target is the Vocti Corp account's hew-docs
+    # Cloudflare Pages project, which serves docs.hew.sh. Remove this guard and
+    # the comment above to enable; see docs/release-runbook.md Phase 6.
     if: false
     runs-on: ubuntu-latest
     steps:
@@ -23,9 +23,27 @@ jobs:
         run: cargo build -p hew-cli --bin hew --release
       - name: Generate stdlib docs
         run: ./target/release/hew doc std/ --output-dir target/doc/
+      - name: Validate generated docs
+        run: |
+          source_modules="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"
+          generated_modules="$(find target/doc -maxdepth 1 -type f -name 'std.*.html' | wc -l | tr -d ' ')"
+          if [ "$source_modules" -eq 0 ] || [ "$generated_modules" -ne "$source_modules" ]; then
+            echo "::error::Expected $source_modules generated module pages, found $generated_modules"
+            exit 1
+          fi
+          if [ ! -s target/doc/index.html ]; then
+            echo "::error::Generated documentation index is missing or empty"
+            exit 1
+          fi
+          empty_file="$(find target/doc -type f -empty -print -quit)"
+          if [ -n "$empty_file" ]; then
+            echo "::error::Generated documentation contains an empty file: $empty_file"
+            exit 1
+          fi
       - name: Install wrangler
         run: npm install -g wrangler
       - name: Deploy to Cloudflare Pages
         env:
+          CLOUDFLARE_ACCOUNT_ID: 54f878d09e1f09fc95bbaddd5bf031f9
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: wrangler pages deploy target/doc/ --project-name hew-docs

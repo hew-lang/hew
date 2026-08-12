@@ -253,15 +253,19 @@ macOS release notes:
 - [ ] Confirm `secrets.CLOUDFLARE_API_TOKEN` is set in repository settings
       (one-time setup — then remove the `if: false` guard in
       `.github/workflows/deploy-docs.yml` and this checkbox).
+- [ ] Confirm the token can edit Pages projects in the Vocti Corp account
+      (`54f878d09e1f09fc95bbaddd5bf031f9`). The production project is
+      `hew-docs`, and its custom domain is `docs.hew.sh`.
 - [ ] On tag push: the `Deploy docs` workflow fires automatically. Verify it
       succeeded in [Actions → Deploy docs](../../actions/workflows/deploy-docs.yml).
 - [ ] If the workflow is disabled or fails, run locally:
       ```bash
       make publish-docs
-      wrangler pages deploy target/doc/ --project-name hew-docs
+      CLOUDFLARE_ACCOUNT_ID=54f878d09e1f09fc95bbaddd5bf031f9 \
+        wrangler pages deploy target/doc/ --project-name hew-docs
       ```
-- [ ] Spot-check `hew-docs.pages.dev` shows the new release's stdlib content
-      (verify module count matches `hew doc` output: currently 55 modules).
+- [ ] Spot-check `docs.hew.sh` shows the new release's stdlib content and verify
+      its module count matches the `hew doc` output.
 
 ## Phase 7 — Post-release verification
 

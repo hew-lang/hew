@@ -83,6 +83,28 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
     Ok(())
 }
 
+/// Open and return the shared cross-process WASI bootstrap lock.
+///
+/// Every wasm32-wasip1 staticlib built by this harness shares one lock file, so
+/// concurrent nextest processes serialize against each other regardless of
+/// which artifact each one happened to find missing.
+fn open_wasi_bootstrap_lock(target_dir: &Path) -> Result<RwLock<std::fs::File>, String> {
+    let lock_path = target_dir.join("hew-cli-wasi-bootstrap.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "failed to open WASI bootstrap lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    Ok(RwLock::new(lock_file))
+}
+
 /// Build `libhew_runtime.a` for wasm32-wasip1, serialized across parallel
 /// nextest test processes.
 ///
@@ -104,24 +126,11 @@ fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Resu
         return Ok(());
     }
 
-    let lock_path = target_dir.join("hew-cli-wasi-bootstrap.lock");
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| {
-            format!(
-                "failed to open WASI bootstrap lock {}: {error}",
-                lock_path.display()
-            )
-        })?;
-    let mut lock = RwLock::new(lock_file);
+    let mut lock = open_wasi_bootstrap_lock(target_dir)?;
     let _guard = lock.write().map_err(|error| {
         format!(
-            "failed to lock WASI bootstrap {}: {error}",
-            lock_path.display()
+            "failed to lock WASI bootstrap in {}: {error}",
+            target_dir.display()
         )
     })?;
 
@@ -227,6 +236,23 @@ fn build_wasi_stdlib_archive(
         .join("wasm32-wasip1")
         .join(build_profile)
         .join(archive);
+    if archive_path.is_file() {
+        return Ok(());
+    }
+
+    // Same race as `build_wasi_runtime_serialized`: without the shared lock,
+    // parallel test processes each see the archive absent and each launch
+    // `cargo build`, and Cargo's non-atomic staticlib write leaves wasm-ld
+    // reading a truncated or transiently-absent archive.
+    let mut lock = open_wasi_bootstrap_lock(target_dir)?;
+    let _guard = lock.write().map_err(|error| {
+        format!(
+            "failed to lock WASI bootstrap in {}: {error}",
+            target_dir.display()
+        )
+    })?;
+
+    // Re-check after acquiring the lock: a sibling may have built while we waited.
     if archive_path.is_file() {
         return Ok(());
     }

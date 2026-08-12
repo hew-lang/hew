@@ -74,6 +74,19 @@
 # does not, rather than inferring that a passing oracle is a proof of sole
 # ownership for all time.
 #
+# What those oracles CANNOT see: they are black-box probes over live results,
+# so they establish that two results occupy distinct addresses, that the
+# caller's handle is the sole owner at handoff, and that the callee's own
+# state survives the caller's release. Together those still miss one shape — a
+# callee that allocates fresh, hands back a genuinely sole-owned buffer, and
+# separately stashes a raw non-refcounted pointer to it that it frees at
+# process teardown. Every probe passes, the caller's release is correct at the
+# call site, and the buffer is freed twice at shutdown. No symbol in this file
+# does that today; the rows below were corroborated against their
+# implementation sites. But "measured" here means measured by those oracles,
+# not proved sole-owned for all time: anyone adding a row must read the
+# callee's teardown path as well as running the oracle.
+#
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
 #

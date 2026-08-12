@@ -27875,8 +27875,8 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 // Composite-return spine — Lane W2.004 Stage 1
 // ----------------------------------------------------------------------------
 //
-// Four substrate helpers that synthesize user-visible composite return values
-// (`Result<T, E>`, struct literals, enum-variant literals) into a destination
+// Three substrate helpers that synthesize user-visible composite return values
+// (`Result<T, E>`, enum-variant literals) into a destination
 // `Place`. Each helper resolves the destination's registered layout
 // (`EnumLayout` via `machine_layouts`, `RecordLayout` via `record_layouts`)
 // and stores the tag + per-field payload through the existing
@@ -27888,21 +27888,8 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 //   - `emit_remote_pid_send_call` Err-arm `llvm.rs:~7553-7641` — `emit_result_err`
 //   - `emit_node_lookup_call`     Ok-arm `llvm.rs:~7783-7819` — `emit_result_ok`
 //   - `emit_node_lookup_call`     Err-arm `llvm.rs:~7747-7781` — `emit_result_err`
-//   - `Instr::RecordInit` `lower_record_init` — `emit_struct_literal`
-//     (no in-scope refactor; helper is the substrate for future Cluster-2
-//     consumers per audit §C.3)
 //   - `emit_enum_variant_literal` — no precedent; new substrate for Stage 3
 //     MIR producers (W2.005).
-//
-// Helper signatures (push-back per A259 #3(b) vs the plan):
-//   - `emit_struct_literal` uses `&[(FieldOffset, Place)]` (the MIR
-//     primitive used by `Instr::RecordInit`) rather than the plan's
-//     `&[(FieldName, Place)]`. `FieldName` is not a type in the MIR model;
-//     name → offset resolution happens at MIR-producer time per the
-//     `RecordInit` docstring (`hew-mir/src/model.rs:1747`).
-//   - `emit_struct_literal` does not take `struct_name`: the registered
-//     record name is recovered from `place_resolved_ty(dest)`'s
-//     `ResolvedTy::Named { name, .. }`, identically to `lower_record_init`.
 //
 // Constraints (CLAUDE.md customs):
 //   - **#2 Fail-closed Codegen**: any missing layout / mismatched type /
@@ -28059,7 +28046,6 @@ pub(crate) fn emit_result_ok(
 /// NodeRoutingNotWired`), the caller constructs the source local with
 /// the discriminant already set; this helper does not synthesise
 /// variant tags for the payload type.
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 pub(crate) fn emit_result_err(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,
@@ -28071,46 +28057,6 @@ pub(crate) fn emit_result_err(
     copy_into_variant_field(fn_ctx, error_payload, dest_local, 1, 0, "emit_result_err")?;
     emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
     Ok(())
-}
-
-/// Emit a struct literal into a `Place::Local(N)` whose registered
-/// layout is a `RecordLayout`. Each `(offset, src)` pair copies the
-/// source field's loaded value into the destination's struct GEP at the
-/// matching field index.
-///
-/// This helper is the substrate face of the existing `lower_record_init`
-/// inlined codegen path (`llvm.rs:5052`); it intentionally mirrors that
-/// shape so a later refactor can route the inline path through this helper.
-///
-/// It has NO production consumer today (only the unit test below). The
-/// `monitor()` composite-return spine does NOT go through here: `monitor()`
-/// builds `MonitorRef { ref_id }` via the MIR producer's `Instr::RecordInit`,
-/// which codegen lowers through `lower_record_init` directly — the same
-/// underlying path this helper delegates to, reached without this wrapper.
-/// The `#[allow(dead_code)]` is therefore load-bearing until a consumer
-/// adopts the wrapper.
-///
-/// `dest`'s resolved type must be `ResolvedTy::Named { name, .. }`
-/// keyed to a registered `RecordLayout`; the struct's field order is
-/// authoritative — `field_offset.0` indexes directly into the LLVM
-/// struct.
-#[allow(dead_code)] // substrate wrapper over lower_record_init; no production consumer yet
-fn emit_struct_literal(
-    fn_ctx: &FnCtx<'_, '_>,
-    dest: Place,
-    fields: &[(FieldOffset, Place)],
-) -> CodegenResult<()> {
-    let dest_ty = place_resolved_ty(fn_ctx, dest)?.clone();
-    // Delegate to the established record-init path. Reusing
-    // `lower_record_init` guarantees byte-identical IR shape for any
-    // RecordLayout the helper consumes (the Stage 2 refactor target).
-    // `lower_record_init` already enforces:
-    //   - dest slot type matches the registered struct (fail-closed if
-    //     producer/codegen disagree),
-    //   - source slot type matches the field type at each offset,
-    //   - field offsets are in-bounds.
-    // No additional validation needed here — substrate-by-delegation.
-    lower_record_init(fn_ctx, &dest_ty, fields, dest)
 }
 
 /// Emit an arbitrary-variant enum literal into a `Place::Local(N)`
@@ -28129,7 +28075,6 @@ fn emit_struct_literal(
 /// registered `EnumLayout`; mismatched arities are caught downstream by
 /// `place_pointer`'s `MachineVariant` field-index bounds check
 /// (`llvm.rs:~2092`).
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 pub(crate) fn emit_enum_variant_literal(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,

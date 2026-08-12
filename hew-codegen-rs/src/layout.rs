@@ -1252,7 +1252,12 @@ pub(crate) fn collection_layout_witness(
         // collection: its drop is the user close-symbol call in
         // `emit_field_drop_step`'s dedicated arm and its clone is the rollback
         // refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::Resource { .. } => None,
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject is not a runtime-managed collection: the owned fat
+        // pointer drops through `hew_dyn_trait_drop_boxed_in_place` (the
+        // prepared-carrier and Vec-descriptor drop paths) and its clone is
+        // refused (erased concrete type — ownership moves instead).
+        | StateFieldCloneKind::TraitObject => None,
     })
 }
 

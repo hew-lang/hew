@@ -203,6 +203,23 @@ pub enum StateFieldCloneKind {
     /// deferred until a concrete surface needs it.
     ClosurePair,
 
+    /// Owned `dyn Trait` value: a two-word `{ data, vtable }` fat pointer
+    /// whose `data` word points at a `hew_dyn_box_alloc` heap box. A zeroed
+    /// `data` word is the moved-from state shared with consuming Vec
+    /// iteration, so neutralized slots drop as no-ops.
+    ///
+    /// **Drop**: wired. `hew_dyn_trait_drop_boxed_in_place` takes the slot
+    /// address, dispatches vtable slot 0 (`drop_in_place`) on the concrete
+    /// value, frees the box with the vtable's exact `(size_of, align_of)`
+    /// prefix, and nulls both words of the slot.
+    ///
+    /// **Clone**: refused. The concrete type behind the vtable is erased, so
+    /// no structural deep copy can be synthesized at a clone site
+    /// (`is_clone_total` is `false`); ownership MOVES instead — the owned
+    /// call-carrier transfer path moves the existing box (both words) and
+    /// neutralizes the source, never reboxing.
+    TraitObject,
+
     /// `#[opaque]` runtime handle declared in a stdlib or user module (e.g.
     /// `json.Value`, `yaml.Value`, `cron.Expr`). The clone direction has no
     /// dup helper — supervisor-restart clone fails closed (`FailClosed`).
@@ -350,6 +367,7 @@ fn clone_kind_is_total(
         | StateFieldCloneKind::ChannelSender => Ok(true),
         StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. }
         | StateFieldCloneKind::OpaqueHandle { .. } => Ok(false),
         StateFieldCloneKind::Tuple { elems } => {
@@ -552,7 +570,8 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
             | StateFieldCloneKind::Resource { .. }
-            | StateFieldCloneKind::ClosurePair => false,
+            | StateFieldCloneKind::ClosurePair
+            | StateFieldCloneKind::TraitObject => false,
         }
     }
 
@@ -592,6 +611,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
             | StateFieldCloneKind::Resource { .. }
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::OpaqueHandle { .. } => false,
         }
     }
@@ -641,7 +661,8 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
             | StateFieldCloneKind::OpaqueHandle { .. }
-            | StateFieldCloneKind::ClosurePair => false,
+            | StateFieldCloneKind::ClosurePair
+            | StateFieldCloneKind::TraitObject => false,
         }
     }
 
@@ -786,7 +807,16 @@ impl StateFieldCloneKind {
             }
             // Opaque handle: no dup runtime helper, so the synthesised record
             // clone body fails closed. Reject at the value-class gate.
-            StateFieldCloneKind::OpaqueHandle { .. } => false,
+            //
+            // TraitObject: dyn-typed RECORD fields are not a ratified surface
+            // (dyn lives in return position, parameters, and Vec storage
+            // today), so the record value-class spine has no per-field dyn
+            // drop step wired. Reject at the gate — fail-closed, never a
+            // late codegen surprise. Flips to drop-only admission (mirroring
+            // ClosurePair) when dyn record fields land with an
+            // `emit_field_drop_step` arm calling
+            // `hew_dyn_trait_drop_boxed_in_place`.
+            StateFieldCloneKind::OpaqueHandle { .. } | StateFieldCloneKind::TraitObject => false,
         }
     }
 }
@@ -1392,6 +1422,7 @@ pub fn classify_owned_string_record_fields(
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
             | StateFieldCloneKind::ClosurePair
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::OpaqueHandle { .. } => return Ok(None),
         }
@@ -1627,7 +1658,7 @@ fn classify_state_field_full_impl(
         ),
 
         // --- Closed-set rejection -------------------------------------
-        // Pointer, Function, Closure, TraitObject, Tuple, Array, Slice,
+        // Pointer, Function, Closure, Tuple, Array, Slice,
         // and Task are not seen in any audited actor state field. The
         // checker rejects most of them at actor-state position already
         // (Q* rejects); reaching them here would be a checker bug, but
@@ -1657,9 +1688,15 @@ fn classify_state_field_full_impl(
             Ok(StateFieldCloneKind::ClosurePair)
         }
 
+        // Owned `dyn Trait` fat pointer: drop-only admission (see the
+        // `TraitObject` variant doc). The checker rejects dyn at actor-state
+        // and message positions, so this arm is reached for value-class
+        // classification only — chiefly the owned call-carrier protocol,
+        // whose transfer path moves the existing heap box.
+        ResolvedTy::TraitObject { .. } => Ok(StateFieldCloneKind::TraitObject),
+
         ResolvedTy::Pointer { .. }
         | ResolvedTy::Borrow { .. }
-        | ResolvedTy::TraitObject { .. }
         | ResolvedTy::Slice(_)
         | ResolvedTy::Task(_)
         | ResolvedTy::TypeParam { .. } => Err(ClassificationError::Unsupported {

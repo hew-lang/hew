@@ -5458,6 +5458,16 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              emitted caller-side in emit_field_clone_step — caller must dispatch \
              separately (LESSONS: boundary-fail-closed)."
         ))),
+        // TraitObject clone is refused everywhere: the concrete type behind
+        // the vtable is erased, so no deep copy can be synthesised at a clone
+        // site. Ownership MOVES through the owned call-carrier transfer path
+        // instead (the fat pointer's existing heap box changes owner).
+        StateFieldCloneKind::TraitObject => Err(CodegenError::FailClosed(
+            "TraitObject has no clone helper; an owned `dyn Trait` box moves \
+             (owned call-carrier transfer) rather than cloning — the erased \
+             concrete type admits no structural deep copy."
+                .into(),
+        )),
     }
 }
 
@@ -5587,6 +5597,18 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              (the close symbol is per-type, not a fixed runtime extern) — caller \
              must dispatch separately (LESSONS: boundary-fail-closed)."
         ))),
+        // TraitObject drop takes the SLOT ADDRESS of the two-word fat pointer
+        // (`hew_dyn_trait_drop_boxed_in_place`), not a loaded handle pointer,
+        // so it cannot ride the load-then-call `DropHelper` shape. The
+        // prepared-carrier drop path dispatches it directly; a record-field
+        // dyn drop step does not exist yet (dyn record fields are not a
+        // ratified surface) — fail closed if one reaches here.
+        StateFieldCloneKind::TraitObject => Err(CodegenError::FailClosed(
+            "TraitObject drop requires the slot-address dispatch to \
+             hew_dyn_trait_drop_boxed_in_place, not a loaded-handle runtime \
+             extern — caller must dispatch separately."
+                .into(),
+        )),
     }
 }
 
@@ -8076,7 +8098,11 @@ fn collect_clone_target_names(
         // Resource has no synthesised per-type clone/drop helper: its drop is
         // the inline user close-symbol call and its clone is the inline
         // rollback refusal. Nothing to enqueue.
-        | StateFieldCloneKind::Resource { .. } => {}
+        | StateFieldCloneKind::Resource { .. }
+        // TraitObject has no synthesised per-type helper: its drop is the
+        // slot-address call to hew_dyn_trait_drop_boxed_in_place and its
+        // clone is refused. Nothing to enqueue.
+        | StateFieldCloneKind::TraitObject => {}
     }
 }
 
@@ -9267,6 +9293,9 @@ fn overwrite_heap_leaf_capacity(
             // Resource clone is refused, so an affine handle can never alias a
             // new value's leaf — it contributes no neutralise-tracked slot.
             | StateFieldCloneKind::Resource { .. }
+            // TraitObject clone is refused for the same reason (erased
+            // concrete type): a new value can never alias a dyn box.
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::ClosurePair => 0,
         };
     }
@@ -9498,6 +9527,9 @@ fn emit_overwrite_collect_leaves<'ctx>(
             // Resource contributes no collected leaf (clone refused → cannot
             // alias); the drop spine closes it directly.
             | StateFieldCloneKind::Resource { .. }
+            // TraitObject contributes no collected leaf (clone refused →
+            // a new value cannot alias a dyn box).
+            | StateFieldCloneKind::TraitObject
             | StateFieldCloneKind::ClosurePair => None,
         };
         if let Some(slot_src) = leaf_slot {
@@ -10010,6 +10042,31 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                 builder
                     .build_store(slot, ptr_ty.const_null())
                     .llvm_ctx_with(|| format!("{label} resource null store"))?;
+            }
+            StateFieldCloneKind::TraitObject => {
+                // Dyn-valued actor state is check-rejected upstream, so this
+                // leaf is unreachable from a state-field store today.
+                // Defensive posture mirroring ClosurePair/Resource
+                // (leak-over-UAF): zero the whole two-word fat pointer so the
+                // drop spine's slot dispatch no-ops on the nulled data word.
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: parent struct {st_ty:?} has no \
+                         field at index {idx_u} for TraitObject"
+                    ))
+                })?;
+                let BasicTypeEnum::StructType(fat_ty) = parent_field_ty else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: TraitObject field {idx_u} is \
+                         {parent_field_ty:?}, not the two-pointer fat-pointer struct"
+                    )));
+                };
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_dyn_ptr"))
+                    .llvm_ctx_with(|| format!("{label} trait object gep"))?;
+                builder
+                    .build_store(field_ptr, fat_ty.const_zero())
+                    .llvm_ctx_with(|| format!("{label} trait object zero store"))?;
             }
             StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
@@ -16193,6 +16250,9 @@ fn aggregate_kind_contains_inline_string(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }
+        // TraitObject: the concrete value behind the fat pointer is heap
+        // storage, not an inline string leaf — nothing to retain here.
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Ok(false),
     }
 }
@@ -16527,6 +16587,7 @@ fn retain_strings_in_aggregate_slot<'ctx>(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Ok(()),
     }
 }
@@ -17304,6 +17365,11 @@ fn lower_actor_state_field_load(
                 | StateFieldCloneKind::Resource { .. }
                 | StateFieldCloneKind::OpaqueHandle { .. }
                 | StateFieldCloneKind::Tuple { .. }
+                // TraitObject: dyn-valued actor state is rejected at check
+                // time, so this arm is unreachable in practice; clone is
+                // structurally refused (no dup for an erased concrete type),
+                // matching the ClosurePair/Resource defensive grouping.
+                | StateFieldCloneKind::TraitObject
                 | StateFieldCloneKind::Array { .. } => {}
             }
         }
@@ -17568,9 +17634,13 @@ fn emit_field_overwrite_release(
         // proof the old value isn't aliased elsewhere risks a double-free/UAF,
         // which this crate treats as strictly worse than a leak. This arm now
         // also serves the widened ordinary-record-field-store call site above.
+        // TraitObject joins the same posture: an overwritten dyn slot is
+        // abandoned rather than released (dyn-valued state/record fields are
+        // check-rejected, so this arm is unreachable in practice).
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
     }
 }
@@ -18771,6 +18841,10 @@ fn lower_value_snapshot_clone_instr<'ctx>(
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::OpaqueHandle { .. }
         | StateFieldCloneKind::ClosurePair
+        // TraitObject: clone is structurally refused (erased concrete type);
+        // `is_clone_total` is false, so MIR never emits a snapshot clone for
+        // a dyn value — ownership transfers through the carrier move instead.
+        | StateFieldCloneKind::TraitObject
         | StateFieldCloneKind::Resource { .. } => Err(CodegenError::FailClosed(format!(
             "snapshot clone for `{}` reached unsupported direct kind {:?}",
             ty.user_facing(),
@@ -18971,6 +19045,44 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                     fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
                 )
                 .llvm_ctx("prepared IO null store")?;
+            Ok(())
+        }
+        StateFieldCloneKind::TraitObject => {
+            // Owned `dyn Trait` carrier: dispatch vtable slot 0 on the boxed
+            // concrete value and free the box with the vtable's exact layout,
+            // via the slot-address helper (null-data tolerant — a moved-from
+            // slot neutralized by the transfer path no-ops). The helper
+            // zeroes both words of the slot after the release, so a
+            // structurally reachable second drop short-circuits.
+            let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+            let is_fat_pair = matches!(
+                slot_ty,
+                BasicTypeEnum::StructType(st)
+                    if st.count_fields() == 2
+                        && st
+                            .get_field_types()
+                            .iter()
+                            .all(|t| matches!(t, BasicTypeEnum::PointerType(_)))
+            );
+            if !is_fat_pair {
+                return Err(CodegenError::FailClosed(format!(
+                    "prepared trait-object carrier `{}` has non-fat-pointer slot \
+                     type {slot_ty:?}; expected the two-pointer {{ data, vtable }} \
+                     struct",
+                    ty.user_facing()
+                )));
+            }
+            let helper = get_or_declare_drop_helper(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &DropHelper {
+                    name: "hew_dyn_trait_drop_boxed_in_place",
+                },
+            );
+            fn_ctx
+                .builder
+                .build_call(helper, &[slot.into()], "prepared_dyn_drop")
+                .llvm_ctx("prepared trait-object drop call")?;
             Ok(())
         }
         StateFieldCloneKind::ClosurePair
@@ -20238,6 +20350,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::UserRecord { name } => format!("record_{name}"),
         StateFieldCloneKind::Enum { name } => format!("enum_{name}"),
         StateFieldCloneKind::ClosurePair => "closure_pair".to_string(),
+        StateFieldCloneKind::TraitObject => "trait_object".to_string(),
         StateFieldCloneKind::Resource { name, .. } => format!("resource_{name}"),
         StateFieldCloneKind::OpaqueHandle { name } => format!("opaque_{name}"),
     }

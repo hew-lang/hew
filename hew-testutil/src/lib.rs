@@ -23,6 +23,22 @@ const OUTPUT_READ_CHUNK_BYTES: usize = 8 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 // Grace between killing the process tree and waiting for drain threads to see EOF.
 const KILL_GRACE: Duration = Duration::from_secs(5);
+const SPAWN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Retry only a temporarily resource-blocked spawn. Once a child exists its
+/// exit status is returned unchanged and never triggers another execution.
+fn spawn_with_retry(mut spawn: impl FnMut() -> std::io::Result<Child>) -> std::io::Result<Child> {
+    let deadline = Instant::now() + SPAWN_RETRY_TIMEOUT;
+    loop {
+        match spawn() {
+            Err(error) if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
+                std::thread::sleep(SPAWN_RETRY_INTERVAL);
+            }
+            result => return result,
+        }
+    }
+}
 
 /// Error returned by bounded process execution.
 #[derive(Debug)]
@@ -314,7 +330,7 @@ impl BoundedChild {
     fn spawn(command: &mut Command, label: &str) -> Result<Self, BoundedExecError> {
         own_process_group(command);
 
-        let child = command.spawn().map_err(|error| {
+        let child = spawn_with_retry(|| command.spawn()).map_err(|error| {
             BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
         })?;
         Ok(Self { child })
@@ -328,19 +344,16 @@ impl BoundedChild {
 
         match windows_job::WindowsJob::new() {
             Err(_) => {
-                let child = command.spawn().map_err(|error| {
+                let child = spawn_with_retry(|| command.spawn()).map_err(|error| {
                     BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
                 })?;
                 Ok(Self { child, job: None })
             }
             Ok(job) => {
-                let mut child =
-                    command
-                        .creation_flags(CREATE_SUSPENDED)
-                        .spawn()
-                        .map_err(|error| {
-                            BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
-                        })?;
+                command.creation_flags(CREATE_SUSPENDED);
+                let mut child = spawn_with_retry(|| command.spawn()).map_err(|error| {
+                    BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
+                })?;
                 let job = job.assign(&child).ok().map(|()| job);
                 if let Err(error) = windows_job::resume_child_process(&child) {
                     let _ = child.kill();
@@ -357,7 +370,7 @@ impl BoundedChild {
 
     #[cfg(not(any(unix, windows)))]
     fn spawn(command: &mut Command, label: &str) -> Result<Self, BoundedExecError> {
-        let child = command.spawn().map_err(|error| {
+        let child = spawn_with_retry(|| command.spawn()).map_err(|error| {
             BoundedExecError::failed(label, format!("cannot spawn child: {error}"))
         })?;
         Ok(Self { child })
@@ -1167,6 +1180,25 @@ mod hew_lib_bootstrap_tests {
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn transient_spawn_pressure_is_retried_before_child_execution() {
+        let attempts = Cell::new(0);
+        let mut command = Command::new("true");
+        let mut child = spawn_with_retry(|| {
+            let attempt = attempts.get();
+            attempts.set(attempt + 1);
+            if attempt < 2 {
+                Err(std::io::Error::from(ErrorKind::WouldBlock))
+            } else {
+                command.spawn()
+            }
+        })
+        .expect("transient spawn pressure should recover");
+        assert!(child.wait().expect("reap true child").success());
+        assert_eq!(attempts.get(), 3);
+    }
 
     #[test]
     fn bounded_exec_helper_kills_infinite_output_child() {

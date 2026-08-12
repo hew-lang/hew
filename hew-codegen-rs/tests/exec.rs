@@ -2,6 +2,13 @@
 // Add new exec-behaviour tests under `tests/exec/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+use std::process::{Command, Output};
+
+fn run_hew_command(command: &mut Command, label: impl Into<String>) -> Output {
+    hew_testutil::run_command_bounded(command, label, hew_testutil::DEFAULT_EXEC_TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
 #[path = "exec/bytes_index_exec.rs"]
 mod bytes_index_exec;
 #[path = "exec/coro_emission_exec.rs"]

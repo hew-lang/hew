@@ -57,11 +57,9 @@ fn run_fixture(repo: &Path, group: &str, name: &str) {
     let expected =
         std::fs::read_to_string(fixture.with_extension("expected")).expect("read .expected");
 
-    let output = hew_command(repo)
-        .arg("run")
-        .arg(&fixture)
-        .output()
-        .expect("spawn hew run");
+    let mut command = hew_command(repo);
+    command.arg("run").arg(&fixture);
+    let output = super::run_hew_command(&mut command, format!("hew run {}", fixture.display()));
     assert!(
         output.status.success(),
         "hew run {} exited non-zero (status={:?}); stderr:\n{}",

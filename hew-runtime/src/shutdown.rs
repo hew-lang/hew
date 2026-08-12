@@ -473,8 +473,14 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
 
 fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool) {
     // Phase 1: Quiesce (already set by caller).
-    // Nothing else to do — hew_is_shutting_down() now returns 1, which
-    // callers can check before spawning new actors.
+    // Close periodic-timer admission and wait out any callback already sending
+    // before sampling scheduler idleness. Otherwise a callback can enqueue an
+    // actor after the final idle observation but before worker shutdown, leaving
+    // cleanup with a Runnable actor that no worker can consume.
+    //
+    // Keep the shared timer wheel/ticker alive: suspended sleep activations still
+    // need it through drain and parked-frame retirement.
+    crate::timer_periodic::quiesce_periodic_timers();
 
     // Phase 2: Drain — let workers process remaining messages.
     shutdown_phase_store(PHASE_DRAIN, Ordering::Release);

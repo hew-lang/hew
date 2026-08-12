@@ -256,6 +256,121 @@ fn already_dyn_argument_is_not_reboxed_as_its_original_concrete() {
     );
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end ownership boundary covers callee transfer and both caller exits"
+)]
+fn returned_dyn_transfers_heap_boxed_drop_authority_to_the_caller() {
+    use hew_mir::{ExitPath, Place, Terminator, TraitObjectStorage};
+
+    let source = r#"
+        trait Labeled {
+            fn size(val: Self) -> i64;
+        }
+        type Item { label: string }
+        impl Item {
+            fn size(val: Item) -> i64 { val.label.len() }
+        }
+        fn make(label: string) -> dyn Labeled {
+            let erased: dyn Labeled = Item { label: label };
+            erased
+        }
+        fn hold_then_panic() {
+            let value = make("panic-owner");
+            let empty: Vec<i64> = Vec::new();
+            let missing = empty[0];
+        }
+        fn main() {
+            let value = make("return-owner");
+            value.size();
+        }
+    "#;
+    let p = pipeline(source);
+
+    let make_raw = p
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "make")
+        .expect("make raw MIR");
+    assert!(
+        make_raw.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        ..
+                    }
+                )
+            }) && matches!(block.terminator, Terminator::Return)
+        }),
+        "the factory must transfer its fat pointer through ReturnSlot"
+    );
+
+    let make_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "make")
+        .expect("make elaborated MIR");
+    assert!(
+        make_elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .flat_map(|(_, plan)| &plan.drops)
+            .all(|drop| !matches!(drop.kind, DropKind::TraitObject { .. })),
+        "the callee must not drop the dyn owner after returning it"
+    );
+
+    let main_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR");
+    let main_dyn_drops = main_elab
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                DropKind::TraitObject {
+                    storage: TraitObjectStorage::HeapBoxed
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        main_dyn_drops, 1,
+        "the normal caller must hold exactly one HeapBoxed drop authority"
+    );
+
+    let panic_elab = p
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "hold_then_panic")
+        .expect("panic owner elaborated MIR");
+    assert!(
+        panic_elab
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Panic { .. }))
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| {
+                matches!(
+                    drop.kind,
+                    DropKind::TraitObject {
+                        storage: TraitObjectStorage::HeapBoxed
+                    }
+                )
+            }),
+        "panic cleanup must release the caller-owned dyn box; plans: {:#?}",
+        panic_elab.drop_plans
+    );
+}
+
 /// A method call on a `dyn Display` receiver lowers to
 /// `Instr::CallTraitMethod` with the right trait, method, and pre-computed
 /// slot index. Slot 3 = first trait method (slots 0..=2 are the runtime

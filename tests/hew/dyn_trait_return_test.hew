@@ -1,0 +1,61 @@
+//! Returned trait objects own heap-promoted concrete storage. The callee
+//! transfers that box through its return slot; the caller is the sole final
+//! owner on both normal and panic exits.
+
+import std::string;
+import std::testing;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person {
+    label: string;
+}
+
+impl Person {
+    fn label_size(val: Person) -> i64 {
+        val.label.len()
+    }
+}
+
+type Parcel {
+    label: string;
+}
+
+impl Parcel {
+    fn label_size(val: Parcel) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_person(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Person { label: string.repeat(seed, 64) };
+    erased
+}
+
+fn make_parcel(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Parcel { label: string.repeat(seed, 96) };
+    erased
+}
+
+fn inspect(value: dyn Labeled) -> i64 {
+    value.label_size()
+}
+
+#[test]
+fn test_returned_dyn_transfers_to_caller() {
+    let person = make_person("p");
+    let parcel = make_parcel("q");
+    testing.assert_eq(inspect(person), 64);
+    testing.assert_eq(inspect(parcel), 96);
+}
+
+#[test]
+#[should_panic]
+fn test_returned_dyn_drops_during_panic_unwind() {
+    let value = make_person("u");
+    testing.assert_eq(inspect(value), 64);
+    let empty: Vec<i64> = Vec::new();
+    let _missing = empty[0];
+}

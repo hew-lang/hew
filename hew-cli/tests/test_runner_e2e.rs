@@ -37,6 +37,11 @@ fn passing_suite_exits_zero() {
     );
 
     assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("test passes ... ok"));
     assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
@@ -83,6 +88,79 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
     assert!(stdout.contains("test alpha ... ok"));
     assert!(stdout.contains("test beta ... FAILED"));
     assert!(stdout.contains("1 passed; 1 failed; 0 ignored"));
+}
+
+#[test]
+fn parallel_suite_reports_in_discovery_order() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "ordered_test.hew",
+            "#[test]\nfn slow_first() {\n    sleep(100ms);\n}\n\n#[test]\nfn fast_second() {\n    assert(true);\n}\n",
+        )],
+        &["--no-color", "--jobs", "2"],
+    );
+
+    assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first = stdout.find("test slow_first ... ok").unwrap();
+    let second = stdout.find("test fast_second ... ok").unwrap();
+    assert!(first < second, "stdout: {stdout}");
+}
+
+#[test]
+fn serial_tests_do_not_overlap() {
+    require_codegen();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let source = format!(
+        "import std::net;\n\n\
+         fn hold_port() {{\n\
+             match net.try_listen(\"127.0.0.1:{port}\") {{\n\
+                 Ok(listener) => {{\n\
+                     sleep(200ms);\n\
+                     listener.close();\n\
+                 }},\n\
+                 Err(_) => panic(\"serial tests overlapped\"),\n\
+             }}\n\
+         }}\n\n\
+         #[test]\n#[serial]\nfn serial_one() {{ hold_port(); }}\n\n\
+         #[test]\n#[serial]\nfn serial_two() {{ hold_port(); }}\n"
+    );
+
+    let output = run_suite(
+        &[("serial_test.hew", source.as_str())],
+        &["--no-color", "--jobs", "2"],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn zero_jobs_is_rejected() {
+    let output = run_suite(
+        &[("ignored_test.hew", "#[test]\n#[ignore]\nfn ignored() {}\n")],
+        &["--jobs", "0"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid value '0'"), "stderr: {stderr}");
 }
 
 #[test]

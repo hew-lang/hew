@@ -329,6 +329,7 @@ fn test_collect_exhausted_scanner_returns_empty() {
 
 // ── file constructors ─────────────────────────────────────────────────
 #[test]
+#[serial]
 fn test_from_file_scans_real_empty_line_and_eof() {
     let path = ".tmp/scanner-test-input.txt";
     // Ensure the scratch directory exists — it is gitignored and may be absent
@@ -384,6 +385,7 @@ fn test_from_file_scans_real_empty_line_and_eof() {
 }
 
 #[test]
+#[serial]
 fn test_from_file_missing_path_returns_io_error() {
     match scanner.from_file(".tmp/scanner-test-definitely-missing.txt") {
         Ok(_) => {

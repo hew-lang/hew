@@ -625,6 +625,12 @@ pub struct TestArgs {
     /// Exit 0 when no test files or functions are discovered.
     #[arg(long)]
     pub allow_empty: bool,
+    /// Maximum number of tests to compile or execute concurrently.
+    ///
+    /// Defaults to the host's physical core count, capped to avoid excessive
+    /// memory pressure from concurrent compilation tasks.
+    #[arg(long, short = 'j', value_name = "N")]
+    pub jobs: Option<std::num::NonZeroUsize>,
 }
 
 // ---------------------------------------------------------------------------

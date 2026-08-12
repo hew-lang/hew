@@ -121,6 +121,22 @@ pub fn link_executable(
     extra_libs: &[String],
     debug: bool,
 ) -> Result<(), String> {
+    link_executable_with_hew_lib(object_path, output_path, target, extra_libs, debug, None)
+}
+
+/// Link a native object with an optional, already-resolved Hew runtime archive.
+///
+/// Supplying `hew_lib` prevents in-process callers from accidentally resolving
+/// the archive relative to their host executable rather than the compiler
+/// whose pipeline they are invoking.
+pub(crate) fn link_executable_with_hew_lib(
+    object_path: &str,
+    output_path: &str,
+    target: &TargetSpec,
+    extra_libs: &[String],
+    debug: bool,
+    hew_lib: Option<&std::path::Path>,
+) -> Result<(), String> {
     if target.is_wasm() {
         return link_wasm(object_path, output_path, target.normalized_triple());
     }
@@ -201,11 +217,20 @@ pub fn link_executable(
     // target/debug/libhew.a runtime, and selecting an older release-lib sibling
     // would make ordinary local programs silently execute stale runtime code.
     // Release compilers map to the shipped, non-LTO release-lib archive.
-    let hew_lib = find_hew_lib(
-        target.hew_lib_name(),
-        target.normalized_triple(),
-        target.can_run_on_host(),
-    )?;
+    let hew_lib = match hew_lib {
+        Some(path) if path.is_file() => path.display().to_string(),
+        Some(path) => {
+            return Err(format!(
+                "Error: Hew runtime archive is missing at `{}`",
+                path.display()
+            ));
+        }
+        None => find_hew_lib(
+            target.hew_lib_name(),
+            target.normalized_triple(),
+            target.can_run_on_host(),
+        )?,
+    };
 
     let mut cmd = std::process::Command::new(compiler.program);
 
@@ -953,7 +978,11 @@ fn unresolved_hew_wasm_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 }
 
 /// Resolves the combined runtime + stdlib archive for the link line.
-fn find_hew_lib(name: &str, triple: &str, target_matches_host: bool) -> Result<String, String> {
+pub(crate) fn find_hew_lib(
+    name: &str,
+    triple: &str,
+    target_matches_host: bool,
+) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
     let candidates = hew_lib_candidates(exe_dir, name, triple, target_matches_host);

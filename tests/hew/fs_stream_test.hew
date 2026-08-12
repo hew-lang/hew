@@ -26,6 +26,7 @@ fn cleanup_file(file_path: string) {
 }
 
 #[test]
+#[serial]
 fn test_try_read_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_missing.txt";
     cleanup_file(file_path);
@@ -50,6 +51,7 @@ fn test_try_read_directory_returns_eisdir() {
 }
 
 #[test]
+#[serial]
 fn test_try_read_bytes_missing_returns_not_found() {
     let file_path = "tests/hew/_fs_stream_bytes_missing.bin";
     cleanup_file(file_path);
@@ -63,6 +65,7 @@ fn test_try_read_bytes_missing_returns_not_found() {
 }
 
 #[test]
+#[serial]
 fn test_try_read_bytes_failure_drains_stale_error_message() {
     // Regression pin: try_read_bytes must drain hew_stream_last_error() on
     // its failure path, not just hew_stream_last_errno(). The two are
@@ -105,6 +108,7 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
 }
 
 #[test]
+#[serial]
 fn test_try_write_read_size_and_delete_roundtrip() {
     let file_path = "tests/hew/_fs_stream_roundtrip.txt";
     cleanup_file(file_path);
@@ -124,6 +128,7 @@ fn test_try_write_read_size_and_delete_roundtrip() {
 }
 
 #[test]
+#[serial]
 fn test_try_rename_missing_source_returns_not_found() {
     let source_path = "tests/hew/_fs_stream_rename_missing.txt";
     let target_path = "tests/hew/_fs_stream_rename_missing_target.txt";
@@ -139,6 +144,7 @@ fn test_try_rename_missing_source_returns_not_found() {
 }
 
 #[test]
+#[serial]
 fn test_try_rename_success() {
     let source_path = "tests/hew/_fs_stream_rename_src.txt";
     let target_path = "tests/hew/_fs_stream_rename_dst.txt";
@@ -161,6 +167,7 @@ fn test_try_rename_success() {
 }
 
 #[test]
+#[serial]
 fn test_try_copy_missing_source_returns_not_found() {
     let source_path = "tests/hew/_fs_stream_copy_missing.txt";
     let target_path = "tests/hew/_fs_stream_copy_missing_target.txt";
@@ -176,6 +183,7 @@ fn test_try_copy_missing_source_returns_not_found() {
 }
 
 #[test]
+#[serial]
 fn test_try_copy_success() {
     let source_path = "tests/hew/_fs_stream_copy_src.txt";
     let target_path = "tests/hew/_fs_stream_copy_dst.txt";
@@ -199,6 +207,7 @@ fn test_try_copy_success() {
 }
 
 #[test]
+#[serial]
 fn test_try_append_and_try_read_bytes() {
     let file_path = "tests/hew/_fs_stream_bytes.txt";
     cleanup_file(file_path);
@@ -218,6 +227,7 @@ fn test_try_append_and_try_read_bytes() {
 }
 
 #[test]
+#[serial]
 fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     let file_path = "tests/hew/_fs_stream_binary_bytes.bin";
     cleanup_file(file_path);
@@ -268,6 +278,7 @@ fn test_try_list_dir_handles_success_and_missing_paths() {
 }
 
 #[test]
+#[serial]
 fn test_try_list_dir_regular_file_returns_enotdir() {
     let file_path = "tests/hew/_fs_stream_not_directory.txt";
     cleanup_file(file_path);
@@ -283,6 +294,7 @@ fn test_try_list_dir_regular_file_returns_enotdir() {
 }
 
 #[test]
+#[serial]
 fn test_try_write_reports_enotdir_errno() {
     let file_path = "tests/hew/_fs_stream_write_parent.txt";
     cleanup_file(file_path);
@@ -298,6 +310,7 @@ fn test_try_write_reports_enotdir_errno() {
 }
 
 #[test]
+#[serial]
 fn test_stream_try_from_file_missing_returns_not_found() {
     // try_from_file on a missing path returns IoError::NotFound.
     let missing_path = "tests/hew/_stream_missing.txt";
@@ -312,6 +325,7 @@ fn test_stream_try_from_file_missing_returns_not_found() {
 }
 
 #[test]
+#[serial]
 fn test_stream_try_to_file_send_close_and_try_from_file() {
     // try_to_file opens a writable Sink; send+close works.
     // try_from_file on the written file succeeds (no IoError).
@@ -336,6 +350,7 @@ fn test_stream_try_to_file_send_close_and_try_from_file() {
 }
 
 #[test]
+#[serial]
 fn test_stream_try_to_file_missing_dir_returns_not_found() {
     // Regression: try_to_file must classify open failures through the runtime's
     // canonical error-kind channel (like std/fs), not the raw errno alone.

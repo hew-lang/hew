@@ -1,9 +1,74 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+const MAX_DEFAULT_JOBS: usize = 8;
+
+/// Choose a conservative host-aware default for concurrent compilation tasks.
+#[must_use]
+pub fn default_jobs() -> usize {
+    physical_core_count()
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        })
+        .clamp(1, MAX_DEFAULT_JOBS)
+}
+
+#[cfg(target_os = "macos")]
+fn physical_core_count() -> Option<usize> {
+    use std::ffi::CString;
+
+    let name = CString::new("hw.physicalcpu").ok()?;
+    let mut cores: libc::c_uint = 0;
+    let mut size = std::mem::size_of_val(&cores);
+    // SAFETY: `cores` and `size` point to writable storage of the advertised
+    // length, and the remaining sysctl arguments are null for a read-only query.
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::from_mut(&mut cores).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && cores > 0).then_some(cores as usize)
+}
+
+#[cfg(target_os = "linux")]
+fn physical_core_count() -> Option<usize> {
+    use std::collections::HashSet;
+
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    let mut physical_id = None;
+    let mut core_id = None;
+    let mut cores = HashSet::new();
+    for line in cpuinfo.lines().chain(std::iter::once("")) {
+        if let Some((key, value)) = line.split_once(':') {
+            match key.trim() {
+                "physical id" => physical_id = value.trim().parse::<usize>().ok(),
+                "core id" => core_id = value.trim().parse::<usize>().ok(),
+                _ => {}
+            }
+        } else if line.is_empty() {
+            if let (Some(package), Some(core)) = (physical_id.take(), core_id.take()) {
+                cores.insert((package, core));
+            }
+        }
+    }
+    (!cores.is_empty()).then_some(cores.len())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn physical_core_count() -> Option<usize> {
+    None
+}
 
 /// Default per-test execution timeout.
 #[cfg(test)]
@@ -46,6 +111,61 @@ pub struct TestSummary {
     pub ignored: usize,
 }
 
+/// Filesystem inputs needed by the in-process native compiler.
+#[derive(Debug)]
+pub struct TestCompilePaths {
+    paths: crate::NativeCompilePaths,
+}
+
+impl TestCompilePaths {
+    /// Resolve the standard library and runtime archive before scheduling work.
+    pub fn resolve(project_dir: &Path) -> Result<Self, String> {
+        let module_search_paths =
+            hew_types::module_registry::build_module_search_paths_for(Some(project_dir));
+        let target = crate::target::TargetSpec::from_requested(None)
+            .map_err(|error| format!("cannot determine the host target: {error}"))?;
+        let hew_lib = crate::link::find_hew_lib(
+            target.hew_lib_name(),
+            target.normalized_triple(),
+            target.can_run_on_host(),
+        )?;
+        Self::from_explicit(module_search_paths, PathBuf::from(hew_lib))
+    }
+
+    fn from_explicit(module_search_paths: Vec<PathBuf>, hew_lib: PathBuf) -> Result<Self, String> {
+        let has_stdlib = module_search_paths
+            .iter()
+            .any(|root| root.join("std/builtins.hew").is_file());
+        if !has_stdlib {
+            let tried = module_search_paths
+                .iter()
+                .map(|root| root.join("std/builtins.hew").display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Hew standard library is missing; looked for std/builtins.hew at: {}",
+                if tried.is_empty() {
+                    "<no search roots>"
+                } else {
+                    &tried
+                }
+            ));
+        }
+        if !hew_lib.is_file() {
+            return Err(format!(
+                "Hew runtime archive is missing at `{}`",
+                hew_lib.display()
+            ));
+        }
+        Ok(Self {
+            paths: crate::NativeCompilePaths {
+                module_search_paths,
+                hew_lib,
+            },
+        })
+    }
+}
+
 /// Run a set of test cases.
 ///
 /// Each test is compiled to a native binary via the `hew compile` pipeline and
@@ -56,6 +176,38 @@ pub fn run_tests(
     filter: Option<&str>,
     include_ignored: bool,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
+    timeout: Duration,
+    jobs: usize,
+) -> TestSummary {
+    if jobs <= 1 {
+        return run_tests_serial(
+            tests,
+            filter,
+            include_ignored,
+            ffi_lib,
+            compile_paths,
+            timeout,
+        );
+    }
+
+    run_tests_parallel(
+        tests,
+        filter,
+        include_ignored,
+        ffi_lib,
+        compile_paths,
+        timeout,
+        jobs,
+    )
+}
+
+fn run_tests_serial(
+    tests: &[TestCase],
+    filter: Option<&str>,
+    include_ignored: bool,
+    ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
 ) -> TestSummary {
     let mut results = Vec::new();
@@ -110,7 +262,7 @@ pub fn run_tests(
                 continue;
             }
 
-            let result = run_single_test(&source, test, ffi_lib, timeout);
+            let result = run_single_test(&source, test, ffi_lib, compile_paths, timeout);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -120,6 +272,135 @@ pub fn run_tests(
         }
     }
 
+    TestSummary {
+        results,
+        passed,
+        failed,
+        ignored,
+    }
+}
+
+struct TestTask {
+    result_index: usize,
+    source: Arc<str>,
+    test: TestCase,
+}
+
+fn run_tests_parallel(
+    tests: &[TestCase],
+    filter: Option<&str>,
+    include_ignored: bool,
+    ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
+    timeout: Duration,
+    jobs: usize,
+) -> TestSummary {
+    let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
+    for test in tests {
+        if filter.is_some_and(|pattern| !test.name.contains(pattern)) {
+            continue;
+        }
+        if let Some((_, grouped_tests)) = by_file
+            .iter_mut()
+            .find(|(file, _)| *file == test.file.as_str())
+        {
+            grouped_tests.push(test);
+        } else {
+            by_file.push((test.file.as_str(), vec![test]));
+        }
+    }
+
+    let result_count = by_file.iter().map(|(_, tests)| tests.len()).sum();
+    let mut result_slots: Vec<Option<TestResult>> =
+        std::iter::repeat_with(|| None).take(result_count).collect();
+    let mut tasks = Vec::new();
+    let mut result_index = 0;
+
+    for (file, file_tests) in by_file {
+        let source = match std::fs::read_to_string(file) {
+            Ok(source) => Some(Arc::<str>::from(source)),
+            Err(error) => {
+                for test in file_tests {
+                    result_slots[result_index] = Some(TestResult {
+                        test: test.clone(),
+                        outcome: TestOutcome::Failed(format!("cannot read {file}: {error}")),
+                        output: String::new(),
+                        duration: Duration::ZERO,
+                    });
+                    result_index += 1;
+                }
+                continue;
+            }
+        };
+
+        for test in file_tests {
+            if test.ignored && !include_ignored {
+                result_slots[result_index] = Some(TestResult {
+                    test: test.clone(),
+                    outcome: TestOutcome::Ignored,
+                    output: String::new(),
+                    duration: Duration::ZERO,
+                });
+            } else {
+                tasks.push(TestTask {
+                    result_index,
+                    source: Arc::clone(source.as_ref().expect("source was read")),
+                    test: test.clone(),
+                });
+            }
+            result_index += 1;
+        }
+    }
+
+    let next_task = AtomicUsize::new(0);
+    let result_slots = Mutex::new(result_slots);
+    let serial_gate = Mutex::new(());
+    let worker_count = jobs.min(tasks.len().max(1));
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| loop {
+                let task_index = next_task.fetch_add(1, Ordering::Relaxed);
+                let Some(task) = tasks.get(task_index) else {
+                    break;
+                };
+                let result = if task.test.serial {
+                    let _serial_guard = serial_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
+                } else {
+                    run_single_test(&task.source, &task.test, ffi_lib, compile_paths, timeout)
+                };
+                result_slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)[task.result_index] =
+                    Some(result);
+            });
+        }
+    });
+
+    summarize(
+        result_slots
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .into_iter()
+            .map(|result| result.expect("every scheduled test returns a result"))
+            .collect(),
+    )
+}
+
+fn summarize(results: Vec<TestResult>) -> TestSummary {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut ignored = 0;
+    for result in &results {
+        match result.outcome {
+            TestOutcome::Passed => passed += 1,
+            TestOutcome::Failed(_) => failed += 1,
+            TestOutcome::Ignored => ignored += 1,
+        }
+    }
     TestSummary {
         results,
         passed,
@@ -139,6 +420,7 @@ fn compile_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
 ) -> Result<CompiledTestArtifact, String> {
     if ffi_lib.is_some() {
         return Err("hew test FFI libraries are unavailable on the v0.5 compile path".to_string());
@@ -148,8 +430,6 @@ fn compile_test(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
         name = test.name,
     );
-
-    let hew_binary = crate::util::find_hew_binary()?;
 
     // Write synthetic source and the emit dir to the system temp directory,
     // NOT to the test file's own parent.  If the process is killed mid-run,
@@ -176,24 +456,19 @@ fn compile_test(
         .ok_or_else(|| "temp source path has no file stem".to_string())?;
     let binary_path = emit_dir.path().join(binary_name);
 
-    let mut cmd = Command::new(&hew_binary);
-    cmd.arg("compile")
-        .arg(tmp_source.path())
-        .arg("--emit-dir")
-        .arg(emit_dir.path());
-    let compile_output = cmd
-        .output()
-        .map_err(|e| format!("cannot invoke hew compile: {e}"))?;
-
-    if !compile_output.status.success() {
-        let stderr = String::from_utf8_lossy(&compile_output.stderr);
-        let stdout = String::from_utf8_lossy(&compile_output.stdout);
-        let msg = if stderr.is_empty() {
-            stdout.to_string()
+    crate::diagnostic::start_diagnostic_capture();
+    let compile_result = crate::compile_native_binary_with_paths(
+        tmp_source.path(),
+        &binary_path,
+        Some(&compile_paths.paths),
+    );
+    let diagnostics = crate::diagnostic::finish_diagnostic_capture();
+    if compile_result.is_err() {
+        return Err(if diagnostics.is_empty() {
+            "in-process compilation failed".to_string()
         } else {
-            stderr.to_string()
-        };
-        return Err(msg);
+            diagnostics.trim_end().to_string()
+        });
     }
 
     Ok(CompiledTestArtifact {
@@ -209,11 +484,12 @@ fn run_single_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
+    compile_paths: &TestCompilePaths,
     timeout: Duration,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let artifact = match compile_test(source, test, ffi_lib) {
+    let artifact = match compile_test(source, test, ffi_lib, compile_paths) {
         Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -305,7 +581,7 @@ mod tests {
     /// Skip tests that require the linked native execution substrate while
     /// `hew test` is still blocked by the v0.5 cutover guard.
     fn require_codegen() -> bool {
-        ensure_test_toolchain() && crate::util::find_hew_binary().is_ok()
+        ensure_test_toolchain()
     }
 
     /// Ensure the full native test toolchain is available before tests that
@@ -314,10 +590,67 @@ mod tests {
         static BUILD_OK: OnceLock<bool> = OnceLock::new();
         *BUILD_OK.get_or_init(|| {
             Command::new("make")
-                .args(["hew", "codegen", "runtime", "stdlib"])
+                .current_dir(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .expect("hew-cli should have a workspace parent"),
+                )
+                .arg("stdlib")
                 .status()
                 .is_ok_and(|status| status.success())
         })
+    }
+
+    fn cargo_test_compile_paths() -> &'static TestCompilePaths {
+        static PATHS: OnceLock<TestCompilePaths> = OnceLock::new();
+        PATHS.get_or_init(|| {
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("hew-cli should have a workspace parent")
+                .to_path_buf();
+            let cargo_profile_dir = Path::new(env!("OUT_DIR"))
+                .ancestors()
+                .nth(3)
+                .expect("OUT_DIR should be below the Cargo profile directory");
+            let target = crate::target::TargetSpec::from_requested(None)
+                .expect("the test host target should resolve");
+            TestCompilePaths::from_explicit(
+                vec![workspace_root],
+                cargo_profile_dir.join(target.hew_lib_name()),
+            )
+            .expect("make stdlib should provide explicit test compiler paths")
+        })
+    }
+
+    #[test]
+    fn explicit_compile_paths_name_missing_standard_library() {
+        let dir = tempfile::tempdir().expect("create path fixture");
+        let archive = dir.path().join("libhew.a");
+        std::fs::write(&archive, []).expect("create archive fixture");
+
+        let error = TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive)
+            .expect_err("a root without std/builtins.hew must fail");
+
+        assert!(error.contains("standard library"), "error: {error}");
+        assert!(error.contains("std/builtins.hew"), "error: {error}");
+    }
+
+    #[test]
+    fn explicit_compile_paths_name_missing_runtime_archive() {
+        let dir = tempfile::tempdir().expect("create path fixture");
+        std::fs::create_dir(dir.path().join("std")).expect("create std fixture");
+        std::fs::write(dir.path().join("std/builtins.hew"), []).expect("create builtins fixture");
+        let archive = dir.path().join("missing-libhew.a");
+
+        let error =
+            TestCompilePaths::from_explicit(vec![dir.path().to_path_buf()], archive.clone())
+                .expect_err("a missing runtime archive must fail");
+
+        assert!(error.contains("runtime archive"), "error: {error}");
+        assert!(
+            error.contains(&archive.display().to_string()),
+            "error: {error}"
+        );
     }
 
     /// Helper to run tests from inline source.
@@ -342,7 +675,15 @@ mod tests {
                 t
             })
             .collect();
-        run_tests(&tests, None, false, None, timeout)
+        run_tests(
+            &tests,
+            None,
+            false,
+            None,
+            cargo_test_compile_paths(),
+            timeout,
+            1,
+        )
     }
 
     #[test]
@@ -500,22 +841,39 @@ fn test_timeout() {
                 file: "alpha_test.hew".into(),
                 ignored: true,
                 should_panic: false,
+                serial: false,
             },
             TestCase {
                 name: "beta".into(),
                 file: "nested/beta_test.hew".into(),
                 ignored: true,
                 should_panic: false,
+                serial: false,
             },
             TestCase {
                 name: "gamma".into(),
                 file: "tests/gamma.hew".into(),
                 ignored: true,
                 should_panic: false,
+                serial: false,
             },
         ];
 
-        let summary = run_tests(&tests, None, false, None, DEFAULT_TEST_TIMEOUT);
+        let unused_paths = TestCompilePaths {
+            paths: crate::NativeCompilePaths {
+                module_search_paths: Vec::new(),
+                hew_lib: PathBuf::new(),
+            },
+        };
+        let summary = run_tests(
+            &tests,
+            None,
+            false,
+            None,
+            &unused_paths,
+            DEFAULT_TEST_TIMEOUT,
+            2,
+        );
         let names: Vec<_> = summary
             .results
             .iter()

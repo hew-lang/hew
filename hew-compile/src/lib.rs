@@ -23,6 +23,13 @@ pub struct FrontendOptions {
     /// validation, lockfile) identical to `compile_file`.  When `None` the
     /// old cwd-fallback with no manifest is used.
     pub project_dir: Option<PathBuf>,
+    /// Exact roots used to resolve standard-library and global modules.
+    ///
+    /// When unset, the frontend discovers roots from the source path, current
+    /// directory, and installed compiler layout. Synthetic in-process callers
+    /// should set this so resolution does not depend on the host process's
+    /// working directory or executable location.
+    pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
     /// When `true`, [`check_file`], [`check_program`], [`compile_file`], and
@@ -209,6 +216,7 @@ pub struct ImportResolutionContext<'a> {
     pub locked_versions: Option<&'a [(String, String)]>,
     pub package_name: Option<&'a str>,
     pub project_dir: &'a Path,
+    pub module_search_paths: Option<&'a [PathBuf]>,
 }
 
 #[derive(Debug)]
@@ -477,6 +485,7 @@ fn resolve_imports_internal(
         locked_versions: project.locked_versions.as_deref(),
         package_name: project.package_name.as_deref(),
         project_dir: &project.project_dir,
+        module_search_paths: options.module_search_paths.as_deref(),
     };
     let module_graph = build_module_graph_with_diagnostics(
         input_path,
@@ -585,8 +594,9 @@ fn typecheck_program_with_diagnostics(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
-    let search_paths =
-        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref());
+    let search_paths = options.module_search_paths.clone().unwrap_or_else(|| {
+        hew_types::module_registry::build_module_search_paths_for(options.project_dir.as_deref())
+    });
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
@@ -1291,9 +1301,17 @@ fn resolve_file_imports_internal(
                 // Stdlib / global search roots — apply exclusive precedence tiers so that
                 // a file in worktree-A always resolves std from A only, never from the
                 // build binary's worktree or a sibling checkout.
-                for root in
-                    hew_types::module_registry::build_module_search_paths_for(Some(source_file))
-                {
+                let discovered_search_paths;
+                let search_paths = if let Some(paths) = ctx.module_search_paths {
+                    paths
+                } else {
+                    discovered_search_paths =
+                        hew_types::module_registry::build_module_search_paths_for(Some(
+                            source_file,
+                        ));
+                    &discovered_search_paths
+                };
+                for root in search_paths {
                     candidates.push(root.join(&dir_path));
                     candidates.push(root.join(&rel_path));
                 }
@@ -3650,6 +3668,53 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "std::fs must not resolve from colliding --pkg-path file {}",
             resolved.display()
         );
+    }
+
+    #[test]
+    fn explicit_module_search_paths_do_not_fall_back_to_process_layout() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let stdlib_root = dir.path().join("compiler-resources");
+        let stdlib_dir = stdlib_root.join("std");
+        fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
+        write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
+        let expected = Path::new(&write_source(
+            &stdlib_dir,
+            "fs.hew",
+            "pub fn explicit_marker() -> i64 { 1 }\n",
+        ))
+        .canonicalize()
+        .expect("canonical explicit stdlib module");
+        let project_dir = dir.path().join("external-project");
+        fs::create_dir(&project_dir).expect("create external project");
+        let input = write_source(
+            &project_dir,
+            "main.hew",
+            "import std::fs;\n\nfn main() {}\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                project_dir: Some(project_dir),
+                module_search_paths: Some(vec![stdlib_root]),
+                ..Default::default()
+            },
+        )
+        .expect("the explicit stdlib root should resolve independently of cwd");
+
+        let resolved = state
+            .program
+            .items
+            .iter()
+            .find_map(|item| match &item.0 {
+                Item::Import(import) if import.path == ["std", "fs"] => {
+                    import.resolved_source_paths.first()
+                }
+                _ => None,
+            })
+            .expect("std::fs should resolve from the explicit root");
+        assert_eq!(resolved, &expected);
     }
 
     #[test]

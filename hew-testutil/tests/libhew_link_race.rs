@@ -98,8 +98,6 @@ const READY_ACK_DEADLINE: Duration = Duration::from_secs(30);
 const CHILD_WAIT_DEADLINE: Duration = Duration::from_mins(3);
 /// Bounds a single real `hew compile` link attempt.
 const LINK_DEADLINE: Duration = Duration::from_secs(30);
-/// Bounds the one-time prebuild of the `hew` binary itself.
-const PREBUILD_DEADLINE: Duration = Duration::from_mins(5);
 /// Poll interval used only for bounded-wait backstops (readiness, deadline
 /// reaping) -- never as the race's evidentiary basis.
 const POLL_SLEEP: Duration = Duration::from_millis(5);
@@ -626,29 +624,18 @@ fn open_write_lock(barrier_path: &Path) -> RwLock<fs::File> {
     RwLock::new(file)
 }
 
-/// Bounded (via `hew_testutil::run_command_bounded`) one-time prebuild of the
-/// `hew` binary itself, run from the orchestrator process directly (not
-/// nested inside any self-fork child), so it needs its own process-group
-/// treatment: a hung `cargo build` (and any `rustc`/linker grandchild it
-/// forks) is killed as a whole group on timeout, not just the immediate
-/// `cargo` process.
+/// One-time prebuild of the `hew` binary itself, delegated to
+/// [`hew_testutil::ensure_hew_bin_built`] -- the same `fd_lock` +
+/// `NEXTEST_RUN_ID`-serialized helper `ensure_hew_lib_built` uses for
+/// `libhew.a`. This test previously duplicated the pre-#1887 raw, unlocked
+/// `cargo build -p hew-cli --bin hew` pattern under a hardcoded, artificial
+/// deadline: under real build-directory lock contention the child produces
+/// no output while waiting on Cargo's own lock, and the deadline converted a
+/// legitimate wait into a false test failure. The shared helper has no
+/// artificial timeout and serializes concurrent callers instead of racing
+/// them.
 fn ensure_hew_binary_built() {
-    let (target_dir, _profile) = target_dir_and_profile();
-    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cmd.args(["build", "-q", "-p", "hew-cli", "--bin", "hew"])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .current_dir(repo_root());
-    let output = hew_testutil::run_command_bounded(
-        &mut cmd,
-        "cargo build -p hew-cli --bin hew",
-        PREBUILD_DEADLINE,
-    )
-    .expect("prebuild of `hew` binary did not complete");
-    assert!(
-        output.status.success(),
-        "prebuild of `hew` binary failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    hew_testutil::ensure_hew_bin_built().expect("prebuild of `hew` binary did not complete");
 }
 
 /// Waits (bounded, polling, no sleep-as-proof) for every path in

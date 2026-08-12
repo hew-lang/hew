@@ -8030,6 +8030,55 @@ fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering>
     aliases
 }
 
+#[derive(Debug, Clone)]
+struct TypeAliasLowering {
+    type_params: Vec<String>,
+    target: Spanned<TypeExpr>,
+}
+
+fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering> {
+    fn insert_alias(
+        aliases: &mut HashMap<String, TypeAliasLowering>,
+        owner: Option<&str>,
+        decl: &TypeAliasDecl,
+    ) {
+        let alias = TypeAliasLowering {
+            type_params: decl
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|param| param.name.clone()).collect())
+                .unwrap_or_default(),
+            target: decl.ty.clone(),
+        };
+        if let Some(owner) = owner {
+            aliases.insert(format!("{owner}.{}", decl.name), alias);
+        } else {
+            aliases.insert(decl.name.clone(), alias);
+        }
+    }
+
+    let mut aliases = HashMap::new();
+    for (item, _) in &program.items {
+        if let Item::TypeAlias(decl) = item {
+            insert_alias(&mut aliases, None, decl);
+        }
+    }
+    if let Some(graph) = &program.module_graph {
+        for module_id in &graph.topo_order {
+            let Some(module) = graph.modules.get(module_id) else {
+                continue;
+            };
+            let owner = module_id.path.join(".");
+            for (item, _) in &module.items {
+                if let Item::TypeAlias(decl) = item {
+                    insert_alias(&mut aliases, Some(&owner), decl);
+                }
+            }
+        }
+    }
+    aliases
+}
+
 struct PendingProducedValueCarrier {
     facts: HashMap<SiteId, HirProducedValueFact>,
     generated_facts: HashMap<SiteId, HirProducedValueFact>,

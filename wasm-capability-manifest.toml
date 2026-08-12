@@ -705,12 +705,6 @@ blocker = "A cooperative WASM implementation of the native dual-queue Duplex run
 tracking_label = "WASM-TODO(duplex):"
 
 [[backlog]]
-id = "dyn-trait-returns"
-gap = "Returned dynamic trait objects across function boundaries"
-blocker = "Heap-promotion of coercion-site concrete storage before the fat pointer escapes its defining frame; return signatures fail closed until that lowering exists"
-tracking_label = "WASM-TODO(dyn-trait-returns):"
-
-[[backlog]]
 id = "http-client"
 gap = "Outbound HTTP client parity"
 blocker = "A browser/WASI request bridge for the native-only HTTP client wrapper"

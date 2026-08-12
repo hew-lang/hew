@@ -44,6 +44,11 @@ fixtures=(
   imported_actor_ask_i64
   imported_actor_ask_string
   imported_actor_ask_record
+  # Importing a package that privately declares its own `Result` must not
+  # replace the builtin generic enum used by an unrelated std::string method.
+  # Calling `to_int` and matching Ok/Err proves the builtin identity survives
+  # package registration even though testffi's record has the same bare leaf.
+  imported_result_does_not_shadow_builtin
   imported_trait_method
   local_actor_ask_guard
   mixed_import_impl_collision

@@ -119,6 +119,40 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
 }
 
 #[test]
+fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.string".to_string());
+    checker.type_defs.insert(
+        "hew.testffi.Result".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Result".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    checker.known_types.insert("hew.testffi.Result".to_string());
+
+    assert_eq!(checker.source_nominal_declaration("Result"), None);
+    let builtin_result = Ty::Named {
+        name: "hew.testffi.Result".to_string(),
+        args: vec![Ty::I64, Ty::String],
+        builtin: Some(BuiltinType::Result),
+    };
+    assert_eq!(
+        checker.normalize_for_use(&builtin_result),
+        Ty::result(Ty::I64, Ty::String),
+        "builtin authority must repair a foreign source owner leaked into its presentation"
+    );
+}
+
+#[test]
 fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());

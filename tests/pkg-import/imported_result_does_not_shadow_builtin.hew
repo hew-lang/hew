@@ -1,0 +1,12 @@
+//! A package-private `Result` record must not replace the builtin enum.
+
+import hew::testffi;
+
+import std::string;
+
+fn main() {
+    match string.try_to_int("42") {
+        Ok(value) => println(value),
+        Err(_) => println("parse failed"),
+    }
+}

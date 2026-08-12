@@ -47,6 +47,7 @@ fn main() -> () [conv=default]
     _9 = move _8
     _10 = call hew_hashmap_entries_layout(_1) [authority=Runtime(HashMapEntriesLayout)] -> bb6
   bb6:
+    stmt: bind BindingId(4294967229) __hew_produced_value site=SiteId(14) ty=Vec<(string, i64)>
     stmt: bind BindingId(3) es site=SiteId(14) ty=Vec<(string, i64)>
     stmt: use BindingId(1) ks site=SiteId(18) ty=Vec<string> intent=Read
     _11 = move _10

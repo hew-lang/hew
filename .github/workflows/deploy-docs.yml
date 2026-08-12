@@ -8,11 +8,9 @@ on:
 
 jobs:
   deploy:
-    # Disabled until CLOUDFLARE_API_TOKEN secret is configured in repository
-    # settings. The verified target is the Vocti Corp account's hew-docs
-    # Cloudflare Pages project, which serves docs.hew.sh. Remove this guard and
-    # the comment above to enable; see docs/release-runbook.md Phase 6.
-    if: false
+    # Deploys the standard-library reference to the Pages project serving
+    # docs.hew.sh. Requires the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+    # repository secrets.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -44,6 +42,6 @@ jobs:
         run: npm install -g wrangler
       - name: Deploy to Cloudflare Pages
         env:
-          CLOUDFLARE_ACCOUNT_ID: 54f878d09e1f09fc95bbaddd5bf031f9
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: wrangler pages deploy target/doc/ --project-name hew-docs

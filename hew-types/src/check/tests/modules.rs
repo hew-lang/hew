@@ -153,6 +153,49 @@ fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
 }
 
 #[test]
+fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
+    // The F4 identity split: an actor field declared through the module alias
+    // (`stream.Stream<string>` after `import std::stream`) compared at spawn
+    // against a factory value spelled with the full source owner
+    // (`std.stream.Stream<string>`). Two dotted spellings are DISTINCT to
+    // `names_match_qualified`, so both must normalize to the one canonical
+    // owner before any unify boundary.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .canonical_std_module_sources
+        .insert("std.stream".to_string());
+    checker
+        .module_import_bindings
+        .insert((None, "stream".to_string()), "std.stream".to_string());
+
+    let aliased = Ty::Named {
+        name: "stream.Stream".to_string(),
+        args: vec![Ty::String],
+        builtin: Some(BuiltinType::Stream),
+    };
+    let full = Ty::Named {
+        name: "std.stream.Stream".to_string(),
+        args: vec![Ty::String],
+        builtin: Some(BuiltinType::Stream),
+    };
+    let aliased_normalized = checker.normalize_for_use(&aliased);
+    assert_eq!(
+        aliased_normalized,
+        checker.normalize_for_use(&full),
+        "an actor field spelled through the module alias must carry the factory's canonical nominal"
+    );
+    assert_eq!(
+        aliased_normalized,
+        Ty::Named {
+            name: "std.stream.Stream".to_string(),
+            args: vec![Ty::String],
+            builtin: Some(BuiltinType::Stream),
+        },
+        "the canonical source owner is the one surviving spelling, builtin authority intact"
+    );
+}
+
+#[test]
 fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());

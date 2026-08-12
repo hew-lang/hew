@@ -2187,12 +2187,24 @@ impl Checker {
             } => {
                 let canonical_name = if let Some(kind) = builtin {
                     // A builtin discriminator is already closed identity
-                    // authority. Do not run its presentation leaf through the
-                    // user-declaration ladder: a private imported `Result`
+                    // authority. Do not run a BARE presentation leaf through
+                    // the user-declaration ladder: a private imported `Result`
                     // may share the leaf, but cannot rename builtin
                     // `Result<T, E>` during final checker handoff.
-                    if name.contains('.') && self.resolved_builtin_type(name).is_none() {
-                        kind.canonical_name().to_string()
+                    if name.contains('.') {
+                        if self.resolved_builtin_type(name).is_some() {
+                            // A trusted qualified carrier still projects its
+                            // lexical module alias to the one canonical source
+                            // owner (`stream.Stream` → `std.stream.Stream`).
+                            // Two dotted spellings are DISTINCT nominals to
+                            // `names_match_qualified`, so leaving the alias
+                            // spelling in place splits one builtin nominal
+                            // into two identities at every unify boundary.
+                            self.canonical_nominal_name(name)
+                                .unwrap_or_else(|| name.clone())
+                        } else {
+                            kind.canonical_name().to_string()
+                        }
                     } else {
                         name.clone()
                     }

@@ -1996,6 +1996,18 @@ params = ["borrow", "borrow", "borrow"]
 release-symbol = "HewTypeLayout.drop_fn"
 discharge-depth = "deep"
 
+# hew-runtime/src/trait_object.rs:426-447 consumes the trait object stored in
+# the pointed-to two-word slot: vtable slot 0 (`drop_in_place`) runs on the
+# concrete value, `hew_dyn_box_free` releases the box with the vtable's exact
+# (size, align), and both slot words are nulled. Null slot / null data word
+# no-op (moved-from state).
+[[ownership.contracts]]
+symbol = "hew_dyn_trait_drop_boxed_in_place"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
 # hew-std/src/protobuf.rs:589-618 allocates a header-aware string copy.
 [[ownership.contracts]]
 symbol = "hew_proto_msg_get_string"

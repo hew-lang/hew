@@ -226,7 +226,7 @@ jobs:
         run: cargo xtask gate format
 
       - name: Lint GitHub Actions workflows
-        run: make workflow-lint
+        run: cargo xtask gate workflow-lint
 
       # Keep the bootstrap counterfactuals on the required job after moving
       # provisioning into the shared action.

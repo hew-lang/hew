@@ -4445,11 +4445,13 @@ impl Builder {
                 //   * heap-owning tuples — `ty_is_heap_owning_tuple`; the tuple-
                 //     typed `RecordFieldLoad` destination is a heap-owning field
                 //     binder in `derive_owned_record_drop_allowed`. Its escape into
-                //     the result's `RecordInit` excludes the consumed base root from
-                //     `RecordInPlace`, transferring the tuple's complete nested drop
-                //     obligation to the result. This also covers tuple elements that
-                //     are `Option` or user-enum payloads; the tuple shape is the
-                //     transfer boundary.
+                //     the result's `RecordInit` triggers that prover's escape rule,
+                //     which excludes the consumed base root from `RecordInPlace` and
+                //     transfers the tuple's complete nested drop obligation to the
+                //     result. This also covers tuple elements that are `Option` or
+                //     user-enum payloads; the tuple shape is the transfer boundary,
+                //     and the owning-record escape rule is the proof that keeps the
+                //     carry sound.
                 // Every OTHER owned field type has NO sound shallow carry and
                 // would be released twice — once by the base's in-place drop and
                 // once by the result's drop (a double-free / use-after-free at

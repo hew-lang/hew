@@ -611,10 +611,12 @@ def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
     build_start = release.index("  build:\n", cross_start)
     freebsd_start = release.index("  build-freebsd:\n", build_start)
     freebsd_aarch64_start = release.index("  build-freebsd-aarch64:\n", freebsd_start)
+    linux_packages_start = release.index("  linux-packages:\n", freebsd_aarch64_start)
 
     cross = release[cross_start:build_start]
     build = release[build_start:freebsd_start]
     freebsd = release[freebsd_start:freebsd_aarch64_start]
+    freebsd_aarch64 = release[freebsd_aarch64_start:linux_packages_start]
     verifier = (ROOT / "scripts" / "verify-cross-release-lib.sh").read_text()
 
     assert 'toolchain: "1.96.0"' in cross
@@ -630,11 +632,24 @@ def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
         " ${{ matrix.rust_target }}" in cross
     )
     assert 'AWS_LC_SYS_PREBUILT_NASM: "1"' in cross
+    assert "components: rust-src" in cross
+    assert cross.count('RUSTC_BOOTSTRAP: "1"') == 1
+    assert (
+        "cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib"
+        " --profile release-lib --target ${{ matrix.rust_target }}" in cross
+    )
+    assert 'zig cc -target "${{ matrix.zig_target }}"' in cross
+    assert "for FreeBSD 14.0 (1400500)" in cross
+    assert 'tee -a "${GITHUB_STEP_SUMMARY}"' in cross
     assert "name: libhew-${{ matrix.rust_target }}" in cross
     assert "cross-release-libs/${{ matrix.rust_target }}" in cross
     assert "if-no-files-found: error" in cross
 
-    for target in ("x86_64-unknown-freebsd", "x86_64-pc-windows-msvc"):
+    for target in (
+        "x86_64-unknown-freebsd",
+        "aarch64-unknown-freebsd",
+        "x86_64-pc-windows-msvc",
+    ):
         assert target in cross
     for required in (
         "llvm-readobj --file-headers",
@@ -642,6 +657,7 @@ def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
         "expected exactly one release archive",
         "hew_alloc",
         "OS/ABI: ${expected_os_abi}",
+        "elf64-littleaarch64",
     ):
         assert required in verifier
 
@@ -663,6 +679,20 @@ def test_cross_release_libraries_are_target_keyed_and_natively_proved() -> None:
     assert freebsd.count("cp cross-release-libs/x86_64-unknown-freebsd/libhew.a") == 2
     assert '"${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"' in freebsd
     assert "pkg-smoke-ok" in freebsd
+
+    assert "needs: build-cross-release-libs" in freebsd_aarch64
+    assert "name: libhew-aarch64-unknown-freebsd" in freebsd_aarch64
+    assert "cargo build -p hew-lib --profile release-lib" not in freebsd_aarch64
+    assert (
+        "--archive cross-release-libs/aarch64-unknown-freebsd/libhew.a"
+        in freebsd_aarch64
+    )
+    assert (
+        freebsd_aarch64.count("cp cross-release-libs/aarch64-unknown-freebsd/libhew.a")
+        == 2
+    )
+    assert '"${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"' in freebsd_aarch64
+    assert "pkg-smoke-ok" in freebsd_aarch64
 
 
 def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> None:

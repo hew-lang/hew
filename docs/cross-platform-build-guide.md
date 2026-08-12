@@ -170,6 +170,24 @@ LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
 
 ### Quick Reference (updated table below)
 
+## FreeBSD aarch64
+
+**Status:** Tier 2 — the release package is proved on FreeBSD 15.0 aarch64
+under QEMU.
+
+Rust 1.96.0 does not publish a standard-library component for
+`aarch64-unknown-freebsd`. Tag releases therefore install the matching
+`rust-src` component and scope `RUSTC_BOOTSTRAP=1` with
+`-Zbuild-std=std,panic_abort` to the `cargo-zigbuild` 0.22.3 archive command.
+The producer records and checks Zig 0.16.0's FreeBSD 14.0 ABI baseline before
+uploading the full-triple-keyed archive.
+
+The FreeBSD 15.0 aarch64 job keeps the native compiler and support-binary
+builds. It links a real Hew consumer against the downloaded `libhew.a`,
+packages that exact archive under both `lib/` and
+`lib/aarch64-unknown-freebsd/`, and executes the packaged compile/run smoke.
+A failed native link or smoke rejects the release.
+
 ## Windows
 
 **Status:** Supported for release builds when LLVM 22 is installed locally

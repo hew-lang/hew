@@ -18,6 +18,12 @@ case "${target}" in
         expected_arch='x86_64'
         expected_os_abi='FreeBSD'
         ;;
+    aarch64-unknown-freebsd)
+        expected_name=libhew.a
+        expected_formats='elf64-littleaarch64'
+        expected_arch='aarch64'
+        expected_os_abi='FreeBSD'
+        ;;
     x86_64-pc-windows-msvc)
         expected_name=hew.lib
         expected_formats='COFF-import-file-x86-64 COFF-x86-64'

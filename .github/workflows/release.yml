@@ -65,9 +65,16 @@ jobs:
           - rust_target: x86_64-unknown-freebsd
             builder: zig
             archive: libhew.a
+            build_std: false
           - rust_target: x86_64-pc-windows-msvc
             builder: xwin
             archive: hew.lib
+            build_std: false
+          - rust_target: aarch64-unknown-freebsd
+            builder: zig
+            archive: libhew.a
+            build_std: true
+            zig_target: aarch64-freebsd
 
     steps:
       - name: Checkout code
@@ -80,11 +87,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends llvm
 
-      - name: Install Rust
+      - name: Install Rust target
+        if: ${{ !matrix.build_std }}
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         with:
           toolchain: "1.96.0"
           targets: ${{ matrix.rust_target }}
+
+      - name: Install Rust sources
+        if: matrix.build_std
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: "1.96.0"
+          components: rust-src
 
       - name: Install Zig
         if: matrix.builder == 'zig'
@@ -101,14 +116,31 @@ jobs:
         run: cargo install cargo-xwin --locked --version 0.23.0
 
       - name: Build FreeBSD release library
-        if: matrix.builder == 'zig'
+        if: matrix.builder == 'zig' && !matrix.build_std
         run: cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Build FreeBSD release library with standard library
+        if: matrix.build_std
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Build Windows release library
         if: matrix.builder == 'xwin'
         env:
           AWS_LC_SYS_PREBUILT_NASM: "1"
         run: cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Record FreeBSD ABI baseline
+        if: matrix.build_std
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'int main(void) { return 0; }' > freebsd-abi-probe.c
+          zig cc -target "${{ matrix.zig_target }}" freebsd-abi-probe.c -o freebsd-abi-probe
+          abi=$(file freebsd-abi-probe)
+          echo "${abi}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "${abi}" | grep -q 'for FreeBSD 14.0 (1400500)'
 
       - name: Verify and stage cross-built archive
         shell: bash
@@ -1026,6 +1058,7 @@ jobs:
   # locally; CI is the proving gate for this toolchain asset.
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd-aarch64:
+    needs: build-cross-release-libs
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
@@ -1041,6 +1074,12 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           echo "name=hew-v${VERSION}-freebsd-aarch64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download cross-built release library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-aarch64-unknown-freebsd
+          path: cross-release-libs/aarch64-unknown-freebsd
 
       - name: Build on FreeBSD aarch64
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
@@ -1075,10 +1114,9 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+              --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -1098,7 +1136,10 @@ jobs:
 
             # The executable consumer proof above is the authority; cp fails
             # closed if the validated archive is absent.
-            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
+            mkdir -p "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a \
+              "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"

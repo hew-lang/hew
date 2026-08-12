@@ -111,6 +111,14 @@ def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() ->
     assert "  - make structural-lint " in local.stdout, local.stdout
     assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
 
+    fallback = run_dispatcher("Cargo.toml")
+    assert fallback.returncode == 0, fallback.stderr
+    assert "  - make structural-lint " not in fallback.stdout, fallback.stdout
+    assert "  - make lint " in fallback.stdout, fallback.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert re.search(r"^lint:.*\bstructural-lint\b", makefile, re.MULTILINE), makefile
+
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert re.search(
         r"name: Provision pinned ast-grep toolchain\s+uses: ./\.github/actions/setup-ast-grep",
@@ -354,8 +362,8 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
         profile_entries = json.loads(Path(profile.name).read_text())
 
     assert result.returncode == 1, result.stdout
-    assert [entry["cmd"] for entry in profile_entries] == ["true", "false", "true"]
-    assert [entry["status"] for entry in profile_entries] == [0, 1, 0]
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "false"]
+    assert [entry["status"] for entry in profile_entries] == [0, 1]
     for entry in profile_entries:
         assert isinstance(entry["elapsed_s"], int), profile_entries
         assert entry["elapsed_s"] >= 0, profile_entries
@@ -547,35 +555,35 @@ def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
     assert "cargo clippy" not in result.stdout, result.stdout
 
 
-def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
-    """Fallback lane runs the smoke tier (make ci-preflight-smoke) before make lint and make test.
-
-    The smoke tier surfaces fmt/clippy/fast-oracle failures in <5 min before
-    the expensive full suite (make lint + make playground-check + make test) is
-    invoked.  Coverage is unchanged: the heavy tier runs on smoke pass.
-    """
-    # An unclassified path routes to the fallback (comprehensive) lane.
+def test_comprehensive_profile_reserves_smoke_for_local_opt_in() -> None:
     result = run_dispatcher("some-unclassified-root-file.txt")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: comprehensive" in result.stdout, result.stdout
-    assert "make ci-preflight-smoke" in result.stdout, (
-        "Expected 'make ci-preflight-smoke' in fallback lane commands.\n"
-        f"stdout:\n{result.stdout}"
-    )
-    assert "make lint" in result.stdout, (
-        f"Expected 'make lint' in fallback lane commands.\nstdout:\n{result.stdout}"
-    )
-    assert "make test" in result.stdout, (
-        f"Expected 'make test' in fallback lane commands.\nstdout:\n{result.stdout}"
-    )
-    # Smoke tier must appear before make lint in the command list.
-    smoke_pos = result.stdout.index("make ci-preflight-smoke")
+    assert "make ci-preflight-smoke" not in result.stdout, result.stdout
+    assert "cargo fmt --all -- --check" in result.stdout, result.stdout
+    assert "make lint" in result.stdout, result.stdout
+    assert "make test" in result.stdout, result.stdout
+
+    fmt_pos = result.stdout.index("cargo fmt --all -- --check")
     lint_pos = result.stdout.index("make lint")
     test_pos = result.stdout.index("make test")
-    assert smoke_pos < lint_pos < test_pos, (
-        f"Expected order: make ci-preflight-smoke < make lint < make test.\n"
-        f"smoke_pos={smoke_pos}, lint_pos={lint_pos}, test_pos={test_pos}\n"
-        f"stdout:\n{result.stdout}"
+    assert fmt_pos < lint_pos < test_pos, result.stdout
+
+    makefile = (ROOT / "Makefile").read_text()
+    assert "cargo nextest run --workspace --profile smoke" in makefile, makefile
+    assert (
+        "cargo nextest run --workspace --exclude hew-cabi --profile ci --no-fail-fast"
+        in makefile
+    ), makefile
+
+    nextest = (ROOT / ".config/nextest.toml").read_text()
+    assert (
+        'default-filter = "test(every_hew_file_roundtrips_through_formatter)"'
+        in nextest
+    )
+    assert (
+        "hew-parser/tests/fmt_roundtrip_corpus.rs"
+        not in nextest.split("[profile.ci]", 1)[1].split("[profile.ci.junit]", 1)[0]
     )
 
 
@@ -828,6 +836,41 @@ def test_hosted_linux_executes_the_dispatcher_directly() -> None:
     assert "run: make test-hew-ratchet" not in workflow
 
 
+def test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts() -> None:
+    local = run_dispatcher("some-unclassified-root-file.txt")
+    assert local.returncode == 0, local.stderr
+    assert "  - make test-hew-ratchet " in local.stdout, local.stdout
+    assert "  - make test-o2-differential " in local.stdout, local.stdout
+
+    hosted = run_dispatcher(
+        "some-unclassified-root-file.txt",
+        env={"COMPILED_HEW_GATE_OWNER": "aggregate"},
+    )
+    assert hosted.returncode == 0, hosted.stderr
+    assert "make test-hew-ratchet" not in hosted.stdout, hosted.stdout
+    assert "make test-o2-differential" not in hosted.stdout, hosted.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "COMPILED_HEW_GATE_OWNER: aggregate" in workflow, workflow
+
+
+def test_selected_commands_are_unique() -> None:
+    result = run_dispatcher(
+        "Cargo.toml",
+        "hew-sandbox-vm/src/interpreter/parity-runner.ts",
+        "std/string.hew",
+        "tests/fuzz-oracle/bounds.hew",
+    )
+    assert result.returncode == 0, result.stderr
+    commands = [
+        line.removeprefix("  - ").split("  (budget:", 1)[0]
+        for line in result.stdout.splitlines()
+        if line.startswith("  - ") and "  (budget:" in line
+    ]
+    assert len(commands) == len(set(commands)), commands
+    assert commands.count("make sandbox-parity") == 1, commands
+
+
 def test_selector_exports_fail_closed_compile_requirement() -> None:
     with tempfile.NamedTemporaryFile() as output:
         result = run_dispatcher(
@@ -883,7 +926,7 @@ _TESTS = [
     test_types_lane_includes_checked_mir_verify,
     test_make_test_compiler_pipeline_recipe_keeps_consumer_corpus_packages,
     test_docs_only_change_does_not_include_vertical_slice_oracle,
-    test_fallback_lane_includes_smoke_tier_before_heavy,
+    test_comprehensive_profile_reserves_smoke_for_local_opt_in,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
     test_hew_tests_path_routes_to_hew_tests_lane,
     test_parser_path_runs_formatter_property,
@@ -902,6 +945,8 @@ _TESTS = [
     test_leaf_crate_runs_only_its_reverse_dependency_closure,
     test_analysis_change_runs_known_dependents_without_workspace,
     test_hosted_linux_executes_the_dispatcher_directly,
+    test_compiled_hew_aggregate_owns_hosted_full_suite_verdicts,
+    test_selected_commands_are_unique,
     test_selector_exports_fail_closed_compile_requirement,
 ]
 

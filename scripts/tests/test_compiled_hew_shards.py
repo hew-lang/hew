@@ -165,8 +165,10 @@ class CompiledHewWorkflowContractTests(unittest.TestCase):
         )
 
     def test_aggregate_uses_an_independent_full_inventory_and_both_gates(self) -> None:
+        self.assertIn("for fixture in tests/hew/*.hew; do", self.workflow)
+        self.assertIn('test "$fixture" --list --allow-empty', self.workflow)
         self.assertIn(
-            'test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"',
+            'LC_ALL=C sort > "${{ runner.temp }}/compiled-hew-full.txt"',
             self.workflow,
         )
         self.assertIn("make test-hew-ratchet", self.workflow)

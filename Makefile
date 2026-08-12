@@ -377,13 +377,13 @@ ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
 # Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
-# tests (nextest smoke profile).  Designed to complete in <5 min and surface
-# format and fast oracle failures before the full heavy tier is invoked.
-# Clippy runs in the lint target; the fallback lane runs both sequentially.
+# tests (nextest smoke profile). Designed to complete in <5 min and surface
+# format and fast oracle failures during local iteration. Clippy remains in
+# the lint target and is not duplicated here.
 #
-# This target is invoked by the dispatcher as the first step of the fallback/heavy
-# lane; the full suite (make test) still runs on smoke pass.  Run it directly for
-# a quick sanity pass on any diff without waiting for E2E compilation.
+# Run this target directly for a quick sanity pass on any diff without waiting
+# for E2E compilation. The comprehensive dispatcher reserves it for that local
+# opt-in because its full workspace run already includes the smoke test.
 #
 # The smoke nextest profile excludes subprocess-intensive tests (eval_e2e,
 # test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].

@@ -2277,6 +2277,20 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
         fn repeat_element(value: dyn Speaker) {
             let copied = [value; 2];
         }
+
+        fn iter_vec(values: Vec<dyn Speaker>) {
+            let cursor = values.iter();
+        }
+
+        fn for_vec(values: Vec<dyn Speaker>) {
+            for value in values {
+                let _ = value;
+            }
+        }
+
+        fn map_vec(values: Vec<dyn Speaker>) {
+            let mapped = values.map(|value| value);
+        }
         ",
     );
 
@@ -2306,6 +2320,29 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
             .contains("array repeat requires the element type to be Clone")
             && message.contains("no clone path")),
         "array repeat must not duplicate a trait-object owner: {:#?}",
+        output.errors
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Vec<dyn Trait>::iter()")
+                && message.contains("into_iter()")),
+        "Vec iter() must fail with the trait-object clone diagnostic naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(
+            |message| message.contains("direct `for` over `Vec<dyn Trait>`")
+                && message.contains("into_iter()")
+        ),
+        "direct for over Vec<dyn Trait> must fail naming into_iter(): {:#?}",
+        output.errors
+    );
+    assert!(
+        messages.iter().any(|message| message
+            .contains("`Vec::map` is not supported for trait-object elements")
+            && message.contains("into_iter()")),
+        "Vec::map on trait-object elements must fail naming into_iter(): {:#?}",
         output.errors
     );
 }

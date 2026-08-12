@@ -2851,6 +2851,22 @@ run_accept_expect_stdout "fork_args_spawn"
 # and a heap-string arg. The block form collapses to a nameless scope spawn;
 # the fork-entry shim transfers args the same way as the named form.
 run_accept_expect_stdout "fork_block_args_spawn"
+run_accept_expect_status "fork_multi_statement_concurrent" 0
+for marker in first-start second-start first-end second-end complete; do
+  grep -qFx -- "${marker}" "${stdout_output}"
+done
+last_start_line="$(grep -nE '^(first|second)-start$' "${stdout_output}" | tail -n 1 | cut -d: -f1)"
+first_end_line="$(grep -nE '^(first|second)-end$' "${stdout_output}" | head -n 1 | cut -d: -f1)"
+if [[ "${last_start_line}" -ge "${first_end_line}" ]]; then
+  echo "expected both fork children to start before either child finished" >&2
+  cat "${stdout_output}" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic delimiters.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fork_parent_borrow_capture.hew" \
+  'fork body cannot borrow parent binding `label`' \
+  "fork_parent_borrow_capture"
 
 # Reject: parent use of a non-Copy string arg after `fork { f(arg); }` must
 # report UseAfterMove — parity with the named `fork t = f(arg)` form. Without
@@ -2909,17 +2925,6 @@ if grep -q 'E_CODEGEN_FRONT' "${reject_output}"; then
   echo "fork-block arg type mismatch must fail at the checker, not codegen" >&2
   exit 1
 fi
-
-# Reject: `fork { ... }` block with multiple statements.
-# Pins the HIR fail-closed fork-block body boundary.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"${reject_output}" 2>&1; then
-  echo "expected fork-multi-stmt fixture to fail" >&2
-  exit 1
-fi
-grep -q 'E_HIR' "${reject_output}"
-# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
-# the diagnostic text, not a command substitution.
-grep -qF 'multi-statement `fork { }` bodies are not yet supported' "${reject_output}"
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body in a
 # CONTEXTLESS caller. The HIR shape gate now admits non-empty bodies (MIR

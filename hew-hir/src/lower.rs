@@ -18860,10 +18860,36 @@ impl LowerCtx {
                     )
                 } else {
                     let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+                    let outer_bindings = self.visible_outer_bindings();
+                    let lowered_body = self.lower_cancellation_clause_block(body);
+                    let checker_key = self.mk_key(&span);
+                    let checker_facts = if let Some(facts) =
+                        self.closure_capture_facts.get(&checker_key)
+                    {
+                        facts.clone()
+                    } else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "fork block".to_string(),
+                                reason: "closure_capture_facts has no record for fork block span"
+                                    .to_string(),
+                            },
+                            span.clone(),
+                            "fork block reached HIR without checker capture metadata",
+                        ));
+                        Vec::new()
+                    };
+                    let captures = self.materialize_closure_block_captures(
+                        &lowered_body,
+                        &outer_bindings,
+                        checker_facts,
+                        span.clone(),
+                    );
                     (
                         HirExprKind::ForkBlock {
-                            body: self.lower_cancellation_clause_block(body),
+                            body: lowered_body,
                             task_ty: task_ty.clone(),
+                            captures,
                         },
                         task_ty,
                     )
@@ -21170,6 +21196,28 @@ impl LowerCtx {
         let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
         collect_general_closure_captures_walk(body, outer_bindings, &mut seen, &mut ordered);
 
+        self.materialize_closure_capture_candidates(ordered, facts, span)
+    }
+
+    fn materialize_closure_block_captures(
+        &mut self,
+        body: &HirBlock,
+        outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
+        let mut seen: HashSet<BindingId> = HashSet::new();
+        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
+        collect_general_closure_captures_walk_block(body, outer_bindings, &mut seen, &mut ordered);
+        self.materialize_closure_capture_candidates(ordered, facts, span)
+    }
+
+    fn materialize_closure_capture_candidates(
+        &mut self,
+        ordered: Vec<ClosureCaptureCandidate>,
+        facts: Vec<ClosureCaptureFact>,
+        span: std::ops::Range<usize>,
+    ) -> Vec<HirClosureCapture> {
         let mut remaining_facts = facts;
         let mut captures = Vec::with_capacity(ordered.len());
         for (binding, name, def_span) in ordered {
@@ -33864,28 +33912,14 @@ fn check_fork_child_shape(
     }
 }
 
-/// Check fork block body shape.
-///
-/// The checker's `synthesize_concurrency` `Expr::ForkBlock` arm now fully
-/// type-checks the body (statements, callee arguments, tail expression), so the
-/// shape restrictions here are NOT type-coverage proxies — they mirror exactly
-/// the body shapes the MIR `lower_fork_block_task` lowering can currently spawn:
-/// a single direct module-function call (any arity). Everything else fails
-/// closed here with an actionable compile-time diagnostic, the earliest clean
-/// point, rather than reaching MIR as a less-legible `NotYetImplemented`.
-///
-/// Unlocking multi-statement / non-call fork bodies is downstream MIR work
-/// (wrap the body in a synthesized anonymous task entry point, mirroring the
-/// lambda-actor path); until then they reject here.
-///
-/// Sites: hew-mir/src/lower.rs `lower_fork_block_task` (`ForkBlock` body).
+/// Reject an empty fork body. Every non-empty unit body is executable through
+/// the synthesized scope-owned task entry path.
 fn check_fork_block_shape(
     body: &hew_parser::ast::Block,
     span: &Span,
     ctx: &mut LowerCtx,
     _program: &Program,
 ) {
-    // Check body has exactly one statement OR one trailing expression
     let stmt_count = body.stmts.len();
     let has_trailing = body.trailing_expr.is_some();
 
@@ -33898,96 +33932,6 @@ fn check_fork_block_shape(
             span.clone(),
             "empty `fork { }` spawns nothing; put a function call in the body, \
              e.g. `fork { work() }`"
-                .to_string(),
-        ));
-        return;
-    }
-
-    if stmt_count > 1 || (stmt_count == 1 && has_trailing) {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::ForkBlockBodyUnsupported {
-                site: ctx.ids.site(),
-                reason: "multi-statement".to_string(),
-            },
-            span.clone(),
-            "multi-statement `fork { }` bodies are not yet supported; move the work \
-             into a function and spawn it as `fork { the_fn() }`"
-                .to_string(),
-        ));
-        return;
-    }
-
-    // Check the single statement/expression is a direct function call
-    let call_expr = if stmt_count == 1 {
-        match &body.stmts[0].0 {
-            Stmt::Expression(e) => Some(e),
-            _ => None,
-        }
-    } else {
-        body.trailing_expr.as_deref()
-    };
-
-    if let Some(call_expr) = call_expr {
-        let Expr::Call { function, .. } = &call_expr.0 else {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ForkBlockBodyUnsupported {
-                    site: ctx.ids.site(),
-                    reason: "not a call expression".to_string(),
-                },
-                span.clone(),
-                "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
-                 other expression forms are not yet supported"
-                    .to_string(),
-            ));
-            return;
-        };
-        // Must be a direct function identifier
-        if let Expr::Identifier(name) = &function.0 {
-            // The checker target is declaration authority. `fn_registry` is
-            // keyed by emitted symbols, so suffix matching here can accept a
-            // same-leaf function from the wrong module.
-            if !matches!(
-                ctx.ordinary_call_target(&call_expr.1),
-                Some(CallTarget::User(_))
-            ) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::ForkBlockBodyUnsupported {
-                        site: ctx.ids.site(),
-                        reason: "not a direct module function".to_string(),
-                    },
-                    span.clone(),
-                    format!("fork block callee '{name}' is not a direct module function"),
-                ));
-            }
-            // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
-            // VALID at spawn time — see `lower_spawned_call` comment.
-            //
-            // RETIRED (RI-08 fold): the zero-argument restriction is gone.
-            // The checker's `Expr::ForkBlock` arm now type-checks callee
-            // arguments, and MIR's `lower_spawned_args_call_task` lowers
-            // arg-bearing single-call fork bodies, so `fork { f(args) }` is
-            // a first-class form. The old gate proxied for "the checker does
-            // not visit block bodies"; that premise no longer holds.
-        } else {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ForkBlockBodyUnsupported {
-                    site: ctx.ids.site(),
-                    reason: "callee is not a direct function identifier".to_string(),
-                },
-                span.clone(),
-                "fork block body must be a direct function call, e.g. `fork { work() }`"
-                    .to_string(),
-            ));
-        }
-    } else {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::ForkBlockBodyUnsupported {
-                site: ctx.ids.site(),
-                reason: "not a call expression".to_string(),
-            },
-            span.clone(),
-            "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
-             other expression forms are not yet supported"
                 .to_string(),
         ));
     }

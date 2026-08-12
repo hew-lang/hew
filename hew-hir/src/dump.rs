@@ -684,7 +684,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
-        HirExprKind::ForkBlock { body, task_ty } => {
+        HirExprKind::ForkBlock { body, task_ty, .. } => {
             writeln!(out, "{pad}  fork-block task_ty={}", task_ty.user_facing())
                 .expect("write to string");
             for stmt in &body.statements {

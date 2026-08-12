@@ -1,0 +1,47 @@
+// Two anonymous children each execute a multi-statement body. The second
+// child's middle marker must appear while the first child is sleeping, which
+// proves the bodies overlap instead of running sequentially.
+import std::net;
+
+actor Driver {
+    receive fn run() -> i64 {
+        let first_listener = net.listen("127.0.0.1:0");
+        let second_listener = net.listen("127.0.0.1:0");
+        let first_addr = f"127.0.0.1:{first_listener.local_port()}";
+        let second_addr = f"127.0.0.1:{second_listener.local_port()}";
+
+        scope {
+            fork {
+                let conn = first_listener.accept();
+                println("first-start");
+                let _ = conn.write_string("ready");
+                let _ = conn.read_string();
+                println("first-end");
+            };
+            fork {
+                let conn = second_listener.accept();
+                println("second-start");
+                let _ = conn.write_string("ready");
+                let _ = conn.read_string();
+                println("second-end");
+            };
+
+            let first_client = net.connect(first_addr);
+            let second_client = net.connect(second_addr);
+            let _ = first_client.read_string();
+            let _ = second_client.read_string();
+            let _ = first_client.write_string("finish");
+            let _ = second_client.write_string("finish");
+        };
+        println("complete");
+        0
+    }
+}
+
+fn main() {
+    let driver = spawn Driver;
+    match await driver.run() {
+        Ok(_) => {},
+        Err(_) => panic("driver failed"),
+    }
+}

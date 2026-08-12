@@ -798,7 +798,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let StringPart::Expr(inner) = part {
+                if let StringPart::Expr(inner) | StringPart::StructuralExpr(inner) = part {
                     walk_expr(&inner.0, &inner.1, visitor);
                 }
             }

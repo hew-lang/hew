@@ -107,6 +107,8 @@ impl ReceiverScanSet {
     pub const BYTES: Self = Self::new(false, false, true);
     /// The polymorphic `hew_vec_len` receiver is observed by Vec and bytes scans.
     pub const VEC_BYTES: Self = Self::new(true, false, true);
+    /// Type-directed structural observation borrows any value carrier in arg[0].
+    pub const VALUE: Self = Self::new(true, true, true);
 
     #[must_use]
     pub const fn new(vec: bool, collection: bool, bytes: bool) -> Self {
@@ -708,6 +710,14 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "string_concat"
         | "to_string_str" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
 
+        "hew_structural_format" => CalleeOwnershipContract::new(
+            BorrowsReceiver {
+                scans: ReceiverScanSet::VALUE,
+            },
+            BorrowingUse,
+            FreshOwnedString,
+        ),
+
         // Scalar and catalog display producers allocate a fresh string result
         // without borrowing a string operand. Keeping this separate from the
         // string-transform arm matters to temporary-drop planning: a fresh
@@ -799,8 +809,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 173;
-    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0x7b5c_1320_52aa_01e8;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_COUNT: usize = 174;
+    const RETIRED_RUNTIME_BACKED_SYMBOL_FINGERPRINT: u64 = 0x859b_98cf_0589_0008;
 
     fn symbol_fingerprint(symbols: &[&str]) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -898,6 +908,7 @@ mod tests {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_append",

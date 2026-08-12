@@ -1,0 +1,56 @@
+record Point {
+    x: i64,
+    label: string,
+}
+
+record Override {
+    value: i64,
+}
+
+record Nested {
+    status: Option<Result<i64, i64>>,
+    pair: (i64, bool),
+}
+
+impl Display for Override {
+    fn fmt(_value: Override) -> string {
+        "concrete-display"
+    }
+}
+
+type NamedMap = HashMap<string, i64>;
+
+impl Display for NamedMap {
+    fn fmt(_value: NamedMap) -> string {
+        "alias-display"
+    }
+}
+
+fn main() {
+    let point = Point { x: 7, label: "west" };
+    let tuple = (1, "two");
+    let some: Option<i64> = Some(3);
+    let none: Option<i64> = None;
+    let ok: Result<i64, string> = Ok(4);
+    let err: Result<i64, string> = Err("bad");
+    let values: Vec<i64> = Vec::new();
+    values.push(5);
+    values.push(6);
+    let map: HashMap<string, i64> = HashMap::new();
+    map.insert("answer", 42);
+    let named: NamedMap = HashMap::new();
+    let nested = Nested {
+        status: Some(Ok(8)),
+        pair: (9, true),
+    };
+
+    println(f"{point:?}");
+    println(f"{tuple:?}");
+    println(f"{some:?} {none:?}");
+    println(f"{ok:?} {err:?}");
+    println(f"{values:?}");
+    println(f"{map:?}");
+    println(f"{nested:?}");
+    println(f"{Override { value: 9 }:?}");
+    println(f"{named:?}");
+}

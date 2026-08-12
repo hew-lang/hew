@@ -3985,6 +3985,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_append",
@@ -4096,6 +4097,7 @@ mod runtime_callee_ownership_contract_parity {
     ];
 
     const VEC_RECEIVER_SYMBOLS: &[&str] = &[
+        "hew_structural_format",
         "hew_vec_append",
         "hew_vec_append_layout",
         "hew_vec_clear",
@@ -4212,6 +4214,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_hashset_remove_layout",
         "hew_hashset_to_vec_layout",
         "hew_string_get",
+        "hew_structural_format",
     ];
 
     const COPY_IN_SYMBOLS: &[&str] = &["hew_vec_push_owned", "hew_vec_set_owned"];
@@ -4227,6 +4230,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_bytes_set",
         "hew_bytes_slice",
         "hew_bytes_to_string",
+        "hew_structural_format",
         "hew_vec_len",
     ];
 
@@ -4271,6 +4275,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_vec_join_str",
         "hew_vec_push_str",
         "hew_vec_set_str",
@@ -4298,6 +4303,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_structural_format",
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_get_str",

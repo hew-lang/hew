@@ -1520,18 +1520,19 @@ fn main() {
 ///
 /// This was previously fail-closed (`reject_carry_tuple_of_owned_field`). The
 /// lift admits `ty_is_heap_owning_tuple` into the carry pre-flight's
-/// `sound_carry` predicate, reusing the EXISTING
-/// `derive_tuple_composite_drop_allowed` composite-drop prover that already sits
-/// beside the record prover making the nested-record carry sound. No new
-/// recursive carry spine is authored: the prover excludes the consumed base, so
-/// the base's scope-exit drop and the result's drop do not both release the
-/// carried tuple.
+/// `sound_carry` predicate. The protection comes from
+/// `derive_owned_record_drop_allowed`, not the tuple-binding prover: the carried
+/// tuple's `RecordFieldLoad` destination is a heap-owning field binder, and its
+/// escape into the result's `RecordInit` excludes the consumed base root from
+/// `RecordInPlace`. The result therefore receives the tuple's complete nested
+/// drop obligation without the base releasing it a second time.
 ///
-/// Verified under `MALLOC_CHECK_=3 MALLOC_PERTURB_=165` with a flat RSS profile
-/// across a 4x frame sweep, matching the known-sound record carry as a positive
-/// control. The closure / `Option` / handle families remain fail-closed — see the
-/// sibling `reject_carry_*` tests, which are the discrimination controls proving
-/// this lift is precisely scoped and not a blanket weakening.
+/// Verified on Linux under glibc's `MALLOC_CHECK_=3 MALLOC_PERTURB_=165` with a
+/// flat RSS profile across a 4x frame sweep, matching the known-sound record
+/// carry as a positive control. Guard Malloc + `MallocScribble` remains the
+/// authoritative Darwin oracle and was verified independently in review. Bare
+/// `Option` / enum fields, closures, and handles remain fail-closed; an `Option`
+/// or enum nested inside the admitted tuple transfer boundary is covered below.
 #[test]
 fn accept_carry_tuple_of_owned_field() {
     let source = r#"
@@ -1559,10 +1560,12 @@ fn main() {
     );
 }
 
-/// Widened shapes for the same lift: a tuple nested inside a tuple, a
-/// tuple-of-tuples, a tuple carrying a `Vec`, and a tuple carrying an owned
-/// user record. Each must accept AND run correctly — checking alone would not
-/// discriminate a sound carry from one that double-frees at teardown.
+/// Widened shapes for the same lift: nested tuples, a tuple carrying a `Vec`,
+/// an owned record, an `Option` payload, or a user-enum payload. Each must accept
+/// AND run correctly — checking alone would not discriminate a sound carry from
+/// one that double-frees at teardown. The latter two fixtures pin the full
+/// admitted scope: bare `Option` / enum fields remain rejected, but their drop
+/// obligations transfer soundly when the tuple is the carried field boundary.
 #[test]
 fn accept_carry_nested_and_collection_bearing_tuples() {
     let cases: &[(&str, &str)] = &[
@@ -1612,6 +1615,33 @@ record Inner { label: string, n: i64 }
 record T { pair: (Inner, i64), tag: string }
 fn mk() -> T {
     let b = T { pair: (Inner { label: string.repeat("k", 32), n: 1 }, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); }
+"#,
+        ),
+        (
+            "tuple carrying an Option payload",
+            r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record T { pair: (Option<Inner>, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Some(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); }
+"#,
+        ),
+        (
+            "tuple carrying a user-enum payload",
+            r#"
+import std::string;
+record Inner { label: string, n: i64 }
+enum Payload { Value(Inner); Empty; }
+record T { pair: (Payload, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Value(Inner { label: string.repeat("k", 32), n: 1 }), 7), tag: string.repeat("x", 32) };
     T { tag: string.repeat("y", 32), ..b }
 }
 fn main() { let r = mk(); println(r.tag); }

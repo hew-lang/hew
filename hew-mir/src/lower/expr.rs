@@ -4357,6 +4357,14 @@ impl Builder {
                 //     nested record's heap leaves transfer with the base excluded
                 //     (the binder-detection fix that also recognises nested records
                 //     as heap-owning binders).
+                //   * heap-owning tuples — `ty_is_heap_owning_tuple`; the tuple-
+                //     typed `RecordFieldLoad` destination is a heap-owning field
+                //     binder in `derive_owned_record_drop_allowed`. Its escape into
+                //     the result's `RecordInit` excludes the consumed base root from
+                //     `RecordInPlace`, transferring the tuple's complete nested drop
+                //     obligation to the result. This also covers tuple elements that
+                //     are `Option` or user-enum payloads; the tuple shape is the
+                //     transfer boundary.
                 // Every OTHER owned field type has NO sound shallow carry and
                 // would be released twice — once by the base's in-place drop and
                 // once by the result's drop (a double-free / use-after-free at
@@ -4367,7 +4375,8 @@ impl Builder {
                 //     single-release affine/linear value the inline-drop authority
                 //     does not cover here;
                 //   * an owned composite the leaf authority does not cover
-                //     (tuple-of-owned, `Option<owned>`, enum-with-heap, or any
+                //     (bare `Option<owned>`, bare enum-with-heap, a non-heap tuple
+                //     conservatively classified outside `BitCopy`, or any
                 //     `Unknown`-class owned Named type).
                 // Fail closed with an NYI diagnostic mirroring the override
                 // pre-flight rather than emit the double-free. Lifting a specific
@@ -4406,7 +4415,8 @@ impl Builder {
                                  ownership cannot be transferred by the functional-update's \
                                  shallow field carry: a closure / `fn` / trait-object capture \
                                  env, an `@resource` / cancellation-token / task handle, or an \
-                                 owned composite (tuple / `Option` / enum) with heap fields. \
+                                 unsupported owned composite (including bare `Option` / enum \
+                                 fields and conservatively rejected non-heap tuples). \
                                  The `..base` consumes the base, so the base's scope-exit drop \
                                  and the new record's drop would both release this carried field \
                                  — a double-free. Set `{fname}` explicitly to a fresh value in \

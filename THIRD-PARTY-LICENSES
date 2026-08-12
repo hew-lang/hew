@@ -6,8 +6,8 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (399 packages)
-  MIT License (116 packages)
+  Apache License 2.0 (402 packages)
+  MIT License (117 packages)
   Unicode License v3 (19 packages)
   ISC License (8 packages)
   BSD 3-Clause "New" or "Revised" License (5 packages)
@@ -665,6 +665,7 @@ Apache License 2.0
 
 ================================================================================
 Apache License 2.0
+  * encode_unicode 1.0.0 — https://github.com/tormol/encode_unicode
   * encoding_rs 0.8.35 — https://github.com/hsivonen/encoding_rs
   * lru-slab 0.1.2 — https://github.com/Ralith/lru-slab
   * static_assertions 1.1.0 — https://github.com/nvzqz/static-assertions-rs
@@ -5988,6 +5989,7 @@ Apache License 2.0
   * idna_adapter 1.2.2 — https://github.com/hsivonen/idna_adapter
   * indexmap 1.9.3 — https://github.com/bluss/indexmap
   * indexmap 2.14.0 — https://github.com/indexmap-rs/indexmap
+  * insta 1.48.0 — https://github.com/mitsuhiko/insta
   * itertools 0.10.5 — https://github.com/rust-itertools/itertools
   * itertools 0.13.0 — https://github.com/rust-itertools/itertools
   * itertools 0.14.0 — https://github.com/rust-itertools/itertools
@@ -6033,6 +6035,7 @@ Apache License 2.0
   * signal-hook-registry 1.4.8 — https://github.com/vorner/signal-hook
   * signal-hook 0.3.18 — https://github.com/vorner/signal-hook
   * simd_cesu8 1.1.1 — https://github.com/seancroach/simd_cesu8
+  * similar 2.7.0 — https://github.com/mitsuhiko/similar
   * smallvec 1.15.1 — https://github.com/servo/rust-smallvec
   * socket2 0.6.4 — https://github.com/rust-lang/socket2
   * stable_deref_trait 1.2.1 — https://github.com/storyyeller/stable_deref_trait
@@ -11404,6 +11407,34 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+
+================================================================================
+MIT License
+  * console 0.16.4 — https://github.com/console-rs/console
+
+The MIT License (MIT)
+
+Copyright (c) 2017 Armin Ronacher <armin.ronacher@active-4.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 
 
 ================================================================================

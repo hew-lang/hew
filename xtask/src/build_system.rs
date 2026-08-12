@@ -78,8 +78,14 @@ const GATES: &[GateSpec] = &[
     gate_spec("clippy", &[], &[], &[], false),
     gate_spec("clippy-json", &[], &[], &[], false),
     gate_spec("structural-bootstrap", &[], &[], &[], false),
-    gate_spec("structural-bootstrap-contract", &[], &[], &[], true),
-    gate_spec("structural-lint", &[], &[], &[], true),
+    gate_spec(
+        "structural-bootstrap-contract",
+        &["structural-bootstrap"],
+        &[],
+        &[],
+        true,
+    ),
+    gate_spec("structural-lint", &["structural-bootstrap"], &[], &[], true),
     gate_spec("freebsd-contract", &[], &[], &[], false),
     gate_spec("release-contract", &[], &[], &[], false),
     gate_spec("cutover-contract", &[], &[], &[], false),
@@ -774,17 +780,7 @@ fn execute_gate(root: &Path, name: &str, filter_expr: Option<&str>) -> Result<()
         "libhew-link-race" => libhew_link_race(root),
         "macos-leak-oracle" => compiled_hew_script(root, "scripts/macos-leak-oracle.sh", &[]),
         "licenses" => licenses_gate(root),
-        "licenses-generate" => cargo(
-            root,
-            &[
-                "about",
-                "generate",
-                "--workspace",
-                "about.hbs",
-                "-o",
-                "THIRD-PARTY-LICENSES",
-            ],
-        ),
+        "licenses-generate" => licenses_generate(root),
         "sandbox-fixtures-check" => cargo(root, &["xtask", "sandbox-fixtures", "--check"]),
         "compiler-lifecycle" => compiler_lifecycle(root, false),
         "compiler-lifecycle-external" => compiler_lifecycle(root, true),
@@ -1050,6 +1046,17 @@ fn licenses_gate(root: &Path) -> Result<()> {
     cargo(root, &["deny", "check", "bans", "sources"])?;
     cargo(root, &["deny", "check", "advisories"])?;
     run_program(root, "scripts/check-licenses-fresh.sh", &[])
+}
+
+fn licenses_generate(root: &Path) -> Result<()> {
+    let output = Command::new(cargo_executable())
+        .current_dir(root)
+        .args(["about", "generate", "about.hbs", "--workspace"])
+        .output()
+        .map_err(|err| format!("generate third-party licenses: {err}"))?;
+    ensure_success(output.status, "generate third-party licenses")?;
+    std::fs::write(root.join("THIRD-PARTY-LICENSES"), output.stdout)
+        .map_err(|err| format!("write THIRD-PARTY-LICENSES: {err}"))
 }
 
 fn coverage_gate(root: &Path) -> Result<()> {
@@ -2209,6 +2216,14 @@ mod tests {
                     dependency
                 );
             }
+        }
+    }
+
+    #[test]
+    fn structural_gates_bootstrap_before_parser_backed_checks() {
+        for name in ["structural-bootstrap-contract", "structural-lint"] {
+            let gate = gate_spec_by_name(name).unwrap();
+            assert!(gate.dependencies.contains(&"structural-bootstrap"));
         }
     }
 

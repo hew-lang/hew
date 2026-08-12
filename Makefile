@@ -58,8 +58,11 @@ lint:
 	cargo xtask gate lint
 
 .PHONY: structural-lint structural-lint-bootstrap
-structural-lint structural-lint-bootstrap:
+structural-lint:
 	cargo xtask gate structural-lint
+
+structural-lint-bootstrap:
+	cargo xtask gate structural-bootstrap-contract
 
 .PHONY: structural-lint-bootstrap-install
 structural-lint-bootstrap-install:

@@ -1,80 +1,21 @@
 #!/usr/bin/env python3
-"""Prove a clean structural bootstrap installs before parser-backed tests."""
+"""Prove parser-backed structural gates depend on the clean bootstrap."""
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-with tempfile.TemporaryDirectory() as temp:
-    work = Path(temp)
-    (work / "Cargo.toml").write_text('[workspace]\nresolver = "2"\n')
-    shutil.copy(ROOT / "Makefile", work / "Makefile")
-    (work / "scripts/tests").mkdir(parents=True)
-    shutil.copy(
-        ROOT / "scripts/cargo-output-dir.py", work / "scripts/cargo-output-dir.py"
-    )
-    (work / "scripts/lib").mkdir()
-    shutil.copy(
-        ROOT / "scripts/lib/toml_compat.py", work / "scripts/lib/toml_compat.py"
-    )
-    inputs = work / "scripts/libhew-inputs.py"
-    inputs.write_text("#!/bin/sh\nprintf 'Makefile\\n'\n")
-    inputs.chmod(0o755)
-    events = work / "events"
+build_system = (ROOT / "xtask/src/build_system.rs").read_text(encoding="utf-8")
+makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-    bootstrap = work / "scripts/ast-grep-lint.sh"
-    bootstrap.write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        '[ "$1" = --bootstrap ]\n'
-        "[ ! -e .ast-grep/tool/bin/ast-grep ]\n"
-        "mkdir -p .ast-grep/tool/bin\n"
-        ": > .ast-grep/tool/bin/ast-grep\n"
-        'printf "bootstrap\\n" >> "$BOOTSTRAP_EVENT_LOG"\n'
-    )
-    bootstrap.chmod(0o755)
+for gate in ("structural-bootstrap-contract", "structural-lint"):
+    declaration = build_system.split(f'"{gate}"', 1)[1].split("),", 1)[0]
+    assert '"structural-bootstrap"' in declaration, declaration
 
-    checks = {
-        "test_structural_authority_audit.py": "authority",
-        "test_ast_grep_contract.sh": "archive-contract",
-        "test_structural_lint_bootstrap.py": "bootstrap-contract",
-    }
-    for filename, event in checks.items():
-        check = work / "scripts/tests" / filename
-        if filename.endswith(".py"):
-            check.write_text(
-                "import os\n"
-                "from pathlib import Path\n"
-                "assert Path('.ast-grep/tool/bin/ast-grep').exists()\n"
-                f"with Path(os.environ['BOOTSTRAP_EVENT_LOG']).open('a') as handle:\n"
-                f"    handle.write('{event}\\n')\n"
-            )
-        else:
-            check.write_text(
-                "#!/bin/sh\n"
-                "set -eu\n"
-                "[ -e .ast-grep/tool/bin/ast-grep ]\n"
-                f'printf "{event}\\n" >> "$BOOTSTRAP_EVENT_LOG"\n'
-            )
-        check.chmod(0o755)
+target = makefile.split("structural-lint-bootstrap:\n", 1)[1].split("\n\n", 1)[0]
+assert "cargo xtask gate structural-bootstrap-contract" in target, target
 
-    result = subprocess.run(
-        ["make", "structural-lint-bootstrap"],
-        cwd=work,
-        env={**os.environ, "BOOTSTRAP_EVENT_LOG": str(events)},
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    order = events.read_text().splitlines()
-    assert order[0] == "bootstrap", order
-    assert set(order[1:]) == set(checks.values()), order
-
-print("structural lint clean-bootstrap ordering: PASS")
+print("structural lint clean-bootstrap dependency: PASS")

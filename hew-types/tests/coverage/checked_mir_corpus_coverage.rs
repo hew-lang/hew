@@ -1,4 +1,4 @@
-//! Family-coverage accounting for the golden MIR corpus
+//! Family-coverage accounting for the snapshotted MIR corpus
 //! (`examples/v05/checked-mir/`).
 //!
 //! The corpus is the byte-identical behavioural oracle for internal
@@ -281,32 +281,26 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_sink_peer_closed",
 ];
 
-fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/v05/checked-mir/golden")
+fn corpus_snapshot() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../xtask/src/snapshots/xtask__snapshots__checked_mir_corpus.snap")
 }
 
 #[test]
 fn corpus_covers_every_family_or_pins_the_gap() {
-    let dir = golden_dir();
+    let snapshot = corpus_snapshot();
     assert!(
-        dir.is_dir(),
-        "golden corpus missing at {} — run `make checked-mir-golden`",
-        dir.display()
+        snapshot.is_file(),
+        "checked-MIR snapshot missing at {} — run `cargo test -p xtask checked_mir_corpus`",
+        snapshot.display()
     );
 
-    let mut haystack = String::new();
-    let mut dump_count = 0usize;
-    for entry in std::fs::read_dir(&dir).expect("read golden dir") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().is_some_and(|e| e == "mir") {
-            haystack.push_str(&std::fs::read_to_string(&path).expect("read golden dump"));
-            dump_count += 1;
-        }
-    }
+    let haystack = std::fs::read_to_string(&snapshot).expect("read checked-MIR snapshot");
+    let dump_count = haystack.matches("===== ").count();
     assert!(
         dump_count > 0,
-        "no .mir dumps under {} — run `make checked-mir-golden`",
-        dir.display()
+        "no MIR dumps in {} — run `cargo test -p xtask checked_mir_corpus`",
+        snapshot.display()
     );
 
     // The `RuntimeCall` payload renders its TYPED family

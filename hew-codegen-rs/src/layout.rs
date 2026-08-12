@@ -277,39 +277,22 @@ pub(crate) fn host_data_layout_string() -> &'static str {
 
 /// Collect machine-layout indices that `field_ty` depends on for sizing.
 ///
-/// Mirrors `collect_named_enum_deps`. Keyed by [`machine_dep_key`] because a
-/// `MachineLayout.name` is a canonical class-tagged mono key (`mc$$Inner$$`)
-/// while a payload field spells its type nominally (`Inner`); both sides are
-/// normalized to the same projection so the lookup can resolve. Recurses
+/// Mirrors `collect_named_enum_deps`. `MachineLayout.name` is already the
+/// canonical class-tagged monomorphization key (`mc$$control.Lifecycle$$i64$$`),
+/// while a payload field carries the nominal owner plus its concrete type
+/// arguments. Project the latter through [`hew_hir::machine_layout_key`] so
+/// both sides meet without discarding module or generic identity. Recurses
 /// through generic args, tuples, arrays, and slices: any of them can carry an
 /// embedded machine whose body must be set before the container is sized.
-/// Normalize a machine name to the key used for dependency lookups.
-///
-/// Two spellings must meet here. `MachineLayout.name` is the canonical
-/// class-tagged monomorphization key produced by
-/// `hew_hir::mono::machine_layout_key` — `mc$$Inner$$`, or
-/// `mc$$control.Lifecycle$$i64$$` once module-qualified and generic. A state
-/// payload field, by contrast, spells its type nominally: `Inner`.
-///
-/// Keying the graph on `short_name` alone left the `mc$$` tag on one side and
-/// not the other, so `index_of.get("Inner")` never matched `mc$$Inner$$`, no
-/// edges were built, and the sort silently reordered nothing — the bug this
-/// module exists to fix. Strip the class tag first, then the module prefix.
-fn machine_dep_key(name: &str) -> &str {
-    let unwrapped = name
-        .strip_prefix("mc$$")
-        .map_or(name, |rest| rest.split("$$").next().unwrap_or(rest));
-    short_name(unwrapped)
-}
-
 fn collect_named_machine_deps(
     field_ty: &ResolvedTy,
-    index_of: &HashMap<&str, usize>,
+    index_of: &HashMap<String, usize>,
     out: &mut Vec<usize>,
 ) {
     match field_ty {
         ResolvedTy::Named { name, args, .. } => {
-            if let Some(&idx) = index_of.get(machine_dep_key(name)) {
+            let machine_key = hew_hir::machine_layout_key(name, args);
+            if let Some(&idx) = index_of.get(&machine_key) {
                 out.push(idx);
             }
             for arg in args {
@@ -374,15 +357,14 @@ pub(crate) fn register_machine_layouts<'ctx>(
     //
     // Algorithm: Kahn's topological sort, stable within each tier so unrelated
     // machines keep input order — required by the first-registration-wins dedup
-    // below. Both sides of the dependency lookup are normalized through
-    // `machine_dep_key`: layout names arrive class-tagged (`mc$$Inner$$`) while
-    // payload fields spell their type nominally (`Inner`).
+    // below. Layout names are already canonical class-tagged keys; payload
+    // fields are projected through the same `machine_layout_key` authority.
     let machine_order: Vec<usize> = {
         let n = machine_layouts.len();
-        let index_of: HashMap<&str, usize> = machine_layouts
+        let index_of: HashMap<String, usize> = machine_layouts
             .iter()
             .enumerate()
-            .map(|(i, l)| (machine_dep_key(&l.name), i))
+            .map(|(i, l)| (l.name.clone(), i))
             .collect();
 
         // `dep_of[i]` = indices of machines whose bodies must be set before `i`.
@@ -6781,36 +6763,39 @@ mod tests {
     }
 
     /// `MachineLayout.name` arrives class-tagged from
-    /// `hew_hir::mono::machine_layout_key` (`mc$$Inner$$`), while a state
-    /// payload field spells its type nominally (`Inner`). Both sides of the
-    /// dependency lookup must normalize to the same string or the graph gets
-    /// no edges and the topological sort silently reorders nothing.
+    /// `hew_hir::machine_layout_key`, while a state payload field carries its
+    /// nominal owner and concrete arguments. The dependency collector must
+    /// project that field through the same authority without collapsing
+    /// distinct module-qualified machines onto one leaf name.
     ///
     /// This is a discrimination test, not a presence test: it pins the exact
     /// pairing that was broken, so re-introducing a bare `short_name` on
     /// either side fails here rather than at runtime in a linked program.
     #[test]
-    fn machine_dep_key_matches_layout_names_against_nominal_field_spellings() {
-        // The pairing that regressed: tagged layout key vs. nominal field type.
+    fn machine_dependency_lookup_uses_canonical_nominal_identity() {
+        let lifecycle_key = hew_hir::machine_layout_key("control.Lifecycle", &[ResolvedTy::I64]);
+        let index_of = HashMap::from([(lifecycle_key, 7)]);
+        let field_ty = ResolvedTy::Named {
+            name: "control.Lifecycle".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        let mut deps = Vec::new();
+        collect_named_machine_deps(&field_ty, &index_of, &mut deps);
+        assert_eq!(deps, vec![7]);
+
+        let other_module = ResolvedTy::Named {
+            name: "other.Lifecycle".to_string(),
+            args: vec![ResolvedTy::I64],
+            builtin: None,
+            is_opaque: false,
+        };
+        collect_named_machine_deps(&other_module, &index_of, &mut deps);
         assert_eq!(
-            machine_dep_key("mc$$Inner$$"),
-            machine_dep_key("Inner"),
-            "a class-tagged layout name must resolve to the same key as the \
-             nominal spelling used by a payload field"
-        );
-
-        // Module-qualified and generic instantiations project to the leaf too.
-        assert_eq!(machine_dep_key("mc$$control.Lifecycle$$i64$$"), "Lifecycle");
-        assert_eq!(machine_dep_key("control.Lifecycle"), "Lifecycle");
-
-        // Untagged input is still handled (defensive: not all callers tag).
-        assert_eq!(machine_dep_key("Inner"), "Inner");
-
-        // Discrimination: distinct machines must NOT collide, or the sort
-        // would build edges between unrelated layouts.
-        assert_ne!(
-            machine_dep_key("mc$$Inner$$"),
-            machine_dep_key("mc$$Outer$$")
+            deps,
+            vec![7],
+            "a same-leaf machine from another module must not claim this dependency"
         );
     }
 }

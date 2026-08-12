@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::atomic::AtomicPtr;
 use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::RngExt;
 
@@ -805,6 +805,17 @@ pub extern "C" fn hew_sched_init() -> c_int {
 /// scheduler — deques, parkers, stealers — as the final teardown step). The
 /// scheduler is owned by the runtime, so detaching the runtime is what frees
 /// the scheduler.
+/// Maximum total time worker teardown will wait for ALL workers to exit.
+///
+/// Chosen to match `shutdown::DEFAULT_DRAIN_TIMEOUT_MS` (5s): by the time
+/// teardown runs, the drain phase has already had its own budget, so this is a
+/// backstop against a worker that cannot return (parked in a blocking syscall),
+/// not a second drain window.
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval while waiting for a worker to finish.
+const WORKER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
 fn teardown_workers(
     scheduler: Option<*const Scheduler>,
     handles: Option<Vec<Option<JoinHandle<()>>>>,
@@ -832,6 +843,10 @@ fn teardown_workers(
         })
     });
     let current_id = thread::current().id();
+    // ONE deadline for the whole set, not per-handle: N workers each parked in a
+    // blocking syscall must not multiply the bound by N.
+    let deadline = Instant::now() + WORKER_JOIN_TIMEOUT;
+    let mut abandoned = 0usize;
     for handle in &mut handles {
         if let Some(ref h) = handle {
             if h.thread().id() == current_id {
@@ -839,9 +854,36 @@ fn teardown_workers(
                 continue;
             }
         }
-        if let Some(h) = handle.take() {
-            crate::util::report_join_panic("scheduler worker thread", h.join());
+        let Some(h) = handle.take() else { continue };
+        // A worker parked in a runtime-owned blocking op (e.g. `accept()`) never
+        // reaches the park-recheck, so an unconditional `join()` is unbounded and
+        // would hang an embedding host's shutdown forever. Poll `is_finished()`
+        // to a deadline, and join only once the thread is known to be done so the
+        // join itself cannot block.
+        loop {
+            if h.is_finished() {
+                crate::util::report_join_panic("scheduler worker thread", h.join());
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // Deliberately LEAK the handle rather than force-kill: the worker
+                // may still be touching scheduler-owned memory, and there is no
+                // safe way to interrupt it. Detaching is the fail-closed choice —
+                // it bounds shutdown without introducing a use-after-free.
+                abandoned += 1;
+                std::mem::forget(h);
+                break;
+            }
+            thread::sleep(WORKER_JOIN_POLL_INTERVAL.min(remaining));
         }
+    }
+    if abandoned > 0 {
+        eprintln!(
+            "hew: scheduler shutdown timed out joining {abandoned} worker thread(s) after \
+             {WORKER_JOIN_TIMEOUT:?}; detaching them (a worker is likely parked in a \
+             blocking syscall)"
+        );
     }
 
     // No joined worker can consume the global injector now. Retire its
@@ -876,8 +918,11 @@ fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
 
 /// Gracefully shut down the scheduler.
 ///
-/// Sets the shutdown flag, wakes all parked workers, then joins every
-/// worker thread. Safe to call if the scheduler was never initialized.
+/// Sets the shutdown flag, wakes all parked workers, then joins every worker
+/// thread subject to a bounded overall deadline (`WORKER_JOIN_TIMEOUT`). A
+/// worker that has not exited by the deadline is detached rather than joined,
+/// so shutdown always terminates. Safe to call if the scheduler was never
+/// initialized.
 #[no_mangle]
 pub extern "C" fn hew_sched_shutdown() {
     let Some(sched) = get_scheduler() else {
@@ -4514,10 +4559,103 @@ mod tests {
     use super::*;
     use std::ptr;
     use std::sync::atomic::AtomicI32;
+    use std::sync::Arc;
 
     // `SCHED_TEST_MUTEX` is defined at module scope (see above) so the
     // cross-module `NoWorkerSchedulerForTest` guard serializes against these
     // tests too; `use super::*` brings it into scope here.
+
+    // Bounded worker join (#2508).
+    //
+    // `teardown_workers` with `scheduler: None` and explicit `handles` exercises
+    // only the join loop, with no global scheduler state involved.
+
+    /// CONTROL: a worker that exits normally is still JOINED, not abandoned,
+    /// and teardown returns promptly rather than burning the timeout.
+    #[test]
+    fn teardown_joins_workers_that_exit() {
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let h = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        let start = Instant::now();
+        teardown_workers(None, Some(vec![Some(h)]), false);
+        let elapsed = start.elapsed();
+
+        // Joined means the worker's write is visible on return.
+        assert!(
+            done.load(Ordering::SeqCst),
+            "a normally-exiting worker must be joined, not abandoned"
+        );
+        assert!(
+            elapsed < WORKER_JOIN_TIMEOUT,
+            "teardown must return as soon as workers exit, took {elapsed:?}"
+        );
+    }
+
+    /// A worker that never returns must NOT hang teardown: it is detached once
+    /// the deadline expires. This is the #2508 defect -- without the bound this
+    /// test never terminates.
+    #[test]
+    fn teardown_abandons_a_worker_that_never_exits() {
+        let release = Arc::new(AtomicBool::new(false));
+        let stuck = Arc::clone(&release);
+        let h = thread::spawn(move || {
+            // Stands in for a worker parked in a blocking syscall: it does not
+            // observe the shutdown flag at all.
+            while !stuck.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let start = Instant::now();
+        teardown_workers(None, Some(vec![Some(h)]), false);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= WORKER_JOIN_TIMEOUT,
+            "teardown must actually wait out the deadline, took {elapsed:?}"
+        );
+        // The bound is the point: teardown RETURNED.
+        assert!(
+            elapsed < WORKER_JOIN_TIMEOUT * 3,
+            "teardown must be bounded near the deadline, took {elapsed:?}"
+        );
+
+        // Let the detached thread go so it does not outlive the test run.
+        release.store(true, Ordering::SeqCst);
+    }
+
+    /// The deadline is shared across the whole set, not applied per handle:
+    /// three stuck workers must not cost 3x the timeout.
+    #[test]
+    fn teardown_deadline_is_shared_across_workers() {
+        let release = Arc::new(AtomicBool::new(false));
+        let handles: Vec<Option<JoinHandle<()>>> = (0..3)
+            .map(|_| {
+                let stuck = Arc::clone(&release);
+                Some(thread::spawn(move || {
+                    while !stuck.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }))
+            })
+            .collect();
+
+        let start = Instant::now();
+        teardown_workers(None, Some(handles), false);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < WORKER_JOIN_TIMEOUT * 2,
+            "3 stuck workers must share one deadline, not multiply it: took {elapsed:?}"
+        );
+
+        release.store(true, Ordering::SeqCst);
+    }
 
     struct ActivatePreReenqueueHookGuard;
 

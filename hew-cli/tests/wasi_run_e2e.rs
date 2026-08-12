@@ -608,6 +608,193 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+//  Cooperative-timer probes (#1964)
+//
+//  WASM timers are cooperative: sleep parks at the message boundary and time
+//  advances through `hew_wasm_timer_tick` (hew-runtime/src/scheduler_wasm.rs).
+//  Nothing in the suite exercised that path, so both a working case and a
+//  divergent one could change silently. These two probes pin the observed
+//  behaviour of the cooperative timer against the native runtime.
+//
+//  Probe (a) — top-level `sleep`: parks and resumes, and the wasm program
+//  terminates with byte-identical stdout to native. This is real parity.
+//
+//  Probe (b) — actor periodic timer (`#[every]`): the timer DOES fire under
+//  wasm, but the program never terminates, because with no host driving
+//  `hew_wasm_timer_tick` the periodic queue keeps the scheduler permanently
+//  non-quiescent. Native runs the same program to completion. That is a real
+//  native↔wasm divergence, not a passing parity case, so probe (b) pins the
+//  divergence explicitly (bounded by `--timeout`) rather than asserting a
+//  parity that does not hold. If the runtime is fixed so the periodic actor
+//  reaches quiescence under wasm, this test fails and must be promoted to a
+//  stdout-parity case alongside the fix.
+// ─────────────────────────────────────────────────────────────────────────
+
+// A top-level `sleep` parks the main activation at the message boundary and is
+// resumed once the cooperative timer advances past the deadline. The prints
+// bracket the park, so a sleep that never resumed (or was skipped entirely and
+// reordered) changes stdout.
+const COOPERATIVE_SLEEP_SOURCE: &str = r#"fn main() {
+    println("before");
+    sleep(50ms);
+    println("after");
+}
+"#;
+
+const COOPERATIVE_SLEEP_EXPECTED: &str = "before\nafter\n";
+
+#[test]
+fn wasm_cooperative_sleep_parks_and_resumes() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("cooperative_sleep_wasi.hew");
+    fs::write(&source, COOPERATIVE_SLEEP_SOURCE).expect("write cooperative sleep WASI source");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hew run --target wasm32-wasi failed for the cooperative sleep source; a parked sleep \
+         that never resumes hangs or traps here\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert_eq!(
+        stdout.as_ref(),
+        COOPERATIVE_SLEEP_EXPECTED,
+        "wasm32 cooperative sleep output mismatch\nstderr:\n{stderr}",
+    );
+}
+
+// Native↔wasm parity half of the sleep probe: the same program must produce
+// byte-identical stdout natively, so the cooperative wasm timer is pinned to
+// real runtime semantics rather than to whatever wasm happens to emit.
+#[test]
+fn native_cooperative_sleep_matches_wasi_output() {
+    support::require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("cooperative_sleep_native.hew");
+    fs::write(&source, COOPERATIVE_SLEEP_SOURCE).expect("write cooperative sleep native source");
+
+    let output = support::run_bounded_hew_run(&source, dir.path());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hew run (native) failed for the cooperative sleep source\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert_eq!(
+        stdout.as_ref(),
+        COOPERATIVE_SLEEP_EXPECTED,
+        "native cooperative sleep output mismatch\nstderr:\n{stderr}",
+    );
+}
+
+// An actor with an `#[every]` periodic handler. No `await` is used: awaiting
+// inside an actor is still gated on wasm (see backlog #1451), so an ask-based
+// variant would fail at codegen and prove nothing about the timer.
+const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
+    var count: i64 = 0;
+
+    #[every(20ms)]
+    receive fn tick() {
+        count += 1;
+        println(f"tick {count}");
+    }
+}
+
+fn main() {
+    let p = spawn Pulse(count: 0);
+    println("spawned");
+    sleep(120ms);
+    println("done");
+}
+"#;
+
+#[test]
+fn wasm_actor_periodic_timer_fires_but_never_reaches_quiescence() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("cooperative_periodic_wasi.hew");
+    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE)
+        .expect("write cooperative periodic WASI source");
+
+    // `--timeout` bounds the run: without it this program does not terminate
+    // under wasm, so an unbounded assertion would hang the suite.
+    let output = Command::new(hew_binary())
+        .args(["run", "--timeout", "5"])
+        .arg(&source)
+        .arg("--target")
+        .arg("wasm32-wasi")
+        .current_dir(dir.path())
+        .output()
+        .expect("run hew --target wasm32-wasi --timeout for the periodic timer probe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The timer really does fire: the cooperative periodic queue is drained by
+    // the scheduler's own clock reads. If this stops holding, the periodic
+    // handler has been gated or silently dropped on wasm.
+    assert!(
+        stdout.contains("tick 1"),
+        "the wasm periodic handler never fired; #[every] is not being delivered on wasm32\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+
+    // ...but the program never becomes quiescent, so `hew run` has to kill it.
+    // Native (below) exits on its own. This asymmetry is the divergence.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected the wasm periodic-timer program to be killed by --timeout (exit 1). If it now \
+         terminates on its own, the cooperative-timer quiescence divergence is FIXED — promote \
+         this probe to a native↔wasm stdout parity case in the same commit.\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("Error: program timed out after 5s"),
+        "expected the explicit timeout diagnostic for the non-quiescent periodic actor\n\
+         stderr:\n{stderr}",
+    );
+}
+
+// The native half: the same periodic-timer program terminates on its own.
+// Pinning this is what makes the wasm probe above a *parity* statement rather
+// than an isolated observation — it is the side that behaves, and the contrast
+// is the thing under test.
+#[test]
+fn native_actor_periodic_timer_reaches_quiescence() {
+    support::require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("cooperative_periodic_native.hew");
+    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE)
+        .expect("write cooperative periodic native source");
+
+    let output = support::run_bounded_hew_run(&source, dir.path());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "hew run (native) failed for the periodic timer source; native is expected to reach \
+         quiescence and exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("tick 1"),
+        "the native periodic handler never fired\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("done"),
+        "native run did not reach the end of main\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+}
+
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

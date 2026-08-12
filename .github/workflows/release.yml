@@ -53,9 +53,118 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
+  # Cross-built release libraries — proved by their target-native consumers
+  # ─────────────────────────────────────────────────────────────────────────
+  build-cross-release-libs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: x86_64-unknown-freebsd
+            builder: zig
+            archive: libhew.a
+            build_std: false
+          - rust_target: x86_64-pc-windows-msvc
+            builder: xwin
+            archive: hew.lib
+            build_std: false
+          - rust_target: aarch64-unknown-freebsd
+            builder: zig
+            archive: libhew.a
+            build_std: true
+            zig_target: aarch64-freebsd
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install archive inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+
+      - name: Install Rust target
+        if: ${{ !matrix.build_std }}
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Rust sources
+        if: matrix.build_std
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: "1.96.0"
+          components: rust-src
+
+      - name: Install Zig
+        if: matrix.builder == 'zig'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2
+        with:
+          version: 0.16.0
+
+      - name: Install cargo-zigbuild
+        if: matrix.builder == 'zig'
+        run: cargo install cargo-zigbuild --locked --version 0.22.3
+
+      - name: Install cargo-xwin
+        if: matrix.builder == 'xwin'
+        run: cargo install cargo-xwin --locked --version 0.23.0
+
+      - name: Build FreeBSD release library
+        if: matrix.builder == 'zig' && !matrix.build_std
+        run: cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Build FreeBSD release library with standard library
+        if: matrix.build_std
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Build Windows release library
+        if: matrix.builder == 'xwin'
+        env:
+          AWS_LC_SYS_PREBUILT_NASM: "1"
+        run: cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+
+      - name: Record FreeBSD ABI baseline
+        if: matrix.build_std
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'int main(void) { return 0; }' > freebsd-abi-probe.c
+          zig cc -target "${{ matrix.zig_target }}" freebsd-abi-probe.c -o freebsd-abi-probe
+          abi=$(file freebsd-abi-probe)
+          echo "${abi}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "${abi}" | grep -q 'for FreeBSD 14.0 (1400500)'
+
+      - name: Verify and stage cross-built archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }}"
+          scripts/verify-cross-release-lib.sh "${{ matrix.rust_target }}" "${archive}"
+
+          destination="cross-release-libs/${{ matrix.rust_target }}"
+          mkdir -p "${destination}"
+          cp "${archive}" "${destination}/${{ matrix.archive }}"
+
+      - name: Upload cross-built archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: libhew-${{ matrix.rust_target }}
+          path: cross-release-libs/${{ matrix.rust_target }}/${{ matrix.archive }}
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build — macOS and Windows release artifacts
   # ─────────────────────────────────────────────────────────────────────────
   build:
+    needs: build-cross-release-libs
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +190,13 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download cross-built release library (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-${{ matrix.rust_target }}
+          path: cross-release-libs/${{ matrix.rust_target }}
 
       # ── LLVM toolchain installation ─────────────────────────────────────
 
@@ -261,6 +377,7 @@ jobs:
         run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
+        if: startsWith(matrix.target, 'darwin')
         # The shipped archive builds under the non-LTO release-lib profile:
         # external Rust staticlibs (--link-lib packages) cannot dedupe their
         # verbatim libstd members against a fat-LTO archive.
@@ -279,7 +396,7 @@ jobs:
         run: |
           ./scripts/test-release-lib-link.ps1 `
             -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
-            -Archive "target/${{ matrix.rust_target }}/release-lib/hew.lib"
+            -Archive "cross-release-libs/${{ matrix.rust_target }}/hew.lib"
 
       - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -381,7 +498,7 @@ jobs:
 
           $Version = $env:RELEASE_TAG.TrimStart("v")
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
-          $ReleaseLibDir = "target/${{ matrix.rust_target }}/release-lib"
+          $ReleaseLibDir = "cross-release-libs/${{ matrix.rust_target }}"
 
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std", "${ArchiveName}/completions" -Force | Out-Null
 
@@ -392,6 +509,11 @@ jobs:
           # The executable consumer proof above is the authority for the
           # release library contract. Copy-Item fails closed if it is absent.
           Copy-Item "${ReleaseLibDir}/hew.lib"                                   "${ArchiveName}/lib/"
+
+          # Keep the full Rust triple in the installed layout so target-aware
+          # lookup chooses the proved archive before the native fallback.
+          New-Item -ItemType Directory -Path "${ArchiveName}/lib/${{ matrix.rust_target }}" -Force | Out-Null
+          Copy-Item "${ReleaseLibDir}/hew.lib" "${ArchiveName}/lib/${{ matrix.rust_target }}/"
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
@@ -800,6 +922,7 @@ jobs:
   # FreeBSD build — x86_64 via QEMU VM (tier-1, required release gate)
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd:
+    needs: build-cross-release-libs
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -815,6 +938,12 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download cross-built release library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-x86_64-unknown-freebsd
+          path: cross-release-libs/x86_64-unknown-freebsd
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
@@ -848,10 +977,9 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+              --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -871,7 +999,10 @@ jobs:
 
             # The executable consumer proof above is the authority; cp fails
             # closed if the validated archive is absent.
-            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
+            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
+            mkdir -p "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd"
+            cp cross-release-libs/x86_64-unknown-freebsd/libhew.a \
+              "${ARCHIVE_NAME}/lib/x86_64-unknown-freebsd/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -927,6 +1058,7 @@ jobs:
   # locally; CI is the proving gate for this toolchain asset.
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd-aarch64:
+    needs: build-cross-release-libs
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
@@ -942,6 +1074,12 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           echo "name=hew-v${VERSION}-freebsd-aarch64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download cross-built release library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: libhew-aarch64-unknown-freebsd
+          path: cross-release-libs/aarch64-unknown-freebsd
 
       - name: Build on FreeBSD aarch64
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
@@ -976,10 +1114,9 @@ jobs:
 
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-cli -p hew-lsp -p hew-observe --release
-            cargo build -p hew-lib --profile release-lib
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
-              --archive target/release-lib/libhew.a
+              --archive cross-release-libs/aarch64-unknown-freebsd/libhew.a
 
             # ── Third-party license attribution ────────────────────────────
             cargo install cargo-about --locked --features cli --version 0.9.0
@@ -999,7 +1136,10 @@ jobs:
 
             # The executable consumer proof above is the authority; cp fails
             # closed if the validated archive is absent.
-            cp target/release-lib/libhew.a "${ARCHIVE_NAME}/lib/"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a "${ARCHIVE_NAME}/lib/"
+            mkdir -p "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd"
+            cp cross-release-libs/aarch64-unknown-freebsd/libhew.a \
+              "${ARCHIVE_NAME}/lib/aarch64-unknown-freebsd/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"

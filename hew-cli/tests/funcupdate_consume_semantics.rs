@@ -1516,11 +1516,24 @@ fn main() {
     );
 }
 
-/// Carrying a tuple-of-owned field must FAIL `hew check` fail-closed: a
-/// `(string, i64)` tuple has no single inline-drop leaf symbol and is not an
-/// owned user record, so the shallow carry has no proven-sound transfer path.
+/// Carrying a HEAP-OWNING tuple field is ACCEPTED and runs clean.
+///
+/// This was previously fail-closed (`reject_carry_tuple_of_owned_field`). The
+/// lift admits `ty_is_heap_owning_tuple` into the carry pre-flight's
+/// `sound_carry` predicate, reusing the EXISTING
+/// `derive_tuple_composite_drop_allowed` composite-drop prover that already sits
+/// beside the record prover making the nested-record carry sound. No new
+/// recursive carry spine is authored: the prover excludes the consumed base, so
+/// the base's scope-exit drop and the result's drop do not both release the
+/// carried tuple.
+///
+/// Verified under `MALLOC_CHECK_=3 MALLOC_PERTURB_=165` with a flat RSS profile
+/// across a 4x frame sweep, matching the known-sound record carry as a positive
+/// control. The closure / `Option` / handle families remain fail-closed — see the
+/// sibling `reject_carry_*` tests, which are the discrimination controls proving
+/// this lift is precisely scoped and not a blanket weakening.
 #[test]
-fn reject_carry_tuple_of_owned_field() {
+fn accept_carry_tuple_of_owned_field() {
     let source = r#"
 import std::string;
 record T { pair: (string, i64), tag: string }
@@ -1531,15 +1544,119 @@ fn mk() -> T {
 fn main() {
     let r = mk();
     println(r.tag);
+    println(r.pair.0);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "heap-owning tuple carry must run clean; got:\n{out}");
+    assert!(
+        out.contains(&"y".repeat(32)),
+        "carry must override tag; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"k".repeat(32)),
+        "carry must preserve the carried tuple's owned element; got:\n{out}"
+    );
+}
+
+/// Widened shapes for the same lift: a tuple nested inside a tuple, a
+/// tuple-of-tuples, a tuple carrying a `Vec`, and a tuple carrying an owned
+/// user record. Each must accept AND run correctly — checking alone would not
+/// discriminate a sound carry from one that double-frees at teardown.
+#[test]
+fn accept_carry_nested_and_collection_bearing_tuples() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "tuple nested in tuple",
+            r#"
+import std::string;
+record T { pair: (string, (string, i64)), tag: string }
+fn mk() -> T {
+    let b = T { pair: (string.repeat("k", 32), (string.repeat("m", 32), 7)), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); println(r.pair.0); }
+"#,
+        ),
+        (
+            "tuple of tuples",
+            r#"
+import std::string;
+record T { pair: ((string, i64), (string, i64)), tag: string }
+fn mk() -> T {
+    let b = T { pair: ((string.repeat("k", 32), 1), (string.repeat("m", 32), 2)), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); }
+"#,
+        ),
+        (
+            "tuple carrying a Vec",
+            r#"
+import std::string;
+record T { pair: (Vec<string>, i64), tag: string }
+fn mk() -> T {
+    let v: Vec<string> = Vec::new();
+    v.push(string.repeat("k", 32));
+    let b = T { pair: (v, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); println(r.pair.0.len()); }
+"#,
+        ),
+        (
+            "tuple carrying an owned record",
+            r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record T { pair: (Inner, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (Inner { label: string.repeat("k", 32), n: 1 }, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() { let r = mk(); println(r.tag); }
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let (ok, out) = hew_run(source);
+        assert!(ok, "{name}: heap-owning tuple carry must run clean; got:\n{out}");
+        assert!(
+            out.contains(&"y".repeat(32)),
+            "{name}: carry must override tag; got:\n{out}"
+        );
+    }
+}
+
+/// Discrimination control for the tuple lift's LOWER edge: a tuple with NO heap
+/// fields (`(i64, i64)`) is not admitted by `ty_is_heap_owning_tuple` and still
+/// fails closed.
+///
+/// This is a coverage gap, not a soundness one — a plain-scalar tuple is
+/// trivially bit-copyable and carrying it can never double-free, so the reject
+/// is conservative rather than wrong. Recorded here so the boundary is asserted
+/// rather than assumed; lifting it is a separate, strictly-safe follow-up.
+#[test]
+fn reject_carry_non_heap_tuple_field_is_conservative() {
+    let source = r#"
+import std::string;
+record T { pair: (i64, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (3, 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
 }
 "#;
     let (ok, out) = hew_check(source);
     assert!(
         !ok,
-        "tuple-of-owned carry must fail check; got success:\n{out}"
+        "non-heap tuple carry is currently conservative-reject; got success:\n{out}"
     );
     assert!(
-        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        out.contains("E_NOT_YET_IMPLEMENTED"),
         "expected the fail-closed carry diagnostic; got:\n{out}"
     );
 }

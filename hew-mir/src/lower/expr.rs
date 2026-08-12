@@ -4385,7 +4385,12 @@ impl Builder {
                                 self.project_field_inline_drop_symbol(&subst_fty),
                                 ReleaseSymbolVerdict::Wired(_)
                             )
-                            || self.is_owned_aggregate_record_ty(&subst_fty);
+                            || self.is_owned_aggregate_record_ty(&subst_fty)
+                            || crate::lower::drop_plan::ty_is_heap_owning_tuple(
+                                &subst_fty,
+                                &self.record_field_orders,
+                                &self.enum_layouts,
+                            );
                         if sound_carry {
                             continue;
                         }

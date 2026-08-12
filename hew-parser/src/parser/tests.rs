@@ -4410,6 +4410,16 @@ fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
     assert!(matches!(&patterns[1], Pattern::Identifier(n) if n == "None"));
 }
 
+#[test]
+fn module_qualified_variant_pattern_preserves_dotted_owner() {
+    let source = "fn f(e: m.E) -> i64 { match e { m.E::Some(x) => x, _ => 0 } }";
+    let patterns = first_match_arm_patterns(source);
+    match &patterns[0] {
+        Pattern::Constructor { name, .. } => assert_eq!(name, "m.E::Some"),
+        other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
+    }
+}
+
 // ── RecordShorthand pattern (let {a, b} = rec) ───────────────────────────
 
 /// `let { x, y } = p` parses as `Pattern::RecordShorthand` with two plain

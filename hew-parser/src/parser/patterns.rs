@@ -179,6 +179,18 @@ impl Parser<'_> {
                 if name == "_" {
                     Pattern::Wildcard
                 } else {
+                    // Preserve dotted module qualification before the
+                    // type/variant separator: `module.Type::Variant`. The
+                    // complete path stays in the existing pattern variants,
+                    // so checker and HIR variant resolution use the same
+                    // owner-qualified constructor surface as expressions.
+                    while self.eat(&Token::Dot) {
+                        if let Some(segment) = self.expect_ident() {
+                            name = format!("{name}.{segment}");
+                        } else {
+                            break;
+                        }
+                    }
                     // Handle qualified names like Colour::Red
                     while self.eat(&Token::DoubleColon) {
                         if let Some(segment) = self.expect_ident() {
